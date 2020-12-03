@@ -6,7 +6,7 @@ authors = ["Brenden Matthews <brenden@brndn.io>"]
 license = "AGPL-3.0-only"
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.8"
 ib_insync = "^0.9.64"
 
 [tool.poetry.dev-dependencies]
