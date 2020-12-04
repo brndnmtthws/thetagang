@@ -6,6 +6,9 @@ is a strategy that [surfaced on Reddit](https://www.reddit.com/r/options/comment
 but has been used by many in the past. This bot implements a slightly
 modified version of The Wheel, with my own personal tweaks.
 
+I've been streaming most of the work on this project [on Twitch, so follow me
+over there](https://www.twitch.tv/letsmakestuff).
+
 ## Requirements
 
 The bot is based on the [ib_insync](https://github.com/erdewit/ib_insync)
