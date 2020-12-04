@@ -3,8 +3,6 @@ import sys
 import json
 import datetime
 from pygments import highlight
-from pygments.formatters import TerminalFormatter
-from pygments.lexers import JsonLexer
 
 
 CONTEXT_SETTINGS = dict(
@@ -13,21 +11,26 @@ CONTEXT_SETTINGS = dict(
 
 
 @click.command(context_settings=CONTEXT_SETTINGS)
-@click.option("--userid", help="Login for your IBKR account", required=True)
-@click.option("--password", help="Password for your IBKR account", required=True)
-@click.option("--twsVersion", help="Version of IBKR TWS", required=True, default="981")
-@click.option("--tradingMode")
-@click.option("--twsPath")
-@click.option("--twsSettingsPath")
-@click.option("--ibcPath")
-@click.option("--ibcIni")
-@click.option("--javaPath")
+@click.option("--ibkr_userid", help="Login for your IBKR account", required=True)
+@click.option("--ibkr_password", help="Password for your IBKR account", required=True)
+@click.option(
+    "--ibkr_tws_version", help="Version of IBKR TWS", required=True, default="981"
+)
+@click.option("--ibkr_trading_mode")
+@click.option("--ibkr_tws_path")
+@click.option("--ibkr_tws_settings_path")
+@click.option("--ibkr_ibc_path")
+@click.option("--ibkr_ibc_ini")
+@click.option("--ibkr_java_path")
 def cli(**kwargs):
     """ThetaGang is an IBKR bot for collecting money.
 
     You may specify options using environment variables by prefixing them
     with `THETAGANG_`. For example, you can specify the login details using
-    `THETAGANG_IBLOGIN`.
+    `THETAGANG_IBKR_USERID`.
+
+    Options prefixed with "ibkr_" are passed directly to the underlying IBC
+    instance (see https://ib-insync.readthedocs.io/api.html#ibc for details).
     """
 
     from .thetagang import start
