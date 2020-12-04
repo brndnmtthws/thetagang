@@ -7,18 +7,29 @@ from pygments.formatters import TerminalFormatter
 from pygments.lexers import JsonLexer
 
 
-CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
+CONTEXT_SETTINGS = dict(
+    help_option_names=["-h", "--help"], auto_envvar_prefix="THETAGANG"
+)
 
 
 @click.command(context_settings=CONTEXT_SETTINGS)
-@click.option("--login", help="Login", required=True)
-@click.option("--password", help="Password", required=True)
-def cli(
-    login,
-    password,
-):
-    """ThetaGang is an IBKR bot for collecting money"""
+@click.option("--userid", help="Login for your IBKR account", required=True)
+@click.option("--password", help="Password for your IBKR account", required=True)
+@click.option("--twsVersion", help="Version of IBKR TWS", required=True, default="981")
+@click.option("--tradingMode")
+@click.option("--twsPath")
+@click.option("--twsSettingsPath")
+@click.option("--ibcPath")
+@click.option("--ibcIni")
+@click.option("--javaPath")
+def cli(**kwargs):
+    """ThetaGang is an IBKR bot for collecting money.
 
-    click.echo(f"{login} {password}")
+    You may specify options using environment variables by prefixing them
+    with `THETAGANG_`. For example, you can specify the login details using
+    `THETAGANG_IBLOGIN`.
+    """
 
-    return
+    from .thetagang import start
+
+    start(**kwargs)

@@ -5,27 +5,21 @@ from ib_insync import IBC, IB, Watchdog, Index, util
 
 util.patchAsyncio()
 
-ibc = IBC(
-    981,
-    gateway=True,
-    tradingMode="paper",
-    ibcPath="/Users/brenden/ibc",
-    javaPath="/Library/Java/JavaVirtualMachines/jdk1.8.0_162.jdk/Contents/Home/bin",
-)
 
+def start(**kwargs):
+    ibc = IBC(kwargs.get("tws_version"), kwargs)
 
-def onConnected():
-    print(ib.accountValues())
+    def onConnected():
+        print(ib.accountValues())
 
-    spx = Index("SPX", "CBOE")
-    contracts = ib.qualifyContracts(spx)
-    print(contracts)
+        spx = Index("SPX", "CBOE")
+        contracts = ib.qualifyContracts(spx)
+        print(contracts)
 
+    ib = IB()
+    ib.connectedEvent += onConnected
 
-ib = IB()
-ib.connectedEvent += onConnected
+    watchdog = Watchdog(ibc, ib, port=4002)
 
-watchdog = Watchdog(ibc, ib, port=4002)
-
-watchdog.start()
-ib.run()
+    watchdog.start()
+    ib.run()
