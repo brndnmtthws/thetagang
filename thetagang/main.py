@@ -11,6 +11,9 @@ CONTEXT_SETTINGS = dict(
 
 
 @click.command(context_settings=CONTEXT_SETTINGS)
+@click.option(
+    "--config", help="Path to toml config", required=True, default="thetagang.toml"
+)
 @click.option("--ibkr_userid", help="Login for your IBKR account", required=True)
 @click.option("--ibkr_password", help="Password for your IBKR account", required=True)
 @click.option(
@@ -18,6 +21,7 @@ CONTEXT_SETTINGS = dict(
 )
 @click.option("--ibkr_trading_mode")
 @click.option("--ibkr_tws_path")
+@click.option("--ibkr_gateway/--no_ibkr_gateway", default=True)
 @click.option("--ibkr_tws_settings_path")
 @click.option("--ibkr_ibc_path")
 @click.option("--ibkr_ibc_ini")

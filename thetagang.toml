@@ -1,0 +1,29 @@
+[account]
+# The account number to operate on
+number = "DU2962946"
+
+# Minimum amount of excess liquidity as a percentage of net liquidation value
+minimum_excess_liquidity = 0.15
+
+[roll_when]
+# Roll when P&L reaches 90%
+pnl = 0.9
+# Or when there are <= 15 days to expiry
+dte = 15
+
+[target]
+# Target 45 or more days to expiry
+dte = 45
+# Target delta of 0.3 or less
+delta = 0.3
+
+[symbols]
+
+  [symbols.SPY]
+  weight = 40
+
+  [symbols.QQQ]
+  weight = 30
+
+  [symbols.TLT]
+  weight = 30
