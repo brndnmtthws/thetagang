@@ -2,8 +2,20 @@
 # The account number to operate on
 number = "DU2962946"
 
+# Cancel any existing orders for the symbols configured at startup
+cancel_orders = true
+
 # Minimum amount of excess liquidity as a percentage of net liquidation value
-minimum_excess_liquidity = 0.15
+minimum_excess_liquidity = 0.2
+
+# Market data type (see https://interactivebrokers.github.io/tws-api/market_data_type.html)
+market_data_type = 2
+
+[option_chains]
+# Number of expirations to load from option chains
+expirations = 5
+# Number of strikes to load from option chains
+strikes = 50
 
 [roll_when]
 # Roll when P&L reaches 90%
@@ -16,14 +28,16 @@ dte = 15
 dte = 45
 # Target delta of 0.3 or less
 delta = 0.3
+# Minimum amount of open interest for a contract to qualify
+minimum_open_interest = 10
 
 [symbols]
 
   [symbols.SPY]
-  weight = 40
+  weight = 0.4
 
   [symbols.QQQ]
-  weight = 30
+  weight = 0.3
 
   [symbols.TLT]
-  weight = 30
+  weight = 0.3
