@@ -1,8 +1,9 @@
 import click
-import sys
-import json
-import datetime
-from pygments import highlight
+import click_log
+import logging
+
+logger = logging.getLogger(__name__)
+click_log.basic_config(logger)
 
 
 CONTEXT_SETTINGS = dict(
@@ -11,6 +12,7 @@ CONTEXT_SETTINGS = dict(
 
 
 @click.command(context_settings=CONTEXT_SETTINGS)
+@click_log.simple_verbosity_option(logger)
 @click.option(
     "--config", help="Path to toml config", required=True, default="thetagang.toml"
 )
