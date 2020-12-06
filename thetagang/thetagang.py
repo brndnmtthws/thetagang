@@ -10,8 +10,13 @@ from ib_insync.contract import Stock
 from ib_insync.objects import Position
 
 from .portfolio_manager import PortfolioManager
-from .util import (account_summary_to_dict, justify,
-                   portfolio_positions_to_dict, position_pnl, to_camel_case)
+from .util import (
+    account_summary_to_dict,
+    justify,
+    portfolio_positions_to_dict,
+    position_pnl,
+    to_camel_case,
+)
 
 pp = pprint.PrettyPrinter(indent=2)
 
