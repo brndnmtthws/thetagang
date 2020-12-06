@@ -1,13 +1,13 @@
-import pprint
+import math
 
-import ib_insync
-from ib_insync.order import LimitOrder, Order
-from thetagang.util import position_pnl
 import click
+import ib_insync
 from ib_insync.contract import ComboLeg, Contract, Option, Stock, TagValue
-from .options import contract_date_to_datetime, option_dte
+from ib_insync.order import LimitOrder, Order
 
-pp = pprint.PrettyPrinter(indent=4)
+from thetagang.util import position_pnl
+
+from .options import contract_date_to_datetime, option_dte
 
 
 class PortfolioManager:
@@ -138,12 +138,12 @@ class PortfolioManager:
             sell_ticker = self.find_eligible_contracts(symbol, right)
             quantity = abs(position.position)
 
+            position.contract.exchange = "SMART"
             [buy_ticker] = self.ib.reqTickers(position.contract)
-            print(buy_ticker)
 
-            price = sell_ticker.modelGreeks.optPrice + buy_ticker.modelGreeks.optPrice
+            price = buy_ticker.modelGreeks.optPrice - sell_ticker.modelGreeks.optPrice
 
-            # Create buy combo legs
+            # Create combo legs
             comboLegs = [
                 ComboLeg(
                     conId=position.contract.conId,
@@ -158,6 +158,7 @@ class PortfolioManager:
                     action="SELL",
                 ),
             ]
+            # Create contract
             combo = Contract(
                 secType="BAG",
                 symbol=symbol,
@@ -165,6 +166,7 @@ class PortfolioManager:
                 exchange="SMART",
                 comboLegs=comboLegs,
             )
+            # Create order
             order = LimitOrder(
                 "BUY",
                 quantity,
@@ -172,9 +174,10 @@ class PortfolioManager:
                 algoStrategy="Adaptive",
                 algoParams=[TagValue("adaptivePriority", "Patient")],
             )
+            # Submit order
             trade = self.ib.placeOrder(combo, order)
             click.secho("Order submitted", fg="green")
-            click.secho(trade, fg="green")
+            click.secho(f"{trade}", fg="green")
 
     def find_eligible_contracts(self, symbol, right):
         stock = Stock(symbol, "SMART", currency="USD")
@@ -235,13 +238,14 @@ class PortfolioManager:
             # data, so just ignore it when the value is None
             if right.startswith("P"):
                 return (
-                    ticker.putOpenInterest is None
+                    math.isnan(ticker.putOpenInterest) or ticker.putOpenInterest is None
                 ) or ticker.putOpenInterest >= self.config["target"][
                     "minimum_open_interest"
                 ]
             if right.startswith("C"):
                 return (
-                    ticker.callOpenInterest is None
+                    math.isnan(ticker.callOpenInterest)
+                    or ticker.callOpenInterest is None
                 ) or ticker.callOpenInterest >= self.config["target"][
                     "minimum_open_interest"
                 ]

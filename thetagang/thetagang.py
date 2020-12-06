@@ -1,21 +1,17 @@
 #!/usr/bin/env python
 
-import copy
 import asyncio
-from ib_insync import IBC, IB, Watchdog, Index, util
+import copy
 import pprint
-import click
-from ib_insync.objects import Position
-from .portfolio_manager import PortfolioManager
 
+import click
+from ib_insync import IB, IBC, Index, Watchdog, util
 from ib_insync.contract import Stock
-from .util import (
-    account_summary_to_dict,
-    justify,
-    portfolio_positions_to_dict,
-    position_pnl,
-    to_camel_case,
-)
+from ib_insync.objects import Position
+
+from .portfolio_manager import PortfolioManager
+from .util import (account_summary_to_dict, justify,
+                   portfolio_positions_to_dict, position_pnl, to_camel_case)
 
 pp = pprint.PrettyPrinter(indent=2)
 
