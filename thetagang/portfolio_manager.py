@@ -2,12 +2,13 @@ import math
 
 import click
 import ib_insync
+from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Option, Stock, TagValue
 from ib_insync.order import LimitOrder, Order
 
-from thetagang.util import position_pnl
+from thetagang.util import count_option_positions, position_pnl
 
-from .options import contract_date_to_datetime, option_dte
+from .options import option_dte
 
 
 class PortfolioManager:
@@ -94,12 +95,23 @@ class PortfolioManager:
         return portfolio_positions
 
     def manage(self, account_summary, portfolio_positions):
-        click.secho("\nChecking positions...\n", fg="green")
+        click.echo()
+        click.secho("Checking positions...", fg="green")
+        click.echo()
 
         portfolio_positions = self.filter_positions(portfolio_positions)
 
         self.check_puts(portfolio_positions)
         self.check_calls(portfolio_positions)
+
+        # Look for lots of stock that don't have covered calls
+        self.check_for_uncovered_positions(portfolio_positions)
+
+        # Refresh positions
+        portfolio_positions = self.ib.portfolio()
+
+        # Check if we have enough buying power to write some puts
+        self.check_if_can_write_puts(account_summary, portfolio_positions)
 
         # Shut it down
         self.completion_future.set_result(True)
@@ -126,6 +138,121 @@ class PortfolioManager:
 
         self.roll_calls(rollable_calls)
 
+    def check_for_uncovered_positions(self, portfolio_positions):
+        for symbol in portfolio_positions:
+            call_count = count_option_positions(symbol, portfolio_positions, "C")
+            stock_count = math.floor(
+                sum(
+                    [
+                        p.position
+                        for p in portfolio_positions[symbol]
+                        if isinstance(p.contract, Stock)
+                    ]
+                )
+            )
+
+            target_calls = stock_count // 100
+
+            calls_to_write = target_calls - call_count
+
+            if calls_to_write > 0:
+                click.secho(f"Need to write {calls_to_write} for {symbol}", fg="green")
+                self.write_calls(symbol, calls_to_write)
+
+    def write_calls(self, symbol, quantity):
+        sell_ticker = self.find_eligible_contracts(symbol, "C")
+
+        # Create order
+        order = LimitOrder(
+            "SELL",
+            quantity,
+            round(sell_ticker.marketPrice(), 2),
+            algoStrategy="Adaptive",
+            algoParams=[TagValue("adaptivePriority", "Patient")],
+            tif="DAY",
+        )
+
+        # Submit order
+        trade = self.ib.placeOrder(sell_ticker.contract, order)
+        click.secho("Order submitted", fg="green")
+        click.secho(f"{trade}", fg="green")
+
+    def write_puts(self, symbol, quantity):
+        sell_ticker = self.find_eligible_contracts(symbol, "P")
+
+        # Create order
+        order = LimitOrder(
+            "SELL",
+            quantity,
+            round(sell_ticker.marketPrice(), 2),
+            algoStrategy="Adaptive",
+            algoParams=[TagValue("adaptivePriority", "Patient")],
+            tif="DAY",
+        )
+
+        # Submit order
+        trade = self.ib.placeOrder(sell_ticker.contract, order)
+        click.secho("Order submitted", fg="green")
+        click.secho(f"{trade}", fg="green")
+
+    def check_if_can_write_puts(self, account_summary, portfolio_positions):
+        # Get stock positions
+        stocks = [
+            position
+            for symbol in portfolio_positions
+            for position in portfolio_positions[symbol]
+            if isinstance(position.contract, Stock)
+        ]
+
+        remaining_buying_power = math.floor(
+            min(
+                [
+                    float(account_summary["BuyingPower"].value),
+                    float(account_summary["ExcessLiquidity"].value)
+                    - float(account_summary["NetLiquidation"].value)
+                    * self.config["account"]["minimum_cushion"],
+                ]
+            )
+        )
+
+        # Sum stock values
+        total_value = (
+            sum([stock.marketValue * stock.position for stock in stocks])
+            + remaining_buying_power
+        )
+
+        stock_symbols = dict()
+        for stock in stocks:
+            symbol = stock.contract.symbol
+            stock_symbols[symbol] = stock
+
+        targets = dict()
+        target_additional_quantity = dict()
+
+        # Determine target quantity of each stock
+        for symbol in self.config["symbols"].keys():
+            stock = Stock(symbol, "SMART", currency="USD")
+            [ticker] = self.ib.reqTickers(stock)
+
+            targets[symbol] = self.config["symbols"][symbol]["weight"] * total_value
+            target_additional_quantity[symbol] = math.floor(
+                targets[symbol] / ticker.marketPrice()
+            )
+
+            if symbol in stock_symbols:
+                target_additional_quantity[symbol] = (
+                    target_additional_quantity[symbol] - stock_symbols[symbol].position
+                )
+
+        # Figure out how many addition puts are needed, if they're needed
+        for symbol in target_additional_quantity.keys():
+            put_count = count_option_positions(symbol, portfolio_positions, "P")
+            target_put_count = target_additional_quantity[symbol] // 100
+            if put_count < target_put_count:
+                self.write_puts(symbol, target_put_count - put_count)
+
+        return
+
     def roll_puts(self, puts):
         return self.roll_positions(puts, "P")
 
@@ -141,7 +268,7 @@ class PortfolioManager:
             position.contract.exchange = "SMART"
             [buy_ticker] = self.ib.reqTickers(position.contract)
 
-            price = buy_ticker.modelGreeks.optPrice - sell_ticker.modelGreeks.optPrice
+            price = buy_ticker.marketPrice() - sell_ticker.marketPrice()
 
             # Create combo legs
             comboLegs = [
@@ -158,6 +285,7 @@ class PortfolioManager:
                     action="SELL",
                 ),
             ]
+
             # Create contract
             combo = Contract(
                 secType="BAG",
@@ -166,14 +294,17 @@ class PortfolioManager:
                 exchange="SMART",
                 comboLegs=comboLegs,
             )
+
             # Create order
             order = LimitOrder(
                 "BUY",
                 quantity,
-                price,
+                round(price, 2),
                 algoStrategy="Adaptive",
                 algoParams=[TagValue("adaptivePriority", "Patient")],
+                tif="DAY",
             )
+
             # Submit order
             trade = self.ib.placeOrder(combo, order)
             click.secho("Order submitted", fg="green")
@@ -234,21 +365,27 @@ class PortfolioManager:
         tickers = self.ib.reqTickers(*contracts)
 
         def open_interest_is_valid(ticker):
+            ticker = self.ib.reqMktData(ticker.contract, genericTickList="101")
+
+            while util.isNan(ticker.putOpenInterest) or util.isNan(
+                ticker.callOpenInterest
+            ):
+                self.ib.waitOnUpdate(timeout=2)
+
+            self.ib.cancelMktData(ticker.contract)
+
             # The open interest value is never present when using historical
             # data, so just ignore it when the value is None
             if right.startswith("P"):
                 return (
-                    math.isnan(ticker.putOpenInterest) or ticker.putOpenInterest is None
-                ) or ticker.putOpenInterest >= self.config["target"][
-                    "minimum_open_interest"
-                ]
+                    ticker.putOpenInterest
+                    >= self.config["target"]["minimum_open_interest"]
+                )
             if right.startswith("C"):
                 return (
-                    math.isnan(ticker.callOpenInterest)
-                    or ticker.callOpenInterest is None
-                ) or ticker.callOpenInterest >= self.config["target"][
-                    "minimum_open_interest"
-                ]
+                    ticker.callOpenInterest
+                    >= self.config["target"]["minimum_open_interest"]
+                )
 
         def delta_is_valid(ticker):
             return (
@@ -258,13 +395,10 @@ class PortfolioManager:
             )
 
         # Filter by delta and open interest
-        tickers = [
-            ticker
-            for ticker in tickers
-            if delta_is_valid(ticker) and open_interest_is_valid(ticker)
-        ]
+        tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
+        tickers = [ticker for ticker in tickers if open_interest_is_valid(ticker)]
         tickers = sorted(
-            sorted(tickers, key=lambda t: t.modelGreeks.delta),
+            reversed(sorted(tickers, key=lambda t: abs(t.modelGreeks.delta))),
             key=lambda t: option_dte(t.contract.lastTradeDateOrContractMonth),
         )
 

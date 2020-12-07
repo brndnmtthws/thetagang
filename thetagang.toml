@@ -6,10 +6,10 @@ number = "DU2962946"
 cancel_orders = true
 
 # Minimum amount of excess liquidity as a percentage of net liquidation value
-minimum_excess_liquidity = 0.2
+minimum_cushion = 0.2
 
 # Market data type (see https://interactivebrokers.github.io/tws-api/market_data_type.html)
-market_data_type = 2
+market_data_type = 1
 
 [option_chains]
 # Number of expirations to load from option chains
@@ -41,3 +41,18 @@ minimum_open_interest = 10
 
   [symbols.TLT]
   weight = 0.3
+
+[ibc]
+# IBC configuration parameters. See https://ib-insync.readthedocs.io/api.html#ibc for details.
+twsVersion  = 981
+gateway     = true
+tradingMode = 'paper'
+userid      = 'demo'
+password    = 'demo'
+ibcPath     = '/Users/brenden/ibc'
+# twsPath         = ''
+# twsSettingsPath = ''
+# ibcIni          = ''
+# javaPath        = ''
+# fixuserid       = ''
+# fixpassword     = ''

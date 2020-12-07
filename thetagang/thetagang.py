@@ -23,15 +23,16 @@ pp = pprint.PrettyPrinter(indent=2)
 util.patchAsyncio()
 
 
-def start(**kwargs):
+def start(config):
     import toml
 
-    with open(kwargs.get("config"), "r") as f:
+    with open(config, "r") as f:
         config = toml.load(f)
 
     click.secho(f"Config:", fg="green")
+    click.echo()
 
-    click.secho(f"\n  Account details:", fg="green")
+    click.secho(f"  Account details:", fg="green")
     click.secho(
         f"    Number                   = {config['account']['number']}", fg="cyan"
     )
@@ -40,15 +41,16 @@ def start(**kwargs):
         fg="cyan",
     )
     click.secho(
-        f"    Minimum excess liquidity = {config['account']['minimum_excess_liquidity']} ({config['account']['minimum_excess_liquidity'] * 100}%)",
+        f"    Minimum cushion          = {config['account']['minimum_cushion']} ({config['account']['minimum_cushion'] * 100}%)",
         fg="cyan",
     )
     click.secho(
         f"    Market data type         = {config['account']['market_data_type']}",
         fg="cyan",
     )
+    click.echo()
 
-    click.secho(f"\n  Roll options when either condition is true:", fg="green")
+    click.secho(f"  Roll options when either condition is true:", fg="green")
     click.secho(
         f"    Days to expiry          <= {config['roll_when']['dte']}", fg="cyan"
     )
@@ -57,7 +59,8 @@ def start(**kwargs):
         fg="cyan",
     )
 
-    click.secho(f"\n  Write options with targets of:", fg="green")
+    click.echo()
+    click.secho(f"  Write options with targets of:", fg="green")
     click.secho(f"    Days to expiry          >= {config['target']['dte']}", fg="cyan")
     click.secho(
         f"    Delta                   <= {config['target']['delta']}", fg="cyan"
@@ -67,7 +70,8 @@ def start(**kwargs):
         fg="cyan",
     )
 
-    click.secho(f"\n  Symbols:", fg="green")
+    click.echo()
+    click.secho(f"  Symbols:", fg="green")
     for s in config["symbols"].keys():
         click.secho(
             f"    {s}, weight = {config['symbols'][s]['weight']} ({config['symbols'][s]['weight'] * 100}%)",
@@ -76,28 +80,24 @@ def start(**kwargs):
     assert (
         sum([config["symbols"][s]["weight"] for s in config["symbols"].keys()]) == 1.0
     )
+    click.echo()
 
-    camelcase_kwargs = dict()
-    # add in camel case copy of args
-    for k in kwargs.keys():
-        if k.startswith("ibkr_"):
-            camelcase_kwargs[to_camel_case(k[5:])] = kwargs[k]
-
-    ibc = IBC(**camelcase_kwargs)
+    ibc = IBC(**config["ibc"])
 
     def onConnected():
         ib.reqMarketDataType(config["account"]["market_data_type"])
 
         if config["account"]["cancel_orders"]:
             # Cancel any existing orders
-            open_orders = ib.openOrders()
-            for order in open_orders:
-                if order.isActive() and order.contract.symbol in config["symbols"]:
-                    click.secho(f"Canceling order {order}", fg="red")
-                    ib.cancelOrder(order)
+            open_trades = ib.openTrades()
+            for trade in open_trades:
+                if trade.isActive() and trade.contract.symbol in config["symbols"]:
+                    click.secho(f"Canceling order {trade.order}", fg="red")
+                    ib.cancelOrder(trade.order)
 
         account_summary = ib.accountSummary(config["account"]["number"])
-        click.secho(f"\nAccount summary:\n", fg="green")
+        click.secho(f"Account summary:", fg="green")
+        click.echo()
         account_summary = account_summary_to_dict(account_summary)
 
         click.secho(
@@ -106,6 +106,10 @@ def start(**kwargs):
         )
         click.secho(
             f"  Net liquidation   = {justify(account_summary['NetLiquidation'].value)}",
+            fg="cyan",
+        )
+        click.secho(
+            f"  Cushion           = {account_summary['Cushion'].value} ({round(float(account_summary['Cushion'].value) * 100, 1)}%)",
             fg="cyan",
         )
         click.secho(
@@ -120,22 +124,23 @@ def start(**kwargs):
             f"  Total cash value  = {justify(account_summary['TotalCashValue'].value)}",
             fg="cyan",
         )
-        click.secho(
-            f"  Cushion           = {account_summary['Cushion'].value} ({round(float(account_summary['Cushion'].value) * 100, 1)}%)",
-            fg="cyan",
-        )
 
         portfolio_positions = ib.portfolio()
-        portfolio_positions = list(
-            filter(
-                lambda p: p.account == config["account"]["number"], portfolio_positions
-            )
-        )
+        # Filter out any positions we don't care about, i.e., we don't know the
+        # symbol or it's not in the desired account.
+        portfolio_positions = [
+            item
+            for item in portfolio_positions
+            if item.account == config["account"]["number"]
+            and item.contract.symbol in config["symbols"]
+        ]
 
-        click.secho("\nPortfolio positions:", fg="green")
+        click.echo()
+        click.secho("Portfolio positions:", fg="green")
+        click.echo()
         portfolio_positions = portfolio_positions_to_dict(portfolio_positions)
         for symbol in portfolio_positions.keys():
-            click.secho(f"\n  {symbol}:", fg="cyan")
+            click.secho(f"  {symbol}:", fg="cyan")
             for p in portfolio_positions[symbol]:
                 click.secho(f"    {p.contract}", fg="cyan")
                 click.secho(f"      P&L {round(position_pnl(p) * 100, 1)}%", fg="cyan")

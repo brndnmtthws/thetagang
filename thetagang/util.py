@@ -1,3 +1,8 @@
+import math
+
+from ib_insync.contract import Option
+
+
 def to_camel_case(snake_str):
     components = snake_str.split("_")
     # We capitalize the first letter of each component except the first one
@@ -28,3 +33,19 @@ def justify(s):
 
 def position_pnl(position):
     return position.unrealizedPNL / position.averageCost
+
+
+def count_option_positions(symbol, portfolio_positions, right):
+    if symbol in portfolio_positions:
+        return math.floor(
+            -sum(
+                [
+                    p.position
+                    for p in portfolio_positions[symbol]
+                    if isinstance(p.contract, Option)
+                    and p.contract.right.startswith(right)
+                ]
+            )
+        )
+
+    return 0

@@ -1,4 +1,4 @@
-# ThetaGang
+# Θ ThetaGang
 
 ThetaGang is an [IBKR](https://www.interactivebrokers.com/) trading bot for
 collecting premium by selling options using "The Wheel" strategy. The Wheel
