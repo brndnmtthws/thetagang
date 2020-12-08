@@ -36,6 +36,10 @@ the only exception being ITM puts. Once puts are in the money, they will be
 ignored until they expire and are execised (after which you will own the
 underlying).
 
+Please note: this strategy is based on the assumption that implied volatility
+is, on average, always higher than realized volatility. In cases where this
+is not true, this strategy will cause you to lose money.
+
 In the case of deep ITM calls, the bot will prefer to roll the calls to next
 expiration rather than allowing the underlying to get called away. If you
 don't have adequate buying power available in your account, it's possible
