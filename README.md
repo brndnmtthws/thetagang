@@ -72,7 +72,8 @@ $ thetagang -h
 
 My preferred way for running ThetaGang is to use a cronjob to execute Docker
 commands. I've built a Docker image as part of this project, which you can
-use with your installation.
+use with your installation. There's a [prebuilt Docker image
+here](https://hub.docker.com/repository/docker/brndnmtthws/thetagang).
 
 To run ThetaGang within Docker, you'll need to pass `config.ini` for [IBC
 configuration](https://github.com/IbcAlpha/IBC/blob/master/userguide.md) and
@@ -84,7 +85,7 @@ volume. For example, you can use the following command:
 ```shell
 $ docker run --rm -it \
     -v ~/ibc:/ibc \
-    docker.pkg.github.com/brndnmtthws/thetagang/thetagang:latest \
+    brndnmtthws/thetagang/thetagang:latest \
     --config /ibc/thetagang.toml
 ```
 
