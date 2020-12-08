@@ -1,6 +1,6 @@
 [account]
 # The account number to operate on
-number = "DU2962946"
+number = "DU2962946" # paper account
 
 # Cancel any existing orders for the symbols configured at startup
 cancel_orders = true
@@ -42,6 +42,9 @@ minimum_open_interest = 10
   [symbols.TLT]
   weight = 0.3
 
+[ib_insync]
+logfile = 'ib_insync.log'
+
 [ibc]
 # IBC configuration parameters. See https://ib-insync.readthedocs.io/api.html#ibc for details.
 twsVersion  = 981
@@ -49,10 +52,28 @@ gateway     = true
 tradingMode = 'paper'
 userid      = 'demo'
 password    = 'demo'
-ibcPath     = '/Users/brenden/ibc'
+ibcPath     = ''
 # twsPath         = ''
 # twsSettingsPath = ''
 # ibcIni          = ''
 # javaPath        = ''
 # fixuserid       = ''
 # fixpassword     = ''
+
+[watchdog]
+# Watchdog configuration params. See https://ib-insync.readthedocs.io/api.html#watchdog for details.
+readonly       = false
+clientId       = 1
+connectTimeout = 2
+appStartupTime = 30
+appTimeout     = 20
+retryDelay     = 2
+probeTimeout   = 4
+host           = '127.0.0.1'
+port           = 4002
+
+  [watchdog.probeContract]
+  secType  = 'STK'
+  symbol   = 'SPY'
+  currency = 'USD'
+  exchange = 'SMART'

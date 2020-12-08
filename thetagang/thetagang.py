@@ -1,12 +1,10 @@
 #!/usr/bin/env python
 
 import asyncio
-import copy
-import pprint
 
 import click
 from ib_insync import IB, IBC, Index, Watchdog, util
-from ib_insync.contract import Stock
+from ib_insync.contract import Contract, Stock
 from ib_insync.objects import Position
 
 from .portfolio_manager import PortfolioManager
@@ -18,7 +16,6 @@ from .util import (
     to_camel_case,
 )
 
-pp = pprint.PrettyPrinter(indent=2)
 
 util.patchAsyncio()
 
@@ -82,70 +79,12 @@ def start(config):
     )
     click.echo()
 
+    util.logToFile(config["ib_insync"]["logfile"])
+
     ibc = IBC(**config["ibc"])
 
     def onConnected():
-        ib.reqMarketDataType(config["account"]["market_data_type"])
-
-        if config["account"]["cancel_orders"]:
-            # Cancel any existing orders
-            open_trades = ib.openTrades()
-            for trade in open_trades:
-                if trade.isActive() and trade.contract.symbol in config["symbols"]:
-                    click.secho(f"Canceling order {trade.order}", fg="red")
-                    ib.cancelOrder(trade.order)
-
-        account_summary = ib.accountSummary(config["account"]["number"])
-        click.secho(f"Account summary:", fg="green")
-        click.echo()
-        account_summary = account_summary_to_dict(account_summary)
-
-        click.secho(
-            f"  Excess liquidity  = {justify(account_summary['ExcessLiquidity'].value)}",
-            fg="cyan",
-        )
-        click.secho(
-            f"  Net liquidation   = {justify(account_summary['NetLiquidation'].value)}",
-            fg="cyan",
-        )
-        click.secho(
-            f"  Cushion           = {account_summary['Cushion'].value} ({round(float(account_summary['Cushion'].value) * 100, 1)}%)",
-            fg="cyan",
-        )
-        click.secho(
-            f"  Full maint margin = {justify(account_summary['FullMaintMarginReq'].value)}",
-            fg="cyan",
-        )
-        click.secho(
-            f"  Buying power      = {justify(account_summary['BuyingPower'].value)}",
-            fg="cyan",
-        )
-        click.secho(
-            f"  Total cash value  = {justify(account_summary['TotalCashValue'].value)}",
-            fg="cyan",
-        )
-
-        portfolio_positions = ib.portfolio()
-        # Filter out any positions we don't care about, i.e., we don't know the
-        # symbol or it's not in the desired account.
-        portfolio_positions = [
-            item
-            for item in portfolio_positions
-            if item.account == config["account"]["number"]
-            and item.contract.symbol in config["symbols"]
-        ]
-
-        click.echo()
-        click.secho("Portfolio positions:", fg="green")
-        click.echo()
-        portfolio_positions = portfolio_positions_to_dict(portfolio_positions)
-        for symbol in portfolio_positions.keys():
-            click.secho(f"  {symbol}:", fg="cyan")
-            for p in portfolio_positions[symbol]:
-                click.secho(f"    {p.contract}", fg="cyan")
-                click.secho(f"      P&L {round(position_pnl(p) * 100, 1)}%", fg="cyan")
-
-        portfolio_manager.manage(account_summary, portfolio_positions)
+        portfolio_manager.manage()
 
     ib = IB()
     ib.connectedEvent += onConnected
@@ -153,7 +92,17 @@ def start(config):
     completion_future = asyncio.Future()
     portfolio_manager = PortfolioManager(config, ib, completion_future)
 
-    watchdog = Watchdog(ibc, ib, port=4002, probeContract=Stock("SPY", "SMART", "USD"))
+    probeContractConfig = config["watchdog"]["probeContract"]
+    watchdogConfig = config.get("watchdog")
+    del watchdogConfig["probeContract"]
+    probeContract = Contract(
+        secType=probeContractConfig["secType"],
+        symbol=probeContractConfig["symbol"],
+        currency=probeContractConfig["currency"],
+        exchange=probeContractConfig["exchange"],
+    )
+
+    watchdog = Watchdog(ibc, ib, probeContract=probeContract, **watchdogConfig)
 
     watchdog.start()
     ib.run(completion_future)

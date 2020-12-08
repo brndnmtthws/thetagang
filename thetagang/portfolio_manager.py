@@ -6,7 +6,13 @@ from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Option, Stock, TagValue
 from ib_insync.order import LimitOrder, Order
 
-from thetagang.util import count_option_positions, position_pnl
+from thetagang.util import (
+    account_summary_to_dict,
+    count_option_positions,
+    justify,
+    portfolio_positions_to_dict,
+    position_pnl,
+)
 
 from .options import option_dte
 
@@ -94,7 +100,77 @@ class PortfolioManager:
                 del portfolio_positions[k]
         return portfolio_positions
 
-    def manage(self, account_summary, portfolio_positions):
+    def get_portfolio_positions(self):
+        portfolio_positions = self.ib.portfolio()
+        # Filter out any positions we don't care about, i.e., we don't know the
+        # symbol or it's not in the desired account.
+        portfolio_positions = [
+            item
+            for item in portfolio_positions
+            if item.account == self.config["account"]["number"]
+            and item.contract.symbol in self.config["symbols"]
+        ]
+        return portfolio_positions_to_dict(portfolio_positions)
+
+    def initialize_account(self):
+        self.ib.reqMarketDataType(self.config["account"]["market_data_type"])
+
+        if self.config["account"]["cancel_orders"]:
+            # Cancel any existing orders
+            open_trades = self.ib.openTrades()
+            for trade in open_trades:
+                if trade.isActive() and trade.contract.symbol in self.config["symbols"]:
+                    click.secho(f"Canceling order {trade.order}", fg="red")
+                    self.ib.cancelOrder(trade.order)
+
+    def summarize_account(self):
+        account_summary = self.ib.accountSummary(self.config["account"]["number"])
+        click.secho(f"Account summary:", fg="green")
+        click.echo()
+        account_summary = account_summary_to_dict(account_summary)
+
+        click.secho(
+            f"  Excess liquidity  = {justify(account_summary['ExcessLiquidity'].value)}",
+            fg="cyan",
+        )
+        click.secho(
+            f"  Net liquidation   = {justify(account_summary['NetLiquidation'].value)}",
+            fg="cyan",
+        )
+        click.secho(
+            f"  Cushion           = {account_summary['Cushion'].value} ({round(float(account_summary['Cushion'].value) * 100, 1)}%)",
+            fg="cyan",
+        )
+        click.secho(
+            f"  Full maint margin = {justify(account_summary['FullMaintMarginReq'].value)}",
+            fg="cyan",
+        )
+        click.secho(
+            f"  Buying power      = {justify(account_summary['BuyingPower'].value)}",
+            fg="cyan",
+        )
+        click.secho(
+            f"  Total cash value  = {justify(account_summary['TotalCashValue'].value)}",
+            fg="cyan",
+        )
+
+        portfolio_positions = self.get_portfolio_positions()
+
+        click.echo()
+        click.secho("Portfolio positions:", fg="green")
+        click.echo()
+        for symbol in portfolio_positions.keys():
+            click.secho(f"  {symbol}:", fg="cyan")
+            for p in portfolio_positions[symbol]:
+                click.secho(f"    {p.contract}", fg="cyan")
+                click.secho(f"      P&L {round(position_pnl(p) * 100, 1)}%", fg="cyan")
+
+        return (account_summary, portfolio_positions)
+
+    def manage(self):
+        self.initialize_account()
+        (account_summary, portfolio_positions) = self.summarize_account()
+
         click.echo()
         click.secho("Checking positions...", fg="green")
         click.echo()
@@ -107,8 +183,8 @@ class PortfolioManager:
         # Look for lots of stock that don't have covered calls
         self.check_for_uncovered_positions(portfolio_positions)
 
-        # Refresh positions
-        portfolio_positions = self.ib.portfolio()
+        # Refresh positions, in case anything changed from the ordering above
+        portfolio_positions = self.get_portfolio_positions()
 
         # Check if we have enough buying power to write some puts
         self.check_if_can_write_puts(account_summary, portfolio_positions)
@@ -197,7 +273,7 @@ class PortfolioManager:
 
     def check_if_can_write_puts(self, account_summary, portfolio_positions):
         # Get stock positions
-        stocks = [
+        stock_positions = [
             position
             for symbol in portfolio_positions
             for position in portfolio_positions[symbol]
@@ -215,14 +291,19 @@ class PortfolioManager:
             )
         )
 
-        # Sum stock values
+        click.echo()
+        click.secho(f"Remaining buying power: ${remaining_buying_power}", fg="green")
+
+        # Sum stock values that we care about
         total_value = (
-            sum([stock.marketValue * stock.position for stock in stocks])
+            sum([stock.marketValue for stock in stock_positions])
             + remaining_buying_power
         )
+        click.secho(f"Total value: ${total_value}", fg="green")
+        click.echo()
 
         stock_symbols = dict()
-        for stock in stocks:
+        for stock in stock_positions:
             symbol = stock.contract.symbol
             stock_symbols[symbol] = stock
 
@@ -231,25 +312,48 @@ class PortfolioManager:
 
         # Determine target quantity of each stock
         for symbol in self.config["symbols"].keys():
+            click.secho(f"  {symbol}", fg="green")
             stock = Stock(symbol, "SMART", currency="USD")
             [ticker] = self.ib.reqTickers(stock)
 
-            targets[symbol] = self.config["symbols"][symbol]["weight"] * total_value
-            target_additional_quantity[symbol] = math.floor(
-                targets[symbol] / ticker.marketPrice()
+            current_position = math.floor(
+                stock_symbols[symbol].position if symbol in stock_symbols else 0
+            )
+            click.secho(
+                f"    Current position quantity {current_position}", fg="cyan",
             )
 
-            if symbol in stock_symbols:
-                target_additional_quantity[symbol] = (
-                    target_additional_quantity[symbol] - stock_symbols[symbol].position
-                )
+            targets[symbol] = round(
+                self.config["symbols"][symbol]["weight"] * total_value, 2
+            )
+            click.secho(f"    Target value ${targets[symbol]}", fg="cyan")
+            target_quantity = math.floor(targets[symbol] / ticker.marketPrice())
+            click.secho(f"    Target quantity {target_quantity}", fg="cyan")
+
+            target_additional_quantity[symbol] = math.floor(
+                target_quantity - current_position
+            )
+
+            click.secho(
+                f"    Target additional quantity (excl. existing options) {target_additional_quantity[symbol]}",
+                fg="cyan",
+            )
+
+        click.echo()
 
         # Figure out how many addition puts are needed, if they're needed
         for symbol in target_additional_quantity.keys():
-            put_count = count_option_positions(symbol, portfolio_positions, "P")
-            target_put_count = target_additional_quantity[symbol] // 100
-            if put_count < target_put_count:
-                self.write_puts(symbol, target_put_count - put_count)
+            additional_quantity = target_additional_quantity[symbol]
+            if additional_quantity >= 100:
+                put_count = count_option_positions(symbol, portfolio_positions, "P")
+                target_put_count = additional_quantity // 100
+                puts_to_write = target_put_count - put_count
+                if puts_to_write > 0:
+                    click.secho(
+                        f"Preparing to write additional {puts_to_write} puts to purchase {symbol}",
+                        fg="cyan",
+                    )
+                    self.write_puts(symbol, puts_to_write)
 
         return
 
