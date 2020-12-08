@@ -90,7 +90,7 @@ volume. For example, you can use the following command:
 ```shell
 $ docker run --rm -it \
     -v ~/ibc:/ibc \
-    brndnmtthws/thetagang/thetagang:latest \
+    brndnmtthws/thetagang:latest \
     --config /ibc/thetagang.toml
 ```
 
