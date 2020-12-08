@@ -59,14 +59,14 @@ class PortfolioManager:
 
         if dte <= self.config["roll_when"]["dte"]:
             click.secho(
-                f"{put.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']}",
+                f"  {put.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']}",
                 fg="blue",
             )
             return True
 
         if pnl >= self.config["roll_when"]["pnl"]:
             click.secho(
-                f"{put.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100,1)}",
+                f"  {put.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100,1)}",
                 fg="blue",
             )
             return True
@@ -125,6 +125,7 @@ class PortfolioManager:
 
     def summarize_account(self):
         account_summary = self.ib.accountSummary(self.config["account"]["number"])
+        click.echo()
         click.secho(f"Account summary:", fg="green")
         click.echo()
         account_summary = account_summary_to_dict(account_summary)
@@ -199,7 +200,9 @@ class PortfolioManager:
         # find puts eligible to be rolled
         rollable_puts = list(filter(lambda p: self.put_can_be_rolled(p), puts))
 
-        click.secho(f"{len(rollable_puts)} puts will be rolled", fg="green")
+        click.echo()
+        click.secho(f"{len(rollable_puts)} puts will be rolled", fg="magenta")
+        click.echo()
 
         self.roll_puts(rollable_puts)
 
@@ -210,7 +213,9 @@ class PortfolioManager:
         # find calls eligible to be rolled
         rollable_calls = list(filter(lambda p: self.call_can_be_rolled(p), calls))
 
-        click.secho(f"{len(rollable_calls)} calls will be rolled", fg="green")
+        click.echo()
+        click.secho(f"{len(rollable_calls)} calls will be rolled", fg="magenta")
+        click.echo()
 
         self.roll_calls(rollable_calls)
 
@@ -250,6 +255,7 @@ class PortfolioManager:
 
         # Submit order
         trade = self.ib.placeOrder(sell_ticker.contract, order)
+        click.echo()
         click.secho("Order submitted", fg="green")
         click.secho(f"{trade}", fg="green")
 
@@ -268,6 +274,7 @@ class PortfolioManager:
 
         # Submit order
         trade = self.ib.placeOrder(sell_ticker.contract, order)
+        click.echo()
         click.secho("Order submitted", fg="green")
         click.secho(f"{trade}", fg="green")
 
