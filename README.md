@@ -106,3 +106,9 @@ $ poetry run thetaging -h
 ```
 
 You are now ready to make a splash! 🐳
+
+## Support
+
+If you like what you see but want something different, I am willing
+to work on bespoke or custom trading bots for a fee. Reach out
+to me directly through my GitHub profile.
