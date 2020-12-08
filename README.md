@@ -50,6 +50,15 @@ implications, but that is outside the scope of this README.
 In normal usage, you would run the script as a cronjob on a daily, hourly, or
 weekly basis according to your preferences.
 
+## Project status
+
+This project is, in its current state, considered to be complete. I'm open
+to contributions, but I am unlikely to accept PRs or feature requests that
+involve significant changes to the underlying algorithm.
+
+If you find something that you think is a bug, or some other issue, please
+[create a new issue](https://github.com/brndnmtthws/thetagang/issues/new).
+
 ## Requirements
 
 The bot is based on the [ib_insync](https://github.com/erdewit/ib_insync)
