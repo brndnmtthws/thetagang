@@ -18,7 +18,12 @@ CONTEXT_SETTINGS = dict(
     "--config", help="Path to toml config", required=True, default="thetagang.toml"
 )
 def cli(config):
-    """ThetaGang is an IBKR bot for collecting money."""
+    """ThetaGang is an IBKR bot for collecting money.
+
+    You can configure this tool by supplying a toml configuration file.
+    There's a sample config on GitHub, here:
+    https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml
+    """
 
     from .thetagang import start
 

@@ -1,4 +1,4 @@
-# Θ ThetaGang
+# Θ ThetaGang Θ
 
 ThetaGang is an [IBKR](https://www.interactivebrokers.com/) trading bot for
 collecting premium by selling options using "The Wheel" strategy. The Wheel
@@ -17,10 +17,42 @@ gateway.
 
 To use the bot, you'll need an Interactive Brokers account with a working installation of IBC. Additionally, you'll need an installation of Python 3.8 or newer with the [`poetry`](https://python-poetry.org/) package manager.
 
-## Getting Started
+## Installation
+
+```shell
+$ pip install thetagang
+```
+
+## Usage
+
+```shell
+$ thetagang -h
+```
+
+## Running with Docker
+
+My preferred way for running ThetaGang is to use a cronjob to execute Docker
+commands. I've built a Docker image as part of this project, which you can
+use with your installation.
+
+To run ThetaGang within Docker, you'll need to pass `config.ini` for [IBC configuration](https://github.com/IbcAlpha/IBC/blob/master/userguide.md) and [`thetagang.toml`](/thetagang.toml) for ThetaGang.
+
+The easiest way to get the config files into the container is by mounting a volume. For example, you can use the following command:
+
+```shell
+$ docker run --rm -it \
+    -v ~/ibc:/ibc \
+    docker.pkg.github.com/brndnmtthws/thetagang/thetagang:latest \
+    --config /ibc/thetagang.toml
+```
+
+## Development
 
 Check out the code to your local machine and install the Python dependencies:
 
 ```shell
 $ poetry install
+$ poetry run thetaging -h
+...
 ```
+
