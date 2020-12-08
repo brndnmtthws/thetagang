@@ -1,6 +1,6 @@
 [tool.poetry]
 name        = "thetagang"
-version     = "0.1.0"
+version = "0.1.1"
 description = "ThetaGang is an IBKR bot for getting money"
 authors     = ["Brenden Matthews <brenden@brndn.io>"]
 license     = "AGPL-3.0-only"
@@ -28,18 +28,18 @@ license     = "AGPL-3.0-only"
 requires      = ["poetry>=0.12"]
 build-backend = "poetry.masonry.api"
 
-        [tool.poetry.scripts]
+                        [tool.poetry.scripts]
         thetagang = 'thetagang.entry:cli'
         vscode    = "vscode:vscode"
 
-        [tool.pylint.messages_control]
+                        [tool.pylint.messages_control]
         disable = "C0330, C0326"
 
-        [tool.pylint.format]
+                                                [tool.pylint.format]
         max-line-length = "88"
 
 
-[tool.isort]
+        [tool.isort]
 include_trailing_comma         = true
 use_parentheses                = true
 ensure_newline_before_comments = true
@@ -47,6 +47,6 @@ multi_line_output              = 3
 force_grid_wrap                = 0
 line_length                    = 88
 
-[tool.autohooks]
+        [tool.autohooks]
 mode       = "poetry"
 pre-commit = ["autohooks.plugins.isort", "autohooks.plugins.black"]
