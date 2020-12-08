@@ -6,8 +6,13 @@ from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Option, Stock, TagValue
 from ib_insync.order import LimitOrder, Order
 
-from thetagang.util import (account_summary_to_dict, count_option_positions,
-                            justify, portfolio_positions_to_dict, position_pnl)
+from thetagang.util import (
+    account_summary_to_dict,
+    count_option_positions,
+    justify,
+    portfolio_positions_to_dict,
+    position_pnl,
+)
 
 from .options import option_dte
 

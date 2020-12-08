@@ -5,40 +5,48 @@ description = "ThetaGang is an IBKR bot for getting money"
 authors     = ["Brenden Matthews <brenden@brndn.io>"]
 license     = "AGPL-3.0-only"
 
-    [tool.poetry.dependencies]
-    python          = "^3.8"
-    ib_insync       = "^0.9.64"
-    click           = "^7.1.2"
-    pytimeparse     = "^1.1.8"
-    python-dateutil = "^2.8.1"
-    toml            = "^0.10.2"
-    click-log       = "^0.3.2"
-    colorama        = "^0.4.4"
-    pandas          = "^1.1.4"
+        [tool.poetry.dependencies]
+        python          = "^3.8"
+        ib_insync       = "^0.9.64"
+        click           = "^7.1.2"
+        pytimeparse     = "^1.1.8"
+        python-dateutil = "^2.8.1"
+        toml            = "^0.10.2"
+        click-log       = "^0.3.2"
+        colorama        = "^0.4.4"
+        pandas          = "^1.1.4"
 
-    [tool.poetry.dev-dependencies]
-    black                  = "^20.8b1"
-    isort                  = "^5.6.4"
-    autoflake              = "^1.4"
-    autohooks              = "^2.2.0"
-    autohooks-plugin-isort = "^1.0.0"
-    autohooks-plugin-black = "^1.2.0"
+        [tool.poetry.dev-dependencies]
+        black                  = "^20.8b1"
+        isort                  = "^5.6.4"
+        autoflake              = "^1.4"
+        autohooks              = "^2.2.0"
+        autohooks-plugin-isort = "^1.0.0"
+        autohooks-plugin-black = "^1.2.0"
 
 [build-system]
 requires      = ["poetry>=0.12"]
 build-backend = "poetry.masonry.api"
 
-    [tool.poetry.scripts]
-    thetagang = 'thetagang.entry:cli'
-    vscode    = "vscode:vscode"
+        [tool.poetry.scripts]
+        thetagang = 'thetagang.entry:cli'
+        vscode    = "vscode:vscode"
 
-    [tool.pylint.messages_control]
-    disable = "C0330, C0326"
+        [tool.pylint.messages_control]
+        disable = "C0330, C0326"
 
-    [tool.pylint.format]
-    max-line-length = "88"
+        [tool.pylint.format]
+        max-line-length = "88"
 
+
+[tool.isort]
+include_trailing_comma         = true
+use_parentheses                = true
+ensure_newline_before_comments = true
+multi_line_output              = 3
+force_grid_wrap                = 0
+line_length                    = 88
 
 [tool.autohooks]
 mode       = "poetry"
-pre-commit = ["autohooks.plugins.black", "autohooks.plugins.isort"]
+pre-commit = ["autohooks.plugins.isort", "autohooks.plugins.black"]
