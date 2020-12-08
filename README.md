@@ -53,8 +53,9 @@ library, and uses [IBC](https://github.com/IbcAlpha/IBC) for managing the API
 gateway.
 
 To use the bot, you'll need an Interactive Brokers account with a working
-installation of IBC. Additionally, you'll need an installation of Python 3.8
-or newer with the [`poetry`](https://python-poetry.org/) package manager.
+installation of IBC. If you want to modify the bot, you'll need an
+installation of Python 3.8 or newer with the
+[`poetry`](https://python-poetry.org/) package manager.
 
 ## Installation
 
@@ -95,6 +96,7 @@ Check out the code to your local machine and install the Python dependencies:
 
 ```shell
 $ poetry install
+$ poetry run autohooks activate
 $ poetry run thetaging -h
 ...
 ```

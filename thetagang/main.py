@@ -15,7 +15,12 @@ CONTEXT_SETTINGS = dict(
 @click.command(context_settings=CONTEXT_SETTINGS)
 @click_log.simple_verbosity_option(logger)
 @click.option(
-    "--config", help="Path to toml config", required=True, default="thetagang.toml"
+    "-c",
+    "--config",
+    help="Path to toml config",
+    required=True,
+    default="thetagang.toml",
+    type=click.Path(exists=True, readable=True),
 )
 def cli(config):
     """ThetaGang is an IBKR bot for collecting money.
