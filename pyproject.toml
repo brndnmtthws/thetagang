@@ -7,7 +7,7 @@ license       = "AGPL-3.0-only"
 name          = "thetagang"
 readme        = "README.md"
 repository    = "https://github.com/brndnmtthws/thetagang.git"
-version       = "0.1.2"
+version = "0.1.3"
 
 
                 [tool.poetry.dependencies]
@@ -39,10 +39,10 @@ version       = "0.1.2"
                 vscode    = "vscode:vscode"
 
 
-                [tool.pylint.messages_control]
+                                                [tool.pylint.messages_control]
                 disable = "C0330, C0326"
 
-                [tool.pylint.format]
+                                                                                [tool.pylint.format]
                 max-line-length = "88"
 
 
