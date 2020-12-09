@@ -54,8 +54,9 @@ that the options may get exercised instead of rolling forward and the process
 starts back at the beginning. Please keep in mind this may have tax
 implications, but that is outside the scope of this README.
 
-In normal usage, you would run the script as a cronjob on a daily, hourly, or
-weekly basis according to your preferences.
+In normal usage, you would run the script as a cronjob on a daily, weekly, or
+monthly basis according to your preferences. Running more frequently than
+daily is not recommended, but the choice is yours.
 
 ## Project status
 
