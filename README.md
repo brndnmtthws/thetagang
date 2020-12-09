@@ -80,6 +80,8 @@ installation of Python 3.8 or newer with the
 
 ## Installation
 
+*Before running ThetaGang, you should set up an IBKR paper account to test the
+code.*
 
 ```shell
 $ pip install thetagang
