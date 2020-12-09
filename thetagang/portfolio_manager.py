@@ -190,6 +190,10 @@ class PortfolioManager:
         # Check if we have enough buying power to write some puts
         self.check_if_can_write_puts(account_summary, portfolio_positions)
 
+        click.echo()
+        click.secho("ThetaGang is done, shutting down! Cya next time.", fg="yellow")
+        click.echo()
+
         # Shut it down
         self.completion_future.set_result(True)
 
@@ -300,7 +304,7 @@ class PortfolioManager:
 
         click.echo()
         click.secho(f"Remaining buying power: ${remaining_buying_power}", fg="green")
-
+        #
         # Sum stock values that we care about
         total_value = (
             sum([stock.marketValue for stock in stock_positions])
