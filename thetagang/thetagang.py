@@ -7,6 +7,8 @@ from ib_insync import IB, IBC, Index, Watchdog, util
 from ib_insync.contract import Contract, Stock
 from ib_insync.objects import Position
 
+from thetagang.config import validate_config
+
 from .portfolio_manager import PortfolioManager
 from .util import (
     account_summary_to_dict,
@@ -24,6 +26,8 @@ def start(config):
 
     with open(config, "r") as f:
         config = toml.load(f)
+
+    validate_config(config)
 
     click.secho(f"Config:", fg="green")
     click.echo()
@@ -78,7 +82,8 @@ def start(config):
     )
     click.echo()
 
-    util.logToFile(config["ib_insync"]["logfile"])
+    if config.get("ib_insync", {}).get("logfile"):
+        util.logToFile(config["ib_insync"]["logfile"])
 
     ibc = IBC(**config["ibc"])
 
