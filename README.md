@@ -80,9 +80,16 @@ installation of Python 3.8 or newer with the
 
 ## Installation
 
+
 ```shell
 $ pip install thetagang
 ```
+
+It's recommended you familiarize yourself with
+[IBC](https://github.com/IbcAlpha/IBC) so you know how it works. You'll need
+to know how to configure the various knows and settings, and make sure things
+like API ports are configured correctly. If you don't want to mess around too
+much, consider [running ThetaGang with Docker](#running-with-docker).
 
 ## Usage
 
@@ -99,7 +106,8 @@ here](https://hub.docker.com/repository/docker/brndnmtthws/thetagang).
 
 To run ThetaGang within Docker, you'll need to pass `config.ini` for [IBC
 configuration](https://github.com/IbcAlpha/IBC/blob/master/userguide.md) and
-[`thetagang.toml`](/thetagang.toml) for ThetaGang.
+[`thetagang.toml`](/thetagang.toml) for ThetaGang. There's a sample
+[`ibc-config.ini`](/ibc-config.ini) included in this repo for your convenience.
 
 The easiest way to get the config files into the container is by mounting a
 volume. For example, you can use the following command:
