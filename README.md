@@ -22,6 +22,13 @@ typical index-fund based portfolio with specific asset allocations. For
 example, you might want to use a 60/40 portfolio with SPY (S&P500 fund) and
 TLT (20 year treasury fund).
 
+The main difference between ThetaGang and simply buying and holding index
+funds is that this script will attempt to harvest volatility by selling
+options, rather than buying shares directly. This works because implied
+volatility is typically higher than realized volatility on average. Instead
+of buying shares, you write puts. This has pros and cons, which are outside
+the scope of this README.
+
 You could use this tool on individual stocks, but I personally don't
 recommend it because I am not smart enough to understand which stocks to buy.
 That's why I just buy index funds.
