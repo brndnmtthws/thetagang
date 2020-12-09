@@ -1,14 +1,16 @@
 [account]
 # The account number to operate on
-number = "DU2962946" # paper account
+number = "DU3162941"
 
 # Cancel any existing orders for the symbols configured at startup
 cancel_orders = true
 
-# Minimum amount of excess liquidity as a percentage of net liquidation value
+# Minimum amount of excess liquidity as a percentage of net liquidation value.
+# Adjust this based on your tolerance for margin usage.
 minimum_cushion = 0.2
 
-# Market data type (see https://interactivebrokers.github.io/tws-api/market_data_type.html)
+# Market data type (see
+# https://interactivebrokers.github.io/tws-api/market_data_type.html)
 market_data_type = 1
 
 [option_chains]
@@ -46,34 +48,40 @@ minimum_open_interest = 10
 logfile = 'ib_insync.log'
 
 [ibc]
-# IBC configuration parameters. See https://ib-insync.readthedocs.io/api.html#ibc for details.
-twsVersion  = 981
+# IBC configuration parameters. See
+# https://ib-insync.readthedocs.io/api.html#ibc for details.
+password = 'demo'
+userid   = 'demo'
+
 gateway     = true
+ibcPath     = '/opt/ibc'
 tradingMode = 'paper'
-userid      = 'demo'
-password    = 'demo'
-ibcPath     = ''
+twsVersion  = 981
+
+# Change this to point to your config.ini for IBC
+ibcIni = '/etc/thetagang/config.ini'
+
 # twsPath         = ''
 # twsSettingsPath = ''
-# ibcIni          = ''
 # javaPath        = ''
 # fixuserid       = ''
 # fixpassword     = ''
 
 [watchdog]
-# Watchdog configuration params. See https://ib-insync.readthedocs.io/api.html#watchdog for details.
-readonly       = false
-clientId       = 1
-connectTimeout = 2
+# Watchdog configuration params. See
+# https://ib-insync.readthedocs.io/api.html#watchdog for details.
 appStartupTime = 30
 appTimeout     = 20
-retryDelay     = 2
-probeTimeout   = 4
+clientId       = 1
+connectTimeout = 2
 host           = '127.0.0.1'
 port           = 4002
+probeTimeout   = 4
+readonly       = false
+retryDelay     = 2
 
   [watchdog.probeContract]
-  secType  = 'STK'
-  symbol   = 'SPY'
   currency = 'USD'
   exchange = 'SMART'
+  secType  = 'STK'
+  symbol   = 'SPY'
