@@ -1,7 +1,6 @@
 import math
 
 import click
-import ib_insync
 from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Option, Stock, TagValue
 from ib_insync.order import LimitOrder, Order
@@ -163,8 +162,22 @@ class PortfolioManager:
         for symbol in portfolio_positions.keys():
             click.secho(f"  {symbol}:", fg="cyan")
             for p in portfolio_positions[symbol]:
-                click.secho(f"    {p.contract}", fg="cyan")
-                click.secho(f"      P&L {round(position_pnl(p) * 100, 1)}%", fg="cyan")
+                if isinstance(p.contract, Stock):
+                    click.secho(
+                        f"    Stock Qty={int(p.position)} Price={round(p.marketPrice,2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={round(position_pnl(p) * 100, 1)}%",
+                        fg="cyan",
+                    )
+                elif isinstance(p.contract, Option):
+
+                    def p_or_c(p):
+                        return "Call" if p.contract.right.startswith("C") else "Put "
+
+                    click.secho(
+                        f"    {p_or_c(p)}  Qty={int(p.position)} Price={round(p.marketPrice,2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={round(position_pnl(p) * 100, 1)}% Strike={p.contract.strike} Exp={p.contract.lastTradeDateOrContractMonth}",
+                        fg="cyan",
+                    )
+                else:
+                    click.secho(f"    {p.contract}", fg="cyan")
 
         return (account_summary, portfolio_positions)
 
