@@ -78,6 +78,16 @@ installation of IBC. If you want to modify the bot, you'll need an
 installation of Python 3.8 or newer with the
 [`poetry`](https://python-poetry.org/) package manager.
 
+One more thing: to run this on a live account, you'll require enough capital
+to purchase at least 100 shares of the stocks or ETFs you choose. For
+example, if SPY is trading at $300/share you'd need $30,000 available. You
+can search for lower priced alternatives, but these tend to have low volume
+on options which may not be appropriate for this strategy. You should
+generally avoid low volume ETFs/stocks. If you don't have that kind of
+capital, you'll need to keep renting out your time to the capitalists until
+you can become a capitalist yourself. That's the way the pyramid scheme we
+call capitalism works.
+
 ## Installation
 
 *Before running ThetaGang, you should set up an IBKR paper account to test the
