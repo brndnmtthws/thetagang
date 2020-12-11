@@ -32,7 +32,7 @@ def justify(s):
 
 
 def position_pnl(position):
-    return position.unrealizedPNL / position.averageCost
+    return position.unrealizedPNL / abs(position.averageCost * position.position)
 
 
 def count_option_positions(symbol, portfolio_positions, right):

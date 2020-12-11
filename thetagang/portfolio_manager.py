@@ -162,18 +162,21 @@ class PortfolioManager:
         for symbol in portfolio_positions.keys():
             click.secho(f"  {symbol}:", fg="cyan")
             for p in portfolio_positions[symbol]:
+                print(p)
                 if isinstance(p.contract, Stock):
+                    pnl = round(position_pnl(p) * 100, 2)
                     click.secho(
-                        f"    Stock Qty={int(p.position)} Price={round(p.marketPrice,2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={round(position_pnl(p) * 100, 1)}%",
+                        f"    Stock Qty={int(p.position)} Price={round(p.marketPrice,2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={pnl}%",
                         fg="cyan",
                     )
                 elif isinstance(p.contract, Option):
+                    pnl = round(position_pnl(p) * 100, 2)
 
                     def p_or_c(p):
                         return "Call" if p.contract.right.startswith("C") else "Put "
 
                     click.secho(
-                        f"    {p_or_c(p)}  Qty={int(p.position)} Price={round(p.marketPrice,2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={round(position_pnl(p) * 100, 1)}% Strike={p.contract.strike} Exp={p.contract.lastTradeDateOrContractMonth}",
+                        f"    {p_or_c(p)}  Qty={int(p.position)} Price={round(p.marketPrice,2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={pnl}% Strike={p.contract.strike} Exp={p.contract.lastTradeDateOrContractMonth}",
                         fg="cyan",
                     )
                 else:
