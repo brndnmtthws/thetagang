@@ -14,8 +14,8 @@ on:
   pull_request:
 
 env:
-  # TODO: Change variable to your image's name.
   IMAGE_NAME: thetagang
+  DOCKERHUB_ACCOUNT: brndnmtthws
 
 jobs:
   test:
@@ -51,15 +51,19 @@ jobs:
       - name: Build image
         run: docker build . --file Dockerfile --tag $IMAGE_NAME
 
-      - name: Log into registry
+      - name: Log into GitHub registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login docker.pkg.github.com -u ${{ github.actor }} --password-stdin
+      - name: Log into Dockerhub registry
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u $DOCKERHUB_ACCOUNT --password-stdin
 
       - name: Push image
         run: |
-          IMAGE_ID=docker.pkg.github.com/${{ github.repository }}/$IMAGE_NAME
+          GITHUB_IMAGE_ID=docker.pkg.github.com/${{ github.repository }}/$IMAGE_NAME
+          DOCKERHUB_IMAGE_ID=$DOCKERHUB_ACCOUNT/$IMAGE_NAME
 
           # Change all uppercase to lowercase
-          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+          GITHUB_IMAGE_ID=$(echo $GITHUB_IMAGE_ID | tr '[A-Z]' '[a-z]')
+          DOCKERHUB_IMAGE_ID=$(echo $DOCKERHUB_IMAGE_ID | tr '[A-Z]' '[a-z]')
 
           # Strip git ref prefix from version
           VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
@@ -70,8 +74,12 @@ jobs:
           # Use Docker `latest` tag convention
           [ "$VERSION" == "main" ] && VERSION=latest
 
-          echo IMAGE_ID=$IMAGE_ID
+          echo GITHUB_IMAGE_ID=$GITHUB_IMAGE_ID
+          echo DOCKERHUB_IMAGE_ID=$DOCKERHUB_IMAGE_ID
           echo VERSION=$VERSION
 
-          docker tag $IMAGE_NAME $IMAGE_ID:$VERSION
+          docker tag $IMAGE_NAME $GITHUB_IMAGE_ID:$VERSION
+          docker push $GITHUB_IMAGE_ID:$VERSION
+
+          docker tag $IMAGE_NAME $DOCKERHUB_IMAGE_ID:$VERSION
           docker push $IMAGE_ID:$VERSION
