@@ -162,7 +162,6 @@ class PortfolioManager:
         for symbol in portfolio_positions.keys():
             click.secho(f"  {symbol}:", fg="cyan")
             for p in portfolio_positions[symbol]:
-                print(p)
                 if isinstance(p.contract, Stock):
                     pnl = round(position_pnl(p) * 100, 2)
                     click.secho(
