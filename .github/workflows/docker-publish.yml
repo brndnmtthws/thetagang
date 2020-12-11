@@ -82,4 +82,4 @@ jobs:
           docker push $GITHUB_IMAGE_ID:$VERSION
 
           docker tag $IMAGE_NAME $DOCKERHUB_IMAGE_ID:$VERSION
-          docker push $IMAGE_ID:$VERSION
+          docker push $DOCKERHUB_IMAGE_ID:$VERSION
