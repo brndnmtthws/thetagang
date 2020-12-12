@@ -138,7 +138,7 @@ Check out the code to your local machine and install the Python dependencies:
 ```shell
 $ poetry install
 $ poetry run autohooks activate
-$ poetry run thetaging -h
+$ poetry run thetagang -h
 ...
 ```
 
