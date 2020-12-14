@@ -1,3 +1,5 @@
+import math
+
 from schema import And, Optional, Schema, Use
 
 
@@ -61,3 +63,8 @@ def validate_config(config):
         }
     )
     schema.validate(config)
+
+    assert len(config["symbols"]) > 0
+    assert math.isclose(
+        1, sum([s["weight"] for s in config["symbols"].values()]), rel_tol=1e-5
+    )
