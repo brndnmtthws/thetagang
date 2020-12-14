@@ -1,5 +1,7 @@
 # Θ ThetaGang Θ
 
+*Beat the capitalists at their own game with ThetaGang 📈*
+
 ThetaGang is an [IBKR](https://www.interactivebrokers.com/) trading bot for
 collecting premium by selling options using "The Wheel" strategy. The Wheel
 is a strategy that [surfaced on
@@ -66,6 +68,26 @@ involve significant changes to the underlying algorithm.
 
 If you find something that you think is a bug, or some other issue, please
 [create a new issue](https://github.com/brndnmtthws/thetagang/issues/new).
+
+## "Show me your gains bro" – i.e., what are the returns?
+
+As discussed elsewhere in this README, you must conduct your own research,
+and I suggest starting with resources such as CBOE's BXM and BXDM indices,
+and comparing those to SPX. I've had a lot of people complain because "that
+strategy isn't better than buy and hold BRUH"–let me assure you, that is not
+my goal with this.
+
+Generally speaking, the point of selling options is not to exceed the returns
+of the underlying, but rather to reduce risk. Reducing risk is an important
+feature because it, in turn, allows one to increase risk in other ways
+(i.e., allocate higher percentage to stocks or buy riskier assets).
+
+Whether you use this or not is up to you. I have not one single fuck to give,
+whether you use it or not. I am not here to convince you to use it, I merely
+want to share knowledge and perhaps help create a little bit of wealth
+redistribution.
+
+💫
 
 ## Requirements
 
