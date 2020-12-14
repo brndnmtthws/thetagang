@@ -184,33 +184,39 @@ class PortfolioManager:
         return (account_summary, portfolio_positions)
 
     def manage(self):
-        self.initialize_account()
-        (account_summary, portfolio_positions) = self.summarize_account()
+        try:
+            self.initialize_account()
+            (account_summary, portfolio_positions) = self.summarize_account()
 
-        click.echo()
-        click.secho("Checking positions...", fg="green")
-        click.echo()
+            click.echo()
+            click.secho("Checking positions...", fg="green")
+            click.echo()
 
-        portfolio_positions = self.filter_positions(portfolio_positions)
+            portfolio_positions = self.filter_positions(portfolio_positions)
 
-        self.check_puts(portfolio_positions)
-        self.check_calls(portfolio_positions)
+            self.check_puts(portfolio_positions)
+            self.check_calls(portfolio_positions)
 
-        # Look for lots of stock that don't have covered calls
-        self.check_for_uncovered_positions(portfolio_positions)
+            # Look for lots of stock that don't have covered calls
+            self.check_for_uncovered_positions(portfolio_positions)
 
-        # Refresh positions, in case anything changed from the ordering above
-        portfolio_positions = self.get_portfolio_positions()
+            # Refresh positions, in case anything changed from the ordering above
+            portfolio_positions = self.get_portfolio_positions()
 
-        # Check if we have enough buying power to write some puts
-        self.check_if_can_write_puts(account_summary, portfolio_positions)
+            # Check if we have enough buying power to write some puts
+            self.check_if_can_write_puts(account_summary, portfolio_positions)
 
-        click.echo()
-        click.secho("ThetaGang is done, shutting down! Cya next time.", fg="yellow")
-        click.echo()
+            click.echo()
+            click.secho("ThetaGang is done, shutting down! Cya next time.", fg="yellow")
+            click.echo()
 
-        # Shut it down
-        self.completion_future.set_result(True)
+        except:
+            click.secho("An exception was raised, exiting", fg="red")
+            raise
+
+        finally:
+            # Shut it down
+            self.completion_future.set_result(True)
 
     def check_puts(self, portfolio_positions):
         # Check for puts which may be rolled to the next expiration or a better price
@@ -219,8 +225,10 @@ class PortfolioManager:
         # find puts eligible to be rolled
         rollable_puts = list(filter(lambda p: self.put_can_be_rolled(p), puts))
 
+        total_rollable_puts = sum([abs(p.position) for p in rollable_puts])
+
         click.echo()
-        click.secho(f"{len(rollable_puts)} puts will be rolled", fg="magenta")
+        click.secho(f"{len(total_rollable_puts)} puts will be rolled", fg="magenta")
         click.echo()
 
         self.roll_puts(rollable_puts)
@@ -231,9 +239,10 @@ class PortfolioManager:
 
         # find calls eligible to be rolled
         rollable_calls = list(filter(lambda p: self.call_can_be_rolled(p), calls))
+        total_rollable_calls = sum([abs(p.position) for p in rollable_calls])
 
         click.echo()
-        click.secho(f"{len(rollable_calls)} calls will be rolled", fg="magenta")
+        click.secho(f"{len(total_rollable_calls)} calls will be rolled", fg="magenta")
         click.echo()
 
         self.roll_calls(rollable_calls)
@@ -498,9 +507,13 @@ class PortfolioManager:
         def open_interest_is_valid(ticker):
             ticker = self.ib.reqMktData(ticker.contract, genericTickList="101")
 
-            while util.isNan(ticker.putOpenInterest) or util.isNan(
-                ticker.callOpenInterest
-            ):
+            def open_interest_is_not_ready():
+                if right.startswith("P"):
+                    return not util.isNan(ticker.putOpenInterest)
+                if right.startswith("C"):
+                    return not util.isNan(ticker.callOpenInterest)
+
+            while open_interest_is_not_ready():
                 self.ib.waitOnUpdate(timeout=2)
 
             self.ib.cancelMktData(ticker.contract)
@@ -536,4 +549,5 @@ class PortfolioManager:
         if len(tickers) == 0:
             raise RuntimeError(f"No valid contracts found for {symbol}. Aborting.")
 
+        # Return the first result
         return tickers[0]
