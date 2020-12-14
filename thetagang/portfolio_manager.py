@@ -212,6 +212,7 @@ class PortfolioManager:
 
         except:
             click.secho("An exception was raised, exiting", fg="red")
+            click.secho("Check log for details", fg="red")
             raise
 
         finally:
@@ -225,10 +226,10 @@ class PortfolioManager:
         # find puts eligible to be rolled
         rollable_puts = list(filter(lambda p: self.put_can_be_rolled(p), puts))
 
-        total_rollable_puts = sum([abs(p.position) for p in rollable_puts])
+        total_rollable_puts = math.floor(sum([abs(p.position) for p in rollable_puts]))
 
         click.echo()
-        click.secho(f"{len(total_rollable_puts)} puts will be rolled", fg="magenta")
+        click.secho(f"{total_rollable_puts} puts will be rolled", fg="magenta")
         click.echo()
 
         self.roll_puts(rollable_puts)
@@ -239,10 +240,12 @@ class PortfolioManager:
 
         # find calls eligible to be rolled
         rollable_calls = list(filter(lambda p: self.call_can_be_rolled(p), calls))
-        total_rollable_calls = sum([abs(p.position) for p in rollable_calls])
+        total_rollable_calls = math.floor(
+            sum([abs(p.position) for p in rollable_calls])
+        )
 
         click.echo()
-        click.secho(f"{len(total_rollable_calls)} calls will be rolled", fg="magenta")
+        click.secho(f"{total_rollable_calls} calls will be rolled", fg="magenta")
         click.echo()
 
         self.roll_calls(rollable_calls)
@@ -509,9 +512,9 @@ class PortfolioManager:
 
             def open_interest_is_not_ready():
                 if right.startswith("P"):
-                    return not util.isNan(ticker.putOpenInterest)
+                    return util.isNan(ticker.putOpenInterest)
                 if right.startswith("C"):
-                    return not util.isNan(ticker.callOpenInterest)
+                    return util.isNan(ticker.callOpenInterest)
 
             while open_interest_is_not_ready():
                 self.ib.waitOnUpdate(timeout=2)
