@@ -34,6 +34,8 @@ delta = 0.3
 minimum_open_interest = 10
 
 [symbols]
+# NOTE: Please change these symbols and weights according to your preferences.
+# These are provided only as an example for the purpose of configuration.
 
   [symbols.SPY]
   weight = 0.4
