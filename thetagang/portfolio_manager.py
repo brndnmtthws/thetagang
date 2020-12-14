@@ -454,6 +454,11 @@ class PortfolioManager:
             click.secho(f"{trade}", fg="green")
 
     def find_eligible_contracts(self, symbol, right):
+        click.echo()
+        click.secho(
+            f"Searching option chain for symbol={symbol} right={right}...", fg="green"
+        )
+        click.echo()
         stock = Stock(symbol, "SMART", currency="USD")
         contracts = self.ib.qualifyContracts(stock)
 
