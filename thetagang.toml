@@ -5,9 +5,19 @@ number = "DU3162941"
 # Cancel any existing orders for the symbols configured at startup
 cancel_orders = true
 
-# Minimum amount of excess liquidity as a percentage of net liquidation value.
-# Adjust this based on your tolerance for margin usage.
-minimum_cushion = 0.2
+# Maximum amount of margin to use, as a percentage of net liquidation. IB lets
+# you use varying amounts of margin, depending on the assets. To use up to 4x
+# margin, set this to 4. It's recommended you always leave some additional
+# cushion. IB will start to close positions if you go below certain thresholds
+# of available margin in your account.
+#
+# For details on margin usage, see:
+#   https://www.interactivebrokers.com/en/index.php?f=24176
+#
+# The default value allows 50% margin usage, above your net liquidation. For
+# example, if you have $100,000 in cash, ThetaGang will try to use up to
+# $150,000 worth of margin (including the $100,000 in cash).
+margin_usage = 1.5
 
 # Market data type (see
 # https://interactivebrokers.github.io/tws-api/market_data_type.html)

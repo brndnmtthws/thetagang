@@ -41,7 +41,7 @@ def start(config):
         fg="cyan",
     )
     click.secho(
-        f"    Minimum cushion          = {config['account']['minimum_cushion']} ({config['account']['minimum_cushion'] * 100}%)",
+        f"    Margin usage             = {config['account']['margin_usage']} ({config['account']['margin_usage'] * 100}%)",
         fg="cyan",
     )
     click.secho(

@@ -336,9 +336,8 @@ class PortfolioManager:
             min(
                 [
                     float(account_summary["BuyingPower"].value),
-                    float(account_summary["ExcessLiquidity"].value)
-                    - float(account_summary["NetLiquidation"].value)
-                    * self.config["account"]["minimum_cushion"],
+                    float(account_summary["NetLiquidation"].value)
+                    * self.config["account"]["margin_usage"],
                 ]
             )
         )
@@ -470,7 +469,8 @@ class PortfolioManager:
     def find_eligible_contracts(self, symbol, right):
         click.echo()
         click.secho(
-            f"Searching option chain for symbol={symbol} right={right}...", fg="green"
+            f"Searching option chain for symbol={symbol} right={right}, this can take a while...",
+            fg="green",
         )
         click.echo()
         stock = Stock(symbol, "SMART", currency="USD")

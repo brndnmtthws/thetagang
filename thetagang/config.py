@@ -4,12 +4,15 @@ from schema import And, Optional, Schema, Use
 
 
 def validate_config(config):
+    if "minimum_cushion" in config["account"]:
+        raise "Config error: minimum_cushion is deprecated and replaced with margin_usage. See sample config for details."
+
     schema = Schema(
         {
             "account": {
                 "number": And(str, len),
                 "cancel_orders": bool,
-                "minimum_cushion": And(float, lambda n: 0 <= n <= 1),
+                "margin_usage": And(float, lambda n: 0 <= n),
                 "market_data_type": And(int, lambda n: 1 <= n <= 4),
             },
             "option_chains": {
