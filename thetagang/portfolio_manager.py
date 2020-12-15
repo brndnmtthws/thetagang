@@ -271,6 +271,16 @@ class PortfolioManager:
                 click.secho(f"Need to write {calls_to_write} for {symbol}", fg="green")
                 self.write_calls(symbol, calls_to_write)
 
+    def wait_for_trade_submitted(self, trade):
+        while trade.orderStatus.status not in [
+            "Submitted",
+            "Filled",
+            "ApiCancelled",
+            "Cancelled",
+        ]:
+            self.ib.waitOnUpdate(timeout=2)
+        return trade
+
     def write_calls(self, symbol, quantity):
         sell_ticker = self.find_eligible_contracts(symbol, "C")
 
@@ -285,7 +295,9 @@ class PortfolioManager:
         )
 
         # Submit order
-        trade = self.ib.placeOrder(sell_ticker.contract, order)
+        trade = self.wait_for_trade_submitted(
+            self.ib.placeOrder(sell_ticker.contract, order)
+        )
         click.echo()
         click.secho("Order submitted", fg="green")
         click.secho(f"{trade}", fg="green")
@@ -304,7 +316,9 @@ class PortfolioManager:
         )
 
         # Submit order
-        trade = self.ib.placeOrder(sell_ticker.contract, order)
+        trade = self.wait_for_trade_submitted(
+            self.ib.placeOrder(sell_ticker.contract, order)
+        )
         click.echo()
         click.secho("Order submitted", fg="green")
         click.secho(f"{trade}", fg="green")
@@ -449,7 +463,7 @@ class PortfolioManager:
             )
 
             # Submit order
-            trade = self.ib.placeOrder(combo, order)
+            trade = self.wait_for_trade_submitted(self.ib.placeOrder(combo, order))
             click.secho("Order submitted", fg="green")
             click.secho(f"{trade}", fg="green")
 
