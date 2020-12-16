@@ -14,10 +14,10 @@ cancel_orders = true
 # For details on margin usage, see:
 #   https://www.interactivebrokers.com/en/index.php?f=24176
 #
-# The default value allows 50% margin usage, above your net liquidation. For
-# example, if you have $100,000 in cash, ThetaGang will try to use up to
-# $150,000 worth of margin (including the $100,000 in cash).
-margin_usage = 1.5
+# The default value uses 50% of your available net liquidation value
+# (i.e., half of your funds). Set this to 1.0 to use all your funds,
+# or 1.5 to use 150% (which may incur margin interest charges).
+margin_usage = 0.5
 
 # Market data type (see
 # https://interactivebrokers.github.io/tws-api/market_data_type.html)
