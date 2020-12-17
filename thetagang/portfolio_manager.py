@@ -396,6 +396,9 @@ class PortfolioManager:
         # Figure out how many addition puts are needed, if they're needed
         for symbol in target_additional_quantity.keys():
             additional_quantity = target_additional_quantity[symbol]
+            # NOTE: it's possible there are non-standard option contract sizes,
+            # like with futures, but we don't bother handling those cases.
+            # Please don't use this code with futures.
             if additional_quantity >= 100:
                 put_count = count_option_positions(symbol, portfolio_positions, "P")
                 target_put_count = additional_quantity // 100

@@ -1,3 +1,12 @@
+# NOTE: It is STRONGLY recommended you read through all notes, config options,
+# and documentation before proceeding. Be sure to update the configuration
+# values according to your preferences. Additionally, any default values in
+# this config do not constitute a recommendation or endorsement, or any provide
+# claims abount returns or performance.
+#
+# Should you decide to use ThetaGang, please experiment with a paper trading
+# account before trying on a live account.
+
 [account]
 # The account number to operate on
 number = "DU1234567"
@@ -45,7 +54,15 @@ minimum_open_interest = 10
 
 [symbols]
 # NOTE: Please change these symbols and weights according to your preferences.
-# These are provided only as an example for the purpose of configuration.
+# These are provided only as an example for the purpose of configuration. These
+# values were chosen as sane values should someone decide to run this code
+# without changes, however it is in no way a recommendation or endorsement.
+#
+# You should try to choose ETFs or stocks that:
+#
+#  1) Have sufficient trading volume for the underlying
+#  2) Have standard options contracts (100 shares per contract)
+#  3) Have options with sufficient open interest and trading volume
 
   [symbols.SPY]
   weight = 0.4
