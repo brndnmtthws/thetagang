@@ -49,8 +49,11 @@ class PortfolioManager:
         return contract.strike >= ticker.marketPrice()
 
     def put_can_be_rolled(self, put):
-        # Check if this put is ITM. Do not roll ITM puts.
-        if self.put_is_itm(put.contract):
+        # Check if this put is ITM, and if it's o.k. to roll
+        if (
+            "puts" not in self.config["roll_when"]
+            or not self.config["roll_when"]["puts"]["itm"]
+        ) and self.put_is_itm(put.contract):
             return False
 
         dte = option_dte(put.contract.lastTradeDateOrContractMonth)
@@ -65,14 +68,26 @@ class PortfolioManager:
 
         if pnl >= self.config["roll_when"]["pnl"]:
             click.secho(
-                f"  {put.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100,1)}",
+                f"  {put.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100, 1)}",
                 fg="blue",
             )
             return True
 
         return False
 
+    def call_is_itm(self, contract):
+        stock = Stock(contract.symbol, "SMART", currency="USD")
+        [ticker] = self.ib.reqTickers(stock)
+        return contract.strike <= ticker.marketPrice()
+
     def call_can_be_rolled(self, call):
+        # Check if this call is ITM, and it's o.k. to roll
+        if (
+            "calls" in self.config["roll_when"]
+            and not self.config["roll_when"]["calls"]["itm"]
+        ) and self.call_is_itm(call.contract):
+            return False
+
         dte = option_dte(call.contract.lastTradeDateOrContractMonth)
         pnl = position_pnl(call)
 
@@ -85,7 +100,7 @@ class PortfolioManager:
 
         if pnl >= self.config["roll_when"]["pnl"]:
             click.secho(
-                f"{call.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100,1)}",
+                f"{call.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100, 1)}",
                 fg="blue",
             )
             return True

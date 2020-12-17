@@ -41,18 +41,31 @@ strikes = 50
 [roll_when]
 # Roll when P&L reaches 90%
 pnl = 0.9
+
 # Or when there are <= 15 days to expiry
 dte = 15
+
+  [roll_when.calls]
+  # Roll calls to the next expiration even if they're in the money. Defaults to
+  # true if not specified.
+  itm = true
+
+  [roll_when.puts]
+  # Roll puts if they're in the money. Defaults to false if not specified.
+  itm = false
 
 [target]
 # Target 45 or more days to expiry
 dte = 45
+
 # Target delta of 0.3 or less
 delta = 0.3
+
 # Minimum amount of open interest for a contract to qualify
 minimum_open_interest = 10
 
 [symbols]
+
 # NOTE: Please change these symbols and weights according to your preferences.
 # These are provided only as an example for the purpose of configuration. These
 # values were chosen as sane values should someone decide to run this code
@@ -63,7 +76,6 @@ minimum_open_interest = 10
 #  1) Have sufficient trading volume for the underlying
 #  2) Have standard options contracts (100 shares per contract)
 #  3) Have options with sufficient open interest and trading volume
-
   [symbols.SPY]
   weight = 0.4
 
@@ -79,14 +91,12 @@ logfile = 'ib_insync.log'
 [ibc]
 # IBC configuration parameters. See
 # https://ib-insync.readthedocs.io/api.html#ibc for details.
-password = 'demo'
-userid   = 'demo'
-
 gateway     = true
 ibcPath     = '/opt/ibc'
+password    = 'demo'
 tradingMode = 'paper'
 twsVersion  = 981
-
+userid      = 'demo'
 # Change this to point to your config.ini for IBC
 ibcIni = '/etc/thetagang/config.ini'
 

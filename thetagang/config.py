@@ -22,6 +22,12 @@ def validate_config(config):
             "roll_when": {
                 "pnl": And(float, lambda n: 0 <= n <= 1),
                 "dte": And(int, lambda n: 0 <= n),
+                Optional("calls"): {
+                    "itm": bool,
+                },
+                Optional("puts"): {
+                    "itm": bool,
+                },
             },
             "target": {
                 "dte": And(int, lambda n: 0 <= n),
