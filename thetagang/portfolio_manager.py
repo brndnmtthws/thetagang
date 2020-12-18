@@ -347,23 +347,20 @@ class PortfolioManager:
             if isinstance(position.contract, Stock)
         ]
 
-        remaining_buying_power = math.floor(
-            min(
-                [
-                    float(account_summary["BuyingPower"].value),
-                    float(account_summary["NetLiquidation"].value)
-                    * self.config["account"]["margin_usage"],
-                ]
-            )
+        total_buying_power = math.floor(
+            float(account_summary["NetLiquidation"].value)
+            * self.config["account"]["margin_usage"]
         )
 
         click.echo()
-        click.secho(f"Remaining buying power: ${remaining_buying_power}", fg="green")
-        #
+        click.secho(
+            f"Total buying power: ${total_buying_power} at {round(self.config['account']['margin_usage'] * 100, 1)}% margin usage",
+            fg="green",
+        )
+
         # Sum stock values that we care about
         total_value = (
-            sum([stock.marketValue for stock in stock_positions])
-            + remaining_buying_power
+            sum([stock.marketValue for stock in stock_positions]) + total_buying_power
         )
         click.secho(f"Total value: ${total_value}", fg="green")
         click.echo()
