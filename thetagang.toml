@@ -95,7 +95,6 @@ gateway     = true
 ibcPath     = '/opt/ibc'
 password    = 'demo'
 tradingMode = 'paper'
-twsVersion  = 981
 userid      = 'demo'
 # Change this to point to your config.ini for IBC
 ibcIni = '/etc/thetagang/config.ini'

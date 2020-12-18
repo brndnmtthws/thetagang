@@ -1,6 +1,24 @@
 import math
 
+import click
 from schema import And, Optional, Schema, Use
+
+
+def normalize_config(config):
+    # Do any pre-processing necessary to the config here, such as handling
+    # defaults, deprecated values, config changes, etc.
+
+    if "twsVersion" in config["ibc"]:
+        click.secho(
+            "WARNING: IBC config param 'twsVersion' is deprecated, please remove it from your config.",
+            fg="yellow",
+            err=True,
+        )
+
+        # TWS version is pinned to latest stable, delete any existing config if it's present
+        del config["ibc"]["twsVersion"]
+
+    return config
 
 
 def validate_config(config):
@@ -44,7 +62,6 @@ def validate_config(config):
                 Optional("tradingMode"): And(
                     str, len, lambda s: s in ("live", "paper")
                 ),
-                Optional("twsVersion"): int,
                 Optional("ibcIni"): And(str, len),
                 Optional("twsPath"): And(str, len),
                 Optional("twsSettingsPath"): And(str, len),
