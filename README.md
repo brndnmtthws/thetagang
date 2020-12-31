@@ -2,6 +2,8 @@
 
 *Beat the capitalists at their own game with ThetaGang 📈*
 
+![Decay my sweet babies](thetagang.jpg)
+
 ThetaGang is an [IBKR](https://www.interactivebrokers.com/) trading bot for
 collecting premium by selling options using "The Wheel" strategy. The Wheel
 is a strategy that [surfaced on
