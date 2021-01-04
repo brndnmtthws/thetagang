@@ -43,9 +43,16 @@ class PortfolioManager:
 
         return r
 
+    def wait_for_market_price(self, ticker):
+        while util.isNan(ticker.marketPrice()):
+            self.ib.waitOnUpdate(timeout=2)
+
     def put_is_itm(self, contract):
         stock = Stock(contract.symbol, "SMART", currency="USD")
         [ticker] = self.ib.reqTickers(stock)
+
+        self.wait_for_market_price(ticker)
+
         return contract.strike >= ticker.marketPrice()
 
     def put_can_be_rolled(self, put):
@@ -78,6 +85,9 @@ class PortfolioManager:
     def call_is_itm(self, contract):
         stock = Stock(contract.symbol, "SMART", currency="USD")
         [ticker] = self.ib.reqTickers(stock)
+
+        self.wait_for_market_price(ticker)
+
         return contract.strike <= ticker.marketPrice()
 
     def call_can_be_rolled(self, call):
@@ -180,7 +190,7 @@ class PortfolioManager:
                 if isinstance(p.contract, Stock):
                     pnl = round(position_pnl(p) * 100, 2)
                     click.secho(
-                        f"    Stock Qty={int(p.position)} Price={round(p.marketPrice,2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={pnl}%",
+                        f"    Stock Qty={int(p.position)} Price={round(p.marketPrice, 2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={pnl}%",
                         fg="cyan",
                     )
                 elif isinstance(p.contract, Option):
@@ -190,7 +200,7 @@ class PortfolioManager:
                         return "Call" if p.contract.right.startswith("C") else "Put "
 
                     click.secho(
-                        f"    {p_or_c(p)}  Qty={int(p.position)} Price={round(p.marketPrice,2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={pnl}% Strike={p.contract.strike} Exp={p.contract.lastTradeDateOrContractMonth}",
+                        f"    {p_or_c(p)}  Qty={int(p.position)} Price={round(p.marketPrice, 2)} Value={round(p.marketValue,2)} AvgCost={round(p.averageCost,2)} P&L={pnl}% Strike={p.contract.strike} Exp={p.contract.lastTradeDateOrContractMonth}",
                         fg="cyan",
                     )
                 else:
@@ -299,6 +309,8 @@ class PortfolioManager:
     def write_calls(self, symbol, quantity):
         sell_ticker = self.find_eligible_contracts(symbol, "C")
 
+        self.wait_for_market_price(sell_ticker)
+
         # Create order
         order = LimitOrder(
             "SELL",
@@ -319,6 +331,8 @@ class PortfolioManager:
 
     def write_puts(self, symbol, quantity):
         sell_ticker = self.find_eligible_contracts(symbol, "P")
+
+        self.wait_for_market_price(sell_ticker)
 
         # Create order
         order = LimitOrder(
@@ -379,6 +393,8 @@ class PortfolioManager:
             stock = Stock(symbol, "SMART", currency="USD")
             [ticker] = self.ib.reqTickers(stock)
 
+            self.wait_for_market_price(ticker)
+
             current_position = math.floor(
                 stock_symbols[symbol].position if symbol in stock_symbols else 0
             )
@@ -434,10 +450,12 @@ class PortfolioManager:
         for position in positions:
             symbol = position.contract.symbol
             sell_ticker = self.find_eligible_contracts(symbol, right)
+            self.wait_for_market_price(sell_ticker)
             quantity = abs(position.position)
 
             position.contract.exchange = "SMART"
             [buy_ticker] = self.ib.reqTickers(position.contract)
+            self.wait_for_market_price(buy_ticker)
 
             price = buy_ticker.marketPrice() - sell_ticker.marketPrice()
 
