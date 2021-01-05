@@ -43,6 +43,10 @@ class PortfolioManager:
 
         return r
 
+    def wait_for_midpoint_price(self, ticker):
+        while util.isNan(ticker.midpoint()):
+            self.ib.waitOnUpdate(timeout=2)
+
     def wait_for_market_price(self, ticker):
         while util.isNan(ticker.marketPrice()):
             self.ib.waitOnUpdate(timeout=2)
@@ -309,13 +313,13 @@ class PortfolioManager:
     def write_calls(self, symbol, quantity):
         sell_ticker = self.find_eligible_contracts(symbol, "C")
 
-        self.wait_for_market_price(sell_ticker)
+        self.wait_for_midpoint_price(sell_ticker)
 
         # Create order
         order = LimitOrder(
             "SELL",
             quantity,
-            round(sell_ticker.marketPrice(), 2),
+            round(sell_ticker.midpoint(), 2),
             algoStrategy="Adaptive",
             algoParams=[TagValue("adaptivePriority", "Patient")],
             tif="DAY",
@@ -332,13 +336,13 @@ class PortfolioManager:
     def write_puts(self, symbol, quantity):
         sell_ticker = self.find_eligible_contracts(symbol, "P")
 
-        self.wait_for_market_price(sell_ticker)
+        self.wait_for_midpoint_price(sell_ticker)
 
         # Create order
         order = LimitOrder(
             "SELL",
             quantity,
-            round(sell_ticker.marketPrice(), 2),
+            round(sell_ticker.midpoint(), 2),
             algoStrategy="Adaptive",
             algoParams=[TagValue("adaptivePriority", "Patient")],
             tif="DAY",
@@ -449,15 +453,17 @@ class PortfolioManager:
     def roll_positions(self, positions, right):
         for position in positions:
             symbol = position.contract.symbol
+
             sell_ticker = self.find_eligible_contracts(symbol, right)
-            self.wait_for_market_price(sell_ticker)
+            self.wait_for_midpoint_price(sell_ticker)
+
             quantity = abs(position.position)
 
             position.contract.exchange = "SMART"
             [buy_ticker] = self.ib.reqTickers(position.contract)
-            self.wait_for_market_price(buy_ticker)
+            self.wait_for_midpoint_price(buy_ticker)
 
-            price = buy_ticker.marketPrice() - sell_ticker.marketPrice()
+            price = buy_ticker.midpoint() - sell_ticker.midpoint()
 
             # Create combo legs
             comboLegs = [
