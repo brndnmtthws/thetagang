@@ -3,7 +3,7 @@ FROM debian:bullseye
 RUN apt-get update \
   && apt-get install -qy python3-pip xvfb libxrender1 openjfx unzip curl \
   && pip3 install --upgrade pip poetry \
-  && echo 'd1e42a975832440be5e76cb5882a5e0bf476508d245b6ac79bee589646333aec  tws-installer.sh' | tee tws-installer.sh.sha256 \
+  && echo '30ed8944d4df950e8802b0f127f6445cd23fbfd6ecc42b375fe222f6714669fa  tws-installer.sh' | tee tws-installer.sh.sha256 \
   && curl -qL https://download2.interactivebrokers.com/installers/tws/stable-standalone/tws-stable-standalone-linux-x64.sh -o tws-installer.sh \
   && sha256sum -c tws-installer.sh.sha256 \
   && echo 'c079e0ade7e95069e464859197498f0abb4ce277b2f101d7474df4826dcac837  ibc.zip' | tee ibc.zip.sha256 \
