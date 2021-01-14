@@ -16,6 +16,7 @@ on:
 env:
   IMAGE_NAME: thetagang
   DOCKERHUB_ACCOUNT: brndnmtthws
+  DOCKER_BUILDKIT: 1
 
 jobs:
   test:
