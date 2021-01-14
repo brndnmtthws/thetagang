@@ -1,5 +1,6 @@
 import math
 
+from ib_insync import util
 from ib_insync.contract import Option
 
 
@@ -49,3 +50,19 @@ def count_option_positions(symbol, portfolio_positions, right):
         )
 
     return 0
+
+
+def while_n_times(pred, body, remaining):
+    if pred() and remaining > 0:
+        body()
+        while_n_times(pred, body, remaining - 1)
+
+
+def midpoint_or_market_price(ticker):
+    # As per the ib_insync docs, marketPrice returns the last price first, but
+    # we often prefer the midpoint over the last price. This function pulls the
+    # midpoint first, then falls back to marketPrice() if midpoint is nan.
+    if util.isNan(ticker.midpoint()):
+        return ticker.marketPrice()
+
+    return ticker.midpoint()

@@ -9,8 +9,10 @@ from thetagang.util import (
     account_summary_to_dict,
     count_option_positions,
     justify,
+    midpoint_or_market_price,
     portfolio_positions_to_dict,
     position_pnl,
+    while_n_times,
 )
 
 from .options import option_dte
@@ -44,12 +46,18 @@ class PortfolioManager:
         return r
 
     def wait_for_midpoint_price(self, ticker):
-        while util.isNan(ticker.midpoint()):
-            self.ib.waitOnUpdate(timeout=2)
+        while_n_times(
+            lambda: util.isNan(ticker.midpoint()),
+            lambda: self.ib.waitOnUpdate(timeout=2),
+            10,
+        )
 
     def wait_for_market_price(self, ticker):
-        while util.isNan(ticker.marketPrice()):
-            self.ib.waitOnUpdate(timeout=2)
+        while_n_times(
+            lambda: util.isNan(ticker.marketPrice()),
+            lambda: self.ib.waitOnUpdate(timeout=2),
+            10,
+        )
 
     def put_is_itm(self, contract):
         stock = Stock(contract.symbol, "SMART", currency="USD")
@@ -301,13 +309,17 @@ class PortfolioManager:
                 self.write_calls(symbol, calls_to_write)
 
     def wait_for_trade_submitted(self, trade):
-        while trade.orderStatus.status not in [
-            "Submitted",
-            "Filled",
-            "ApiCancelled",
-            "Cancelled",
-        ]:
-            self.ib.waitOnUpdate(timeout=2)
+        while_n_times(
+            lambda: trade.orderStatus.status
+            not in [
+                "Submitted",
+                "Filled",
+                "ApiCancelled",
+                "Cancelled",
+            ],
+            lambda: self.ib.waitOnUpdate(timeout=2),
+            10,
+        )
         return trade
 
     def write_calls(self, symbol, quantity):
@@ -319,7 +331,7 @@ class PortfolioManager:
         order = LimitOrder(
             "SELL",
             quantity,
-            round(sell_ticker.midpoint(), 2),
+            round(midpoint_or_market_price(sell_ticker), 2),
             algoStrategy="Adaptive",
             algoParams=[TagValue("adaptivePriority", "Patient")],
             tif="DAY",
@@ -342,7 +354,7 @@ class PortfolioManager:
         order = LimitOrder(
             "SELL",
             quantity,
-            round(sell_ticker.midpoint(), 2),
+            round(midpoint_or_market_price(sell_ticker), 2),
             algoStrategy="Adaptive",
             algoParams=[TagValue("adaptivePriority", "Patient")],
             tif="DAY",
@@ -463,7 +475,9 @@ class PortfolioManager:
             [buy_ticker] = self.ib.reqTickers(position.contract)
             self.wait_for_midpoint_price(buy_ticker)
 
-            price = buy_ticker.midpoint() - sell_ticker.midpoint()
+            price = midpoint_or_market_price(buy_ticker) - midpoint_or_market_price(
+                sell_ticker
+            )
 
             # Create combo legs
             comboLegs = [
@@ -574,9 +588,9 @@ class PortfolioManager:
                 if right.startswith("C"):
                     return util.isNan(ticker.callOpenInterest)
 
-            while open_interest_is_not_ready():
-                self.ib.waitOnUpdate(timeout=2)
-
+            while_n_times(
+                open_interest_is_not_ready, lambda: self.ib.waitOnUpdate(timeout=2), 10
+            )
             self.ib.cancelMktData(ticker.contract)
 
             # The open interest value is never present when using historical
