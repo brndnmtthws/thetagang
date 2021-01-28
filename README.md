@@ -166,7 +166,7 @@ Now, to run ThetaGang with Docker:
 
 ```console
 $ docker run --rm -it \
-    -v ~/ibc:/etc/thetagang \
+    -v ~/thetagang:/etc/thetagang \
     brndnmtthws/thetagang:latest \
     --config /etc/thetagang/thetagang.toml
 ```
