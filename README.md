@@ -119,7 +119,7 @@ call capitalism works.
 *Before running ThetaGang, you should set up an IBKR paper account to test the
 code.*
 
-```shell
+```console
 $ pip install thetagang
 ```
 
@@ -131,11 +131,11 @@ much, consider [running ThetaGang with Docker](#running-with-docker).
 
 ## Usage
 
-```shell
+```console
 $ thetagang -h
 ```
 
-## Running with Docker
+## Up and Running with Docker
 
 My preferred way for running ThetaGang is to use a cronjob to execute Docker
 commands. I've built a Docker image as part of this project, which you can
@@ -148,13 +148,35 @@ configuration](https://github.com/IbcAlpha/IBC/blob/master/userguide.md) and
 [`ibc-config.ini`](/ibc-config.ini) included in this repo for your convenience.
 
 The easiest way to get the config files into the container is by mounting a
-volume. For example, you can use the following command:
+volume.
 
-```shell
+To get started, grab a copy of `thetagang.toml` and `config.ini`:
+
+```console
+$ mkdir ~/thetagang
+$ cd ~/thetagang
+$ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/thetagang.toml -o ~/thetagang/thetagang.toml
+$ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/ibc-config.ini -o ~/thetagang/config.ini
+```
+
+Edit `~/thetagang/thetagang.toml` to suit your needs. Pay particular
+attention to the symbols and weights.
+
+Now, to run ThetaGang with Docker:
+
+```console
 $ docker run --rm -it \
-    -v ~/ibc:/ibc \
+    -v ~/ibc:/etc/thetagang \
     brndnmtthws/thetagang:latest \
-    --config /ibc/thetagang.toml
+    --config /etc/thetagang/thetagang.toml
+```
+
+Lastly, to run ThetaGang as a daily cronjob Monday to Friday at 9am, add
+something like this to your crontab (on systems with a cron installation, use
+`crontab -e` to edit your crontab):
+
+```crontab
+0 9 * * 1-5 docker run --rm -it -v ~/ibc:/etc/thetagang brndnmtthws/thetagang:latest --config /etc/thetagang/thetagang.toml
 ```
 
 ## Development
