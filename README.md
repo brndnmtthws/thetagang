@@ -18,7 +18,7 @@ over there](https://www.twitch.tv/letsmakestuff).
 
 ## How it works
 
-You should start by reading [the Reddit
+Start by reading [the Reddit
 post](https://www.reddit.com/r/options/comments/a36k4j/the_wheel_aka_triple_income_strategy_explained/)
 to get some background.
 
@@ -46,7 +46,7 @@ acceptable contracts are available, enough shares needed, etc).
 
 ThetaGang will continue to roll any open option positions indefinitely, with
 the only exception being ITM puts. Once puts are in the money, they will be
-ignored until they expire and are execised (after which you will own the
+ignored until they expire and are exercised (after which you will own the
 underlying).
 
 Please note: this strategy is based on the assumption that implied volatility
@@ -160,7 +160,9 @@ $ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/ibc-conf
 ```
 
 Edit `~/thetagang/thetagang.toml` to suit your needs. Pay particular
-attention to the symbols and weights.
+attention to the symbols and weights. At a minimum, you must change the
+username, password, and account number. You may also want to change the
+trading move from paper to live when needed.
 
 Now, to run ThetaGang with Docker:
 
