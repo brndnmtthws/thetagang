@@ -86,7 +86,7 @@ minimum_open_interest = 10
   weight = 0.3
 
 [ib_insync]
-logfile = 'ib_insync.log'
+logfile = '/etc/thetagang/ib_insync.log'
 
 [ibc]
 # IBC configuration parameters. See
