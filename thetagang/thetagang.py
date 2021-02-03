@@ -69,11 +69,11 @@ def start(config):
         f"    Delta                   <= {config['target']['delta']}", fg="cyan"
     )
     click.secho(
-        f"    Maximum new contracts   <= {config['target']['maximum_new_contracts']}",
+        f"    Maximum new contracts    = {config['target']['maximum_new_contracts']}",
         fg="cyan",
     )
     click.secho(
-        f"    Minimum open interest   >= {config['target']['minimum_open_interest']}",
+        f"    Minimum open interest    = {config['target']['minimum_open_interest']}",
         fg="cyan",
     )
 
