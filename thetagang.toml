@@ -45,14 +45,14 @@ pnl = 0.9
 # Or when there are <= 15 days to expiry
 dte = 15
 
-  [roll_when.calls]
-  # Roll calls to the next expiration even if they're in the money. Defaults to
-  # true if not specified.
-  itm = true
+[roll_when.calls]
+# Roll calls to the next expiration even if they're in the money. Defaults to
+# true if not specified.
+itm = true
 
-  [roll_when.puts]
-  # Roll puts if they're in the money. Defaults to false if not specified.
-  itm = false
+[roll_when.puts]
+# Roll puts if they're in the money. Defaults to false if not specified.
+itm = false
 
 [target]
 # Target 45 or more days to expiry
@@ -60,6 +60,13 @@ dte = 45
 
 # Target delta of 0.3 or less
 delta = 0.3
+
+# When writing new contracts (either covered calls or naked puts), never write
+# more than this number of contracts at once. This can be useful to spread the
+# contracts out over time in order to protect yourself from large swings. This
+# value does not affect rolling existing contracts to the next expiration.
+# Defaults to 15 if not specified.
+maximum_new_contracts = 15
 
 # Minimum amount of open interest for a contract to qualify
 minimum_open_interest = 10
@@ -76,14 +83,14 @@ minimum_open_interest = 10
 #  1) Have sufficient trading volume for the underlying
 #  2) Have standard options contracts (100 shares per contract)
 #  3) Have options with sufficient open interest and trading volume
-  [symbols.SPY]
-  weight = 0.4
+[symbols.SPY]
+weight = 0.4
 
-  [symbols.QQQ]
-  weight = 0.3
+[symbols.QQQ]
+weight = 0.3
 
-  [symbols.TLT]
-  weight = 0.3
+[symbols.TLT]
+weight = 0.3
 
 [ib_insync]
 logfile = '/etc/thetagang/ib_insync.log'
@@ -91,11 +98,11 @@ logfile = '/etc/thetagang/ib_insync.log'
 [ibc]
 # IBC configuration parameters. See
 # https://ib-insync.readthedocs.io/api.html#ibc for details.
-gateway     = true
-ibcPath     = '/opt/ibc'
-password    = 'demo'
+gateway = true
+ibcPath = '/opt/ibc'
+password = 'demo'
 tradingMode = 'paper'
-userid      = 'demo'
+userid = 'demo'
 # Change this to point to your config.ini for IBC
 ibcIni = '/etc/thetagang/config.ini'
 
@@ -109,17 +116,17 @@ ibcIni = '/etc/thetagang/config.ini'
 # Watchdog configuration params. See
 # https://ib-insync.readthedocs.io/api.html#watchdog for details.
 appStartupTime = 30
-appTimeout     = 20
-clientId       = 1
+appTimeout = 20
+clientId = 1
 connectTimeout = 2
-host           = '127.0.0.1'
-port           = 4002
-probeTimeout   = 4
-readonly       = false
-retryDelay     = 2
+host = '127.0.0.1'
+port = 4002
+probeTimeout = 4
+readonly = false
+retryDelay = 2
 
-  [watchdog.probeContract]
-  currency = 'USD'
-  exchange = 'SMART'
-  secType  = 'STK'
-  symbol   = 'SPY'
+[watchdog.probeContract]
+currency = 'USD'
+exchange = 'SMART'
+secType = 'STK'
+symbol = 'SPY'

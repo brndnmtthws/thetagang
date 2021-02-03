@@ -14,7 +14,6 @@ from thetagang.util import (
     position_pnl,
     while_n_times,
 )
-
 from .options import option_dte
 
 
@@ -302,10 +301,14 @@ class PortfolioManager:
 
             target_calls = stock_count // 100
 
-            calls_to_write = target_calls - call_count
+            maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
+            calls_to_write = min([target_calls - call_count, maximum_new_contracts])
 
             if calls_to_write > 0:
-                click.secho(f"Need to write {calls_to_write} for {symbol}", fg="green")
+                click.secho(
+                    f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}",
+                    fg="green",
+                )
                 self.write_calls(symbol, calls_to_write)
 
     def wait_for_trade_submitted(self, trade):
@@ -437,7 +440,7 @@ class PortfolioManager:
 
         click.echo()
 
-        # Figure out how many addition puts are needed, if they're needed
+        # Figure out how many additional puts are needed, if they're needed
         for symbol in target_additional_quantity.keys():
             additional_quantity = target_additional_quantity[symbol]
             # NOTE: it's possible there are non-standard option contract sizes,
@@ -446,10 +449,13 @@ class PortfolioManager:
             if additional_quantity >= 100:
                 put_count = count_option_positions(symbol, portfolio_positions, "P")
                 target_put_count = additional_quantity // 100
-                puts_to_write = target_put_count - put_count
+                maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
+                puts_to_write = min(
+                    [target_put_count - put_count, maximum_new_contracts]
+                )
                 if puts_to_write > 0:
                     click.secho(
-                        f"Preparing to write additional {puts_to_write} puts to purchase {symbol}",
+                        f"Preparing to write additional {puts_to_write} puts to purchase {symbol}, capped at {maximum_new_contracts}",
                         fg="cyan",
                     )
                     self.write_puts(symbol, puts_to_write)

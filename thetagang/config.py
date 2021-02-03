@@ -3,6 +3,8 @@ import math
 import click
 from schema import And, Optional, Schema, Use
 
+import thetagang.config_defaults as config_defaults
+
 
 def normalize_config(config):
     # Do any pre-processing necessary to the config here, such as handling
@@ -18,6 +20,10 @@ def normalize_config(config):
         # TWS version is pinned to latest stable, delete any existing config if it's present
         del config["ibc"]["twsVersion"]
 
+    config["target"]["maximum_new_contracts"] = config["target"].get(
+        "maximum_new_contracts",
+        config_defaults.DEFAULT_MAXIMUM_NEW_CONTRACTS,
+    )
     return config
 
 
@@ -50,6 +56,7 @@ def validate_config(config):
             "target": {
                 "dte": And(int, lambda n: 0 <= n),
                 "delta": And(float, lambda n: 0 <= n <= 1),
+                "maximum_new_contracts": And(int, lambda n: 1 <= n),
                 "minimum_open_interest": And(int, lambda n: 0 <= n),
             },
             "symbols": {object: {"weight": And(float, lambda n: 0 <= n <= 1)}},

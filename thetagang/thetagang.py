@@ -23,6 +23,7 @@ util.patchAsyncio()
 
 def start(config):
     import toml
+    import thetagang.config_defaults as config_defaults
 
     with open(config, "r") as f:
         config = toml.load(f)
@@ -66,6 +67,10 @@ def start(config):
     click.secho(f"    Days to expiry          >= {config['target']['dte']}", fg="cyan")
     click.secho(
         f"    Delta                   <= {config['target']['delta']}", fg="cyan"
+    )
+    click.secho(
+        f"    Maximum new contracts   <= {config['target']['maximum_new_contracts']}",
+        fg="cyan",
     )
     click.secho(
         f"    Minimum open interest   >= {config['target']['minimum_open_interest']}",
