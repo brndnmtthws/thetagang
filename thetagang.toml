@@ -108,7 +108,8 @@ ibcIni = '/etc/thetagang/config.ini'
 
 # twsPath         = ''
 # twsSettingsPath = ''
-# javaPath        = ''
+# Change or unset this to use something other than the Docker bundled OpenJDK.
+javaPath        = '/opt/java/openjdk/bin'
 # fixuserid       = ''
 # fixpassword     = ''
 
