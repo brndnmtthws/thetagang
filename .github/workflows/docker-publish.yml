@@ -66,8 +66,8 @@ jobs:
           docker buildx build \
             --load \
             --platform linux/arm64/v8,linux/amd64 \
-            --cache-from=$DOCKERHUB_ACCOUNT/$IMAGE_NAME:latest \
-            --cache-to=type=inline,mode=all \
+            --cache-from=$DOCKERHUB_ACCOUNT/$IMAGE_NAME:buildcache \
+            --cache-to=type=$DOCKERHUB_ACCOUNT/$IMAGE_NAME:buildcache \
             --tag $IMAGE_NAME \
             .
 
