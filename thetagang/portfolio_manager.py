@@ -615,7 +615,7 @@ class PortfolioManager:
         def delta_is_valid(ticker):
             return (
                 ticker.modelGreeks
-                and ticker.modelGreeks.delta
+                and not util.isNan(ticker.modelGreeks.delta)
                 and abs(ticker.modelGreeks.delta) <= self.config["target"]["delta"]
             )
 
