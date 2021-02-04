@@ -64,23 +64,11 @@ jobs:
       - name: Log into Dockerhub registry
         run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u $DOCKERHUB_ACCOUNT --password-stdin
 
-      - name: Build images
+      - name: Build and push images
         run: |
-          docker buildx build \
-            --load \
-            --platform linux/arm64/v8,linux/amd64 \
-            --cache-from=$DOCKERHUB_ACCOUNT/$IMAGE_NAME:buildcache \
-            --cache-to=$DOCKERHUB_ACCOUNT/$IMAGE_NAME:buildcache \
-            --tag $IMAGE_NAME \
-            .
-
-      - name: Push images
-        run: |
-          GITHUB_IMAGE_ID=docker.pkg.github.com/${{ github.repository }}/$IMAGE_NAME
           DOCKERHUB_IMAGE_ID=$DOCKERHUB_ACCOUNT/$IMAGE_NAME
 
           # Change all uppercase to lowercase
-          GITHUB_IMAGE_ID=$(echo $GITHUB_IMAGE_ID | tr '[A-Z]' '[a-z]')
           DOCKERHUB_IMAGE_ID=$(echo $DOCKERHUB_IMAGE_ID | tr '[A-Z]' '[a-z]')
 
           # Strip git ref prefix from version
@@ -96,8 +84,10 @@ jobs:
           echo DOCKERHUB_IMAGE_ID=$DOCKERHUB_IMAGE_ID
           echo VERSION=$VERSION
 
-          docker tag $IMAGE_NAME $GITHUB_IMAGE_ID:$VERSION
-          docker push $GITHUB_IMAGE_ID:$VERSION
-
-          docker tag $IMAGE_NAME $DOCKERHUB_IMAGE_ID:$VERSION
-          docker push $DOCKERHUB_IMAGE_ID:$VERSION
+          docker buildx build \
+            --push \
+            --platform linux/arm64/v8,linux/amd64 \
+            --cache-from=$DOCKERHUB_ACCOUNT/$IMAGE_NAME:buildcache \
+            --cache-to=$DOCKERHUB_ACCOUNT/$IMAGE_NAME:buildcache \
+            --tag $DOCKERHUB_IMAGE_ID:$VERSION \
+            .
