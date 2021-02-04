@@ -52,15 +52,25 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: Build image
-        run: docker build . --file Dockerfile --tag $IMAGE_NAME --cache-from $DOCKERHUB_ACCOUNT/$IMAGE_NAME --build-arg BUILDKIT_INLINE_CACHE=1
+      - name: Extract TWS installer
+        run: ./extract-installer.sh
 
       - name: Log into GitHub registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login docker.pkg.github.com -u ${{ github.actor }} --password-stdin
       - name: Log into Dockerhub registry
         run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u $DOCKERHUB_ACCOUNT --password-stdin
 
-      - name: Push image
+      - name: Build images
+        run: |
+          docker buildx build \
+            --load \
+            --platform linux/arm/v7,linux/arm64/v8,linux/amd64 \
+            --cache-from=$DOCKERHUB_ACCOUNT/$IMAGE_NAME:latest \
+            --cache-to=type=inline,mode=all \
+            --tag $IMAGE_NAME \
+            .
+
+      - name: Push images
         run: |
           GITHUB_IMAGE_ID=docker.pkg.github.com/${{ github.repository }}/$IMAGE_NAME
           DOCKERHUB_IMAGE_ID=$DOCKERHUB_ACCOUNT/$IMAGE_NAME

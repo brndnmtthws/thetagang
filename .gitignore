@@ -1,5 +1,8 @@
 .vscode/
 
+# Ignore tws installer dir
+tws/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
