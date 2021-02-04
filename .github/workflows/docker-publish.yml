@@ -67,7 +67,7 @@ jobs:
             --load \
             --platform linux/arm64/v8,linux/amd64 \
             --cache-from=$DOCKERHUB_ACCOUNT/$IMAGE_NAME:buildcache \
-            --cache-to=type=$DOCKERHUB_ACCOUNT/$IMAGE_NAME:buildcache \
+            --cache-to=$DOCKERHUB_ACCOUNT/$IMAGE_NAME:buildcache \
             --tag $IMAGE_NAME \
             .
 
