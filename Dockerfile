@@ -21,9 +21,12 @@ RUN apt-get update \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-ADD . /src
 WORKDIR /src
+ADD pyproject.toml .
+ADD poetry.lock .
 
 RUN poetry install
+
+ADD . /src
 
 ENTRYPOINT [ "/src/entrypoint.bash" ]
