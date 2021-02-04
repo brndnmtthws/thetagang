@@ -167,7 +167,7 @@ trading move from paper to live when needed.
 Now, to run ThetaGang with Docker:
 
 ```console
-$ docker run --rm -it \
+$ docker run --rm -i \
     -v ~/thetagang:/etc/thetagang \
     brndnmtthws/thetagang:latest \
     --config /etc/thetagang/thetagang.toml
@@ -178,7 +178,7 @@ something like this to your crontab (on systems with a cron installation, use
 `crontab -e` to edit your crontab):
 
 ```crontab
-0 9 * * 1-5 docker run --rm -it -v ~/ibc:/etc/thetagang brndnmtthws/thetagang:latest --config /etc/thetagang/thetagang.toml
+0 9 * * 1-5 docker run --rm -i -v ~/ibc:/etc/thetagang brndnmtthws/thetagang:latest --config /etc/thetagang/thetagang.toml
 ```
 
 ## Development
