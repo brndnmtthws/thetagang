@@ -42,7 +42,13 @@ strikes = 50
 # Roll when P&L reaches 90%
 pnl = 0.9
 
-# Or when there are <= 15 days to expiry and P&L is at least min_pnl
+# Or, roll options when there are <= 15 days to expiry and P&L is at least
+# min_pnl (min_pnl defaults to 0)
+#
+# NOTE: For cases where an option ends up deep ITM, notably when selling
+# covered calls, it's possible that the P&L would be significantly negative,
+# i.e., -100%. If you want to roll anyway in these situations, set min_pnl to a
+# negative value such as -1 (for -100%).
 dte = 15
 min_pnl = 0
 
