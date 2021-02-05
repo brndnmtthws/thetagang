@@ -14,6 +14,7 @@ from thetagang.util import (
     position_pnl,
     while_n_times,
 )
+
 from .options import option_dte
 
 
@@ -219,7 +220,7 @@ class PortfolioManager:
                         return "Call" if p.contract.right.startswith("C") else "Put "
 
                     click.secho(
-                        f"    {p_or_c(p)}  Qty={int(p.position)} Price={round(p.marketPrice, 2)} Value={round(p.marketValue,2)} Cost={round(p.averageCost * p.position,2)} P&L={pnl}% Strike={p.contract.strike} Exp={p.contract.lastTradeDateOrContractMonth}",
+                        f"    {p_or_c(p)}  Qty={int(p.position)} Price={round(p.marketPrice, 2)} Value={round(p.marketValue,2)} Cost={round(p.averageCost * p.position,2)} P&L={pnl}% Strike={p.contract.strike} DTE={option_dte(p.contract.lastTradeDateOrContractMonth)} Exp={p.contract.lastTradeDateOrContractMonth}",
                         fg="cyan",
                     )
                 else:
