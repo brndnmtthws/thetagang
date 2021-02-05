@@ -5,6 +5,9 @@ ADD ./tws/Jts /root/Jts
 RUN apt-get update \
   && apt-get install -qy \
   python3-pip \
+  python3-dev \
+  libffi-dev \
+  libssl-dev \
   xvfb \
   libxi6 \
   libxtst6 \
