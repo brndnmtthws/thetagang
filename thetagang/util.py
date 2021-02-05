@@ -54,7 +54,7 @@ def count_option_positions(symbol, portfolio_positions, right):
 
 def while_n_times(pred, body, remaining):
     if remaining <= 0:
-        raise "Timeout waiting on predicate. This shouldn't happen. "
+        raise "Exhausted retries waiting on predicate. This shouldn't happen. "
     if pred() and remaining > 0:
         body()
         while_n_times(pred, body, remaining - 1)
