@@ -1,4 +1,4 @@
-FROM adoptopenjdk/openjdk8:jdk8u-ubuntu-nightly
+FROM adoptopenjdk:8u275-b01-jdk-hotspot-focal
 
 ADD ./tws/Jts /root/Jts
 
