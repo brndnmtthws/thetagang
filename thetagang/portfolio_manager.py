@@ -585,6 +585,9 @@ class PortfolioManager:
 
         tickers = self.ib.reqTickers(*contracts)
 
+        # Filter out tickers which don't have a midpoint price
+        tickers = [t for t in tickers if not util.isNan(t.midpoint())]
+
         def open_interest_is_valid(ticker):
             ticker = self.ib.reqMktData(ticker.contract, genericTickList="101")
 
