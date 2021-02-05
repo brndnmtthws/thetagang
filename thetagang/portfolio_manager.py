@@ -77,16 +77,20 @@ class PortfolioManager:
         dte = option_dte(put.contract.lastTradeDateOrContractMonth)
         pnl = position_pnl(put)
 
-        if dte <= self.config["roll_when"]["dte"]:
+        roll_when_dte = self.config["roll_when"]["dte"]
+        roll_when_pnl = self.config["roll_when"]["pnl"]
+        roll_when_min_pnl = self.config["roll_when"]["min_pnl"]
+
+        if dte <= roll_when_dte and pnl >= roll_when_min_pnl:
             click.secho(
-                f"  {put.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']}",
+                f"  {put.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_min_pnl * 100, 1)}%",
                 fg="blue",
             )
             return True
 
-        if pnl >= self.config["roll_when"]["pnl"]:
+        if pnl >= roll_when_pnl:
             click.secho(
-                f"  {put.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100, 1)}",
+                f"  {put.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_pnl * 100, 1)}",
                 fg="blue",
             )
             return True
@@ -112,16 +116,20 @@ class PortfolioManager:
         dte = option_dte(call.contract.lastTradeDateOrContractMonth)
         pnl = position_pnl(call)
 
-        if dte <= self.config["roll_when"]["dte"]:
+        roll_when_dte = self.config["roll_when"]["dte"]
+        roll_when_pnl = self.config["roll_when"]["pnl"]
+        roll_when_min_pnl = self.config["roll_when"]["min_pnl"]
+
+        if dte <= roll_when_dte and pnl >= roll_when_min_pnl:
             click.secho(
-                f"{call.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']}",
+                f"  {call.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_min_pnl * 100, 1)}%",
                 fg="blue",
             )
             return True
 
-        if pnl >= self.config["roll_when"]["pnl"]:
+        if pnl >= roll_when_pnl:
             click.secho(
-                f"{call.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(self.config['roll_when']['pnl'] * 100, 1)}",
+                f"  {call.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_pnl * 100, 1)}",
                 fg="blue",
             )
             return True

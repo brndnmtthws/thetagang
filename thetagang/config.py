@@ -24,6 +24,12 @@ def normalize_config(config):
         "maximum_new_contracts",
         config_defaults.DEFAULT_MAXIMUM_NEW_CONTRACTS,
     )
+
+    config["roll_when"]["min_pnl"] = config["roll_when"].get(
+        "min_pnl",
+        config_defaults.DEFAULT_MIN_PNL,
+    )
+
     return config
 
 
@@ -46,6 +52,7 @@ def validate_config(config):
             "roll_when": {
                 "pnl": And(float, lambda n: 0 <= n <= 1),
                 "dte": And(int, lambda n: 0 <= n),
+                "min_pnl": float,
                 Optional("calls"): {
                     "itm": bool,
                 },

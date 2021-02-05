@@ -42,8 +42,9 @@ strikes = 50
 # Roll when P&L reaches 90%
 pnl = 0.9
 
-# Or when there are <= 15 days to expiry
+# Or when there are <= 15 days to expiry and P&L is at least min_pnl
 dte = 15
+min_pnl = 0
 
 [roll_when.calls]
 # Roll calls to the next expiration even if they're in the money. Defaults to
@@ -100,16 +101,19 @@ logfile = '/etc/thetagang/ib_insync.log'
 # https://ib-insync.readthedocs.io/api.html#ibc for details.
 gateway = true
 ibcPath = '/opt/ibc'
-password = 'demo'
 tradingMode = 'paper'
+
+password = 'demo'
 userid = 'demo'
+
 # Change this to point to your config.ini for IBC
 ibcIni = '/etc/thetagang/config.ini'
 
+# Change or unset this to use something other than the Docker bundled OpenJDK.
+javaPath = '/opt/java/openjdk/bin'
+
 # twsPath         = ''
 # twsSettingsPath = ''
-# Change or unset this to use something other than the Docker bundled OpenJDK.
-javaPath        = '/opt/java/openjdk/bin'
 # fixuserid       = ''
 # fixpassword     = ''
 
