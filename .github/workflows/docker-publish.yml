@@ -27,6 +27,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
+
+      - name: Cache Poetry
+        uses: actions/cache@v2
+        env:
+          cache-name: cache-poetry
+        with:
+          path: ~/.cache/pypoetry
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v2
         with:
@@ -61,13 +70,20 @@ jobs:
         env:
           cache-name: cache-tws
         with:
-          # npm cache files are stored in `~/.npm` on Linux/macOS
           path: tws/
           key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('extract-installer.sh') }}
 
       - name: Extract TWS installer
         if: steps.cache-primes.outputs.cache-hit != 'true'
         run: ./extract-installer.sh
+
+      - name: Cache Poetry
+        uses: actions/cache@v2
+        env:
+          cache-name: cache-poetry
+        with:
+          path: ~/.cache/pypoetry
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v2
