@@ -11,4 +11,5 @@ docker run -i --rm -v `pwd`/tws:/tws debian sh -c " \
     && curl -qL https://download2.interactivebrokers.com/installers/tws/stable-standalone/tws-stable-standalone-linux-x64.sh -o tws-installer.sh \
     && sha256sum -c tws-installer.sh.sha256 \
     && yes "" | sh tws-installer.sh \
+    && chmod 644 /root/Jts/978/uninstall \
     && cp -r /root/Jts /tws"
