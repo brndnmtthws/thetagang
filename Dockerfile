@@ -20,8 +20,6 @@ RUN poetry config cache-dir /src --local \
 
 FROM adoptopenjdk:8u275-b01-jdk-hotspot-focal
 
-ADD ./tws/Jts /root/Jts
-
 COPY --from=python-dependencies /root/.cache/pip /root/.cache/pip
 
 RUN apt-get update \
@@ -44,6 +42,8 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+
+ADD ./tws/Jts /root/Jts
 
 COPY --from=python-dependencies /src /src
 
