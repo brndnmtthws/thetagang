@@ -43,10 +43,9 @@ RUN apt-get update \
 
 WORKDIR /src
 
-ADD ./tws/Jts /root/Jts
-
 COPY --from=python-dependencies /src /src
 
 ADD . /src
+RUN mv /src/tws/Jts /root/Jts
 
 ENTRYPOINT [ "/src/entrypoint.bash" ]
