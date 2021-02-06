@@ -74,7 +74,7 @@ jobs:
           key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('extract-installer.sh') }}
 
       - name: Extract TWS installer
-        if: steps.cache-primes.outputs.cache-hit != 'true'
+        if: steps.cache-tws.outputs.cache-hit != 'true'
         run: ./extract-installer.sh
 
       - name: Cache Poetry
