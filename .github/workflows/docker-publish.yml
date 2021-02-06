@@ -79,12 +79,12 @@ jobs:
         if: steps.cache-tws.outputs.cache-hit != 'true'
         run: ./extract-installer.sh
 
-      - name: Cache Poetry
+      - name: Cache pip and pals
         uses: actions/cache@v2
         env:
-          cache-name: cache-poetry
+          cache-name: cache-pip
         with:
-          path: ~/.cache/pypoetry
+          path: ~/.cache
           key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
 
       - name: Set up Python ${{ matrix.python-version }}
