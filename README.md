@@ -199,3 +199,7 @@ You are now ready to make a splash! 🐳
 If you like what you see but want something different, I am willing
 to work on bespoke or custom trading bots for a fee. Reach out
 to me directly through my GitHub profile.
+
+## Stargazers over time
+
+[![Stargazers over time](https://starchart.cc/brndnmtthws/thetagang.svg)](https://starchart.cc/brndnmtthws/thetagang)
