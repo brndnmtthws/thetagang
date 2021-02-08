@@ -84,10 +84,12 @@ my goal with this.
 There are conflicting opinions about whether selling options is good or bad,
 more or less risky, yadda yadda, but generally the risk profile for covered
 calls and naked puts is no worse than the worst case for simply holding an
-ETF or stock. The main downside is that returns are capped on the upside.
-Depending on your goals, this may not matter. If you're like me, then
-you'd rather have consistent returns and give up a little bit of potential
-upside.
+ETF or stock. In fact, I'd argue that selling a naked put is better than
+buying SPY with a limit order, because at least if SPY goes to zero you keep
+the premium from selling the option. The main downside is that returns are
+capped on the upside. Depending on your goals, this may not matter. If you're
+like me, then you'd rather have consistent returns and give up a little bit
+of potential upside.
 
 Generally speaking, the point of selling options is not to exceed the returns
 of the underlying, but rather to reduce risk. Reducing risk is an important
