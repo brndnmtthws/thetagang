@@ -218,7 +218,13 @@ class PortfolioManager:
         click.echo()
         for symbol in portfolio_positions.keys():
             click.secho(f"  {symbol}:", fg="cyan")
-            for p in portfolio_positions[symbol]:
+            sorted_positions = sorted(
+                portfolio_positions[symbol],
+                key=lambda p: option_dte(p.contract.lastTradeDateOrContractMonth)
+                if isinstance(p.contract, Option)
+                else 0,
+            )
+            for p in sorted_positions:
                 if isinstance(p.contract, Stock):
                     pnl = round(position_pnl(p) * 100, 2)
                     click.secho(
