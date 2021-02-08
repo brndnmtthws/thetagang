@@ -191,6 +191,27 @@ something like this to your crontab (on systems with a cron installation, use
 0 9 * * 1-5 docker run --rm -i -v ~/ibc:/etc/thetagang brndnmtthws/thetagang:latest --config /etc/thetagang/thetagang.toml
 ```
 
+## Determining which ETFs or stocks to run ThetaGang with
+
+I leave this as an exercise to the reader, however I will provide a few
+recommendations and resources:
+
+### Recommendations
+
+* Stick with high volume ETFs or stocks
+* Careful with margin usage, you'll want to calculate the worst case scenario
+  and provide plenty of cushion for yourself based on your portfolio
+
+
+### Resources
+
+* For discussions about selling options, check out
+  [r/thetagang](https://www.reddit.com/r/thetagang/)
+* For backtesting portfolios, you can use [this
+  tool](https://www.portfoliovisualizer.com/backtest-portfolio) and [this
+  tool](https://www.portfoliovisualizer.com/optimize-portfolio) to get an idea
+  of drawdown and typical volatility
+
 ## Development
 
 Check out the code to your local machine and install the Python dependencies:
