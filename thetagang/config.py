@@ -30,6 +30,11 @@ def normalize_config(config):
         config_defaults.DEFAULT_MIN_PNL,
     )
 
+    config["target"]["delta"] = config["target"].get(
+        "delta",
+        config_defaults.DEFAULT_DELTA,
+    )
+
     return config
 
 
@@ -65,8 +70,19 @@ def validate_config(config):
                 "delta": And(float, lambda n: 0 <= n <= 1),
                 "maximum_new_contracts": And(int, lambda n: 1 <= n),
                 "minimum_open_interest": And(int, lambda n: 0 <= n),
+                Optional("calls"): {
+                    "delta": And(float, lambda n: 0 <= n <= 1),
+                },
+                Optional("puts"): {
+                    "delta": And(float, lambda n: 0 <= n <= 1),
+                },
             },
-            "symbols": {object: {"weight": And(float, lambda n: 0 <= n <= 1)}},
+            "symbols": {
+                object: {
+                    "weight": And(float, lambda n: 0 <= n <= 1),
+                    Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                }
+            },
             Optional("ib_insync"): {Optional("logfile"): And(str, len)},
             "ibc": {
                 Optional("password"): And(str, len),

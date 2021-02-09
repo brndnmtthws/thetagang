@@ -65,7 +65,7 @@ itm = false
 # Target 45 or more days to expiry
 dte = 45
 
-# Target delta of 0.3 or less
+# Target delta of 0.3 or less. Defaults to 0.3 if not specified.
 delta = 0.3
 
 # When writing new contracts (either covered calls or naked puts), never write
@@ -77,6 +77,14 @@ maximum_new_contracts = 15
 
 # Minimum amount of open interest for a contract to qualify
 minimum_open_interest = 10
+
+# Optional: specify delta separately for puts/calls. Takes precedent over
+# target.delta.
+#
+#  [target.puts]
+#  delta = 0.5
+#  [target.calls]
+#  delta = 0.3
 
 [symbols]
 
@@ -90,6 +98,10 @@ minimum_open_interest = 10
 #  1) Have sufficient trading volume for the underlying
 #  2) Have standard options contracts (100 shares per contract)
 #  3) Have options with sufficient open interest and trading volume
+#
+# The target delta may also be specified per-symbol, but it affects _both_ puts
+# and calls. Use target.puts.delta or target.calls.delta (above) instead if you
+# want separate values for puts/calls.
 [symbols.SPY]
 weight = 0.4
 
@@ -98,6 +110,8 @@ weight = 0.3
 
 [symbols.TLT]
 weight = 0.3
+# Override delta for this particular symbol, affects both puts and calls.
+delta = 0.4
 
 [ib_insync]
 logfile = '/etc/thetagang/ib_insync.log'

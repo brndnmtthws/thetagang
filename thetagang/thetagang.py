@@ -69,6 +69,16 @@ def start(config):
     click.secho(
         f"    Delta                   <= {config['target']['delta']}", fg="cyan"
     )
+    if "puts" in config["target"]:
+        click.secho(
+            f"    Delta for puts          <= {config['target']['puts']['delta']}",
+            fg="cyan",
+        )
+    if "calls" in config["target"]:
+        click.secho(
+            f"    Delta for calls         <= {config['target']['calls']['delta']}",
+            fg="cyan",
+        )
     click.secho(
         f"    Maximum new contracts    = {config['target']['maximum_new_contracts']}",
         fg="cyan",
@@ -81,10 +91,17 @@ def start(config):
     click.echo()
     click.secho(f"  Symbols:", fg="green")
     for s in config["symbols"].keys():
-        click.secho(
-            f"    {s}, weight = {config['symbols'][s]['weight']} ({config['symbols'][s]['weight'] * 100}%)",
-            fg="cyan",
-        )
+        c = config["symbols"][s]
+        if "delta" in c:
+            click.secho(
+                f"    {s}, weight = {c['weight']} ({c['weight'] * 100}%), delta = {c['delta']}",
+                fg="cyan",
+            )
+        else:
+            click.secho(
+                f"    {s}, weight = {c['weight']} ({c['weight'] * 100}%)",
+                fg="cyan",
+            )
     assert (
         sum([config["symbols"][s]["weight"] for s in config["symbols"].keys()]) == 1.0
     )

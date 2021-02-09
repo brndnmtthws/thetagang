@@ -8,6 +8,7 @@ from ib_insync.order import LimitOrder, Order
 from thetagang.util import (
     account_summary_to_dict,
     count_option_positions,
+    get_target_delta,
     justify,
     midpoint_or_market_price,
     portfolio_positions_to_dict,
@@ -646,7 +647,8 @@ class PortfolioManager:
             return (
                 ticker.modelGreeks
                 and not util.isNan(ticker.modelGreeks.delta)
-                and abs(ticker.modelGreeks.delta) <= self.config["target"]["delta"]
+                and abs(ticker.modelGreeks.delta)
+                <= get_target_delta(self.config, symbol, right)
             )
 
         # Filter by delta and open interest

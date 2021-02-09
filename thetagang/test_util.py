@@ -1,7 +1,7 @@
 from ib_insync import Option, PortfolioItem
 from ib_insync.contract import Stock
 
-from thetagang.util import position_pnl
+from thetagang.util import get_target_delta, position_pnl
 
 
 def test_position_pnl():
@@ -93,3 +93,32 @@ def test_position_pnl():
         account="DU2962946",
     )
     assert round(position_pnl(spy_put), 2) == -0.13
+
+
+def test_get_delta():
+    config = {"target": {"delta": 0.5}, "symbols": {"SPY": {"weight": 1}}}
+    assert 0.5 == get_target_delta(config, "SPY", "P")
+
+    config = {
+        "target": {"delta": 0.5, "puts": {"delta": 0.4}},
+        "symbols": {"SPY": {"weight": 1}},
+    }
+    assert 0.4 == get_target_delta(config, "SPY", "P")
+
+    config = {
+        "target": {"delta": 0.5, "calls": {"delta": 0.4}},
+        "symbols": {"SPY": {"weight": 1}},
+    }
+    assert 0.5 == get_target_delta(config, "SPY", "P")
+
+    config = {
+        "target": {"delta": 0.5, "calls": {"delta": 0.4}},
+        "symbols": {"SPY": {"weight": 1}},
+    }
+    assert 0.4 == get_target_delta(config, "SPY", "C")
+
+    config = {
+        "target": {"delta": 0.5, "calls": {"delta": 0.4}},
+        "symbols": {"SPY": {"weight": 1, "delta": 0.3}},
+    }
+    assert 0.3 == get_target_delta(config, "SPY", "C")
