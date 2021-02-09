@@ -72,7 +72,10 @@ def midpoint_or_market_price(ticker):
 
 def get_target_delta(config, symbol, right):
     p_or_c = "calls" if right.startswith("C") else "puts"
-    return config["symbols"][symbol].get(
-        "delta",
-        config["target"].get(p_or_c, {"delta": config["target"]["delta"]})["delta"],
-    )
+    if p_or_c in config["symbols"][symbol]:
+        return config["symbols"][symbol][p_or_c]["delta"]
+    if "delta" in config["symbols"][symbol]:
+        return config["symbols"][symbol]["delta"]
+    if p_or_c in config["target"]:
+        return config["target"][p_or_c]["delta"]
+    return config["target"]["delta"]

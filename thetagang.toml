@@ -99,18 +99,22 @@ minimum_open_interest = 10
 #  2) Have standard options contracts (100 shares per contract)
 #  3) Have options with sufficient open interest and trading volume
 #
-# The target delta may also be specified per-symbol, but it affects _both_ puts
-# and calls. Use target.puts.delta or target.calls.delta (above) instead if you
-# want separate values for puts/calls.
+# The target delta may also be specified per-symbol, and takes precedence over
+# `target.delta` or `target.puts/calls.delta`. You can specify a value for the
+# symbol, or override individually for puts/calls.
 [symbols.SPY]
 weight = 0.4
 
 [symbols.QQQ]
 weight = 0.3
 
+[symbols.QQQ.puts]
+# Override delta just for QQQ puts
+delta = 0.5
+
 [symbols.TLT]
 weight = 0.3
-# Override delta for this particular symbol, affects both puts and calls.
+# Override delta for this particular symbol, for both puts and calls.
 delta = 0.4
 
 [ib_insync]

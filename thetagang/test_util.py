@@ -122,3 +122,15 @@ def test_get_delta():
         "symbols": {"SPY": {"weight": 1, "delta": 0.3}},
     }
     assert 0.3 == get_target_delta(config, "SPY", "C")
+
+    config = {
+        "target": {"delta": 0.5, "calls": {"delta": 0.4}},
+        "symbols": {"SPY": {"weight": 1, "delta": 0.3, "puts": {"delta": 0.2}}},
+    }
+    assert 0.3 == get_target_delta(config, "SPY", "C")
+
+    config = {
+        "target": {"delta": 0.5, "calls": {"delta": 0.4}},
+        "symbols": {"SPY": {"weight": 1, "delta": 0.3, "puts": {"delta": 0.2}}},
+    }
+    assert 0.2 == get_target_delta(config, "SPY", "P")

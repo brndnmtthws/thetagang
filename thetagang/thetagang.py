@@ -8,6 +8,7 @@ from ib_insync.contract import Contract, Stock
 from ib_insync.objects import Position
 
 from thetagang.config import normalize_config, validate_config
+from thetagang.util import get_target_delta
 
 from .portfolio_manager import PortfolioManager
 from .util import (
@@ -67,7 +68,7 @@ def start(config):
     click.secho(f"  Write options with targets of:", fg="green")
     click.secho(f"    Days to expiry          >= {config['target']['dte']}", fg="cyan")
     click.secho(
-        f"    Delta                   <= {config['target']['delta']}", fg="cyan"
+        f"    Default delta           <= {config['target']['delta']}", fg="cyan"
     )
     if "puts" in config["target"]:
         click.secho(
@@ -92,16 +93,12 @@ def start(config):
     click.secho(f"  Symbols:", fg="green")
     for s in config["symbols"].keys():
         c = config["symbols"][s]
-        if "delta" in c:
-            click.secho(
-                f"    {s}, weight = {c['weight']} ({c['weight'] * 100}%), delta = {c['delta']}",
-                fg="cyan",
-            )
-        else:
-            click.secho(
-                f"    {s}, weight = {c['weight']} ({c['weight'] * 100}%)",
-                fg="cyan",
-            )
+        c_delta = get_target_delta(config, s, "C")
+        p_delta = get_target_delta(config, s, "P")
+        click.secho(
+            f"    {s}, weight = {c['weight']} ({c['weight'] * 100}%), delta = {p_delta}p, {c_delta}c",
+            fg="cyan",
+        )
     assert (
         sum([config["symbols"][s]["weight"] for s in config["symbols"].keys()]) == 1.0
     )

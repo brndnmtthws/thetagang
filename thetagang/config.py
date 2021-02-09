@@ -81,6 +81,12 @@ def validate_config(config):
                 object: {
                     "weight": And(float, lambda n: 0 <= n <= 1),
                     Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                    Optional("calls"): {
+                        "delta": And(float, lambda n: 0 <= n <= 1),
+                    },
+                    Optional("puts"): {
+                        "delta": And(float, lambda n: 0 <= n <= 1),
+                    },
                 }
             },
             Optional("ib_insync"): {Optional("logfile"): And(str, len)},
