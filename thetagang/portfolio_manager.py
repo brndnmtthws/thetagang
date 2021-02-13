@@ -326,6 +326,15 @@ class PortfolioManager:
                     ]
                 )
             )
+            min_strike = math.ceil(
+                max(
+                    [
+                        p.averageCost
+                        for p in portfolio_positions[symbol]
+                        if isinstance(p.contract, Stock)
+                    ]
+                )
+            )
 
             target_calls = stock_count // 100
 
@@ -334,7 +343,7 @@ class PortfolioManager:
 
             if calls_to_write > 0:
                 click.secho(
-                    f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}",
+                    f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}, at or above strike price {min_strike}",
                     fg="green",
                 )
                 self.write_calls(symbol, calls_to_write)
@@ -353,8 +362,8 @@ class PortfolioManager:
         )
         return trade
 
-    def write_calls(self, symbol, quantity):
-        sell_ticker = self.find_eligible_contracts(symbol, "C")
+    def write_calls(self, symbol, quantity, min_strike):
+        sell_ticker = self.find_eligible_contracts(symbol, "C", min_strike)
 
         self.wait_for_midpoint_price(sell_ticker)
 
@@ -553,7 +562,7 @@ class PortfolioManager:
             click.secho("Order submitted", fg="green")
             click.secho(f"{trade}", fg="green")
 
-    def find_eligible_contracts(self, symbol, right):
+    def find_eligible_contracts(self, symbol, right, min_strike=0):
         click.echo()
         click.secho(
             f"Searching option chain for symbol={symbol} right={right}, this can take a while...",
@@ -575,7 +584,7 @@ class PortfolioManager:
             if right.startswith("P"):
                 return strike <= tickerValue
             if right.startswith("C"):
-                return strike >= tickerValue
+                return strike >= tickerValue and strike >= min_strike
             return False
 
         chain_expirations = self.config["option_chains"]["expirations"]

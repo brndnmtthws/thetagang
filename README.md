@@ -28,7 +28,8 @@ The strategy, as implemented here, does a few things differently from the one
 described in the post above. For one, it's intended to be used to augment a
 typical index-fund based portfolio with specific asset allocations. For
 example, you might want to use a 60/40 portfolio with SPY (S&P500 fund) and
-TLT (20 year treasury fund).
+TLT (20 year treasury fund). This strategy reduces risk, but may also limit
+gains from big market swingsn.
 
 The main difference between ThetaGang and simply buying and holding index
 funds is that this script will attempt to harvest volatility by selling
@@ -50,6 +51,10 @@ ThetaGang will continue to roll any open option positions indefinitely, with
 the only exception being ITM puts. Once puts are in the money, they will be
 ignored until they expire and are exercised (after which you will own the
 underlying).
+
+If puts are excercised due to being ITM at expiration, you will own the
+stock, and ThetaGang switches from writing puts to writing calls at a strike
+at least as high as the average cost of the stock held.
 
 Please note: this strategy is based on the assumption that implied volatility
 is, on average, always higher than realized volatility. In cases where this
