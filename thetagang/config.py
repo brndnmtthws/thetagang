@@ -4,6 +4,7 @@ import click
 from schema import And, Optional, Schema, Use
 
 import thetagang.config_defaults as config_defaults
+from thetagang.dict_merge import dict_merge
 
 
 def normalize_config(config):
@@ -20,22 +21,11 @@ def normalize_config(config):
         # TWS version is pinned to latest stable, delete any existing config if it's present
         del config["ibc"]["twsVersion"]
 
-    config["target"]["maximum_new_contracts"] = config["target"].get(
-        "maximum_new_contracts",
-        config_defaults.DEFAULT_MAXIMUM_NEW_CONTRACTS,
-    )
+    return apply_default_values(config)
 
-    config["roll_when"]["min_pnl"] = config["roll_when"].get(
-        "min_pnl",
-        config_defaults.DEFAULT_MIN_PNL,
-    )
 
-    config["target"]["delta"] = config["target"].get(
-        "delta",
-        config_defaults.DEFAULT_DELTA,
-    )
-
-    return config
+def apply_default_values(config):
+    return dict_merge(config_defaults.DEFAULT_CONFIG, config)
 
 
 def validate_config(config):

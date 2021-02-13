@@ -50,7 +50,7 @@ pnl = 0.9
 # i.e., -100%. If you want to roll anyway in these situations, set min_pnl to a
 # negative value such as -1 (for -100%).
 dte = 15
-min_pnl = 0
+min_pnl = 0.0
 
 [roll_when.calls]
 # Roll calls to the next expiration even if they're in the money. Defaults to

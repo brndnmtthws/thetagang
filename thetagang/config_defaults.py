@@ -1,3 +1,7 @@
-DEFAULT_MAXIMUM_NEW_CONTRACTS = 15
-DEFAULT_MIN_PNL = 0.0
-DEFAULT_DELTA = 0.3
+DEFAULT_CONFIG = {
+    "target": {
+        "maximum_new_contracts": 15,
+        "delta": 0.3,
+    },
+    "roll_when": {"min_pnl": 0.0},
+}
