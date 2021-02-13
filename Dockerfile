@@ -10,8 +10,8 @@ RUN apt-get update \
   libxrender1 \
   unzip \
   curl \
-  && pip3 install --upgrade pip \
-  && if test "$(dpkg --print-architecture)" = "armhf" ; then pip3 config set global.extra-index-url https://www.piwheels.org/simple ; fi \
+  && python3 -m pip install --upgrade pip \
+  && if test "$(dpkg --print-architecture)" = "armhf" ; then python3 -m pip config set global.extra-index-url https://www.piwheels.org/simple ; fi \
   && echo 'c079e0ade7e95069e464859197498f0abb4ce277b2f101d7474df4826dcac837  ibc.zip' | tee ibc.zip.sha256 \
   && curl -qL https://github.com/IbcAlpha/IBC/releases/download/3.8.4-beta.2/IBCLinux-3.8.4-beta.2.zip -o ibc.zip \
   && sha256sum -c ibc.zip.sha256 \
@@ -27,7 +27,7 @@ ADD ./tws/Jts /root/Jts
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
 
-RUN pip3 install dist/thetagang-*.whl \
+RUN python3 -m pip install dist/thetagang-*.whl \
   && rm -rf /root/.cache \
   && rm -rf dist
 
