@@ -14,7 +14,7 @@ number = "DU1234567"
 # Cancel any existing orders for the symbols configured at startup
 cancel_orders = true
 
-# Maximum amount of margin to use, as a percentage of net liquidation. IB lets
+# Maximum amount of margin to use, as a ratio of net liquidation. IB lets
 # you use varying amounts of margin, depending on the assets. To use up to 4x
 # margin, set this to 4. It's recommended you always leave some additional
 # cushion. IB will start to close positions if you go below certain thresholds
