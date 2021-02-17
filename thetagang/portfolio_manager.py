@@ -328,7 +328,8 @@ class PortfolioManager:
             )
             min_strike = math.ceil(
                 max(
-                    [
+                    [0]
+                    + [
                         p.averageCost
                         for p in portfolio_positions[symbol]
                         if isinstance(p.contract, Stock)
