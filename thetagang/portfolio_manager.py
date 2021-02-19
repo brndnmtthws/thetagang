@@ -344,7 +344,7 @@ class PortfolioManager:
 
             if calls_to_write > 0:
                 click.secho(
-                    f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}, at or above strike price {min_strike}",
+                    f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}, at or above strike ${min_strike}",
                     fg="green",
                 )
                 self.write_calls(symbol, calls_to_write)
