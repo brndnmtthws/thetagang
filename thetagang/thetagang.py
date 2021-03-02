@@ -65,6 +65,17 @@ def start(config):
     )
 
     click.echo()
+    click.secho(f"  When contracts are ITM:", fg="green")
+    click.secho(
+        f"    Roll puts               = {config['roll_when']['puts']['itm']}",
+        fg="cyan",
+    )
+    click.secho(
+        f"    Roll calls              = {config['roll_when']['calls']['itm']}",
+        fg="cyan",
+    )
+
+    click.echo()
     click.secho(f"  Write options with targets of:", fg="green")
     click.secho(f"    Days to expiry          >= {config['target']['dte']}", fg="cyan")
     click.secho(

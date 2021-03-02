@@ -70,10 +70,9 @@ class PortfolioManager:
 
     def put_can_be_rolled(self, put):
         # Check if this put is ITM, and if it's o.k. to roll
-        if (
-            "puts" not in self.config["roll_when"]
-            or not self.config["roll_when"]["puts"]["itm"]
-        ) and self.put_is_itm(put.contract):
+        if not self.config["roll_when"]["puts"]["itm"] and self.put_is_itm(
+            put.contract
+        ):
             return False
 
         dte = option_dte(put.contract.lastTradeDateOrContractMonth)
@@ -115,10 +114,9 @@ class PortfolioManager:
 
     def call_can_be_rolled(self, call):
         # Check if this call is ITM, and it's o.k. to roll
-        if (
-            "calls" in self.config["roll_when"]
-            and not self.config["roll_when"]["calls"]["itm"]
-        ) and self.call_is_itm(call.contract):
+        if not self.config["roll_when"]["calls"]["itm"] and self.call_is_itm(
+            call.contract
+        ):
             return False
 
         dte = option_dte(call.contract.lastTradeDateOrContractMonth)
