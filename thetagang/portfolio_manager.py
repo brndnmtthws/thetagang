@@ -50,14 +50,14 @@ class PortfolioManager:
         while_n_times(
             lambda: util.isNan(ticker.midpoint()),
             lambda: self.ib.waitOnUpdate(timeout=5),
-            10,
+            25,
         )
 
     def wait_for_market_price(self, ticker):
         while_n_times(
             lambda: util.isNan(ticker.marketPrice()),
             lambda: self.ib.waitOnUpdate(timeout=5),
-            10,
+            25,
         )
 
     def put_is_itm(self, contract):
@@ -357,7 +357,7 @@ class PortfolioManager:
                 "Cancelled",
             ],
             lambda: self.ib.waitOnUpdate(timeout=5),
-            10,
+            25,
         )
         return trade
 
@@ -641,7 +641,7 @@ class PortfolioManager:
                     return util.isNan(ticker.callOpenInterest)
 
             while_n_times(
-                open_interest_is_not_ready, lambda: self.ib.waitOnUpdate(timeout=5), 10
+                open_interest_is_not_ready, lambda: self.ib.waitOnUpdate(timeout=5), 25
             )
             self.ib.cancelMktData(ticker.contract)
 
