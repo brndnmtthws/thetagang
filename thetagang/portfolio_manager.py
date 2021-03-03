@@ -508,7 +508,11 @@ class PortfolioManager:
         for position in positions:
             symbol = position.contract.symbol
 
-            sell_ticker = self.find_eligible_contracts(symbol, right)
+            sell_ticker = self.find_eligible_contracts(
+                symbol,
+                right,
+                excluded_expirations=[position.contract.lastTradeDateOrContractMonth],
+            )
             self.wait_for_midpoint_price(sell_ticker)
 
             quantity = abs(position.position)
@@ -561,7 +565,9 @@ class PortfolioManager:
             click.secho("Order submitted", fg="green")
             click.secho(f"{trade}", fg="green")
 
-    def find_eligible_contracts(self, symbol, right, min_strike=0):
+    def find_eligible_contracts(
+        self, symbol, right, min_strike=0, excluded_expirations=[]
+    ):
         click.echo()
         click.secho(
             f"Searching option chain for symbol={symbol} right={right}, this can take a while...",
@@ -593,6 +599,7 @@ class PortfolioManager:
             exp
             for exp in chain.expirations
             if option_dte(exp) >= self.config["target"]["dte"]
+            and exp not in excluded_expirations
         )[:chain_expirations]
         rights = [right]
 
