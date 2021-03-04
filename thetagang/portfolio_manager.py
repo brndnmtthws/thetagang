@@ -47,18 +47,26 @@ class PortfolioManager:
         return r
 
     def wait_for_midpoint_price(self, ticker):
-        while_n_times(
-            lambda: util.isNan(ticker.midpoint()),
-            lambda: self.ib.waitOnUpdate(timeout=5),
-            25,
-        )
+        try:
+            while_n_times(
+                lambda: util.isNan(ticker.midpoint()),
+                lambda: self.ib.waitOnUpdate(timeout=5),
+                25,
+            )
+        except:
+            return False
+        return True
 
     def wait_for_market_price(self, ticker):
-        while_n_times(
-            lambda: util.isNan(ticker.marketPrice()),
-            lambda: self.ib.waitOnUpdate(timeout=5),
-            25,
-        )
+        try:
+            while_n_times(
+                lambda: util.isNan(ticker.marketPrice()),
+                lambda: self.ib.waitOnUpdate(timeout=5),
+                25,
+            )
+        except:
+            return False
+        return True
 
     def put_is_itm(self, contract):
         stock = Stock(contract.symbol, "SMART", currency="USD")
@@ -345,7 +353,7 @@ class PortfolioManager:
                     f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}, at or above strike ${min_strike}",
                     fg="green",
                 )
-                self.write_calls(symbol, calls_to_write)
+                self.write_calls(symbol, calls_to_write, min_strike)
 
     def wait_for_trade_submitted(self, trade):
         while_n_times(
@@ -364,7 +372,12 @@ class PortfolioManager:
     def write_calls(self, symbol, quantity, min_strike):
         sell_ticker = self.find_eligible_contracts(symbol, "C", min_strike)
 
-        self.wait_for_midpoint_price(sell_ticker)
+        if not self.wait_for_midpoint_price(sell_ticker):
+            click.secho(
+                "Couldn't get midpoint price for contract={sell_ticker}, skipping for now",
+                fg="red",
+            )
+            return
 
         # Create order
         order = LimitOrder(
@@ -387,7 +400,12 @@ class PortfolioManager:
     def write_puts(self, symbol, quantity):
         sell_ticker = self.find_eligible_contracts(symbol, "P")
 
-        self.wait_for_midpoint_price(sell_ticker)
+        if not self.wait_for_midpoint_price(sell_ticker):
+            click.secho(
+                "Couldn't get midpoint price for contract={sell_ticker}, skipping for now",
+                fg="red",
+            )
+            return
 
         # Create order
         order = LimitOrder(
@@ -640,9 +658,15 @@ class PortfolioManager:
                 if right.startswith("C"):
                     return util.isNan(ticker.callOpenInterest)
 
-            while_n_times(
-                open_interest_is_not_ready, lambda: self.ib.waitOnUpdate(timeout=5), 25
-            )
+            try:
+                while_n_times(
+                    open_interest_is_not_ready,
+                    lambda: self.ib.waitOnUpdate(timeout=5),
+                    25,
+                )
+            except:
+                return False
+
             self.ib.cancelMktData(ticker.contract)
 
             # The open interest value is never present when using historical
