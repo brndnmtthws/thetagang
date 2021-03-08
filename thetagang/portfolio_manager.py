@@ -7,7 +7,7 @@ from ib_insync.order import LimitOrder, Order
 
 from thetagang.util import (
     account_summary_to_dict,
-    count_option_positions,
+    count_short_option_positions,
     get_target_delta,
     justify,
     midpoint_or_market_price,
@@ -322,7 +322,9 @@ class PortfolioManager:
 
     def check_for_uncovered_positions(self, portfolio_positions):
         for symbol in portfolio_positions:
-            call_count = count_option_positions(symbol, portfolio_positions, "C")
+            call_count = max(
+                [0, count_short_option_positions(symbol, portfolio_positions, "C")]
+            )
             stock_count = math.floor(
                 sum(
                     [
@@ -503,7 +505,9 @@ class PortfolioManager:
             # like with futures, but we don't bother handling those cases.
             # Please don't use this code with futures.
             if additional_quantity >= 100:
-                put_count = count_option_positions(symbol, portfolio_positions, "P")
+                put_count = count_short_option_positions(
+                    symbol, portfolio_positions, "P"
+                )
                 target_put_count = additional_quantity // 100
                 maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
                 puts_to_write = min(

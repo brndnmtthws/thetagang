@@ -36,7 +36,7 @@ def position_pnl(position):
     return position.unrealizedPNL / abs(position.averageCost * position.position)
 
 
-def count_option_positions(symbol, portfolio_positions, right):
+def count_short_option_positions(symbol, portfolio_positions, right):
     if symbol in portfolio_positions:
         return math.floor(
             -sum(
@@ -54,7 +54,9 @@ def count_option_positions(symbol, portfolio_positions, right):
 
 def while_n_times(pred, body, remaining):
     if remaining <= 0:
-        raise RuntimeError("Exhausted retries waiting on predicate. This shouldn't happen.")
+        raise RuntimeError(
+            "Exhausted retries waiting on predicate. This shouldn't happen."
+        )
     if pred() and remaining > 0:
         body()
         while_n_times(pred, body, remaining - 1)
