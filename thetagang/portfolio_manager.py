@@ -343,14 +343,16 @@ class PortfolioManager:
                 )
             )
 
-            target_calls = stock_count // 100
+            target_calls = max([0, stock_count // 100])
 
             maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
-            calls_to_write = min([target_calls - call_count, maximum_new_contracts])
+            calls_to_write = max(
+                [0, min([target_calls - call_count, maximum_new_contracts])]
+            )
 
             if calls_to_write > 0:
                 click.secho(
-                    f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}, at or above strike ${min_strike}",
+                    f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}, at or above strike ${min_strike} (target_calls={target_calls}, call_count={call_count})",
                     fg="green",
                 )
                 self.write_calls(symbol, calls_to_write, min_strike)
