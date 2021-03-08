@@ -33,6 +33,14 @@ margin_usage = 0.5
 market_data_type = 1
 
 [option_chains]
+# The option chains are lazy loaded, and before you can determine the greeks
+# (delta) or prices, you need to scan the chains. The settings here tell
+# thetagang how many contracts to load. Don't make these values too high, as
+# they will cause the chain scanning process to take too long, and it may fail.
+#
+# If you have issues where thetagang can't find suitable contracts, try
+# increasing these values slightly.
+#
 # Number of expirations to load from option chains
 expirations = 5
 # Number of strikes to load from option chains
