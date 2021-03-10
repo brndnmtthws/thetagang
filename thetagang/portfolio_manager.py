@@ -77,6 +77,10 @@ class PortfolioManager:
         return contract.strike >= ticker.marketPrice()
 
     def put_can_be_rolled(self, put):
+        # Ignore long positions, we only roll shorts
+        if put.position > 0:
+            return False
+
         # Check if this put is ITM, and if it's o.k. to roll
         if not self.config["roll_when"]["puts"]["itm"] and self.put_is_itm(
             put.contract
@@ -121,6 +125,10 @@ class PortfolioManager:
         return contract.strike <= ticker.marketPrice()
 
     def call_can_be_rolled(self, call):
+        # Ignore long positions, we only roll shorts
+        if call.position > 0:
+            return False
+
         # Check if this call is ITM, and it's o.k. to roll
         if not self.config["roll_when"]["calls"]["itm"] and self.call_is_itm(
             call.contract
