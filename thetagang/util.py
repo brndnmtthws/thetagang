@@ -45,6 +45,24 @@ def count_short_option_positions(symbol, portfolio_positions, right):
                     for p in portfolio_positions[symbol]
                     if isinstance(p.contract, Option)
                     and p.contract.right.startswith(right)
+                    and p.position < 0
+                ]
+            )
+        )
+
+    return 0
+
+
+def count_long_option_positions(symbol, portfolio_positions, right):
+    if symbol in portfolio_positions:
+        return math.floor(
+            sum(
+                [
+                    p.position
+                    for p in portfolio_positions[symbol]
+                    if isinstance(p.contract, Option)
+                    and p.contract.right.startswith(right)
+                    and p.position > 0
                 ]
             )
         )
