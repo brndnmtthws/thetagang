@@ -248,11 +248,11 @@ class PortfolioManager:
             for p in portfolio_positions[symbol]:
                 position_values[p.contract.conId] = {
                     "qty": str(int(p.position)),
-                    "mktprice": f"{round(p.marketPrice, 2):,.2f}",
-                    "avgprice": f"{round(p.averageCost, 2):,.2f}",
-                    "value": f"{round(p.marketValue, 2):,.2f}",
-                    "cost": f"{round(p.averageCost * p.position, 2):,.2f}",
-                    "p&l": f"{round(position_pnl(p) * 100, 2):.2f}%",
+                    "mktprice": f"{p.marketPrice:,.2f}",
+                    "avgprice": f"{p.averageCost:,.2f}",
+                    "value": f"{p.marketValue:,.0f}",
+                    "cost": f"{(p.averageCost * p.position):,.0f}",
+                    "p&l": f"{(position_pnl(p) * 100):.2f}%",
                 }
                 if isinstance(p.contract, Option):
                     position_values[p.contract.conId][
@@ -518,7 +518,7 @@ class PortfolioManager:
 
         click.echo()
         click.secho(
-            f"Total buying power: ${total_buying_power} at {round(self.config['account']['margin_usage'] * 100, 1)}% margin usage",
+            f"Total buying power: ${total_buying_power:,.0f} at {round(self.config['account']['margin_usage'] * 100, 1)}% margin usage",
             fg="green",
         )
 
@@ -526,7 +526,7 @@ class PortfolioManager:
         total_value = (
             sum([stock.marketValue for stock in stock_positions]) + total_buying_power
         )
-        click.secho(f"Total value: ${total_value}", fg="green")
+        click.secho(f"Total value: ${total_value:,.0f}", fg="green")
         click.echo()
 
         stock_symbols = dict()
