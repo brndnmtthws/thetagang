@@ -256,6 +256,9 @@ class PortfolioManager:
                 }
                 if isinstance(p.contract, Option):
                     position_values[p.contract.conId][
+                        "avgprice"
+                    ] = f"{p.averageCost/float(p.contract.multiplier):,.2f}"
+                    position_values[p.contract.conId][
                         "strike"
                     ] = f"{float(p.contract.strike):,.2f}"
                     position_values[p.contract.conId]["dte"] = str(
