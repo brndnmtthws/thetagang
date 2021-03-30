@@ -206,18 +206,18 @@ class PortfolioManager:
             "FullMaintMarginReq": f"{float(account_summary['FullMaintMarginReq'].value):,.0f}",
             "BuyingPower": f"{float(account_summary['BuyingPower'].value):,.0f}",
             "TotalCashValue": f"{float(account_summary['TotalCashValue'].value):,.0f}",
-            "Cushion": f"{float(account_summary['Cushion'].value) * 100:.0f}%",
+            "Cushion": f"{float(account_summary['Cushion'].value) * 100:.1f}%",
         }
 
         padding = max([len(v) for v in justified_values.values()])
         justified_values = {k: v.rjust(padding) for k, v in justified_values.items()}
 
         click.secho(
-            f"  Excess liquidity  = {justified_values['ExcessLiquidity']}",
+            f"  Net liquidation   = {justified_values['NetLiquidation']}",
             fg="cyan",
         )
         click.secho(
-            f"  Net liquidation   = {justified_values['NetLiquidation']}",
+            f"  Excess liquidity  = {justified_values['ExcessLiquidity']}",
             fg="cyan",
         )
         click.secho(
