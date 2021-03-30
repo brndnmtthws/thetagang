@@ -107,7 +107,7 @@ def start(config):
         c_delta = str(get_target_delta(config, s, "C")).ljust(4)
         p_delta = str(get_target_delta(config, s, "P")).ljust(4)
         click.secho(
-            f"    {s}, weight = {str(c['weight']).ljust(4)} ({str(c['weight'] * 100).ljust(4)}%), delta = p{p_delta}, c{c_delta}",
+            f"    {s.ljust(5)} weight = {str(c['weight']).ljust(4)} ({str(c['weight'] * 100).ljust(4)}%), delta = p{p_delta}, c{c_delta}",
             fg="cyan",
         )
     assert (

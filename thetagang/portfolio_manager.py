@@ -237,11 +237,11 @@ class PortfolioManager:
             for p in portfolio_positions[symbol]:
                 position_values[p.contract.conId] = {
                     "qty": str(int(p.position)),
-                    "mktPrice": str(round(p.marketPrice, 2)),
-                    "avgPrice": str(round(p.averageCost, 2)),
-                    "value": str(round(p.marketValue, 2)),
-                    "cost": str(round(p.averageCost * p.position, 2)),
-                    "pnl": str(round(position_pnl(p) * 100, 2)),
+                    "mktprice": f"${str(round(p.marketPrice, 2))}",
+                    "avgprice": f"${str(round(p.averageCost, 2))}",
+                    "value": f"${str(round(p.marketValue, 2))}",
+                    "cost": f"${str(round(p.averageCost * p.position, 2))}",
+                    "p&l": f"{str(round(position_pnl(p) * 100, 2))}%",
                 }
                 if isinstance(p.contract, Option):
                     position_values[p.contract.conId]["strike"] = str(p.contract.strike)
@@ -251,10 +251,29 @@ class PortfolioManager:
                     position_values[p.contract.conId]["exp"] = str(
                         p.contract.lastTradeDateOrContractMonth
                     )
-        padding = {}
+        padding = {
+            "qty": len("Qty"),
+            "mktprice": len("MktPrice"),
+            "avgprice": len("AvgPrice"),
+            "value": len("Value"),
+            "cost": len("Cost"),
+            "p&l": len("P&L"),
+            "strike": len("Strike"),
+            "dte": len("DTE"),
+            "exp": len("Exp"),
+        }
         for _id, p in position_values.items():
             for col, value in p.items():
-                padding[col] = max(padding.get(col, 0), len(value))
+                padding[col] = max(padding[col], len(value))
+
+        # Print column headers
+        def pcol(c):
+            return c.ljust(padding[c.lower()])
+
+        click.secho(
+            f"          {pcol('Qty')} {pcol('MktPrice')} {pcol('AvgPrice')} {pcol('Value')} {pcol('Cost')} {pcol('P&L')} {pcol('Strike')} {pcol('DTE')} {pcol('Exp')}",
+            fg="green",
+        )
 
         for symbol in portfolio_positions.keys():
             click.secho(f"  {symbol}:", fg="cyan")
@@ -271,14 +290,14 @@ class PortfolioManager:
             for p in sorted_positions:
                 id = p.contract.conId
                 qty = pad("qty", id)
-                mktPrice = pad("mktPrice", id)
-                avgPrice = pad("avgPrice", id)
+                mktPrice = pad("mktprice", id)
+                avgPrice = pad("avgprice", id)
                 value = pad("value", id)
                 cost = pad("cost", id)
-                pnl = pad("pnl", id)
+                pnl = pad("p&l", id)
                 if isinstance(p.contract, Stock):
                     click.secho(
-                        f"    Stock Qty={qty} MktPrice={mktPrice} AvgPrice={avgPrice} Value={value} Cost={cost} P&L%={pnl}",
+                        f"    Stock {qty} {mktPrice} {avgPrice} {value} {cost} {pnl}",
                         fg="cyan",
                     )
                 elif isinstance(p.contract, Option):
@@ -290,7 +309,7 @@ class PortfolioManager:
                         return "Call" if p.contract.right.startswith("C") else "Put "
 
                     click.secho(
-                        f"    {p_or_c(p)}  Qty={qty} MktPrice={mktPrice} AvgPrice={avgPrice} Value={value} Cost={cost} P&L%={pnl} Strike={strike} DTE={dte} Exp={exp}",
+                        f"    {p_or_c(p)}  {qty} {mktPrice} {avgPrice} {value} {cost} {pnl} {strike} {dte} {exp}",
                         fg="cyan",
                     )
                 else:
@@ -305,7 +324,6 @@ class PortfolioManager:
 
             click.echo()
             click.secho("Checking positions...", fg="green")
-            click.echo()
 
             portfolio_positions = self.filter_positions(portfolio_positions)
 
@@ -323,7 +341,6 @@ class PortfolioManager:
 
             click.echo()
             click.secho("ThetaGang is done, shutting down! Cya next time.", fg="yellow")
-            click.echo()
 
         except:
             click.secho("An exception was raised, exiting", fg="red")
@@ -345,7 +362,6 @@ class PortfolioManager:
 
         click.echo()
         click.secho(f"{total_rollable_puts} puts will be rolled", fg="magenta")
-        click.echo()
 
         self.roll_puts(rollable_puts)
 
@@ -361,7 +377,6 @@ class PortfolioManager:
 
         click.echo()
         click.secho(f"{total_rollable_calls} calls will be rolled", fg="magenta")
-        click.echo()
 
         self.roll_calls(rollable_calls)
 
