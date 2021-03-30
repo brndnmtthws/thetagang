@@ -52,7 +52,7 @@ the only exception being ITM puts. Once puts are in the money, they will be
 ignored until they expire and are exercised (after which you will own the
 underlying).
 
-If puts are excercised due to being ITM at expiration, you will own the
+If puts are exercised due to being ITM at expiration, you will own the
 stock, and ThetaGang switches from writing puts to writing calls at a strike
 at least as high as the average cost of the stock held.
 
@@ -70,6 +70,8 @@ implications, but that is outside the scope of this README.
 In normal usage, you would run the script as a cronjob on a daily, weekly, or
 monthly basis according to your preferences. Running more frequently than
 daily is not recommended, but the choice is yours.
+
+![Paper account sample output](sample.gif)
 
 ## Project status
 
@@ -234,10 +236,10 @@ You are now ready to make a splash! 🐳
 
 ## FAQ
 
-| Error | Cause | Resolution |
-| - | - | - |
-|Requested market data is not subscribed.|Requisite market data subscriptions have not been set up on IBKR.|[Configure](https://www.interactivebrokers.com/en/software/am3/am/settings/marketdatasubscriptions.htm) your market data subscriptions. The default config that ships with this script uses the `Cboe One Add-On Bundle` and the `US Equity and Options Add-On Streaming Bundle`. **Note**: You _must_ fund your account before IBKR will send data for subscriptions. Without funding you can still subscribe but you will get an error from ibc.|
-|No market data during competing live session|Your account is logged in somewhere else, such as the IBKR web portal, the desktop app, or even another instance of this script.|Log out of all sessions and then re-run the script.|
+| Error                                        | Cause                                                                                                                            | Resolution                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Requested market data is not subscribed.     | Requisite market data subscriptions have not been set up on IBKR.                                                                | [Configure](https://www.interactivebrokers.com/en/software/am3/am/settings/marketdatasubscriptions.htm) your market data subscriptions. The default config that ships with this script uses the `Cboe One Add-On Bundle` and the `US Equity and Options Add-On Streaming Bundle`. **Note**: You _must_ fund your account before IBKR will send data for subscriptions. Without funding you can still subscribe but you will get an error from ibc. |
+| No market data during competing live session | Your account is logged in somewhere else, such as the IBKR web portal, the desktop app, or even another instance of this script. | Log out of all sessions and then re-run the script.                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## Support and sponsorship.
 
