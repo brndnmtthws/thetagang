@@ -231,29 +231,66 @@ class PortfolioManager:
         click.echo()
         click.secho("Portfolio positions:", fg="green")
         click.echo()
+
+        position_values = {}
+        for symbol in portfolio_positions.keys():
+            for p in portfolio_positions[symbol]:
+                position_values[p.contract.conId] = {
+                    "qty": str(int(p.position)),
+                    "mktPrice": str(round(p.marketPrice, 2)),
+                    "avgPrice": str(round(p.averageCost, 2)),
+                    "value": str(round(p.marketValue, 2)),
+                    "cost": str(round(p.averageCost * p.position, 2)),
+                    "pnl": str(round(position_pnl(p) * 100, 2)),
+                }
+                if isinstance(p.contract, Option):
+                    position_values[p.contract.conId]["strike"] = str(p.contract.strike)
+                    position_values[p.contract.conId]["dte"] = str(
+                        option_dte(p.contract.lastTradeDateOrContractMonth)
+                    )
+                    position_values[p.contract.conId]["exp"] = str(
+                        p.contract.lastTradeDateOrContractMonth
+                    )
+        padding = {}
+        for _id, p in position_values.items():
+            for col, value in p.items():
+                padding[col] = max(padding.get(col, 0), len(value))
+
         for symbol in portfolio_positions.keys():
             click.secho(f"  {symbol}:", fg="cyan")
             sorted_positions = sorted(
                 portfolio_positions[symbol],
                 key=lambda p: option_dte(p.contract.lastTradeDateOrContractMonth)
                 if isinstance(p.contract, Option)
-                else 0,
+                else -1,  # Keep stonks on top
             )
+
+            def pad(col, id):
+                return position_values[id][col].ljust(padding[col])
+
             for p in sorted_positions:
+                id = p.contract.conId
+                qty = pad("qty", id)
+                mktPrice = pad("mktPrice", id)
+                avgPrice = pad("avgPrice", id)
+                value = pad("value", id)
+                cost = pad("cost", id)
+                pnl = pad("pnl", id)
                 if isinstance(p.contract, Stock):
-                    pnl = round(position_pnl(p) * 100, 2)
                     click.secho(
-                        f"    Stock Qty={int(p.position)} MktPrice={round(p.marketPrice, 2)} AvgPrice={round(p.averageCost, 2)} Value={round(p.marketValue,2)} Cost={round(p.averageCost * p.position,2)} P&L={pnl}%",
+                        f"    Stock Qty={qty} MktPrice={mktPrice} AvgPrice={avgPrice} Value={value} Cost={cost} P&L%={pnl}",
                         fg="cyan",
                     )
                 elif isinstance(p.contract, Option):
-                    pnl = round(position_pnl(p) * 100, 2)
+                    strike = pad("strike", id)
+                    dte = pad("dte", id)
+                    exp = pad("exp", id)
 
                     def p_or_c(p):
                         return "Call" if p.contract.right.startswith("C") else "Put "
 
                     click.secho(
-                        f"    {p_or_c(p)}  Qty={int(p.position)} MktPrice={round(p.marketPrice, 2)} AvgPrice={round(p.averageCost, 2)} Value={round(p.marketValue,2)} Cost={round(p.averageCost * p.position,2)} P&L={pnl}% Strike={p.contract.strike} DTE={option_dte(p.contract.lastTradeDateOrContractMonth)} Exp={p.contract.lastTradeDateOrContractMonth}",
+                        f"    {p_or_c(p)}  Qty={qty} MktPrice={mktPrice} AvgPrice={avgPrice} Value={value} Cost={cost} P&L%={pnl} Strike={strike} DTE={dte} Exp={exp}",
                         fg="cyan",
                     )
                 else:
