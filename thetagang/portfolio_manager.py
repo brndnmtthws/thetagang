@@ -524,12 +524,6 @@ class PortfolioManager:
             f"Total buying power: ${total_buying_power:,.0f} at {round(self.config['account']['margin_usage'] * 100, 1)}% margin usage",
             fg="green",
         )
-
-        # Sum stock values that we care about
-        total_value = (
-            sum([stock.marketValue for stock in stock_positions]) + total_buying_power
-        )
-        click.secho(f"Total value: ${total_value:,.0f}", fg="green")
         click.echo()
 
         stock_symbols = dict()
@@ -557,18 +551,18 @@ class PortfolioManager:
             )
 
             targets[symbol] = round(
-                self.config["symbols"][symbol]["weight"] * total_value, 2
+                self.config["symbols"][symbol]["weight"] * total_buying_power, 2
             )
-            click.secho(f"    Target value ${targets[symbol]}", fg="cyan")
+            click.secho(f"    Target value ${targets[symbol]:,.0f}", fg="cyan")
             target_quantity = math.floor(targets[symbol] / ticker.marketPrice())
-            click.secho(f"    Target quantity {target_quantity}", fg="cyan")
+            click.secho(f"    Target quantity {target_quantity:,d}", fg="cyan")
 
             target_additional_quantity[symbol] = math.floor(
                 target_quantity - current_position
             )
 
             click.secho(
-                f"    Target additional quantity (excl. existing options) {target_additional_quantity[symbol]}",
+                f"    Target additional quantity (excl. existing options) {target_additional_quantity[symbol]:,d}",
                 fg="cyan",
             )
 
