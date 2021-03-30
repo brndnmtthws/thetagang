@@ -28,10 +28,6 @@ def portfolio_positions_to_dict(portfolio_positions):
     return d
 
 
-def justify(s):
-    return s.rjust(12)
-
-
 def position_pnl(position):
     return position.unrealizedPNL / abs(position.averageCost * position.position)
 

@@ -11,13 +11,6 @@ from thetagang.config import normalize_config, validate_config
 from thetagang.util import get_target_delta
 
 from .portfolio_manager import PortfolioManager
-from .util import (
-    account_summary_to_dict,
-    justify,
-    portfolio_positions_to_dict,
-    position_pnl,
-    to_camel_case,
-)
 
 util.patchAsyncio()
 
@@ -104,10 +97,12 @@ def start(config):
     click.secho(f"  Symbols:", fg="green")
     for s in config["symbols"].keys():
         c = config["symbols"][s]
-        c_delta = str(get_target_delta(config, s, "C")).ljust(4)
-        p_delta = str(get_target_delta(config, s, "P")).ljust(4)
+        c_delta = f"{get_target_delta(config, s, 'C'):.2f}".rjust(4)
+        p_delta = f"{get_target_delta(config, s, 'P'):.2f}".rjust(4)
+        weight = f"{c['weight']:.2f}".rjust(4)
+        weight_p = f"{(c['weight'] * 100):.1f}".rjust(4)
         click.secho(
-            f"    {s.ljust(5)} weight = {str(c['weight']).ljust(4)} ({str(c['weight'] * 100).ljust(4)}%), delta = p{p_delta}, c{c_delta}",
+            f"    {s.rjust(5)} weight = {weight} ({weight_p}%), delta = {p_delta}p, {c_delta}c",
             fg="cyan",
         )
     assert (

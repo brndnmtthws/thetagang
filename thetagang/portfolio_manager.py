@@ -9,7 +9,6 @@ from thetagang.util import (
     account_summary_to_dict,
     count_short_option_positions,
     get_target_delta,
-    justify,
     midpoint_or_market_price,
     portfolio_positions_to_dict,
     position_pnl,
@@ -201,28 +200,40 @@ class PortfolioManager:
         click.echo()
         account_summary = account_summary_to_dict(account_summary)
 
+        justified_values = {
+            "ExcessLiquidity": f"{float(account_summary['ExcessLiquidity'].value):.0f}",
+            "NetLiquidation": f"{float(account_summary['NetLiquidation'].value):.0f}",
+            "FullMaintMarginReq": f"{float(account_summary['FullMaintMarginReq'].value):.0f}",
+            "BuyingPower": f"{float(account_summary['BuyingPower'].value):.0f}",
+            "TotalCashValue": f"{float(account_summary['TotalCashValue'].value):.0f}",
+            "Cushion": f"{float(account_summary['Cushion'].value) * 100:.2f}",
+        }
+
+        padding = max([len(v) for v in justified_values.values()])
+        justified_values = {k: v.rjust(padding) for k, v in justified_values.items()}
+
         click.secho(
-            f"  Excess liquidity  = {justify(account_summary['ExcessLiquidity'].value)}",
+            f"  Excess liquidity  = ${justified_values['ExcessLiquidity']}",
             fg="cyan",
         )
         click.secho(
-            f"  Net liquidation   = {justify(account_summary['NetLiquidation'].value)}",
+            f"  Net liquidation   = ${justified_values['NetLiquidation']}",
             fg="cyan",
         )
         click.secho(
-            f"  Cushion           = {account_summary['Cushion'].value} ({round(float(account_summary['Cushion'].value) * 100, 1)}%)",
+            f"  Full maint margin = ${justified_values['FullMaintMarginReq']}",
             fg="cyan",
         )
         click.secho(
-            f"  Full maint margin = {justify(account_summary['FullMaintMarginReq'].value)}",
+            f"  Buying power      = ${justified_values['BuyingPower']}",
             fg="cyan",
         )
         click.secho(
-            f"  Buying power      = {justify(account_summary['BuyingPower'].value)}",
+            f"  Total cash value  = ${justified_values['TotalCashValue']}",
             fg="cyan",
         )
         click.secho(
-            f"  Total cash value  = {justify(account_summary['TotalCashValue'].value)}",
+            f"  Cushion           = {justified_values['Cushion']}%",
             fg="cyan",
         )
 
@@ -237,14 +248,16 @@ class PortfolioManager:
             for p in portfolio_positions[symbol]:
                 position_values[p.contract.conId] = {
                     "qty": str(int(p.position)),
-                    "mktprice": f"${str(round(p.marketPrice, 2))}",
-                    "avgprice": f"${str(round(p.averageCost, 2))}",
-                    "value": f"${str(round(p.marketValue, 2))}",
-                    "cost": f"${str(round(p.averageCost * p.position, 2))}",
-                    "p&l": f"{str(round(position_pnl(p) * 100, 2))}%",
+                    "mktprice": f"{round(p.marketPrice, 2):.2f}",
+                    "avgprice": f"{round(p.averageCost, 2):.2f}",
+                    "value": f"{round(p.marketValue, 2):.2f}",
+                    "cost": f"{round(p.averageCost * p.position, 2):.2f}",
+                    "p&l": f"{round(position_pnl(p) * 100, 2):.2f}%",
                 }
                 if isinstance(p.contract, Option):
-                    position_values[p.contract.conId]["strike"] = str(p.contract.strike)
+                    position_values[p.contract.conId][
+                        "strike"
+                    ] = f"{float(p.contract.strike):.2f}"
                     position_values[p.contract.conId]["dte"] = str(
                         option_dte(p.contract.lastTradeDateOrContractMonth)
                     )
@@ -268,10 +281,10 @@ class PortfolioManager:
 
         # Print column headers
         def pcol(c):
-            return c.ljust(padding[c.lower()])
+            return c.rjust(padding[c.lower()])
 
         click.secho(
-            f"          {pcol('Qty')} {pcol('MktPrice')} {pcol('AvgPrice')} {pcol('Value')} {pcol('Cost')} {pcol('P&L')} {pcol('Strike')} {pcol('DTE')} {pcol('Exp')}",
+            f"          {pcol('Qty')}   {pcol('MktPrice')}   {pcol('AvgPrice')}   {pcol('Value')}   {pcol('Cost')} {pcol('P&L')}   {pcol('Strike')} {pcol('DTE')} {pcol('Exp')}",
             fg="green",
         )
 
@@ -285,7 +298,7 @@ class PortfolioManager:
             )
 
             def pad(col, id):
-                return position_values[id][col].ljust(padding[col])
+                return position_values[id][col].rjust(padding[col])
 
             for p in sorted_positions:
                 id = p.contract.conId
@@ -297,7 +310,7 @@ class PortfolioManager:
                 pnl = pad("p&l", id)
                 if isinstance(p.contract, Stock):
                     click.secho(
-                        f"    Stock {qty} {mktPrice} {avgPrice} {value} {cost} {pnl}",
+                        f"    Stock {qty}  ${mktPrice}  ${avgPrice}  ${value}  ${cost} {pnl}",
                         fg="cyan",
                     )
                 elif isinstance(p.contract, Option):
@@ -309,7 +322,7 @@ class PortfolioManager:
                         return "Call" if p.contract.right.startswith("C") else "Put "
 
                     click.secho(
-                        f"    {p_or_c(p)}  {qty} {mktPrice} {avgPrice} {value} {cost} {pnl} {strike} {dte} {exp}",
+                        f"    {p_or_c(p)}  {qty}  ${mktPrice}  ${avgPrice}  ${value}  ${cost} {pnl}  ${strike} {dte} {exp}",
                         fg="cyan",
                     )
                 else:
