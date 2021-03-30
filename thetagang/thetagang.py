@@ -118,6 +118,7 @@ def start(config):
     if config.get("ib_insync", {}).get("logfile"):
         util.logToFile(config["ib_insync"]["logfile"])
 
+    # TWS version is pinned to current stable
     ibc = IBC(978, **config["ibc"])
 
     def onConnected():
