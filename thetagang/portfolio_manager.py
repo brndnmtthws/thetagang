@@ -553,7 +553,7 @@ class PortfolioManager:
         for symbol in self.config["symbols"].keys():
             click.secho(f"  {symbol}", fg="green")
 
-            stock = self.get_ticker_for(symbol)
+            ticker = self.get_ticker_for(symbol)
 
             current_position = math.floor(
                 stock_symbols[symbol].position if symbol in stock_symbols else 0
