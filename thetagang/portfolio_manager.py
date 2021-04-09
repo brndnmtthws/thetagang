@@ -4,6 +4,7 @@ import click
 from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Option, Stock, TagValue
 from ib_insync.order import LimitOrder, Order
+from functools import lru_cache
 
 from thetagang.util import (
     account_summary_to_dict,
@@ -67,11 +68,17 @@ class PortfolioManager:
             return False
         return True
 
-    def put_is_itm(self, contract):
-        stock = Stock(contract.symbol, "SMART", currency="USD")
+    @lru_cache
+    def get_ticker_for(self, symbol):
+        stock = Stock(symbol, "SMART", currency="USD")
         [ticker] = self.ib.reqTickers(stock)
 
         self.wait_for_market_price(ticker)
+
+        return ticker
+
+    def put_is_itm(self, contract):
+        ticker = self.get_ticker_for(contract.symbol)
 
         return contract.strike >= ticker.marketPrice()
 
@@ -116,10 +123,7 @@ class PortfolioManager:
         return False
 
     def call_is_itm(self, contract):
-        stock = Stock(contract.symbol, "SMART", currency="USD")
-        [ticker] = self.ib.reqTickers(stock)
-
-        self.wait_for_market_price(ticker)
+        ticker = self.get_ticker_for(contract.symbol)
 
         return contract.strike <= ticker.marketPrice()
 
@@ -244,6 +248,14 @@ class PortfolioManager:
         click.echo()
 
         position_values = {}
+
+        def is_itm(p):
+            if p.contract.right.startswith("C") and self.call_is_itm(p.contract):
+                return "*"
+            elif p.contract.right.startswith("P") and self.put_is_itm(p.contract):
+                return "*"
+            return " "
+
         for symbol in portfolio_positions.keys():
             for p in portfolio_positions[symbol]:
                 position_values[p.contract.conId] = {
@@ -253,6 +265,7 @@ class PortfolioManager:
                     "value": f"{p.marketValue:,.0f}",
                     "cost": f"{(p.averageCost * p.position):,.0f}",
                     "p&l": f"{(position_pnl(p) * 100):.2f}%",
+                    "itm?": is_itm(p),
                 }
                 if isinstance(p.contract, Option):
                     position_values[p.contract.conId][
@@ -277,6 +290,7 @@ class PortfolioManager:
             "strike": len("Strike"),
             "dte": len("DTE"),
             "exp": len("Exp"),
+            "itm?": len("ITM?"),
         }
         for _id, p in position_values.items():
             for col, value in p.items():
@@ -287,7 +301,7 @@ class PortfolioManager:
             return c.rjust(padding[c.lower()])
 
         click.secho(
-            f"           {pcol('Qty')}  {pcol('MktPrice')}  {pcol('AvgPrice')}  {pcol('Value')}  {pcol('Cost')}  {pcol('P&L')}  {pcol('Strike')}  {pcol('DTE')}  {pcol('Exp')}",
+            f"           {pcol('Qty')}  {pcol('MktPrice')}  {pcol('AvgPrice')}  {pcol('Value')}  {pcol('Cost')}  {pcol('P&L')}  {pcol('Strike')}  {pcol('DTE')}  {pcol('Exp')}  {pcol('ITM?')}",
             fg="green",
         )
 
@@ -320,12 +334,13 @@ class PortfolioManager:
                     strike = pad("strike", id)
                     dte = pad("dte", id)
                     exp = pad("exp", id)
+                    itm = pad("itm?", id)
 
                     def p_or_c(p):
                         return "Call" if p.contract.right.startswith("C") else "Put "
 
                     click.secho(
-                        f"    {p_or_c(p)}   {qty}  {mktPrice}  {avgPrice}  {value}  {cost}  {pnl}  {strike}  {dte}  {exp}",
+                        f"    {p_or_c(p)}   {qty}  {mktPrice}  {avgPrice}  {value}  {cost}  {pnl}  {strike}  {dte}  {exp}  {itm}",
                         fg="cyan",
                     )
                 else:
@@ -537,10 +552,8 @@ class PortfolioManager:
         # Determine target quantity of each stock
         for symbol in self.config["symbols"].keys():
             click.secho(f"  {symbol}", fg="green")
-            stock = Stock(symbol, "SMART", currency="USD")
-            [ticker] = self.ib.reqTickers(stock)
 
-            self.wait_for_market_price(ticker)
+            stock = self.get_ticker_for(symbol)
 
             current_position = math.floor(
                 stock_symbols[symbol].position if symbol in stock_symbols else 0
