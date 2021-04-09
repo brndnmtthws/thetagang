@@ -68,7 +68,7 @@ class PortfolioManager:
             return False
         return True
 
-    @lru_cache
+    @lru_cache(maxsize=32)
     def get_ticker_for(self, symbol):
         stock = Stock(symbol, "SMART", currency="USD")
         [ticker] = self.ib.reqTickers(stock)
