@@ -241,7 +241,7 @@ You are now ready to make a splash! 🐳
 | Requested market data is not subscribed.     | Requisite market data subscriptions have not been set up on IBKR.                                                                | [Configure](https://www.interactivebrokers.com/en/software/am3/am/settings/marketdatasubscriptions.htm) your market data subscriptions. The default config that ships with this script uses the `Cboe One Add-On Bundle` and the `US Equity and Options Add-On Streaming Bundle`. **Note**: You _must_ fund your account before IBKR will send data for subscriptions. Without funding you can still subscribe but you will get an error from ibc. |
 | No market data during competing live session | Your account is logged in somewhere else, such as the IBKR web portal, the desktop app, or even another instance of this script. | Log out of all sessions and then re-run the script.                                                                                                                                                                                                                                                                                                                                                                                                |
 
-## Support and sponsorship.
+## Support and sponsorship
 
 If you get some value out of this, please consider [sponsoring me](https://github.com/sponsors/brndnmtthws)
 to continue maintaining this project well into the future. Like
