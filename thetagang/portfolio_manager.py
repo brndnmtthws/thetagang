@@ -297,11 +297,11 @@ class PortfolioManager:
                 padding[col] = max(padding[col], len(value))
 
         # Print column headers
-        def pcol(c):
+        def print_col(c):
             return c.rjust(padding[c.lower()])
 
         click.secho(
-            f"           {pcol('Qty')}  {pcol('MktPrice')}  {pcol('AvgPrice')}  {pcol('Value')}  {pcol('Cost')}  {pcol('P&L')}  {pcol('Strike')}  {pcol('DTE')}  {pcol('Exp')}  {pcol('ITM?')}",
+            f"           {print_col('Qty')}  {print_col('MktPrice')}  {print_col('AvgPrice')}  {print_col('Value')}  {print_col('Cost')}  {print_col('P&L')}  {print_col('Strike')}  {print_col('DTE')}  {print_col('Exp')}  {print_col('ITM?')}",
             fg="green",
         )
 
