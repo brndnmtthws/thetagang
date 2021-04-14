@@ -559,23 +559,26 @@ class PortfolioManager:
                 stock_symbols[symbol].position if symbol in stock_symbols else 0
             )
             click.secho(
-                f"    Current position quantity {current_position}",
+                f"    Current position quantity: {current_position} shares",
                 fg="cyan",
             )
 
             targets[symbol] = round(
                 self.config["symbols"][symbol]["weight"] * total_buying_power, 2
             )
-            click.secho(f"    Target value ${targets[symbol]:,.0f}", fg="cyan")
+            click.secho(f"    Target value: ${targets[symbol]:,.0f}", fg="cyan")
             target_quantity = math.floor(targets[symbol] / ticker.marketPrice())
-            click.secho(f"    Target quantity {target_quantity:,d}", fg="cyan")
+            click.secho(f"    Target share quantity: {target_quantity:,d}", fg="cyan")
+
+            # Current number of short puts
+            put_count = count_short_option_positions(symbol, portfolio_positions, "P")
 
             target_additional_quantity[symbol] = math.floor(
-                target_quantity - current_position
+                target_quantity - current_position - 100 * put_count
             )
 
             click.secho(
-                f"    Target additional quantity (excl. existing options) {target_additional_quantity[symbol]:,d}",
+                f"    Net quantity: {target_additional_quantity[symbol]:,d} shares, {target_additional_quantity[symbol] // 100} contracts",
                 fg="cyan",
             )
 
@@ -583,19 +586,13 @@ class PortfolioManager:
 
         # Figure out how many additional puts are needed, if they're needed
         for symbol in target_additional_quantity.keys():
-            additional_quantity = target_additional_quantity[symbol]
+            additional_quantity = target_additional_quantity[symbol] // 100
             # NOTE: it's possible there are non-standard option contract sizes,
             # like with futures, but we don't bother handling those cases.
             # Please don't use this code with futures.
-            if additional_quantity >= 100:
-                put_count = count_short_option_positions(
-                    symbol, portfolio_positions, "P"
-                )
-                target_put_count = additional_quantity // 100
+            if additional_quantity >= 1:
                 maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
-                puts_to_write = min(
-                    [target_put_count - put_count, maximum_new_contracts]
-                )
+                puts_to_write = min([additional_quantity, maximum_new_contracts])
                 if puts_to_write > 0:
                     click.secho(
                         f"Preparing to write additional {puts_to_write} puts to purchase {symbol}, capped at {maximum_new_contracts}",
