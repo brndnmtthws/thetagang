@@ -614,9 +614,9 @@ class PortfolioManager:
         return self.roll_positions(puts, "P")
 
     def roll_calls(self, calls, portfolio_positions):
-        return self.roll_positions(calls, "C")
+        return self.roll_positions(calls, "C", portfolio_positions)
 
-    def roll_positions(self, positions, right, strike_limit, portfolio_positions={}):
+    def roll_positions(self, positions, right, portfolio_positions={}):
         for position in positions:
             symbol = position.contract.symbol
             strike_limit = get_strike_limit(self.config, symbol, right)
