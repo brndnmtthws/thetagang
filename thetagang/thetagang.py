@@ -8,7 +8,7 @@ from ib_insync.contract import Contract, Stock
 from ib_insync.objects import Position
 
 from thetagang.config import normalize_config, validate_config
-from thetagang.util import get_target_delta
+from thetagang.util import get_strike_limit, get_target_delta
 
 from .portfolio_manager import PortfolioManager
 
@@ -101,8 +101,15 @@ def start(config):
         p_delta = f"{get_target_delta(config, s, 'P'):.2f}".rjust(4)
         weight = f"{c['weight']:.2f}".rjust(4)
         weight_p = f"{(c['weight'] * 100):.1f}".rjust(4)
+        strike_limits = ""
+        c_limit = get_strike_limit(config, s, "C")
+        p_limit = get_strike_limit(config, s, "P")
+        if c_limit:
+            strike_limits += f", call strike >= ${c_limit:.2f}"
+        if p_limit:
+            strike_limits += f", put strike <= ${p_limit:.2f}"
         click.secho(
-            f"    {s.rjust(5)} weight = {weight} ({weight_p}%), delta = {p_delta}p, {c_delta}c",
+            f"    {s.rjust(5)} weight = {weight} ({weight_p}%), delta = {p_delta}p, {c_delta}c{strike_limits}",
             fg="cyan",
         )
     assert (
