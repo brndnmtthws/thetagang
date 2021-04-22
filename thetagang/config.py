@@ -61,10 +61,10 @@ def validate_config(config):
                 "maximum_new_contracts": And(int, lambda n: 1 <= n),
                 "minimum_open_interest": And(int, lambda n: 0 <= n),
                 Optional("calls"): {
-                    "delta": And(float, lambda n: 0 <= n <= 1),
+                    Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                 },
                 Optional("puts"): {
-                    "delta": And(float, lambda n: 0 <= n <= 1),
+                    Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                 },
             },
             "symbols": {
@@ -72,12 +72,12 @@ def validate_config(config):
                     "weight": And(float, lambda n: 0 <= n <= 1),
                     Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                     Optional("calls"): {
-                        "delta": Optional(And(float, lambda n: 0 <= n <= 1)),
-                        "strike_limit": Optional(And(float, lambda n: n > 0)),
+                        Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("strike_limit"): And(float, lambda n: n > 0),
                     },
                     Optional("puts"): {
-                        "delta": Optional(And(float, lambda n: 0 <= n <= 1)),
-                        "strike_limit": Optional(And(float, lambda n: n > 0)),
+                        Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("strike_limit"): And(float, lambda n: n > 0),
                     },
                 }
             },
