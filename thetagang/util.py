@@ -88,10 +88,23 @@ def midpoint_or_market_price(ticker):
 
 def get_target_delta(config, symbol, right):
     p_or_c = "calls" if right.startswith("C") else "puts"
-    if p_or_c in config["symbols"][symbol]:
+    if (
+        p_or_c in config["symbols"][symbol]
+        and "delta" in config["symbols"][symbol][p_or_c]
+    ):
         return config["symbols"][symbol][p_or_c]["delta"]
     if "delta" in config["symbols"][symbol]:
         return config["symbols"][symbol]["delta"]
     if p_or_c in config["target"]:
         return config["target"][p_or_c]["delta"]
     return config["target"]["delta"]
+
+
+def get_strike_limit(config, symbol, right):
+    p_or_c = "calls" if right.startswith("C") else "puts"
+    if (
+        p_or_c in config["symbols"][symbol]
+        and "strike_limit" in config["symbols"][symbol][p_or_c]
+    ):
+        return config["symbols"][symbol][p_or_c]["strike_limit"]
+    return None

@@ -72,10 +72,12 @@ def validate_config(config):
                     "weight": And(float, lambda n: 0 <= n <= 1),
                     Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                     Optional("calls"): {
-                        "delta": And(float, lambda n: 0 <= n <= 1),
+                        "delta": Optional(And(float, lambda n: 0 <= n <= 1)),
+                        "strike_limit": Optional(And(float, lambda n: n > 0)),
                     },
                     Optional("puts"): {
-                        "delta": And(float, lambda n: 0 <= n <= 1),
+                        "delta": Optional(And(float, lambda n: 0 <= n <= 1)),
+                        "strike_limit": Optional(And(float, lambda n: n > 0)),
                     },
                 }
             },

@@ -1,14 +1,15 @@
 import math
+from functools import lru_cache
 
 import click
 from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Option, Stock, TagValue
 from ib_insync.order import LimitOrder, Order
-from functools import lru_cache
 
 from thetagang.util import (
     account_summary_to_dict,
     count_short_option_positions,
+    get_strike_limit,
     get_target_delta,
     midpoint_or_market_price,
     portfolio_positions_to_dict,
@@ -425,9 +426,9 @@ class PortfolioManager:
                     ]
                 )
             )
-            min_strike = math.ceil(
+            strike_limit = math.ceil(
                 max(
-                    [0]
+                    [get_strike_limit(self.config, symbol, "C") or 0]
                     + [
                         p.averageCost
                         for p in portfolio_positions[symbol]
@@ -445,10 +446,10 @@ class PortfolioManager:
 
             if calls_to_write > 0:
                 click.secho(
-                    f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}, at or above strike ${min_strike} (target_calls={target_calls}, call_count={call_count})",
+                    f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}, at or above strike ${strike_limit} (target_calls={target_calls}, call_count={call_count})",
                     fg="green",
                 )
-                self.write_calls(symbol, calls_to_write, min_strike)
+                self.write_calls(symbol, calls_to_write, strike_limit)
 
     def wait_for_trade_submitted(self, trade):
         while_n_times(
@@ -464,8 +465,8 @@ class PortfolioManager:
         )
         return trade
 
-    def write_calls(self, symbol, quantity, min_strike):
-        sell_ticker = self.find_eligible_contracts(symbol, "C", min_strike)
+    def write_calls(self, symbol, quantity, strike_limit):
+        sell_ticker = self.find_eligible_contracts(symbol, "C", strike_limit)
 
         if not self.wait_for_midpoint_price(sell_ticker):
             click.secho(
@@ -492,8 +493,8 @@ class PortfolioManager:
         click.secho("Order submitted", fg="green")
         click.secho(f"{trade}", fg="green")
 
-    def write_puts(self, symbol, quantity):
-        sell_ticker = self.find_eligible_contracts(symbol, "P")
+    def write_puts(self, symbol, quantity, strike_limit):
+        sell_ticker = self.find_eligible_contracts(symbol, "P", strike_limit)
 
         if not self.wait_for_midpoint_price(sell_ticker):
             click.secho(
@@ -594,11 +595,18 @@ class PortfolioManager:
                 maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
                 puts_to_write = min([additional_quantity, maximum_new_contracts])
                 if puts_to_write > 0:
-                    click.secho(
-                        f"Preparing to write additional {puts_to_write} puts to purchase {symbol}, capped at {maximum_new_contracts}",
-                        fg="cyan",
-                    )
-                    self.write_puts(symbol, puts_to_write)
+                    strike_limit = get_strike_limit(self.config, symbol, "P")
+                    if strike_limit:
+                        click.secho(
+                            f"Preparing to write additional {puts_to_write} puts to purchase {symbol}, capped at {maximum_new_contracts}, at or below strike ${strike_limit}",
+                            fg="cyan",
+                        )
+                    else:
+                        click.secho(
+                            f"Preparing to write additional {puts_to_write} puts to purchase {symbol}, capped at {maximum_new_contracts}",
+                            fg="cyan",
+                        )
+                    self.write_puts(symbol, puts_to_write, strike_limit)
 
         return
 
@@ -615,6 +623,7 @@ class PortfolioManager:
             sell_ticker = self.find_eligible_contracts(
                 symbol,
                 right,
+                get_strike_limit(self.config, symbol, right),
                 excluded_expirations=[position.contract.lastTradeDateOrContractMonth],
             )
             self.wait_for_midpoint_price(sell_ticker)
@@ -670,7 +679,7 @@ class PortfolioManager:
             click.secho(f"{trade}", fg="green")
 
     def find_eligible_contracts(
-        self, symbol, right, min_strike=0, excluded_expirations=[]
+        self, symbol, right, strike_limit, excluded_expirations=[]
     ):
         click.echo()
         click.secho(
@@ -690,10 +699,14 @@ class PortfolioManager:
         chain = next(c for c in chains if c.exchange == "SMART")
 
         def valid_strike(strike):
-            if right.startswith("P"):
+            if right.startswith("P") and strike_limit:
+                return strike <= tickerValue and strike <= strike_limit
+            elif right.startswith("P"):
                 return strike <= tickerValue
-            if right.startswith("C"):
-                return strike >= tickerValue and strike >= min_strike
+            elif right.startswith("C") and strike_limit:
+                return strike >= tickerValue and strike >= strike_limit
+            elif right.startswith("C"):
+                return strike >= tickerValue
             return False
 
         chain_expirations = self.config["option_chains"]["expirations"]
