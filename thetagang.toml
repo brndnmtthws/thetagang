@@ -119,9 +119,13 @@ weight = 0.3
 [symbols.QQQ.puts]
 # Override delta just for QQQ puts
 delta = 0.5
+
 # Also, optionally specify a strike limit, for either puts or calls.
 # Interpreted as an upper bound for puts, and a lower bound for calls.
-strike_limit = 1000.0
+strike_limit = 1000.0 # never write a put with a strike above $1000
+
+[symbols.QQQ.calls]
+strike_limit = 100.0 # never write a call with a strike below $100
 
 [symbols.TLT]
 weight = 0.3
