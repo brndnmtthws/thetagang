@@ -410,7 +410,7 @@ class PortfolioManager:
         click.echo()
         click.secho(f"{total_rollable_calls} calls will be rolled", fg="magenta")
 
-        self.roll_calls(rollable_calls)
+        self.roll_calls(rollable_calls, portfolio_positions)
 
     def check_for_uncovered_positions(self, portfolio_positions):
         for symbol in portfolio_positions:
@@ -613,17 +613,29 @@ class PortfolioManager:
     def roll_puts(self, puts):
         return self.roll_positions(puts, "P")
 
-    def roll_calls(self, calls):
+    def roll_calls(self, calls, portfolio_positions):
         return self.roll_positions(calls, "C")
 
-    def roll_positions(self, positions, right):
+    def roll_positions(self, positions, right, strike_limit, portfolio_positions={}):
         for position in positions:
             symbol = position.contract.symbol
+            strike_limit = get_strike_limit(self.config, symbol, right)
+            if right.startswith("C"):
+                strike_limit = math.ceil(
+                    max(
+                        [strike_limit or 0]
+                        + [
+                            p.averageCost
+                            for p in portfolio_positions[symbol]
+                            if isinstance(p.contract, Stock)
+                        ]
+                    )
+                )
 
             sell_ticker = self.find_eligible_contracts(
                 symbol,
                 right,
-                get_strike_limit(self.config, symbol, right),
+                strike_limit,
                 excluded_expirations=[position.contract.lastTradeDateOrContractMonth],
             )
             self.wait_for_midpoint_price(sell_ticker)
