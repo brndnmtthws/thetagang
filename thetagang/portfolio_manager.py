@@ -461,7 +461,7 @@ class PortfolioManager:
                 "Cancelled",
             ],
             lambda: self.ib.waitOnUpdate(timeout=5),
-            25,
+            35,
         )
         return trade
 
