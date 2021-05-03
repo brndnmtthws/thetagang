@@ -112,5 +112,5 @@ def get_strike_limit(config, symbol, right):
 
 def parse_symbol(symbol):
     if "@" in symbol:
-        return tuple(symbol.split("@"))
-    return (symbol, None)
+        return tuple(symbol.split("@")[:2])
+    return (symbol, "")
