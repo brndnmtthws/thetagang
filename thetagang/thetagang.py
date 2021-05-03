@@ -8,7 +8,7 @@ from ib_insync.contract import Contract, Stock
 from ib_insync.objects import Position
 
 from thetagang.config import normalize_config, validate_config
-from thetagang.util import get_strike_limit, get_target_delta
+from thetagang.util import get_strike_limit, get_target_delta, parse_symbol
 
 from .portfolio_manager import PortfolioManager
 
@@ -17,6 +17,7 @@ util.patchAsyncio()
 
 def start(config):
     import toml
+
     import thetagang.config_defaults as config_defaults
 
     with open(config, "r") as f:
@@ -104,12 +105,13 @@ def start(config):
         strike_limits = ""
         c_limit = get_strike_limit(config, s, "C")
         p_limit = get_strike_limit(config, s, "P")
+        (symbol, exchange) = parse_symbol(s)
         if c_limit:
             strike_limits += f", call strike >= ${c_limit:.2f}"
         if p_limit:
             strike_limits += f", put strike <= ${p_limit:.2f}"
         click.secho(
-            f"    {s.rjust(5)} weight = {weight} ({weight_p}%), delta = {p_delta}p, {c_delta}c{strike_limits}",
+            f"    {symbol.rjust(5)} weight = {weight} ({weight_p}%), delta = {p_delta}p, {c_delta}c{strike_limits}",
             fg="cyan",
         )
     assert (

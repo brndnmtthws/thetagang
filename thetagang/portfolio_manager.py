@@ -12,6 +12,7 @@ from thetagang.util import (
     get_strike_limit,
     get_target_delta,
     midpoint_or_market_price,
+    parse_symbol,
     portfolio_positions_to_dict,
     position_pnl,
     while_n_times,
@@ -71,7 +72,8 @@ class PortfolioManager:
 
     @lru_cache(maxsize=32)
     def get_ticker_for(self, symbol):
-        stock = Stock(symbol, "SMART", currency="USD")
+        (symbol, exchange) = parse_symbol(symbol)
+        stock = Stock(symbol, "SMART", currency="USD", primaryExchange=exchange)
         [ticker] = self.ib.reqTickers(stock)
 
         self.wait_for_market_price(ticker)
@@ -699,7 +701,8 @@ class PortfolioManager:
             fg="green",
         )
         click.echo()
-        stock = Stock(symbol, "SMART", currency="USD")
+        (symbol, exchange) = parse_symbol(symbol)
+        stock = Stock(symbol, "SMART", currency="USD", primaryExchange=exchange)
         contracts = self.ib.qualifyContracts(stock)
 
         [ticker] = self.ib.reqTickers(stock)
