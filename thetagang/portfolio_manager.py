@@ -701,8 +701,8 @@ class PortfolioManager:
             fg="green",
         )
         click.echo()
-        (symbol, exchange) = parse_symbol(symbol)
-        stock = Stock(symbol, "SMART", currency="USD", primaryExchange=exchange)
+        (parsed_symbol, exchange) = parse_symbol(symbol)
+        stock = Stock(parsed_symbol, "SMART", currency="USD", primaryExchange=exchange)
         contracts = self.ib.qualifyContracts(stock)
 
         [ticker] = self.ib.reqTickers(stock)
@@ -744,7 +744,7 @@ class PortfolioManager:
 
         contracts = [
             Option(
-                symbol,
+                parsed_symbol,
                 expiration,
                 strike,
                 right,
