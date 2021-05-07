@@ -87,6 +87,7 @@ def midpoint_or_market_price(ticker):
 
 
 def get_target_delta(config, symbol, right):
+    (symbol, _) = parse_symbol(symbol)
     p_or_c = "calls" if right.startswith("C") else "puts"
     if (
         p_or_c in config["symbols"][symbol]
