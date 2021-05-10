@@ -171,24 +171,17 @@ class PortfolioManager:
         return False
 
     def filter_positions(self, portfolio_positions):
-        keys = portfolio_positions.keys()
-        for k in keys:
-            if k not in self.config["symbols"]:
-                del portfolio_positions[k]
-        return portfolio_positions
-
-    def get_portfolio_positions(self):
-        portfolio_positions = self.ib.portfolio()
-        # Filter out any positions we don't care about, i.e., we don't know the
-        # symbol or it's not in the desired account.
-        portfolio_positions = [
+        return [
             item
             for item in portfolio_positions
             if item.account == self.config["account"]["number"]
             and item.contract.symbol
-            in map(lambda s: parse_symbol(s)[0], self.config["symbols"].keys())
+            in [parse_symbol(s)[0] for s in self.config["symbols"].keys()]
         ]
-        return portfolio_positions_to_dict(portfolio_positions)
+
+    def get_portfolio_positions(self):
+        portfolio_positions = self.ib.portfolio()
+        return portfolio_positions_to_dict(self.filter_positions(portfolio_positions))
 
     def initialize_account(self):
         self.ib.reqMarketDataType(self.config["account"]["market_data_type"])
@@ -359,8 +352,6 @@ class PortfolioManager:
 
             click.echo()
             click.secho("Checking positions...", fg="green")
-
-            portfolio_positions = self.filter_positions(portfolio_positions)
 
             self.check_puts(portfolio_positions)
             self.check_calls(portfolio_positions)
