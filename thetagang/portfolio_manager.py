@@ -185,7 +185,8 @@ class PortfolioManager:
             item
             for item in portfolio_positions
             if item.account == self.config["account"]["number"]
-            and item.contract.symbol in self.config["symbols"]
+            and item.contract.symbol
+            in map(lambda s: parse_symbol(s)[0], self.config["symbols"].keys())
         ]
         return portfolio_positions_to_dict(portfolio_positions)
 
