@@ -132,11 +132,18 @@ weight = 0.2
 # Override delta for this particular symbol, for both puts and calls.
 delta = 0.4
 
+[symbols.ABNB]
+# For symbols that require an exchange, which is typically any company stock,
+# you must specify the primary exchange.
+primary_exchange = "NASDAQ"
+weight = 0.05
+
+# Sometimes you may need to wrap the symbol in quotes.
 [symbols."BRK.B"]
 # For symbols that require an exchange, which is typically any company stock,
-# you must specify the primary exchange
+# you must specify the primary exchange.
 primary_exchange = "NYSE"
-weight = 0.1
+weight = 0.05
 
 [ib_insync]
 logfile = '/etc/thetagang/ib_insync.log'
