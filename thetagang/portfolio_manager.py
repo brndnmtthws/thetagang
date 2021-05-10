@@ -12,7 +12,6 @@ from thetagang.util import (
     get_strike_limit,
     get_target_delta,
     midpoint_or_market_price,
-    parse_symbol,
     portfolio_positions_to_dict,
     position_pnl,
     while_n_times,
@@ -71,9 +70,8 @@ class PortfolioManager:
         return True
 
     @lru_cache(maxsize=32)
-    def get_ticker_for(self, symbol):
-        (symbol, exchange) = parse_symbol(symbol)
-        stock = Stock(symbol, "SMART", currency="USD", primaryExchange=exchange)
+    def get_ticker_for(self, symbol, primary_exchange):
+        stock = Stock(symbol, "SMART", currency="USD", primaryExchange=primary_exchange)
         [ticker] = self.ib.reqTickers(stock)
 
         self.wait_for_market_price(ticker)
@@ -81,7 +79,7 @@ class PortfolioManager:
         return ticker
 
     def put_is_itm(self, contract):
-        ticker = self.get_ticker_for(contract.symbol)
+        ticker = self.get_ticker_for(contract.symbol, contract.primaryExchange)
 
         return contract.strike >= ticker.marketPrice()
 
@@ -126,7 +124,7 @@ class PortfolioManager:
         return False
 
     def call_is_itm(self, contract):
-        ticker = self.get_ticker_for(contract.symbol)
+        ticker = self.get_ticker_for(contract.symbol, contract.primaryExchange)
 
         return contract.strike <= ticker.marketPrice()
 
@@ -171,7 +169,7 @@ class PortfolioManager:
         return False
 
     def get_symbols(self):
-        return [parse_symbol(s)[0] for s in self.config["symbols"].keys()]
+        return [s for s in self.config["symbols"].keys()]
 
     def filter_positions(self, portfolio_positions):
         symbols = self.get_symbols()
@@ -446,7 +444,12 @@ class PortfolioManager:
                     f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}, at or above strike ${strike_limit} (target_calls={target_calls}, call_count={call_count})",
                     fg="green",
                 )
-                self.write_calls(symbol, calls_to_write, strike_limit)
+                self.write_calls(
+                    symbol,
+                    self.get_primary_exchange(symbol),
+                    calls_to_write,
+                    strike_limit,
+                )
 
     def wait_for_trade_submitted(self, trade):
         while_n_times(
@@ -462,8 +465,10 @@ class PortfolioManager:
         )
         return trade
 
-    def write_calls(self, symbol, quantity, strike_limit):
-        sell_ticker = self.find_eligible_contracts(symbol, "C", strike_limit)
+    def write_calls(self, symbol, primary_exchange, quantity, strike_limit):
+        sell_ticker = self.find_eligible_contracts(
+            symbol, primary_exchange, "C", strike_limit
+        )
 
         if not self.wait_for_midpoint_price(sell_ticker):
             click.secho(
@@ -490,8 +495,10 @@ class PortfolioManager:
         click.secho("Order submitted", fg="green")
         click.secho(f"{trade}", fg="green")
 
-    def write_puts(self, symbol, quantity, strike_limit):
-        sell_ticker = self.find_eligible_contracts(symbol, "P", strike_limit)
+    def write_puts(self, symbol, primary_exchange, quantity, strike_limit):
+        sell_ticker = self.find_eligible_contracts(
+            symbol, primary_exchange, "P", strike_limit
+        )
 
         if not self.wait_for_midpoint_price(sell_ticker):
             click.secho(
@@ -517,6 +524,9 @@ class PortfolioManager:
         click.echo()
         click.secho("Order submitted", fg="green")
         click.secho(f"{trade}", fg="green")
+
+    def get_primary_exchange(self, symbol):
+        return self.config["symbols"][symbol].get("primary_exchange", "")
 
     def check_if_can_write_puts(self, account_summary, portfolio_positions):
         # Get stock positions
@@ -551,7 +561,7 @@ class PortfolioManager:
         for symbol in self.config["symbols"].keys():
             click.secho(f"  {symbol}", fg="green")
 
-            ticker = self.get_ticker_for(symbol)
+            ticker = self.get_ticker_for(symbol, self.get_primary_exchange(symbol))
 
             current_position = math.floor(
                 stock_symbols[symbol].position if symbol in stock_symbols else 0
@@ -603,7 +613,12 @@ class PortfolioManager:
                             f"Preparing to write additional {puts_to_write} puts to purchase {symbol}, capped at {maximum_new_contracts}",
                             fg="cyan",
                         )
-                    self.write_puts(symbol, puts_to_write, strike_limit)
+                    self.write_puts(
+                        symbol,
+                        self.get_primary_exchange(symbol),
+                        puts_to_write,
+                        strike_limit,
+                    )
 
         return
 
@@ -631,6 +646,7 @@ class PortfolioManager:
 
             sell_ticker = self.find_eligible_contracts(
                 symbol,
+                self.get_primary_exchange(symbol),
                 right,
                 strike_limit,
                 excluded_expirations=[position.contract.lastTradeDateOrContractMonth],
@@ -688,7 +704,7 @@ class PortfolioManager:
             click.secho(f"{trade}", fg="green")
 
     def find_eligible_contracts(
-        self, symbol, right, strike_limit, excluded_expirations=[]
+        self, symbol, primary_exchange, right, strike_limit, excluded_expirations=[]
     ):
         click.echo()
         click.secho(
@@ -696,8 +712,7 @@ class PortfolioManager:
             fg="green",
         )
         click.echo()
-        (parsed_symbol, exchange) = parse_symbol(symbol)
-        stock = Stock(parsed_symbol, "SMART", currency="USD", primaryExchange=exchange)
+        stock = Stock(symbol, "SMART", currency="USD", primaryExchange=primary_exchange)
         contracts = self.ib.qualifyContracts(stock)
 
         [ticker] = self.ib.reqTickers(stock)
@@ -739,11 +754,12 @@ class PortfolioManager:
 
         contracts = [
             Option(
-                parsed_symbol,
+                symbol,
                 expiration,
                 strike,
                 right,
                 "SMART",
+                primaryExchange=primary_exchange,
                 tradingClass=chain.tradingClass,
             )
             for right in rights

@@ -108,9 +108,3 @@ def get_strike_limit(config, symbol, right):
     ):
         return config["symbols"][symbol][p_or_c]["strike_limit"]
     return None
-
-
-def parse_symbol(symbol):
-    if "@" in symbol:
-        return tuple(symbol.split("@")[:2])
-    return (symbol, "")

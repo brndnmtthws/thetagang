@@ -70,6 +70,7 @@ def validate_config(config):
             "symbols": {
                 object: {
                     "weight": And(float, lambda n: 0 <= n <= 1),
+                    Optional("primary_exchange"): And(str, len),
                     Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                     Optional("calls"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),

@@ -132,9 +132,10 @@ weight = 0.2
 # Override delta for this particular symbol, for both puts and calls.
 delta = 0.4
 
-[symbols."BRK.A@NYSE"]
+[symbols."BRK.B"]
 # For symbols that require an exchange, which is typically any company stock,
-# use the symbol@exchange syntax to specify the exchaneg and symbol.
+# you must specify the primary exchange
+primary_exchange = "NYSE"
 weight = 0.1
 
 [ib_insync]
