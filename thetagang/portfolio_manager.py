@@ -171,12 +171,12 @@ class PortfolioManager:
         return False
 
     def filter_positions(self, portfolio_positions):
+        symbols = [parse_symbol(s)[0] for s in self.config["symbols"].keys()]
         return [
             item
             for item in portfolio_positions
             if item.account == self.config["account"]["number"]
-            and item.contract.symbol
-            in [parse_symbol(s)[0] for s in self.config["symbols"].keys()]
+            and item.contract.symbol in symbols
         ]
 
     def get_portfolio_positions(self):
