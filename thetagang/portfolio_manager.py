@@ -170,8 +170,11 @@ class PortfolioManager:
 
         return False
 
+    def get_symbols(self):
+        return [parse_symbol(s)[0] for s in self.config["symbols"].keys()]
+
     def filter_positions(self, portfolio_positions):
-        symbols = [parse_symbol(s)[0] for s in self.config["symbols"].keys()]
+        symbols = self.get_symbols()
         return [
             item
             for item in portfolio_positions
@@ -190,7 +193,7 @@ class PortfolioManager:
             # Cancel any existing orders
             open_trades = self.ib.openTrades()
             for trade in open_trades:
-                if trade.isActive() and trade.contract.symbol in self.config["symbols"]:
+                if trade.isActive() and trade.contract.symbol in self.get_symbols():
                     click.secho(f"Canceling order {trade.order}", fg="red")
                     self.ib.cancelOrder(trade.order)
 
