@@ -488,12 +488,19 @@ class PortfolioManager:
         )
 
         # Submit order
-        trade = self.wait_for_trade_submitted(
-            self.ib.placeOrder(sell_ticker.contract, order)
-        )
-        click.echo()
-        click.secho("Order submitted", fg="green")
-        click.secho(f"{trade}", fg="green")
+        try:
+            trade = self.wait_for_trade_submitted(
+                self.ib.placeOrder(sell_ticker.contract, order)
+            )
+            click.echo()
+            click.secho("Order submitted", fg="green")
+            click.secho(f"{trade}", fg="green")
+        except:
+            click.echo()
+            click.secho(
+                "Order trade submission seems to have failed, or a response wasn't received in time. Continuing anyway...",
+                fg="yellow",
+            )
 
     def write_puts(self, symbol, primary_exchange, quantity, strike_limit):
         sell_ticker = self.find_eligible_contracts(
