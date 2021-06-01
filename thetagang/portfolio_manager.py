@@ -503,9 +503,17 @@ class PortfolioManager:
             )
 
     def write_puts(self, symbol, primary_exchange, quantity, strike_limit):
-        sell_ticker = self.find_eligible_contracts(
-            symbol, primary_exchange, "P", strike_limit
-        )
+        try:
+            sell_ticker = self.find_eligible_contracts(
+                symbol, primary_exchange, "P", strike_limit
+            )
+        except:
+            click.echo()
+            click.secho(
+                f"Finding eligible contracts for ${symbol} failed. Continuing anyway...",
+                fg="yellow",
+            )
+            return
 
         if not self.wait_for_midpoint_price(sell_ticker):
             click.secho(
