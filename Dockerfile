@@ -1,7 +1,7 @@
-FROM adoptopenjdk/openjdk8:jdk8u302-b04-debian
+FROM adoptopenjdk/openjdk8:jdk8u292-b10-debian
 
-RUN apt-get update \
-  && DEBIAN_FRONTEND=noninteractive apt-get install -qy --no-install-recommends \
+RUN apt update \
+  && DEBIAN_FRONTEND=noninteractive apt install -qy --no-install-recommends \
   python3-pip \
   python3-setuptools \
   xvfb \
@@ -23,6 +23,7 @@ RUN apt-get update \
 
 WORKDIR /src
 
+ADD ./jfx/*.jar /opt/java/openjdk/lib
 ADD ./tws/Jts /root/Jts
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
