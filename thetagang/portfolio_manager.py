@@ -178,6 +178,8 @@ class PortfolioManager:
             for item in portfolio_positions
             if item.account == self.config["account"]["number"]
             and item.contract.symbol in symbols
+            and item.position != 0
+            and item.averageCost != 0
         ]
 
     def get_portfolio_positions(self):
