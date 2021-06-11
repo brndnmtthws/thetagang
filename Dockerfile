@@ -1,4 +1,4 @@
-FROM adoptopenjdk/openjdk8:jdk8u262-b10-debian
+FROM adoptopenjdk/openjdk8:jdk8u292-b10-debian
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -qy --no-install-recommends \
