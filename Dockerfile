@@ -1,4 +1,4 @@
-FROM adoptopenjdk/openjdk8:jdk8u292-b10-debian
+FROM adoptopenjdk/openjdk11:debian
 
 RUN apt update \
   && DEBIAN_FRONTEND=noninteractive apt install -qy --no-install-recommends \
@@ -10,6 +10,7 @@ RUN apt update \
   libxrender1 \
   unzip \
   curl \
+  openjfx \
   && python3 -m pip install --upgrade pip \
   && if test "$(dpkg --print-architecture)" = "armhf" ; then python3 -m pip config set global.extra-index-url https://www.piwheels.org/simple ; fi \
   && echo 'ffccc98102df7750b86a6b77308dcdc3965c4aff1ee7216ba7142cad67a292a0  ibc.zip' | tee ibc.zip.sha256 \
@@ -24,13 +25,13 @@ RUN apt update \
 WORKDIR /src
 
 ADD ./tws/Jts /root/Jts
-ADD ./jfx/jfxrt.jar /opt/java/openjdk/jre/lib/ext/
-ADD ./jfx/jfxswt.jar /opt/java/openjdk/jre/lib/
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
 
 RUN python3 -m pip install dist/thetagang-*.whl \
   && rm -rf /root/.cache \
-  && rm -rf dist
+  && rm -rf dist \
+  && echo '--module-path /usr/share/openjfx/lib' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '--add-modules=javafx.base,javafx.controls,javafx.fxml,javafx.graphics,javafx.media,javafx.swing,javafx.web' | tee -a /root/Jts/*/tws.vmoptions
 
 ENTRYPOINT [ "/src/entrypoint.bash" ]
