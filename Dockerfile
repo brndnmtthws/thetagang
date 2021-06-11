@@ -25,6 +25,7 @@ WORKDIR /src
 
 ADD ./tws/Jts /root/Jts
 ADD ./jfx/jfxrt.jar /opt/java/openjdk/jre/lib/ext/
+ADD ./jfx/jfxswt.jar /opt/java/openjdk/jre/lib/
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
 
