@@ -8,6 +8,7 @@ from ib_insync.order import LimitOrder, Order
 from thetagang.util import (
     account_summary_to_dict,
     count_short_option_positions,
+    get_highest_price,
     get_strike_limit,
     get_target_delta,
     midpoint_or_market_price,
@@ -482,7 +483,7 @@ class PortfolioManager:
         order = LimitOrder(
             "SELL",
             quantity,
-            round(midpoint_or_market_price(sell_ticker), 2),
+            round(get_highest_price(sell_ticker), 2),
             algoStrategy="Adaptive",
             algoParams=[TagValue("adaptivePriority", "Patient")],
             tif="DAY",
@@ -527,7 +528,7 @@ class PortfolioManager:
         order = LimitOrder(
             "SELL",
             quantity,
-            round(midpoint_or_market_price(sell_ticker), 2),
+            round(get_highest_price(sell_ticker), 2),
             algoStrategy="Adaptive",
             algoParams=[TagValue("adaptivePriority", "Patient")],
             tif="DAY",
@@ -808,8 +809,6 @@ class PortfolioManager:
                     fg="yellow",
                 )
                 return False
-            finally:
-                self.ib.cancelMktData(ticker.contract)
 
             # The open interest value is never present when using historical
             # data, so just ignore it when the value is None
@@ -835,7 +834,7 @@ class PortfolioManager:
         # Filter by delta and open interest
         tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
         tickers = [
-            self.ib.reqMktData(ticker.contract, genericTickList="101")
+            self.ib.reqMktData(ticker.contract, genericTickList="101", snapshot=True)
             for ticker in tickers
         ]
         tickers = [ticker for ticker in tickers if open_interest_is_valid(ticker)]

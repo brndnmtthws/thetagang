@@ -76,6 +76,16 @@ def while_n_times(pred, body, remaining):
         while_n_times(pred, body, remaining - 1)
 
 
+def get_highest_price(ticker):
+    # Returns the highest of either the option model price, the midpoint, or the
+    # market price. The midpoint is usually a bit higher than the IB model's
+    # pricing, but we want to avoid leaving money on the table in cases where
+    # the spread might be messed up. This may in some cases make it harder for
+    # orders to fill in a given day, but I think that's a reasonable tradeoff to
+    # avoid leaving money on the table.
+    return max([midpoint_or_market_price(ticker), ticker.modelGreeks.optPrice])
+
+
 def midpoint_or_market_price(ticker):
     # As per the ib_insync docs, marketPrice returns the last price first, but
     # we often prefer the midpoint over the last price. This function pulls the
