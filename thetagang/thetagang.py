@@ -122,7 +122,7 @@ def start(config):
         util.logToFile(config["ib_insync"]["logfile"])
 
     # TWS version is pinned to current stable
-    ibc = IBC(978, **config["ibc"])
+    ibc = IBC(981, **config["ibc"])
 
     def onConnected():
         portfolio_manager.manage()
