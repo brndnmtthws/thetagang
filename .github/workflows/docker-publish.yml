@@ -34,7 +34,7 @@ jobs:
           cache-name: cache-poetry
         with:
           path: ~/.cache/pypoetry
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
+          key: ${{ runner.os }}-publish-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v2
@@ -73,7 +73,7 @@ jobs:
           cache-name: cache-tws
         with:
           path: tws/
-          key: ${{ runner.os }}-tws-${{ env.cache-name }}-${{ hashFiles('extract-installer.sh') }}
+          key: ${{ runner.os }}-publish-${{ env.cache-name }}-${{ hashFiles('extract-installer.sh') }}
 
       - name: Extract TWS installer
         if: steps.cache-tws.outputs.cache-hit != 'true'
@@ -85,7 +85,7 @@ jobs:
           cache-name: cache-pip
         with:
           path: ~/.cache
-          key: ${{ runner.os }}-pipnpals-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
+          key: ${{ runner.os }}-publish-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v2

@@ -1,6 +1,5 @@
 import math
 from functools import lru_cache
-
 import click
 from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Option, Stock, TagValue
@@ -54,7 +53,7 @@ class PortfolioManager:
                 lambda: self.ib.waitOnUpdate(timeout=5),
                 25,
             )
-        except:
+        except RuntimeError:
             return False
         return True
 
@@ -512,7 +511,7 @@ class PortfolioManager:
         except:
             click.echo()
             click.secho(
-                f"Finding eligible contracts for ${symbol} failed. Continuing anyway...",
+                f"Finding eligible contracts for {symbol} failed. Continuing anyway...",
                 fg="yellow",
             )
             return
@@ -776,7 +775,6 @@ class PortfolioManager:
                 strike,
                 right,
                 "SMART",
-                primaryExchange=primary_exchange,
                 tradingClass=chain.tradingClass,
             )
             for right in rights
@@ -792,8 +790,6 @@ class PortfolioManager:
         tickers = [t for t in tickers if not util.isNan(t.midpoint())]
 
         def open_interest_is_valid(ticker):
-            ticker = self.ib.reqMktData(ticker.contract, genericTickList="101")
-
             def open_interest_is_not_ready():
                 if right.startswith("P"):
                     return util.isNan(ticker.putOpenInterest)
@@ -806,10 +802,14 @@ class PortfolioManager:
                     lambda: self.ib.waitOnUpdate(timeout=5),
                     25,
                 )
-            except:
+            except RuntimeError:
+                click.secho(
+                    f"Timeout waiting on market data for {ticker.contract}. Continuing...",
+                    fg="yellow",
+                )
                 return False
-
-            self.ib.cancelMktData(ticker.contract)
+            finally:
+                self.ib.cancelMktData(ticker.contract)
 
             # The open interest value is never present when using historical
             # data, so just ignore it when the value is None
@@ -834,6 +834,10 @@ class PortfolioManager:
 
         # Filter by delta and open interest
         tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
+        tickers = [
+            self.ib.reqMktData(ticker.contract, genericTickList="101")
+            for ticker in tickers
+        ]
         tickers = [ticker for ticker in tickers if open_interest_is_valid(ticker)]
         tickers = sorted(
             reversed(sorted(tickers, key=lambda t: abs(t.modelGreeks.delta))),
