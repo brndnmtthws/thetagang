@@ -23,8 +23,8 @@ RUN apt update \
 
 WORKDIR /src
 
-ADD ./jfx/*.jar /opt/java/openjdk/lib
 ADD ./tws/Jts /root/Jts
+ADD ./jfx/jfxrt.jar /opt/java/openjdk/jre/lib/ext/
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
 
