@@ -29,7 +29,7 @@ described in the post above. For one, it's intended to be used to augment a
 typical index-fund based portfolio with specific asset allocations. For
 example, you might want to use a 60/40 portfolio with SPY (S&P500 fund) and
 TLT (20 year treasury fund). This strategy reduces risk, but may also limit
-gains from big market swingsn.
+gains from big market swings. By reducing risk, one can increase leverage.
 
 The main difference between ThetaGang and simply buying and holding index
 funds is that this script will attempt to harvest volatility by selling
