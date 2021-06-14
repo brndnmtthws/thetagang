@@ -22,9 +22,19 @@ from .options import option_dte
 
 class PortfolioManager:
     def __init__(self, config, ib, completion_future):
+        self.orders = []
         self.config = config
         self.ib = ib
         self.completion_future = completion_future
+        self.ib.orderStatusEvent += self.orderStatusEvent
+
+    def orderStatusEvent(self, trade):
+        if trade.orderStatus.status in ["Submitted", "Filled"]:
+            click.secho(f"Order updated: {trade}", fg="green")
+        elif "Cancelled" in trade.orderStatus.status:
+            click.secho(f"Order cancelled: {trade}", fg="red")
+        else:
+            click.secho(f"Order updated: {trade}", fg="blue")
 
     def get_calls(self, portfolio_positions):
         return self.get_options(portfolio_positions, "C")
@@ -51,7 +61,7 @@ class PortfolioManager:
         try:
             while_n_times(
                 lambda: util.isNan(ticker.midpoint()),
-                lambda: self.ib.waitOnUpdate(timeout=5),
+                lambda: self.ib.waitOnUpdate(timeout=15),
                 25,
             )
         except RuntimeError:
@@ -62,7 +72,7 @@ class PortfolioManager:
         try:
             while_n_times(
                 lambda: util.isNan(ticker.marketPrice()),
-                lambda: self.ib.waitOnUpdate(timeout=5),
+                lambda: self.ib.waitOnUpdate(timeout=15),
                 25,
             )
         except:
@@ -368,6 +378,15 @@ class PortfolioManager:
             # Check if we have enough buying power to write some puts
             self.check_if_can_write_puts(account_summary, portfolio_positions)
 
+            # Wait for pending orders
+            while_n_times(
+                lambda: any(
+                    "Pending" in trade.orderStatus.status for trade in self.orders
+                ),
+                lambda: self.ib.waitOnUpdate(timeout=15),
+                25,
+            )
+
             click.echo()
             click.secho("ThetaGang is done, shutting down! Cya next time.", fg="yellow")
 
@@ -453,20 +472,6 @@ class PortfolioManager:
                     strike_limit,
                 )
 
-    def wait_for_trade_submitted(self, trade):
-        while_n_times(
-            lambda: trade.orderStatus.status
-            not in [
-                "Submitted",
-                "Filled",
-                "ApiCancelled",
-                "Cancelled",
-            ],
-            lambda: self.ib.waitOnUpdate(timeout=5),
-            35,
-        )
-        return trade
-
     def write_calls(self, symbol, primary_exchange, quantity, strike_limit):
         sell_ticker = self.find_eligible_contracts(
             symbol, primary_exchange, "C", strike_limit
@@ -491,9 +496,8 @@ class PortfolioManager:
 
         # Submit order
         try:
-            trade = self.wait_for_trade_submitted(
-                self.ib.placeOrder(sell_ticker.contract, order)
-            )
+            trade = self.ib.placeOrder(sell_ticker.contract, order)
+            self.orders.append(trade)
             click.echo()
             click.secho("Order submitted", fg="green")
             click.secho(f"{trade}", fg="green")
@@ -535,9 +539,8 @@ class PortfolioManager:
         )
 
         # Submit order
-        trade = self.wait_for_trade_submitted(
-            self.ib.placeOrder(sell_ticker.contract, order)
-        )
+        trade = self.ib.placeOrder(sell_ticker.contract, order)
+        self.orders.append(trade)
         click.echo()
         click.secho("Order submitted", fg="green")
         click.secho(f"{trade}", fg="green")
@@ -716,7 +719,9 @@ class PortfolioManager:
             )
 
             # Submit order
-            trade = self.wait_for_trade_submitted(self.ib.placeOrder(combo, order))
+            trade = self.ib.placeOrder(combo, order)
+            self.orders.append(trade)
+            click.echo()
             click.secho("Order submitted", fg="green")
             click.secho(f"{trade}", fg="green")
 
@@ -785,10 +790,10 @@ class PortfolioManager:
 
         contracts = self.ib.qualifyContracts(*contracts)
 
-        contracts = self.ib.reqTickers(*contracts)
+        tickers = self.ib.reqTickers(*contracts)
 
         # Filter out contracts which don't have a midpoint price
-        contracts = [c for c in contracts if not util.isNan(c.midpoint())]
+        tickers = [t for t in tickers if not util.isNan(t.midpoint())]
 
         def open_interest_is_valid(ticker):
             def open_interest_is_not_ready():
@@ -800,7 +805,7 @@ class PortfolioManager:
             try:
                 while_n_times(
                     open_interest_is_not_ready,
-                    lambda: self.ib.waitOnUpdate(timeout=5),
+                    lambda: self.ib.waitOnUpdate(timeout=30),
                     25,
                 )
             except RuntimeError:
@@ -834,10 +839,10 @@ class PortfolioManager:
             )
 
         # Filter by delta and open interest
-        contracts = [contract for contract in contracts if delta_is_valid(ticker)]
+        tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
         tickers = [
-            self.ib.reqMktData(contract, genericTickList="101")
-            for contract in contracts
+            self.ib.reqMktData(ticker.contract, genericTickList="101")
+            for ticker in tickers
         ]
         tickers = [ticker for ticker in tickers if open_interest_is_valid(ticker)]
         tickers = sorted(
