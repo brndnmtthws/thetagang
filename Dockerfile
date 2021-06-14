@@ -35,6 +35,7 @@ RUN python3 -m pip install dist/thetagang-*.whl \
   && echo '--add-modules=javafx.base,javafx.controls,javafx.fxml,javafx.graphics,javafx.media,javafx.swing,javafx.web' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--add-opens java.desktop/javax.swing=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--add-opens java.desktop/java.awt=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '--add-opens java.base/java.util=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--illegal-access=permit' | tee -a /root/Jts/*/tws.vmoptions
 
 ENTRYPOINT [ "/src/entrypoint.bash" ]
