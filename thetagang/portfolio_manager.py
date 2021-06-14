@@ -809,6 +809,8 @@ class PortfolioManager:
                     fg="yellow",
                 )
                 return False
+            finally:
+                self.ib.cancelMktData(ticker.contract)
 
             # The open interest value is never present when using historical
             # data, so just ignore it when the value is None
@@ -834,7 +836,7 @@ class PortfolioManager:
         # Filter by delta and open interest
         tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
         tickers = [
-            self.ib.reqMktData(ticker.contract, genericTickList="101", snapshot=True)
+            self.ib.reqMktData(ticker.contract, genericTickList="101")
             for ticker in tickers
         ]
         tickers = [ticker for ticker in tickers if open_interest_is_valid(ticker)]
