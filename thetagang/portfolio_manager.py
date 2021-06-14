@@ -785,10 +785,10 @@ class PortfolioManager:
 
         contracts = self.ib.qualifyContracts(*contracts)
 
-        tickers = self.ib.reqTickers(*contracts)
+        contracts = self.ib.reqTickers(*contracts)
 
-        # Filter out tickers which don't have a midpoint price
-        tickers = [t for t in tickers if not util.isNan(t.midpoint())]
+        # Filter out contracts which don't have a midpoint price
+        contracts = [c for c in contracts if not util.isNan(c.midpoint())]
 
         def open_interest_is_valid(ticker):
             def open_interest_is_not_ready():
@@ -834,10 +834,10 @@ class PortfolioManager:
             )
 
         # Filter by delta and open interest
-        tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
+        contracts = [contract for contract in contracts if delta_is_valid(ticker)]
         tickers = [
-            self.ib.reqMktData(ticker.contract, genericTickList="101")
-            for ticker in tickers
+            self.ib.reqMktData(contract, genericTickList="101")
+            for contract in contracts
         ]
         tickers = [ticker for ticker in tickers if open_interest_is_valid(ticker)]
         tickers = sorted(
