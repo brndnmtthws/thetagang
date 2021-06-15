@@ -1,4 +1,5 @@
 import math
+from datetime import datetime
 
 from ib_insync import util
 from ib_insync.contract import Option
@@ -66,14 +67,15 @@ def count_long_option_positions(symbol, portfolio_positions, right):
     return 0
 
 
-def while_n_times(pred, body, remaining):
-    if remaining <= 0:
+def wait_n_seconds(pred, body, seconds_to_wait, started_at=datetime.now()):
+    diff = datetime.now() - started_at
+    if diff.seconds > seconds_to_wait:
         raise RuntimeError(
             "Exhausted retries waiting on predicate. This shouldn't happen."
         )
-    if pred() and remaining > 0:
+    if pred():
         body()
-        while_n_times(pred, body, remaining - 1)
+        wait_n_seconds(pred, body, seconds_to_wait, started_at)
 
 
 def get_highest_price(ticker):

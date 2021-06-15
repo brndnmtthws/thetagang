@@ -1,5 +1,6 @@
 import math
 from functools import lru_cache
+
 import click
 from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Option, Stock, TagValue
@@ -14,7 +15,7 @@ from thetagang.util import (
     midpoint_or_market_price,
     portfolio_positions_to_dict,
     position_pnl,
-    while_n_times,
+    wait_n_seconds,
 )
 
 from .options import option_dte
@@ -29,12 +30,21 @@ class PortfolioManager:
         self.ib.orderStatusEvent += self.orderStatusEvent
 
     def orderStatusEvent(self, trade):
-        if trade.orderStatus.status in ["Submitted", "Filled"]:
-            click.secho(f"Order updated: {trade}", fg="green")
-        elif "Cancelled" in trade.orderStatus.status:
-            click.secho(f"Order cancelled: {trade}", fg="red")
+        if "Filled" in trade.orderStatus.status:
+            click.secho(
+                f"Order filled, symbol={trade.contract.symbol}",
+                fg="green",
+            )
+        if "Cancelled" in trade.orderStatus.status:
+            click.secho(
+                f"Order cancelled, symbol={trade.contract.symbol} message={trade.orderStatus.message}",
+                fg="red",
+            )
         else:
-            click.secho(f"Order updated: {trade}", fg="blue")
+            click.secho(
+                f"Order updated, symbol={trade.contract.symbol} status={trade.orderStatus.status}",
+                fg="blue",
+            )
 
     def get_calls(self, portfolio_positions):
         return self.get_options(portfolio_positions, "C")
@@ -59,10 +69,10 @@ class PortfolioManager:
 
     def wait_for_midpoint_price(self, ticker):
         try:
-            while_n_times(
+            wait_n_seconds(
                 lambda: util.isNan(ticker.midpoint()),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                25,
+                60,
             )
         except RuntimeError:
             return False
@@ -70,10 +80,10 @@ class PortfolioManager:
 
     def wait_for_market_price(self, ticker):
         try:
-            while_n_times(
+            wait_n_seconds(
                 lambda: util.isNan(ticker.marketPrice()),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                25,
+                60,
             )
         except:
             return False
@@ -379,12 +389,12 @@ class PortfolioManager:
             self.check_if_can_write_puts(account_summary, portfolio_positions)
 
             # Wait for pending orders
-            while_n_times(
+            wait_n_seconds(
                 lambda: any(
                     "Pending" in trade.orderStatus.status for trade in self.orders
                 ),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                25,
+                60,
             )
 
             click.echo()
@@ -803,10 +813,10 @@ class PortfolioManager:
                     return util.isNan(ticker.callOpenInterest)
 
             try:
-                while_n_times(
+                wait_n_seconds(
                     open_interest_is_not_ready,
-                    lambda: self.ib.waitOnUpdate(timeout=30),
-                    25,
+                    lambda: self.ib.waitOnUpdate(timeout=15),
+                    60,
                 )
             except RuntimeError:
                 click.secho(
