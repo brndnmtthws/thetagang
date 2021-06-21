@@ -848,13 +848,23 @@ class PortfolioManager:
                 <= get_target_delta(self.config, symbol, right)
             )
 
+        def price_is_valid(ticker):
+            return not util.isNan(ticker.midpoint()) or not util.isNan(
+                ticker.marketPrice()
+            )
+
+        # Filter out tickers without prices
+        tickers = [ticker for ticker in tickers if price_is_valid(ticker)]
         # Filter by delta and open interest
         tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
+        # Fetch market data
         tickers = [
             self.ib.reqMktData(ticker.contract, genericTickList="101")
             for ticker in tickers
         ]
+        # Fetch open interest
         tickers = [ticker for ticker in tickers if open_interest_is_valid(ticker)]
+        # Sort by delta first, then expiry date
         tickers = sorted(
             reversed(sorted(tickers, key=lambda t: abs(t.modelGreeks.delta))),
             key=lambda t: option_dte(t.contract.lastTradeDateOrContractMonth),
