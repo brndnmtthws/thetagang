@@ -95,7 +95,11 @@ def midpoint_or_market_price(ticker):
     # we often prefer the midpoint over the last price. This function pulls the
     # midpoint first, then falls back to marketPrice() if midpoint is nan.
     if util.isNan(ticker.midpoint()):
-        return ticker.marketPrice()
+        if util.isNan(ticker.marketPrice()):
+            # Fallback to the model price
+            return ticker.modelGreeks.optPrice
+        else:
+            return ticker.marketPrice()
 
     return ticker.midpoint()
 
