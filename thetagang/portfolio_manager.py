@@ -4,7 +4,7 @@ from functools import lru_cache
 import click
 from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Option, Stock, TagValue
-from ib_insync.order import LimitOrder, Order
+from ib_insync.order import LimitOrder
 
 from thetagang.util import (
     account_summary_to_dict,
@@ -220,7 +220,7 @@ class PortfolioManager:
     def summarize_account(self):
         account_summary = self.ib.accountSummary(self.config["account"]["number"])
         click.echo()
-        click.secho(f"Account summary:", fg="green")
+        click.secho("Account summary:", fg="green")
         click.echo()
         account_summary = account_summary_to_dict(account_summary)
 
@@ -844,6 +844,7 @@ class PortfolioManager:
             return (
                 ticker.modelGreeks
                 and not util.isNan(ticker.modelGreeks.delta)
+                and ticker.modelGreeks.delta is not None
                 and abs(ticker.modelGreeks.delta)
                 <= get_target_delta(self.config, symbol, right)
             )
