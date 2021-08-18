@@ -1,4 +1,4 @@
-FROM adoptopenjdk/openjdk12:debian
+FROM adoptopenjdk/openjdk11:debian
 
 RUN apt update \
   && DEBIAN_FRONTEND=noninteractive apt install -qy --no-install-recommends \
