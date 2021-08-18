@@ -124,13 +124,14 @@ def start(config):
         util.logToFile(config["ib_insync"]["logfile"])
 
     # TWS version is pinned to current stable
-    ibc = IBC(981, **config["ibc"])
+    ibc_config = config.get("ibc", {})
+    ibc = IBC(981, **ibc_config)
 
     def onConnected():
         portfolio_manager.manage()
 
     ib = IB()
-    ib.RaiseRequestErrors = True
+    ib.RaiseRequestErrors = ibc_config.get("RaiseRequestErrors", False)
     ib.connectedEvent += onConnected
 
     completion_future = asyncio.Future()

@@ -155,6 +155,11 @@ gateway = true
 ibcPath = '/opt/ibc'
 tradingMode = 'paper'
 
+# Set this to true if you want to raise an exception on request errors. Under
+# normal operation this should be false because we often try to make "invalid"
+# requests when scanning option chains for example.
+RaiseRequestErrors = false
+
 password = 'demo'
 userid = 'demo'
 
