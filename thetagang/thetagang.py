@@ -114,7 +114,10 @@ def start(config):
             fg="cyan",
         )
     assert (
-        sum([config["symbols"][s]["weight"] for s in config["symbols"].keys()]) == 1.0
+        round(
+            sum([config["symbols"][s]["weight"] for s in config["symbols"].keys()]), 5
+        )
+        == 1.00000
     )
     click.echo()
 
