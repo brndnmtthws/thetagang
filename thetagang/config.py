@@ -87,6 +87,7 @@ def validate_config(config):
                 Optional("password"): And(str, len),
                 Optional("userid"): And(str, len),
                 Optional("gateway"): bool,
+                Optional("RaiseRequestErrors"): bool,
                 Optional("ibcPath"): And(str, len),
                 Optional("tradingMode"): And(
                     str, len, lambda s: s in ("live", "paper")
