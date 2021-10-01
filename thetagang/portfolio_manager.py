@@ -72,7 +72,7 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: util.isNan(ticker.midpoint()),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                60,
+                90,
             )
         except RuntimeError:
             return False
@@ -83,7 +83,7 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: util.isNan(ticker.marketPrice()),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                60,
+                90,
             )
         except:
             return False
@@ -394,7 +394,7 @@ class PortfolioManager:
                     "Pending" in trade.orderStatus.status for trade in self.orders
                 ),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                60,
+                90,
             )
 
             click.echo()
@@ -816,7 +816,7 @@ class PortfolioManager:
                 wait_n_seconds(
                     open_interest_is_not_ready,
                     lambda: self.ib.waitOnUpdate(timeout=15),
-                    60,
+                    90,
                 )
             except RuntimeError:
                 click.secho(
