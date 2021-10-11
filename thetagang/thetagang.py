@@ -125,7 +125,11 @@ def start(config):
 
     # TWS version is pinned to current stable
     ibc_config = config.get("ibc", {})
-    ibc = IBC(981, **ibc_config)
+    # Remove any config params that aren't valid keywords for IBC
+    ibc_keywords = {
+        k: ibc_config[k] for k in ibc_config if k not in ["RaiseRequestErrors"]
+    }
+    ibc = IBC(981, **ibc_keywords)
 
     def onConnected():
         portfolio_manager.manage()
