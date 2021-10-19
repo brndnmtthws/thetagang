@@ -48,6 +48,7 @@ def validate_config(config):
                 "pnl": And(float, lambda n: 0 <= n <= 1),
                 "dte": And(int, lambda n: 0 <= n),
                 "min_pnl": float,
+                Optional("max_dte"): And(int, lambda n: 1 <= n),
                 Optional("calls"): {
                     "itm": bool,
                 },

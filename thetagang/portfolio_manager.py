@@ -121,6 +121,12 @@ class PortfolioManager:
         roll_when_pnl = self.config["roll_when"]["pnl"]
         roll_when_min_pnl = self.config["roll_when"]["min_pnl"]
 
+        if (
+            "max_dte" in self.config["roll_when"]
+            and dte > self.config["roll_when"]["max_dte"]
+        ):
+            return False
+
         if dte <= roll_when_dte:
             if pnl >= roll_when_min_pnl:
                 click.secho(
@@ -684,6 +690,11 @@ class PortfolioManager:
             self.wait_for_midpoint_price(sell_ticker)
 
             quantity = abs(position.position)
+            maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
+            dte = option_dte(position.contract.lastTradeDateOrContractMonth)
+            roll_when_dte = self.config["roll_when"]["dte"]
+            if dte > roll_when_dte:
+                quantity = min([quantity, maximum_new_contracts])
 
             position.contract.exchange = "SMART"
             [buy_ticker] = self.ib.reqTickers(position.contract)
@@ -732,7 +743,10 @@ class PortfolioManager:
             trade = self.ib.placeOrder(combo, order)
             self.orders.append(trade)
             click.echo()
-            click.secho("Order submitted", fg="green")
+            click.secho(
+                f"Order submitted, current position={abs(position.position)} quantity to roll={quantity}, dte={dte}, price={round(price,2)}",
+                fg="green",
+            )
             click.secho(f"{trade}", fg="green")
 
     def find_eligible_contracts(

@@ -60,6 +60,10 @@ pnl = 0.9
 dte = 15
 min_pnl = 0.0
 
+# Optional: Don't roll contracts when the current DTE is greater than this
+# number of days. This helps avoid cases where you end up rolling out to LEAPs.
+# max_dte = 180
+
 [roll_when.calls]
 # Roll calls to the next expiration even if they're in the money. Defaults to
 # true if not specified.
@@ -76,11 +80,15 @@ dte = 45
 # Target delta of 0.3 or less. Defaults to 0.3 if not specified.
 delta = 0.3
 
-# When writing new contracts (either covered calls or naked puts), never write
-# more than this number of contracts at once. This can be useful to spread the
-# contracts out over time in order to protect yourself from large swings. This
-# value does not affect rolling existing contracts to the next expiration.
-# Defaults to 15 if not specified.
+# When writing new contracts (either covered calls or naked puts), or rolling
+# before `roll_when.dte` is reached, never write more than this number of
+# contracts at once.  This can be useful to avoid bunching by spreading contract
+# placement out over time (and possibly expirations) in order to protect
+# yourself from large swings. This value does not affect rolling existing
+# contracts to the next expiration.  Defaults to 15 if not specified.
+#
+# Once the `roll_when.dte` date is reached, all the remaining positions are
+# rolled regardless of the current position quantity.
 maximum_new_contracts = 15
 
 # Minimum amount of open interest for a contract to qualify

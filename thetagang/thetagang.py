@@ -52,10 +52,16 @@ def start(config):
         f"    Days to expiry          <= {config['roll_when']['dte']} and P&L >= {config['roll_when']['min_pnl']} ({config['roll_when']['min_pnl'] * 100}%)",
         fg="cyan",
     )
-    click.secho(
-        f"    P&L                     >= {config['roll_when']['pnl']} ({config['roll_when']['pnl'] * 100}%)",
-        fg="cyan",
-    )
+    if "max_dte" in config["roll_when"]:
+        click.secho(
+            f"    P&L                     >= {config['roll_when']['pnl']} ({config['roll_when']['pnl'] * 100}%) and DTE < {config['roll_when']['max_dte']}",
+            fg="cyan",
+        )
+    else:
+        click.secho(
+            f"    P&L                     >= {config['roll_when']['pnl']} ({config['roll_when']['pnl'] * 100}%)",
+            fg="cyan",
+        )
 
     click.echo()
     click.secho("  When contracts are ITM:", fg="green")
