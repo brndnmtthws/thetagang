@@ -690,7 +690,9 @@ class PortfolioManager:
             self.wait_for_midpoint_price(sell_ticker)
 
             quantity = abs(position.position)
-            maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
+            maximum_new_contracts = float(
+                self.config["target"]["maximum_new_contracts"]
+            )
             dte = option_dte(position.contract.lastTradeDateOrContractMonth)
             roll_when_dte = self.config["roll_when"]["dte"]
             if dte > roll_when_dte:
