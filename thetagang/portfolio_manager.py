@@ -746,10 +746,9 @@ class PortfolioManager:
             self.orders.append(trade)
             click.echo()
             click.secho(
-                f"Order submitted, current position={abs(position.position)} quantity to roll={quantity}, dte={dte}, price={round(price,2)}",
+                f"Order submitted, current position={abs(position.position)} quantity to roll={quantity}, dte={dte}, price={round(price,2)}, trade={trade}",
                 fg="green",
             )
-            click.secho(f"{trade}", fg="green")
 
     def find_eligible_contracts(
         self, symbol, primary_exchange, right, strike_limit, excluded_expirations=[]
