@@ -230,6 +230,11 @@ class PortfolioManager:
         click.echo()
         account_summary = account_summary_to_dict(account_summary)
 
+        if "NetLiquidation" not in account_summary:
+            raise RuntimeError(
+                f"Account number {self.config['account']['number']} appears invalid (no account data returned)"
+            )
+
         justified_values = {
             "ExcessLiquidity": f"{float(account_summary['ExcessLiquidity'].value):,.0f}",
             "NetLiquidation": f"{float(account_summary['NetLiquidation'].value):,.0f}",
