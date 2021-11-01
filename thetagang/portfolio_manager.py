@@ -37,7 +37,7 @@ class PortfolioManager:
             )
         if "Cancelled" in trade.orderStatus.status:
             click.secho(
-                f"Order cancelled, symbol={trade.contract.symbol} message={trade.orderStatus.message}",
+                f"Order cancelled, symbol={trade.contract.symbol} log={trade.orderStatus.log}",
                 fg="red",
             )
         else:
