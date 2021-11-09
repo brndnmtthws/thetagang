@@ -787,13 +787,14 @@ class PortfolioManager:
             return False
 
         chain_expirations = self.config["option_chains"]["expirations"]
+        min_dte = max([0] + [option_dte(e) for e in excluded_expirations])
 
         strikes = sorted(strike for strike in chain.strikes if valid_strike(strike))
         expirations = sorted(
             exp
             for exp in chain.expirations
             if option_dte(exp) >= self.config["target"]["dte"]
-            and exp not in excluded_expirations
+            and option_dte(exp) > min_dte
         )[:chain_expirations]
         rights = [right]
 
