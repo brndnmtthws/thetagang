@@ -690,7 +690,7 @@ class PortfolioManager:
                 self.get_primary_exchange(symbol),
                 right,
                 strike_limit,
-                excluded_expirations=[position.contract.lastTradeDateOrContractMonth],
+                excluded_expiration=position.contract.lastTradeDateOrContractMonth,
             )
             self.wait_for_midpoint_price(sell_ticker)
 
@@ -756,7 +756,7 @@ class PortfolioManager:
             )
 
     def find_eligible_contracts(
-        self, symbol, primary_exchange, right, strike_limit, excluded_expirations=[]
+        self, symbol, primary_exchange, right, strike_limit, excluded_expiration=None
     ):
         click.echo()
         click.secho(
@@ -787,7 +787,7 @@ class PortfolioManager:
             return False
 
         chain_expirations = self.config["option_chains"]["expirations"]
-        min_dte = max([0] + [option_dte(e) for e in excluded_expirations])
+        min_dte = option_dte(excluded_expiration) if excluded_expiration else 0
 
         strikes = sorted(strike for strike in chain.strikes if valid_strike(strike))
         expirations = sorted(
