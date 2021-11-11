@@ -430,7 +430,7 @@ class PortfolioManager:
         total_rollable_puts = math.floor(sum([abs(p.position) for p in rollable_puts]))
 
         click.echo()
-        click.secho(f"{total_rollable_puts} puts will be rolled", fg="magenta")
+        click.secho(f"{total_rollable_puts} puts can be rolled", fg="magenta")
 
         self.roll_puts(rollable_puts)
 
@@ -445,7 +445,7 @@ class PortfolioManager:
         )
 
         click.echo()
-        click.secho(f"{total_rollable_calls} calls will be rolled", fg="magenta")
+        click.secho(f"{total_rollable_calls} calls can be rolled", fg="magenta")
 
         self.roll_calls(rollable_calls, portfolio_positions)
 
@@ -475,15 +475,16 @@ class PortfolioManager:
             )
 
             target_calls = max([0, stock_count // 100])
+            new_contracts_needed = target_calls - call_count
 
             maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
             calls_to_write = max(
-                [0, min([target_calls - call_count, maximum_new_contracts])]
+                [0, min([new_contracts_needed, maximum_new_contracts])]
             )
 
             if calls_to_write > 0:
                 click.secho(
-                    f"Need to write {calls_to_write} for {symbol}, capped at {maximum_new_contracts}, at or above strike ${strike_limit} (target_calls={target_calls}, call_count={call_count})",
+                    f"Will write {calls_to_write} calls, {new_contracts_needed} needed for {symbol}, capped at {maximum_new_contracts}, at or above strike ${strike_limit} (target_calls={target_calls}, call_count={call_count})",
                     fg="green",
                 )
                 self.write_calls(
@@ -646,12 +647,12 @@ class PortfolioManager:
                     strike_limit = get_strike_limit(self.config, symbol, "P")
                     if strike_limit:
                         click.secho(
-                            f"Preparing to write additional {puts_to_write} puts to purchase {symbol}, capped at {maximum_new_contracts}, at or below strike ${strike_limit}",
+                            f"Will write {puts_to_write} puts, {additional_quantity} needed for {symbol}, capped at {maximum_new_contracts}, at or below strike ${strike_limit}",
                             fg="cyan",
                         )
                     else:
                         click.secho(
-                            f"Preparing to write additional {puts_to_write} puts to purchase {symbol}, capped at {maximum_new_contracts}",
+                            f"Will write {puts_to_write} puts, {additional_quantity} needed for {symbol}, capped at {maximum_new_contracts}",
                             fg="cyan",
                         )
                     self.write_puts(
