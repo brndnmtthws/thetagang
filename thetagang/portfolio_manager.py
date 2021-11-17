@@ -724,9 +724,6 @@ class PortfolioManager:
             self.wait_for_midpoint_price(sell_ticker)
 
             quantity = abs(position.position)
-            maximum_new_contracts = float(
-                self.config["target"]["maximum_new_contracts"]
-            )
             maximum_new_contracts = self.get_maximum_new_contracts_for(
                 symbol,
                 self.get_primary_exchange(symbol),
