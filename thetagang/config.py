@@ -13,13 +13,22 @@ def normalize_config(config):
 
     if "twsVersion" in config["ibc"]:
         click.secho(
-            "WARNING: IBC config param 'twsVersion' is deprecated, please remove it from your config.",
+            "WARNING: config param ibc.twsVersion is deprecated, please remove it from your config.",
             fg="yellow",
             err=True,
         )
 
         # TWS version is pinned to latest stable, delete any existing config if it's present
         del config["ibc"]["twsVersion"]
+
+    if "maximum_new_contracts" in config["target"]:
+        click.secho(
+            "WARNING: config param target.maximum_new_contracts is deprecated, please remove it from your config.",
+            fg="yellow",
+            err=True,
+        )
+
+        del config["target"]["maximum_new_contracts"]
 
     return apply_default_values(config)
 
@@ -59,7 +68,10 @@ def validate_config(config):
             "target": {
                 "dte": And(int, lambda n: 0 <= n),
                 "delta": And(float, lambda n: 0 <= n <= 1),
-                "maximum_new_contracts": And(int, lambda n: 1 <= n),
+                Optional("maximum_new_contracts"): And(int, lambda n: 1 <= n),
+                Optional("maximum_new_contracts_percent"): And(
+                    float, lambda n: 0 <= n <= 1
+                ),
                 "minimum_open_interest": And(int, lambda n: 0 <= n),
                 Optional("calls"): {
                     Optional("delta"): And(float, lambda n: 0 <= n <= 1),

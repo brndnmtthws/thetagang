@@ -91,7 +91,7 @@ def start(config):
             fg="cyan",
         )
     click.secho(
-        f"    Maximum new contracts    = {config['target']['maximum_new_contracts']}",
+        f"    Maximum new contracts    = {config['target']['maximum_new_contracts_percent'] * 100}% of buying power",
         fg="cyan",
     )
     click.secho(

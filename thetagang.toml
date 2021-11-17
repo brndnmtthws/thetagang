@@ -81,15 +81,20 @@ dte = 45
 delta = 0.3
 
 # When writing new contracts (either covered calls or naked puts), or rolling
-# before `roll_when.dte` is reached, never write more than this number of
-# contracts at once.  This can be useful to avoid bunching by spreading contract
+# before `roll_when.dte` is reached, never write more than this amount of
+# contracts at once. This can be useful to avoid bunching by spreading contract
 # placement out over time (and possibly expirations) in order to protect
 # yourself from large swings. This value does not affect rolling existing
-# contracts to the next expiration.  Defaults to 15 if not specified.
-#
+# contracts to the next expiration. This value is expressed as a percentage of
+# buying power based on the market price of the underlying ticker, as a range
+# from [0.0-1.0].
+# 
 # Once the `roll_when.dte` date is reached, all the remaining positions are
 # rolled regardless of the current position quantity.
-maximum_new_contracts = 15
+#
+# Defaults to 5% of buying power. Set this to 1.0 to effectively disable the
+# limit.
+maximum_new_contracts_percent = 0.05
 
 # Minimum amount of open interest for a contract to qualify
 minimum_open_interest = 10
@@ -147,7 +152,7 @@ primary_exchange = "NASDAQ"
 weight = 0.05
 
 # Sometimes you may need to wrap the symbol in quotes.
-[symbols."BRK.B"]
+[symbols."BRK B"]
 # For symbols that require an exchange, which is typically any company stock,
 # you must specify the primary exchange.
 primary_exchange = "NYSE"

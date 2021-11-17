@@ -392,11 +392,11 @@ class PortfolioManager:
             click.echo()
             click.secho("Checking positions...", fg="green")
 
-            self.check_puts(portfolio_positions)
-            self.check_calls(portfolio_positions)
+            self.check_puts(account_summary, portfolio_positions)
+            self.check_calls(account_summary, portfolio_positions)
 
             # Look for lots of stock that don't have covered calls
-            self.check_for_uncovered_positions(portfolio_positions)
+            self.check_for_uncovered_positions(account_summary, portfolio_positions)
 
             # Refresh positions, in case anything changed from the ordering above
             portfolio_positions = self.get_portfolio_positions()
@@ -425,7 +425,7 @@ class PortfolioManager:
             # Shut it down
             self.completion_future.set_result(True)
 
-    def check_puts(self, portfolio_positions):
+    def check_puts(self, account_summary, portfolio_positions):
         # Check for puts which may be rolled to the next expiration or a better price
         puts = self.get_puts(portfolio_positions)
 
@@ -437,9 +437,9 @@ class PortfolioManager:
         click.echo()
         click.secho(f"{total_rollable_puts} puts can be rolled", fg="magenta")
 
-        self.roll_puts(rollable_puts)
+        self.roll_puts(rollable_puts, account_summary)
 
-    def check_calls(self, portfolio_positions):
+    def check_calls(self, account_summary, portfolio_positions):
         # Check for calls which may be rolled to the next expiration or a better price
         calls = self.get_calls(portfolio_positions)
 
@@ -452,9 +452,21 @@ class PortfolioManager:
         click.echo()
         click.secho(f"{total_rollable_calls} calls can be rolled", fg="magenta")
 
-        self.roll_calls(rollable_calls, portfolio_positions)
+        self.roll_calls(rollable_calls, account_summary, portfolio_positions)
 
-    def check_for_uncovered_positions(self, portfolio_positions):
+    def get_maximum_new_contracts_for(self, symbol, primary_exchange, account_summary):
+        total_buying_power = self.get_buying_power(account_summary)
+        max_buying_power = (
+            self.config["target"]["maximum_new_contracts_percent"] * total_buying_power
+        )
+        ticker = self.get_ticker_for(
+            symbol,
+            primary_exchange,
+        )
+
+        return max([1, round((max_buying_power / ticker.marketPrice()) // 100)])
+
+    def check_for_uncovered_positions(self, account_summary, portfolio_positions):
         for symbol in portfolio_positions:
             call_count = max(
                 [0, count_short_option_positions(symbol, portfolio_positions, "C")]
@@ -482,7 +494,11 @@ class PortfolioManager:
             target_calls = max([0, stock_count // 100])
             new_contracts_needed = target_calls - call_count
 
-            maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
+            maximum_new_contracts = self.get_maximum_new_contracts_for(
+                symbol,
+                self.get_primary_exchange(symbol),
+                account_summary,
+            )
             calls_to_write = max(
                 [0, min([new_contracts_needed, maximum_new_contracts])]
             )
@@ -575,6 +591,12 @@ class PortfolioManager:
     def get_primary_exchange(self, symbol):
         return self.config["symbols"][symbol].get("primary_exchange", "")
 
+    def get_buying_power(self, account_summary):
+        return math.floor(
+            float(account_summary["NetLiquidation"].value)
+            * self.config["account"]["margin_usage"]
+        )
+
     def check_if_can_write_puts(self, account_summary, portfolio_positions):
         # Get stock positions
         stock_positions = [
@@ -584,10 +606,7 @@ class PortfolioManager:
             if isinstance(position.contract, Stock)
         ]
 
-        total_buying_power = math.floor(
-            float(account_summary["NetLiquidation"].value)
-            * self.config["account"]["margin_usage"]
-        )
+        total_buying_power = self.get_buying_power(account_summary)
 
         click.echo()
         click.secho(
@@ -646,7 +665,11 @@ class PortfolioManager:
             # like with futures, but we don't bother handling those cases.
             # Please don't use this code with futures.
             if additional_quantity >= 1:
-                maximum_new_contracts = self.config["target"]["maximum_new_contracts"]
+                maximum_new_contracts = self.get_maximum_new_contracts_for(
+                    symbol,
+                    self.get_primary_exchange(symbol),
+                    account_summary,
+                )
                 puts_to_write = min([additional_quantity, maximum_new_contracts])
                 if puts_to_write > 0:
                     strike_limit = get_strike_limit(self.config, symbol, "P")
@@ -669,13 +692,13 @@ class PortfolioManager:
 
         return
 
-    def roll_puts(self, puts):
-        return self.roll_positions(puts, "P")
+    def roll_puts(self, puts, account_summary):
+        return self.roll_positions(puts, "P", account_summary)
 
-    def roll_calls(self, calls, portfolio_positions):
-        return self.roll_positions(calls, "C", portfolio_positions)
+    def roll_calls(self, calls, account_summary, portfolio_positions):
+        return self.roll_positions(calls, "C", account_summary, portfolio_positions)
 
-    def roll_positions(self, positions, right, portfolio_positions={}):
+    def roll_positions(self, positions, right, account_summary, portfolio_positions={}):
         for position in positions:
             symbol = position.contract.symbol
             strike_limit = get_strike_limit(self.config, symbol, right)
@@ -703,6 +726,11 @@ class PortfolioManager:
             quantity = abs(position.position)
             maximum_new_contracts = float(
                 self.config["target"]["maximum_new_contracts"]
+            )
+            maximum_new_contracts = self.get_maximum_new_contracts_for(
+                symbol,
+                self.get_primary_exchange(symbol),
+                account_summary,
             )
             dte = option_dte(position.contract.lastTradeDateOrContractMonth)
             roll_when_dte = self.config["roll_when"]["dte"]

@@ -1,6 +1,6 @@
 DEFAULT_CONFIG = {
     "target": {
-        "maximum_new_contracts": 15,
+        "maximum_new_contracts_percent": 0.05,
         "delta": 0.3,
     },
     "roll_when": {
