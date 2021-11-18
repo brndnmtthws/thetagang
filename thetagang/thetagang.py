@@ -105,8 +105,7 @@ def start(config):
         c = config["symbols"][s]
         c_delta = f"{get_target_delta(config, s, 'C'):.2f}".rjust(4)
         p_delta = f"{get_target_delta(config, s, 'P'):.2f}".rjust(4)
-        weight = f"{c['weight']:.2f}".rjust(4)
-        weight_p = f"{(c['weight'] * 100):.1f}".rjust(4)
+        weight_p = f"{(c['weight'] * 100):.2f}".rjust(4)
         strike_limits = ""
         c_limit = get_strike_limit(config, s, "C")
         p_limit = get_strike_limit(config, s, "P")
@@ -115,7 +114,7 @@ def start(config):
         if p_limit:
             strike_limits += f", put strike <= ${p_limit:.2f}"
         click.secho(
-            f"    {s.rjust(5)} weight = {weight} ({weight_p}%), delta = {p_delta}p, {c_delta}c{strike_limits}",
+            f"    {s.rjust(5)} weight = {weight_p}%, delta = {p_delta}p, {c_delta}c{strike_limits}",
             fg="cyan",
         )
     assert (

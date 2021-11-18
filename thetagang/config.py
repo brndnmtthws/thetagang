@@ -1,7 +1,7 @@
 import math
 
 import click
-from schema import And, Optional, Schema, Use
+from schema import And, Optional, Or, Schema
 
 import thetagang.config_defaults as config_defaults
 from thetagang.dict_merge import dict_merge
@@ -29,6 +29,22 @@ def normalize_config(config):
         )
 
         del config["target"]["maximum_new_contracts"]
+
+    # xor: should have weight OR parts, but not both
+    if any(["weight" in s for s in config["symbols"].values()]) == any(
+        ["parts" in s for s in config["symbols"].values()]
+    ):
+        raise RuntimeError(
+            "ERROR: all symbols should have either a weight or parts specified, but parts and weights cannot be mixed."
+        )
+
+    if "parts" in list(config["symbols"].values())[0]:
+        # If using "parts" instead of "weight", convert parts into weights
+        total_parts = float(sum([s["parts"] for s in config["symbols"].values()]))
+        for k in config["symbols"].keys():
+            config["symbols"][k]["weight"] = config["symbols"][k]["parts"] / total_parts
+        for s in config["symbols"].values():
+            del s["parts"]
 
     return apply_default_values(config)
 
@@ -82,7 +98,10 @@ def validate_config(config):
             },
             "symbols": {
                 object: {
-                    "weight": And(float, lambda n: 0 <= n <= 1),
+                    Or("weight", "parts", only_one=True): And(
+                        Or(float, int),
+                        lambda n: 0 <= n <= 1 if isinstance(n, float) else n > 0,
+                    ),
                     Optional("primary_exchange"): And(str, len),
                     Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                     Optional("calls"): {
@@ -134,6 +153,7 @@ def validate_config(config):
     schema.validate(config)
 
     assert len(config["symbols"]) > 0
+
     assert math.isclose(
         1, sum([s["weight"] for s in config["symbols"].values()]), rel_tol=1e-5
     )

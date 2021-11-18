@@ -26,6 +26,9 @@ cancel_orders = true
 # The default value uses 50% of your available net liquidation value
 # (i.e., half of your funds). Set this to 1.0 to use all your funds,
 # or 1.5 to use 150% (which may incur margin interest charges).
+#
+# In other words, ThetaGang's buying power is calculated by taking your NLV and
+# multiplying it by margin_usage.
 margin_usage = 0.5
 
 # Market data type (see
@@ -114,6 +117,11 @@ minimum_open_interest = 10
 # values were chosen as sane values should someone decide to run this code
 # without changes, however it is in no way a recommendation or endorsement.
 #
+# You can specify the weight either as a percentage of your buying power (which
+# is calculated as your NLV * account.margin_usage), or in terms of parts. Parts
+# are summed from all symbols, then the weight is calculated by dividing the
+# parts by the total parts.
+#
 # You should try to choose ETFs or stocks that:
 #
 #  1) Have sufficient trading volume for the underlying
@@ -125,9 +133,13 @@ minimum_open_interest = 10
 # symbol, or override individually for puts/calls.
 [symbols.SPY]
 weight = 0.4
+# OR: specify in terms of parts. Must use either weight or parts, but cannot mix
+# both.
+# parts = 40
 
 [symbols.QQQ]
 weight = 0.3
+# parts = 30
 
 [symbols.QQQ.puts]
 # Override delta just for QQQ puts
@@ -142,6 +154,7 @@ strike_limit = 100.0 # never write a call with a strike below $100
 
 [symbols.TLT]
 weight = 0.2
+# parts = 20
 # Override delta for this particular symbol, for both puts and calls.
 delta = 0.4
 
@@ -150,6 +163,7 @@ delta = 0.4
 # you must specify the primary exchange.
 primary_exchange = "NASDAQ"
 weight = 0.05
+# parts = 5
 
 # Sometimes you may need to wrap the symbol in quotes.
 [symbols."BRK B"]
@@ -157,6 +171,7 @@ weight = 0.05
 # you must specify the primary exchange.
 primary_exchange = "NYSE"
 weight = 0.05
+# parts = 5
 
 [ib_insync]
 logfile = '/etc/thetagang/ib_insync.log'
