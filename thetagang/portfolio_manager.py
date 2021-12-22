@@ -177,6 +177,12 @@ class PortfolioManager:
         roll_when_pnl = self.config["roll_when"]["pnl"]
         roll_when_min_pnl = self.config["roll_when"]["min_pnl"]
 
+        if (
+            "max_dte" in self.config["roll_when"]
+            and dte > self.config["roll_when"]["max_dte"]
+        ):
+            return False
+
         if dte <= roll_when_dte:
             if pnl >= roll_when_min_pnl:
                 click.secho(
