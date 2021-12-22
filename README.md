@@ -154,7 +154,7 @@ much, consider [running ThetaGang with Docker](#running-with-docker).
 $ thetagang -h
 ```
 
-## Up and Running with Docker
+## Up and running with Docker
 
 My preferred way for running ThetaGang is to use a cronjob to execute Docker
 commands. I've built a Docker image as part of this project, which you can
