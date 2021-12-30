@@ -123,7 +123,7 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: any([util.isNan(t.midpoint()) for t in ticker_list]),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                api_response_wait_time,
+                30,
             )
         except RuntimeError:
             pass
