@@ -95,16 +95,43 @@ class PortfolioManager:
         return True
 
     @lru_cache(maxsize=32)
-    def get_ticker_for(self, symbol, primary_exchange):
-        stock = Stock(symbol, "SMART", currency="USD", primaryExchange=primary_exchange)
-        [ticker] = self.ib.reqTickers(stock)
+    def get_chains_for_stock(self, stock):
+        return self.ib.reqSecDefOptParams(stock.symbol, "", stock.secType, stock.conId)
 
-        self.wait_for_market_price(ticker)
+    @lru_cache(maxsize=32)
+    def get_ticker_for_stock(self, symbol, primary_exchange, midpoint=False):
+        stock = Stock(symbol, "SMART", currency="USD", primaryExchange=primary_exchange)
+        self.ib.qualifyContracts(stock)
+        return self.get_ticker_for(stock)
+
+    @lru_cache(maxsize=32)
+    def get_ticker_for(self, contract, midpoint=False):
+        [ticker] = self.ib.reqTickers(contract)
+
+        if midpoint:
+            self.wait_for_midpoint_price(ticker)
+        else:
+            self.wait_for_market_price(ticker)
 
         return ticker
 
+    @lru_cache(maxsize=32)
+    def get_ticker_list_for(self, contracts):
+        ticker_list = self.ib.reqTickers(*contracts)
+
+        try:
+            wait_n_seconds(
+                lambda: any([util.isNan(t.midpoint()) for t in ticker_list]),
+                lambda: self.ib.waitOnUpdate(timeout=15),
+                api_response_wait_time,
+            )
+        except RuntimeError:
+            pass
+
+        return ticker_list
+
     def put_is_itm(self, contract):
-        ticker = self.get_ticker_for(contract.symbol, contract.primaryExchange)
+        ticker = self.get_ticker_for_stock(contract.symbol, contract.primaryExchange)
 
         return contract.strike >= ticker.marketPrice()
 
@@ -155,7 +182,7 @@ class PortfolioManager:
         return False
 
     def call_is_itm(self, contract):
-        ticker = self.get_ticker_for(contract.symbol, contract.primaryExchange)
+        ticker = self.get_ticker_for_stock(contract.symbol, contract.primaryExchange)
 
         return contract.strike <= ticker.marketPrice()
 
@@ -465,7 +492,7 @@ class PortfolioManager:
         max_buying_power = (
             self.config["target"]["maximum_new_contracts_percent"] * total_buying_power
         )
-        ticker = self.get_ticker_for(
+        ticker = self.get_ticker_for_stock(
             symbol,
             primary_exchange,
         )
@@ -550,8 +577,9 @@ class PortfolioManager:
             click.echo()
             click.secho("Order submitted", fg="green")
             click.secho(f"{trade}", fg="green")
-        except:
+        except RuntimeError as e:
             click.echo()
+            click.secho(e, fg="red")
             click.secho(
                 "Order trade submission seems to have failed, or a response wasn't received in time. Continuing anyway...",
                 fg="yellow",
@@ -562,8 +590,9 @@ class PortfolioManager:
             sell_ticker = self.find_eligible_contracts(
                 symbol, primary_exchange, "P", strike_limit
             )
-        except:
+        except RuntimeError as e:
             click.echo()
+            click.secho(e, fg="red")
             click.secho(
                 f"Finding eligible contracts for {symbol} failed. Continuing anyway...",
                 fg="yellow",
@@ -633,7 +662,9 @@ class PortfolioManager:
         for symbol in self.config["symbols"].keys():
             click.secho(f"  {symbol}", fg="green")
 
-            ticker = self.get_ticker_for(symbol, self.get_primary_exchange(symbol))
+            ticker = self.get_ticker_for_stock(
+                symbol, self.get_primary_exchange(symbol)
+            )
 
             current_position = math.floor(
                 stock_symbols[symbol].position if symbol in stock_symbols else 0
@@ -727,7 +758,6 @@ class PortfolioManager:
                 strike_limit,
                 excluded_expiration=position.contract.lastTradeDateOrContractMonth,
             )
-            self.wait_for_midpoint_price(sell_ticker)
 
             quantity = abs(position.position)
             maximum_new_contracts = self.get_maximum_new_contracts_for(
@@ -741,8 +771,7 @@ class PortfolioManager:
                 quantity = min([quantity, maximum_new_contracts])
 
             position.contract.exchange = "SMART"
-            [buy_ticker] = self.ib.reqTickers(position.contract)
-            self.wait_for_midpoint_price(buy_ticker)
+            [buy_ticker] = self.get_ticker_for(position.contract, midpoint=True)
 
             price = midpoint_or_market_price(buy_ticker) - midpoint_or_market_price(
                 sell_ticker
@@ -802,14 +831,12 @@ class PortfolioManager:
         )
         click.echo()
         stock = Stock(symbol, "SMART", currency="USD", primaryExchange=primary_exchange)
-        contracts = self.ib.qualifyContracts(stock)
+        self.ib.qualifyContracts(stock)
 
-        [ticker] = self.ib.reqTickers(stock)
+        ticker = self.get_ticker_for(stock)
         tickerValue = ticker.marketPrice()
 
-        chains = self.ib.reqSecDefOptParams(
-            stock.symbol, "", stock.secType, stock.conId
-        )
+        chains = self.get_chains_for_stock(stock)
         chain = next(c for c in chains if c.exchange == "SMART")
 
         def valid_strike(strike):
@@ -858,7 +885,7 @@ class PortfolioManager:
 
         contracts = self.ib.qualifyContracts(*contracts)
 
-        tickers = self.ib.reqTickers(*contracts)
+        tickers = self.get_ticker_list_for(tuple(contracts))
 
         # Filter out contracts which don't have a midpoint price
         tickers = [t for t in tickers if not util.isNan(t.midpoint())]
