@@ -771,7 +771,7 @@ class PortfolioManager:
                 quantity = min([quantity, maximum_new_contracts])
 
             position.contract.exchange = "SMART"
-            [buy_ticker] = self.get_ticker_for(position.contract, midpoint=True)
+            buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
 
             price = midpoint_or_market_price(buy_ticker) - midpoint_or_market_price(
                 sell_ticker
