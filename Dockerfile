@@ -13,8 +13,8 @@ RUN apt update \
   openjfx \
   && python3 -m pip install --upgrade pip \
   && if test "$(dpkg --print-architecture)" = "armhf" ; then python3 -m pip config set global.extra-index-url https://www.piwheels.org/simple ; fi \
-  && echo 'ffccc98102df7750b86a6b77308dcdc3965c4aff1ee7216ba7142cad67a292a0  ibc.zip' | tee ibc.zip.sha256 \
-  && curl -qL https://github.com/IbcAlpha/IBC/releases/download/3.8.7/IBCLinux-3.8.7.zip -o ibc.zip \
+  && echo 'f65a629f85c8603a51a4046e4b4f74adbec981a9aa4f7d45a281807fff78ea8f  ibc.zip' | tee ibc.zip.sha256 \
+  && curl -qL https://github.com/IbcAlpha/IBC/releases/download/3.12.0/IBCLinux-3.12.0.zip -o ibc.zip \
   && sha256sum -c ibc.zip.sha256 \
   && unzip ibc.zip -d /opt/ibc \
   && chmod o+x /opt/ibc/*.sh /opt/ibc/*/*.sh \
