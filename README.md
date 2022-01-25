@@ -186,7 +186,7 @@ trading move from paper to live when needed.
 Now, to run ThetaGang with Docker:
 
 ```console
-$ docker run --rm -i \
+$ docker run --rm -i --net host \
     -v ~/thetagang:/etc/thetagang \
     brndnmtthws/thetagang:latest \
     --config /etc/thetagang/thetagang.toml
