@@ -61,7 +61,7 @@ is, on average, always higher than realized volatility. In cases where this
 is not true, this strategy will cause you to lose money.
 
 In the case of deep ITM calls, the bot will prefer to roll the calls to next
-expiration rather than allowing the underlying to get called away. If you
+strike or expiration rather than allowing the underlying to get called away. If you
 don't have adequate buying power available in your account, it's possible
 that the options may get exercised instead of rolling forward and the process
 starts back at the beginning. Please keep in mind this may have tax
