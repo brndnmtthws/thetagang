@@ -757,6 +757,7 @@ class PortfolioManager:
                 right,
                 strike_limit,
                 excluded_expiration=position.contract.lastTradeDateOrContractMonth,
+                excluded_strikes=[position.contract.strike]
             )
 
             quantity = abs(position.position)
@@ -822,7 +823,7 @@ class PortfolioManager:
             )
 
     def find_eligible_contracts(
-        self, symbol, primary_exchange, right, strike_limit, excluded_expiration=None
+        self, symbol, primary_exchange, right, strike_limit, excluded_expiration=None, excluded_strikes=[]
     ):
         click.echo()
         click.secho(
@@ -840,7 +841,9 @@ class PortfolioManager:
         chain = next(c for c in chains if c.exchange == "SMART")
 
         def valid_strike(strike):
-            if right.startswith("P") and strike_limit:
+            if strike in excluded_strikes:
+                return False
+            elif right.startswith("P") and strike_limit:
                 return strike <= tickerValue and strike <= strike_limit
             elif right.startswith("P"):
                 return strike <= tickerValue
@@ -858,7 +861,7 @@ class PortfolioManager:
             exp
             for exp in chain.expirations
             if option_dte(exp) >= self.config["target"]["dte"]
-            and option_dte(exp) > min_dte
+            and option_dte(exp) >= min_dte
         )[:chain_expirations]
         rights = [right]
 
