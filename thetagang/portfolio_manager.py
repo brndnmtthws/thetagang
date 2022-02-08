@@ -822,7 +822,7 @@ class PortfolioManager:
             self.orders.append(trade)
             click.echo()
             click.secho(
-                f"Order submitted, current position={abs(position.position)}, quantity={quantity}, from_dte={from_dte}, to_dte={to_dte}, from_strike={from_strike}, to_strike={to_strike} price={round(price,2)}, trade={trade}",
+                f"Order submitted, current position={abs(position.position)}, quantity={quantity}, from_dte={from_dte}, to_dte={to_dte}, from_strike={from_strike}, to_strike={to_strike}, price={round(price,2)}, trade={trade}",
                 fg="green",
             )
 
