@@ -766,9 +766,9 @@ class PortfolioManager:
                 self.get_primary_exchange(symbol),
                 account_summary,
             )
-            dte = option_dte(position.contract.lastTradeDateOrContractMonth)
+            from_dte = option_dte(position.contract.lastTradeDateOrContractMonth)
             roll_when_dte = self.config["roll_when"]["dte"]
-            if dte > roll_when_dte:
+            if from_dte > roll_when_dte:
                 quantity = min([quantity, maximum_new_contracts])
 
             position.contract.exchange = "SMART"
@@ -813,12 +813,16 @@ class PortfolioManager:
                 tif="DAY",
             )
 
+            to_dte = option_dte(sell_ticker.contract.lastTradeDateOrContractMonth)
+            from_strike = position.contract.strike
+            to_strike = sell_ticker.contract.strike
+
             # Submit order
             trade = self.ib.placeOrder(combo, order)
             self.orders.append(trade)
             click.echo()
             click.secho(
-                f"Order submitted, current position={abs(position.position)} quantity to roll={quantity}, dte={dte}, price={round(price,2)}, trade={trade}",
+                f"Order submitted, current position={abs(position.position)} qty to roll={quantity}, from dte={from_dte}, to dte={to_dte}, from strike={from_strike}, to strike={to_strike} price={round(price,2)}, trade={trade}",
                 fg="green",
             )
 
