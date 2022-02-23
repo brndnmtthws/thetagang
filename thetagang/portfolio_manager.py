@@ -760,7 +760,7 @@ class PortfolioManager:
                 excluded_strikes=[position.contract.strike]
             )
 
-            quantity = abs(position.position)
+            qty_to_roll = abs(position.position)
             maximum_new_contracts = self.get_maximum_new_contracts_for(
                 symbol,
                 self.get_primary_exchange(symbol),
@@ -769,7 +769,7 @@ class PortfolioManager:
             from_dte = option_dte(position.contract.lastTradeDateOrContractMonth)
             roll_when_dte = self.config["roll_when"]["dte"]
             if from_dte > roll_when_dte:
-                quantity = min([quantity, maximum_new_contracts])
+                qty_to_roll = min([qty_to_roll, maximum_new_contracts])
 
             position.contract.exchange = "SMART"
             buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
@@ -806,7 +806,7 @@ class PortfolioManager:
             # Create order
             order = LimitOrder(
                 "BUY",
-                quantity,
+                qty_to_roll,
                 round(price, 2),
                 algoStrategy="Adaptive",
                 algoParams=[TagValue("adaptivePriority", "Patient")],
@@ -822,7 +822,7 @@ class PortfolioManager:
             self.orders.append(trade)
             click.echo()
             click.secho(
-                f"Order submitted, current position={abs(position.position)}, quantity={quantity}, from_dte={from_dte}, to_dte={to_dte}, from_strike={from_strike}, to_strike={to_strike}, price={round(price,2)}, trade={trade}",
+                f"Order submitted, current position={abs(position.position)}, qty_to_roll={qty_to_roll}, from_dte={from_dte}, to_dte={to_dte}, from_strike={from_strike}, to_strike={to_strike}, price={round(price,2)}, trade={trade}",
                 fg="green",
             )
 
