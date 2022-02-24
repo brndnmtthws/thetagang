@@ -579,7 +579,7 @@ class PortfolioManager:
             click.secho(f"{trade}", fg="green")
         except RuntimeError as e:
             click.echo()
-            click.secho(e, fg="red")
+            click.secho(str(e), fg="red")
             click.secho(
                 "Order trade submission seems to have failed, or a response wasn't received in time. Continuing anyway...",
                 fg="yellow",
@@ -592,7 +592,7 @@ class PortfolioManager:
             )
         except RuntimeError as e:
             click.echo()
-            click.secho(e, fg="red")
+            click.secho(str(e), fg="red")
             click.secho(
                 f"Finding eligible contracts for {symbol} failed. Continuing anyway...",
                 fg="yellow",
@@ -828,7 +828,7 @@ class PortfolioManager:
                 )
             except RuntimeError as e:
                 click.echo()
-                click.secho(e, fg="red")
+                click.secho(str(e), fg="red")
                 click.secho(
                     "Error occurred when trying to roll position. Continuing anyway...",
                     fg="yellow",
