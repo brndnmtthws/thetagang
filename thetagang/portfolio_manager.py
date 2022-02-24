@@ -737,97 +737,111 @@ class PortfolioManager:
 
     def roll_positions(self, positions, right, account_summary, portfolio_positions={}):
         for position in positions:
-            symbol = position.contract.symbol
-            strike_limit = get_strike_limit(self.config, symbol, right)
-            if right.startswith("C"):
-                strike_limit = math.ceil(
-                    max(
-                        [strike_limit or 0]
-                        + [
-                            p.averageCost
-                            for p in portfolio_positions[symbol]
-                            if isinstance(p.contract, Stock)
-                        ]
+            try:
+                symbol = position.contract.symbol
+                strike_limit = get_strike_limit(self.config, symbol, right)
+                if right.startswith("C"):
+                    strike_limit = math.ceil(
+                        max(
+                            [strike_limit or 0]
+                            + [
+                                p.averageCost
+                                for p in portfolio_positions[symbol]
+                                if isinstance(p.contract, Stock)
+                            ]
+                        )
                     )
+
+                sell_ticker = self.find_eligible_contracts(
+                    symbol,
+                    self.get_primary_exchange(symbol),
+                    right,
+                    strike_limit,
+                    excluded_expiration=position.contract.lastTradeDateOrContractMonth,
+                    excluded_strikes=[position.contract.strike],
                 )
 
-            sell_ticker = self.find_eligible_contracts(
-                symbol,
-                self.get_primary_exchange(symbol),
-                right,
-                strike_limit,
-                excluded_expiration=position.contract.lastTradeDateOrContractMonth,
-                excluded_strikes=[position.contract.strike]
-            )
+                qty_to_roll = abs(position.position)
+                maximum_new_contracts = self.get_maximum_new_contracts_for(
+                    symbol,
+                    self.get_primary_exchange(symbol),
+                    account_summary,
+                )
+                from_dte = option_dte(position.contract.lastTradeDateOrContractMonth)
+                roll_when_dte = self.config["roll_when"]["dte"]
+                if from_dte > roll_when_dte:
+                    qty_to_roll = min([qty_to_roll, maximum_new_contracts])
 
-            qty_to_roll = abs(position.position)
-            maximum_new_contracts = self.get_maximum_new_contracts_for(
-                symbol,
-                self.get_primary_exchange(symbol),
-                account_summary,
-            )
-            from_dte = option_dte(position.contract.lastTradeDateOrContractMonth)
-            roll_when_dte = self.config["roll_when"]["dte"]
-            if from_dte > roll_when_dte:
-                qty_to_roll = min([qty_to_roll, maximum_new_contracts])
+                position.contract.exchange = "SMART"
+                buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
 
-            position.contract.exchange = "SMART"
-            buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
+                price = midpoint_or_market_price(buy_ticker) - midpoint_or_market_price(
+                    sell_ticker
+                )
 
-            price = midpoint_or_market_price(buy_ticker) - midpoint_or_market_price(
-                sell_ticker
-            )
+                # Create combo legs
+                comboLegs = [
+                    ComboLeg(
+                        conId=position.contract.conId,
+                        ratio=1,
+                        exchange="SMART",
+                        action="BUY",
+                    ),
+                    ComboLeg(
+                        conId=sell_ticker.contract.conId,
+                        ratio=1,
+                        exchange="SMART",
+                        action="SELL",
+                    ),
+                ]
 
-            # Create combo legs
-            comboLegs = [
-                ComboLeg(
-                    conId=position.contract.conId,
-                    ratio=1,
+                # Create contract
+                combo = Contract(
+                    secType="BAG",
+                    symbol=symbol,
+                    currency="USD",
                     exchange="SMART",
-                    action="BUY",
-                ),
-                ComboLeg(
-                    conId=sell_ticker.contract.conId,
-                    ratio=1,
-                    exchange="SMART",
-                    action="SELL",
-                ),
-            ]
+                    comboLegs=comboLegs,
+                )
 
-            # Create contract
-            combo = Contract(
-                secType="BAG",
-                symbol=symbol,
-                currency="USD",
-                exchange="SMART",
-                comboLegs=comboLegs,
-            )
+                # Create order
+                order = LimitOrder(
+                    "BUY",
+                    qty_to_roll,
+                    round(price, 2),
+                    algoStrategy="Adaptive",
+                    algoParams=[TagValue("adaptivePriority", "Patient")],
+                    tif="DAY",
+                )
 
-            # Create order
-            order = LimitOrder(
-                "BUY",
-                qty_to_roll,
-                round(price, 2),
-                algoStrategy="Adaptive",
-                algoParams=[TagValue("adaptivePriority", "Patient")],
-                tif="DAY",
-            )
+                to_dte = option_dte(sell_ticker.contract.lastTradeDateOrContractMonth)
+                from_strike = position.contract.strike
+                to_strike = sell_ticker.contract.strike
 
-            to_dte = option_dte(sell_ticker.contract.lastTradeDateOrContractMonth)
-            from_strike = position.contract.strike
-            to_strike = sell_ticker.contract.strike
-
-            # Submit order
-            trade = self.ib.placeOrder(combo, order)
-            self.orders.append(trade)
-            click.echo()
-            click.secho(
-                f"Order submitted, current position={abs(position.position)}, qty_to_roll={qty_to_roll}, from_dte={from_dte}, to_dte={to_dte}, from_strike={from_strike}, to_strike={to_strike}, price={round(price,2)}, trade={trade}",
-                fg="green",
-            )
+                # Submit order
+                trade = self.ib.placeOrder(combo, order)
+                self.orders.append(trade)
+                click.echo()
+                click.secho(
+                    f"Order submitted, current position={abs(position.position)}, qty_to_roll={qty_to_roll}, from_dte={from_dte}, to_dte={to_dte}, from_strike={from_strike}, to_strike={to_strike}, price={round(price,2)}, trade={trade}",
+                    fg="green",
+                )
+            except RuntimeError as e:
+                click.echo()
+                click.secho(e, fg="red")
+                click.secho(
+                    "Error occurred when trying to roll position. Continuing anyway...",
+                    fg="yellow",
+                )
 
     def find_eligible_contracts(
-        self, symbol, primary_exchange, right, strike_limit, excluded_expiration=None, excluded_strikes=[]
+        self,
+        symbol,
+        primary_exchange,
+        right,
+        strike_limit,
+        excluded_expiration=None,
+        excluded_strikes=[],
     ):
         click.echo()
         click.secho(
