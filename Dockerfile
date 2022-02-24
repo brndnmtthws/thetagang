@@ -8,7 +8,6 @@ RUN apt update \
   libxi6 \
   libxtst6 \
   libxrender1 \
-  libswt-gtk-4-java \
   unzip \
   curl \
   openjfx \
