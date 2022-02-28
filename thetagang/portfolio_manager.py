@@ -541,12 +541,20 @@ class PortfolioManager:
                     f"Will write {calls_to_write} calls, {new_contracts_needed} needed for {symbol}, capped at {maximum_new_contracts}, at or above strike ${strike_limit} (target_calls={target_calls}, call_count={call_count})",
                     fg="green",
                 )
-                self.write_calls(
-                    symbol,
-                    self.get_primary_exchange(symbol),
-                    calls_to_write,
-                    strike_limit,
-                )
+                try:
+                    self.write_calls(
+                        symbol,
+                        self.get_primary_exchange(symbol),
+                        calls_to_write,
+                        strike_limit,
+                    )
+                except RuntimeError as e:
+                    click.echo()
+                    click.secho(str(e), fg="red")
+                    click.secho(
+                        "Failed to write calls for {symbol}. Continuing anyway...",
+                        fg="yellow",
+                    )
 
     def write_calls(self, symbol, primary_exchange, quantity, strike_limit):
         sell_ticker = self.find_eligible_contracts(
