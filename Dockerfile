@@ -2,15 +2,15 @@ FROM eclipse-temurin:17
 
 RUN apt update \
   && DEBIAN_FRONTEND=noninteractive apt install -qy --no-install-recommends \
+  curl \
+  libxi6 \
+  libxrender1 \
+  libxtst6 \
+  openjfx \
   python3-pip \
   python3-setuptools \
-  xvfb \
-  libxi6 \
-  libxtst6 \
-  libxrender1 \
   unzip \
-  curl \
-  openjfx \
+  xvfb \
   && python3 -m pip install --upgrade pip \
   && if test "$(dpkg --print-architecture)" = "armhf" ; then python3 -m pip config set global.extra-index-url https://www.piwheels.org/simple ; fi \
   && echo 'f65a629f85c8603a51a4046e4b4f74adbec981a9aa4f7d45a281807fff78ea8f  ibc.zip' | tee ibc.zip.sha256 \
@@ -32,7 +32,7 @@ RUN python3 -m pip install dist/thetagang-*.whl \
   && rm -rf /root/.cache \
   && rm -rf dist \
   && echo '--module-path /usr/share/openjfx/lib' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '--add-modules=javafx.base,javafx.controls,javafx.fxml,javafx.graphics,javafx.media,javafx.swing,javafx.web' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '--add-modules java.base,java.naming,java.management,javafx.base,javafx.controls,javafx.fxml,javafx.graphics,javafx.media,javafx.swing,javafx.web' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--add-opens java.desktop/javax.swing=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--add-opens java.desktop/java.awt=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--add-opens java.base/java.util=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
