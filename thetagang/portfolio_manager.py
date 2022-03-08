@@ -765,8 +765,8 @@ class PortfolioManager:
                     self.get_primary_exchange(symbol),
                     right,
                     strike_limit,
-                    excluded_expiration=position.contract.lastTradeDateOrContractMonth,
-                    excluded_strikes=[position.contract.strike],
+                    exclude_expirations_before=position.contract.lastTradeDateOrContractMonth,
+                    exclude_first_exp_strike=position.contract.strike,
                 )
 
                 qty_to_roll = abs(position.position)
@@ -848,12 +848,13 @@ class PortfolioManager:
         primary_exchange,
         right,
         strike_limit,
-        excluded_expiration=None,
-        excluded_strikes=[],
+        exclude_expirations_before=None,
+        exclude_first_exp_strike=None,
     ):
         click.echo()
         click.secho(
-            f"Searching option chain for symbol={symbol} right={right}, this can take a while...",
+            f"Searching option chain for symbol={symbol} "
+            "right={right}, this can take a while...",
             fg="green",
         )
         click.echo()
@@ -867,9 +868,7 @@ class PortfolioManager:
         chain = next(c for c in chains if c.exchange == "SMART")
 
         def valid_strike(strike):
-            if strike in excluded_strikes:
-                return False
-            elif right.startswith("P") and strike_limit:
+            if right.startswith("P") and strike_limit:
                 return strike <= tickerValue and strike <= strike_limit
             elif right.startswith("P"):
                 return strike <= tickerValue
@@ -880,7 +879,9 @@ class PortfolioManager:
             return False
 
         chain_expirations = self.config["option_chains"]["expirations"]
-        min_dte = option_dte(excluded_expiration) if excluded_expiration else 0
+        min_dte = (
+            option_dte(exclude_expirations_before) if exclude_expirations_before else 0
+        )
 
         strikes = sorted(strike for strike in chain.strikes if valid_strike(strike))
         expirations = sorted(
@@ -914,6 +915,15 @@ class PortfolioManager:
 
         contracts = self.ib.qualifyContracts(*contracts)
 
+        # exclude strike, but only for the first exp
+        if exclude_first_exp_strike:
+            contracts = [
+                c
+                for c in contracts
+                if c.lastTradeDateOrContractMonth == expirations[0]
+                and c.strike != exclude_first_exp_strike
+            ]
+
         tickers = self.get_ticker_list_for(tuple(contracts))
 
         # Filter out contracts which don't have a midpoint price
@@ -934,7 +944,8 @@ class PortfolioManager:
                 )
             except RuntimeError:
                 click.secho(
-                    f"Timeout waiting on market data for {ticker.contract}. Continuing...",
+                    f"Timeout waiting on market data for "
+                    "{ticker.contract}. Continuing...",
                     fg="yellow",
                 )
                 return False
