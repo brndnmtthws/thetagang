@@ -854,7 +854,7 @@ class PortfolioManager:
         click.echo()
         click.secho(
             f"Searching option chain for symbol={symbol} "
-            "right={right}, this can take a while...",
+            f"right={right}, this can take a while...",
             fg="green",
         )
         click.echo()
@@ -945,7 +945,7 @@ class PortfolioManager:
             except RuntimeError:
                 click.secho(
                     f"Timeout waiting on market data for "
-                    "{ticker.contract}. Continuing...",
+                    f"{ticker.contract}. Continuing...",
                     fg="yellow",
                 )
                 return False
