@@ -552,7 +552,7 @@ class PortfolioManager:
                     click.echo()
                     click.secho(str(e), fg="red")
                     click.secho(
-                        "Failed to write calls for {symbol}. Continuing anyway...",
+                        f"Failed to write calls for {symbol}. Continuing anyway...",
                         fg="yellow",
                     )
 
@@ -563,7 +563,7 @@ class PortfolioManager:
 
         if not self.wait_for_midpoint_price(sell_ticker):
             click.secho(
-                "Couldn't get midpoint price for contract={sell_ticker}, skipping for now",
+                f"Couldn't get midpoint price for {sell_ticker}, skipping for now",
                 fg="red",
             )
             return
