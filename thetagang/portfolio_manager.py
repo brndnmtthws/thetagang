@@ -23,7 +23,7 @@ from .options import option_dte
 # Typically the amount of time needed when waiting on data from the IBKR API.
 # Sometimes it can take a while to retrieve data, and it's lazy-loaded by the
 # API, so getting this number right is largely a matter of guesswork.
-api_response_wait_time = 120
+API_RESPONSE_WAIT_TIME = 120
 
 
 class PortfolioManager:
@@ -77,7 +77,7 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: util.isNan(ticker.midpoint()),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                api_response_wait_time,
+                API_RESPONSE_WAIT_TIME,
             )
         except RuntimeError:
             return False
@@ -88,7 +88,7 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: util.isNan(ticker.marketPrice()),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                api_response_wait_time,
+                API_RESPONSE_WAIT_TIME,
             )
         except:
             return False
@@ -123,7 +123,7 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: any([util.isNan(t.midpoint()) for t in ticker_list]),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                api_response_wait_time,
+                API_RESPONSE_WAIT_TIME,
             )
         except RuntimeError:
             pass
@@ -443,7 +443,7 @@ class PortfolioManager:
                     "Pending" in trade.orderStatus.status for trade in self.orders
                 ),
                 lambda: self.ib.waitOnUpdate(timeout=15),
-                api_response_wait_time,
+                API_RESPONSE_WAIT_TIME,
             )
 
             click.echo()
@@ -940,7 +940,7 @@ class PortfolioManager:
                 wait_n_seconds(
                     open_interest_is_not_ready,
                     lambda: self.ib.waitOnUpdate(timeout=15),
-                    api_response_wait_time,
+                    API_RESPONSE_WAIT_TIME,
                 )
             except RuntimeError:
                 click.secho(
