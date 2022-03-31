@@ -526,6 +526,13 @@ class PortfolioManager:
 
             target_calls = max([0, stock_count // 100])
             new_contracts_needed = target_calls - call_count
+            excess_calls = call_count - target_calls
+
+            if excess_calls > 0:
+                click.secho(
+                    f"Warning: {symbol} has {excess_calls} excess covered calls stock_count={stock_count}, call_count={call_count}",
+                    fg="yellow",
+                )
 
             maximum_new_contracts = self.get_maximum_new_contracts_for(
                 symbol,
