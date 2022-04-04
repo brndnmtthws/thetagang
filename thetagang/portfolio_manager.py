@@ -42,7 +42,7 @@ class PortfolioManager:
             )
         if "Cancelled" in trade.orderStatus.status:
             click.secho(
-                f"Order cancelled, symbol={trade.contract.symbol} log={trade.orderStatus.log}",
+                f"Order cancelled, symbol={trade.contract.symbol} log={trade.log}",
                 fg="red",
             )
         else:
@@ -913,7 +913,7 @@ class PortfolioManager:
                 strike,
                 right,
                 "SMART",
-                tradingClass=chain.tradingClass,
+                # tradingClass=chain.tradingClass,
             )
             for right in rights
             for expiration in expirations
