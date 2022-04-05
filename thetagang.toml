@@ -45,9 +45,9 @@ market_data_type = 1
 # increasing these values slightly.
 #
 # Number of expirations to load from option chains
-expirations = 5
+expirations = 4
 # Number of strikes to load from option chains
-strikes = 10
+strikes = 15
 
 [roll_when]
 # Roll when P&L reaches 90%
