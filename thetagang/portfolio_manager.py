@@ -929,6 +929,7 @@ class PortfolioManager:
                 for c in contracts
                 if c.lastTradeDateOrContractMonth == expirations[0]
                 and c.strike != exclude_first_exp_strike
+                or c.lastTradeDateOrContractMonth != expirations[0]
             ]
 
         tickers = self.get_ticker_list_for(tuple(contracts))
