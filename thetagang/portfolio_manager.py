@@ -517,7 +517,7 @@ class PortfolioManager:
                 max(
                     [get_strike_limit(self.config, symbol, "C") or 0]
                     + [
-                        p.averageCost
+                        p.averageCost or 0
                         for p in portfolio_positions[symbol]
                         if isinstance(p.contract, Stock)
                     ]
