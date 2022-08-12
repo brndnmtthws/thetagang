@@ -69,6 +69,14 @@ def validate_config(config):
                 "expirations": And(int, lambda n: 1 <= n),
                 "strikes": And(int, lambda n: 1 <= n),
             },
+            Optional("write_when"): {
+                Optional("calls"): {
+                    "green": bool,
+                },
+                Optional("puts"): {
+                    "red": bool,
+                },
+            },
             "roll_when": {
                 "pnl": And(float, lambda n: 0 <= n <= 1),
                 "dte": And(int, lambda n: 0 <= n),

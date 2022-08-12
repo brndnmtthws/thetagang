@@ -543,7 +543,18 @@ class PortfolioManager:
                 [0, min([new_contracts_needed, maximum_new_contracts])]
             )
 
-            if calls_to_write > 0:
+            write_only_when_green = self.config["write_when"]["calls"]["green"]
+            ticker = (
+                self.get_ticker_for_stock(symbol, self.get_primary_exchange(symbol))
+                if write_only_when_green
+                else None
+            )
+
+            ok_to_write = (
+                not write_only_when_green or ticker.marketPrice() > ticker.close
+            )
+
+            if calls_to_write > 0 and ok_to_write:
                 click.secho(
                     f"Will write {calls_to_write} calls, {new_contracts_needed} needed for {symbol}, capped at {maximum_new_contracts}, at or above strike ${strike_limit} (target_calls={target_calls}, call_count={call_count})",
                     fg="green",
@@ -562,6 +573,11 @@ class PortfolioManager:
                         f"Failed to write calls for {symbol}. Continuing anyway...",
                         fg="yellow",
                     )
+            elif calls_to_write > 0:
+                click.secho(
+                    f"Need to write {calls_to_write} calls for {symbol}, but skipping because underlying is red",
+                    fg="green",
+                )
 
     def write_calls(self, symbol, primary_exchange, quantity, strike_limit):
         sell_ticker = self.find_eligible_contracts(
@@ -699,12 +715,17 @@ class PortfolioManager:
             # Current number of short puts
             put_count = count_short_option_positions(symbol, portfolio_positions, "P")
 
-            target_additional_quantity[symbol] = math.floor(
-                target_quantity - current_position - 100 * put_count
+            write_only_when_red = self.config["write_when"]["puts"]["red"]
+
+            ok_to_write = not write_only_when_red or ticker.marketPrice() < ticker.close
+
+            target_additional_quantity[symbol] = (
+                math.floor(target_quantity - current_position - 100 * put_count),
+                ok_to_write,
             )
 
             click.secho(
-                f"    Net quantity: {target_additional_quantity[symbol]:,d} shares, {target_additional_quantity[symbol] // 100} contracts",
+                f"    Net quantity: {target_additional_quantity[symbol][0]:,d} shares, {target_additional_quantity[symbol][0] // 100} contracts",
                 fg="cyan",
             )
 
@@ -712,11 +733,12 @@ class PortfolioManager:
 
         # Figure out how many additional puts are needed, if they're needed
         for symbol in target_additional_quantity.keys():
-            additional_quantity = target_additional_quantity[symbol] // 100
+            ok_to_write = target_additional_quantity[symbol][1]
+            additional_quantity = target_additional_quantity[symbol][0] // 100
             # NOTE: it's possible there are non-standard option contract sizes,
             # like with futures, but we don't bother handling those cases.
             # Please don't use this code with futures.
-            if additional_quantity >= 1:
+            if additional_quantity >= 1 and ok_to_write:
                 maximum_new_contracts = self.get_maximum_new_contracts_for(
                     symbol,
                     self.get_primary_exchange(symbol),
@@ -741,6 +763,11 @@ class PortfolioManager:
                         puts_to_write,
                         strike_limit,
                     )
+            elif additional_quantity >= 1:
+                click.secho(
+                    f"Need {additional_quantity} additional for {symbol}, but won't write because {symbol} is green",
+                    fg="cyan",
+                )
 
         return
 

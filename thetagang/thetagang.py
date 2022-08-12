@@ -64,6 +64,17 @@ def start(config):
         )
 
     click.echo()
+    click.secho("  For underlying, only write new contracts when:", fg="green")
+    click.secho(
+        f"    Puts, red           = {config['write_when']['puts']['red']}",
+        fg="cyan",
+    )
+    click.secho(
+        f"    Calls, green        = {config['write_when']['calls']['green']}",
+        fg="cyan",
+    )
+
+    click.echo()
     click.secho("  When contracts are ITM:", fg="green")
     click.secho(
         f"    Roll puts               = {config['roll_when']['puts']['itm']}",

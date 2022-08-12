@@ -76,6 +76,12 @@ itm = true
 # Roll puts if they're in the money. Defaults to false if not specified.
 itm = false
 
+# optionally, only write calls or puts when they're green or red, respectively.
+[write_when.calls]
+green = true
+[write_when.puts]
+red = true
+
 [target]
 # Target 45 or more days to expiry
 dte = 45
