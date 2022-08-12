@@ -15,7 +15,7 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-import collections
+from collections.abc import Mapping
 
 
 def dict_merge(dct, merge_dct):
