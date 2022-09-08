@@ -44,13 +44,14 @@ That's why I just buy index funds.
 
 ThetaGang will try to acquire your desired allocation of each stock or ETF
 according to the weights you specify in the config. To acquire the positions,
-the script will write puts when conditions are met (adequate buying power,
-acceptable contracts are available, enough shares needed, etc).
+the script will write puts when conditions are met (config parameters, adequate
+buying power, acceptable contracts are available, enough shares needed, etc).
 
-ThetaGang will continue to roll any open option positions indefinitely, with
-the only exception being ITM puts. Once puts are in the money, they will be
-ignored until they expire and are exercised (after which you will own the
-underlying).
+ThetaGang will continue to roll any open option positions indefinitely, with the
+only exception being ITM puts (although this is configurable). Once puts are in
+the money, they will be ignored until they expire and are exercised (after which
+you will own the underlying). When rolling puts, the strike of the new contracts
+are capped at the old strike plus the premium received.
 
 If puts are exercised due to being ITM at expiration, you will own the
 stock, and ThetaGang switches from writing puts to writing calls at a strike

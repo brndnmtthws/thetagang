@@ -1,4 +1,5 @@
 import math
+import sys
 from functools import lru_cache
 
 import click
@@ -781,9 +782,13 @@ class PortfolioManager:
         for position in positions:
             try:
                 symbol = position.contract.symbol
+
+                position.contract.exchange = "SMART"
+                buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
+
                 strike_limit = get_strike_limit(self.config, symbol, right)
                 if right.startswith("C"):
-                    strike_limit = math.ceil(
+                    strike_limit = math.round(
                         max(
                             [strike_limit or 0]
                             + [
@@ -791,7 +796,20 @@ class PortfolioManager:
                                 for p in portfolio_positions[symbol]
                                 if isinstance(p.contract, Stock)
                             ]
-                        )
+                        ),
+                        2,
+                    )
+                elif right.startswith("P"):
+                    strike_limit = math.round(
+                        min(
+                            [strike_limit or sys.float_info.max]
+                            + [
+                                position.contract.strike
+                                + position.averageCost
+                                - midpoint_or_market_price(buy_ticker)
+                            ]
+                        ),
+                        2,
                     )
 
                 sell_ticker = self.find_eligible_contracts(
@@ -813,9 +831,6 @@ class PortfolioManager:
                 roll_when_dte = self.config["roll_when"]["dte"]
                 if from_dte > roll_when_dte:
                     qty_to_roll = min([qty_to_roll, maximum_new_contracts])
-
-                position.contract.exchange = "SMART"
-                buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
 
                 price = midpoint_or_market_price(buy_ticker) - midpoint_or_market_price(
                     sell_ticker
