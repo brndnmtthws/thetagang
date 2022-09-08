@@ -189,7 +189,7 @@ Now, to run ThetaGang with Docker:
 ```console
 $ docker run --rm -i --net host \
     -v ~/thetagang:/etc/thetagang \
-    brndnmtthws/thetagang:latest \
+    brndnmtthws/thetagang:main \
     --config /etc/thetagang/thetagang.toml
 ```
 
@@ -198,7 +198,7 @@ something like this to your crontab (on systems with a cron installation, use
 `crontab -e` to edit your crontab):
 
 ```crontab
-0 9 * * 1-5 docker run --rm -i -v ~/ibc:/etc/thetagang brndnmtthws/thetagang:latest --config /etc/thetagang/thetagang.toml
+0 9 * * 1-5 docker run --rm -i -v ~/ibc:/etc/thetagang brndnmtthws/thetagang:main --config /etc/thetagang/thetagang.toml
 ```
 
 ## Determining which ETFs or stocks to run ThetaGang with
