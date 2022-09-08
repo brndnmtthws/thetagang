@@ -77,7 +77,7 @@ class PortfolioManager:
         try:
             wait_n_seconds(
                 lambda: util.isNan(ticker.midpoint()),
-                lambda: self.ib.waitOnUpdate(timeout=15),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
                 API_RESPONSE_WAIT_TIME,
             )
         except RuntimeError:
@@ -88,7 +88,7 @@ class PortfolioManager:
         try:
             wait_n_seconds(
                 lambda: util.isNan(ticker.marketPrice()),
-                lambda: self.ib.waitOnUpdate(timeout=15),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
                 API_RESPONSE_WAIT_TIME,
             )
         except:
@@ -123,7 +123,7 @@ class PortfolioManager:
         try:
             wait_n_seconds(
                 lambda: any([util.isNan(t.midpoint()) for t in ticker_list]),
-                lambda: self.ib.waitOnUpdate(timeout=15),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
                 API_RESPONSE_WAIT_TIME,
             )
         except RuntimeError:
@@ -443,7 +443,7 @@ class PortfolioManager:
                 lambda: any(
                     "Pending" in trade.orderStatus.status for trade in self.orders
                 ),
-                lambda: self.ib.waitOnUpdate(timeout=15),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
                 API_RESPONSE_WAIT_TIME,
             )
 
@@ -991,7 +991,7 @@ class PortfolioManager:
             try:
                 wait_n_seconds(
                     open_interest_is_not_ready,
-                    lambda: self.ib.waitOnUpdate(timeout=15),
+                    lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
                     API_RESPONSE_WAIT_TIME,
                 )
             except RuntimeError:
