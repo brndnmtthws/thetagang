@@ -29,9 +29,9 @@ jobs:
       - uses: actions/checkout@v2
 
       - name: Cache Poetry
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         env:
-          cache-name: cache-poetry
+          cache-name: cache-poetry-${{ matrix.python-version }}
         with:
           path: ~/.cache/pypoetry
           key: ${{ runner.os }}-publish-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
@@ -61,7 +61,7 @@ jobs:
 
       - name: Cache TWS
         id: cache-tws
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         env:
           cache-name: cache-tws
         with:
@@ -73,9 +73,9 @@ jobs:
         run: ./extract-installer.sh
 
       - name: Cache pip and pals
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         env:
-          cache-name: cache-pip
+          cache-name: cache-pip-${{ matrix.python-version }}
         with:
           path: ~/.cache
           key: ${{ runner.os }}-publish-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
