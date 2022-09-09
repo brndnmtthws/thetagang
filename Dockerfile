@@ -31,6 +31,10 @@ ADD entrypoint.bash /src/entrypoint.bash
 RUN python3 -m pip install dist/thetagang-*.whl \
   && rm -rf /root/.cache \
   && rm -rf dist \
+  && echo '-Dtwslaunch.autoupdate.serviceImpl=com.ib.tws.twslaunch.install4j.Install4jAutoUpdateService' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '-Dchannel=stable' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '-Dexe4j.isInstall4j=true' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '-Dinstall4jType=standalone' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--module-path /usr/share/openjfx/lib' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--add-modules java.base,java.naming,java.management,javafx.base,javafx.controls,javafx.fxml,javafx.graphics,javafx.media,javafx.swing,javafx.web' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--add-opens java.desktop/javax.swing=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
