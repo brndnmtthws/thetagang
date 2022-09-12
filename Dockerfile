@@ -1,4 +1,4 @@
-FROM eclipse-temurin:latest
+FROM eclipse-temurin:17.0.4_8-jdk-jammy
 
 RUN apt update \
   && DEBIAN_FRONTEND=noninteractive apt install -qy --no-install-recommends \
