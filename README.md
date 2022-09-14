@@ -51,7 +51,8 @@ ThetaGang will continue to roll any open option positions indefinitely, with the
 only exception being ITM puts (although this is configurable). Once puts are in
 the money, they will be ignored until they expire and are exercised (after which
 you will own the underlying). When rolling puts, the strike of the new contracts
-are capped at the old strike plus the premium received.
+are capped at the old strike plus the premium received (to prevent your account
+from blowing due to over-ratcheting up the buying power usage).
 
 If puts are exercised due to being ITM at expiration, you will own the
 stock, and ThetaGang switches from writing puts to writing calls at a strike
