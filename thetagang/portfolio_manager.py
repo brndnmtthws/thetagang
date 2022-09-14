@@ -788,7 +788,7 @@ class PortfolioManager:
 
                 strike_limit = get_strike_limit(self.config, symbol, right)
                 if right.startswith("C"):
-                    strike_limit = math.round(
+                    strike_limit = round(
                         max(
                             [strike_limit or 0]
                             + [
@@ -800,7 +800,7 @@ class PortfolioManager:
                         2,
                     )
                 elif right.startswith("P"):
-                    strike_limit = math.round(
+                    strike_limit = round(
                         min(
                             [strike_limit or sys.float_info.max]
                             + [
