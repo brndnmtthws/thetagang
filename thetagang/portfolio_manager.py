@@ -258,7 +258,7 @@ class PortfolioManager:
             # Cancel any existing orders
             open_trades = self.ib.openTrades()
             for trade in open_trades:
-                if trade.isActive() and trade.contract.symbol in self.get_symbols():
+                if not trade.isDone() and trade.contract.symbol in self.get_symbols():
                     click.secho(f"Canceling order {trade.order}", fg="red")
                     self.ib.cancelOrder(trade.order)
 
