@@ -46,6 +46,14 @@ def normalize_config(config):
         for s in config["symbols"].values():
             del s["parts"]
 
+    if (
+        config["roll_when"]["close_at_pnl"]
+        and config["roll_when"]["close_at_pnl"] <= config["roll_when"]["min_pnl"]
+    ):
+        raise RuntimeError(
+            "ERROR: roll_when.close_at_pnl needs to be greater than roll_when.min_pnl."
+        )
+
     return apply_default_values(config)
 
 
@@ -81,6 +89,7 @@ def validate_config(config):
                 "pnl": And(float, lambda n: 0 <= n <= 1),
                 "dte": And(int, lambda n: 0 <= n),
                 "min_pnl": float,
+                "close_at_pnl": Optional(float),
                 Optional("max_dte"): And(int, lambda n: 1 <= n),
                 Optional("calls"): {
                     "itm": bool,

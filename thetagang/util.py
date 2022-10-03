@@ -91,6 +91,11 @@ def get_highest_price(ticker):
     return max([midpoint_or_market_price(ticker), ticker.modelGreeks.optPrice])
 
 
+def get_lowest_price(ticker):
+    # Same as get_highest_price(), except get the lower price instead.
+    return min([midpoint_or_market_price(ticker), ticker.modelGreeks.optPrice])
+
+
 def midpoint_or_market_price(ticker):
     # As per the ib_insync docs, marketPrice returns the last price first, but
     # we often prefer the midpoint over the last price. This function pulls the

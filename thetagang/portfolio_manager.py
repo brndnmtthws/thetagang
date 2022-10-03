@@ -11,6 +11,7 @@ from thetagang.util import (
     account_summary_to_dict,
     count_short_option_positions,
     get_highest_price,
+    get_lowest_price,
     get_strike_limit,
     get_target_delta,
     midpoint_or_market_price,
@@ -136,6 +137,23 @@ class PortfolioManager:
 
         return contract.strike >= ticker.marketPrice()
 
+    def position_can_be_closed(self, position):
+        close_at_pnl = self.config["roll_when"]["close_at_pnl"]
+        if close_at_pnl:
+            pnl = position_pnl(position)
+
+            if pnl >= close_at_pnl:
+                click.secho(
+                    f"  {position.contract.localSymbol} will be closed because P&L of {round(pnl * 100, 1)}% is >= {round(close_at_pnl * 100, 1)}",
+                    fg="blue",
+                )
+                return True
+
+        return False
+
+    def put_can_be_closed(self, put):
+        return self.position_can_be_closed(put)
+
     def put_can_be_rolled(self, put):
         # Ignore long positions, we only roll shorts
         if put.position > 0:
@@ -186,6 +204,9 @@ class PortfolioManager:
         ticker = self.get_ticker_for_stock(contract.symbol, contract.primaryExchange)
 
         return contract.strike <= ticker.marketPrice()
+
+    def call_can_be_closed(self, call):
+        return self.position_can_be_closed(call)
 
     def call_can_be_rolled(self, call):
         # Ignore long positions, we only roll shorts
@@ -463,30 +484,55 @@ class PortfolioManager:
         # Check for puts which may be rolled to the next expiration or a better price
         puts = self.get_puts(portfolio_positions)
 
-        # find puts eligible to be rolled
-        rollable_puts = list(filter(lambda p: self.put_can_be_rolled(p), puts))
+        # find puts eligible to be rolled or closed
+        rollable_puts = []
+        closeable_puts = []
+
+        for p in puts:
+            if self.put_can_be_rolled(p):
+                rollable_puts.append(p)
+            elif self.put_can_be_closed(p):
+                closeable_puts.append(p)
 
         total_rollable_puts = math.floor(sum([abs(p.position) for p in rollable_puts]))
+        total_closeable_puts = math.floor(
+            sum([abs(p.position) for p in closeable_puts])
+        )
 
         click.echo()
         click.secho(f"{total_rollable_puts} puts can be rolled", fg="magenta")
+        click.secho(f"{total_closeable_puts} puts can be closed", fg="magenta")
 
         self.roll_puts(rollable_puts, account_summary)
+        self.close_puts(closeable_puts, account_summary)
 
     def check_calls(self, account_summary, portfolio_positions):
         # Check for calls which may be rolled to the next expiration or a better price
         calls = self.get_calls(portfolio_positions)
 
         # find calls eligible to be rolled
-        rollable_calls = list(filter(lambda p: self.call_can_be_rolled(p), calls))
+        rollable_calls = []
+        closeable_calls = []
+
+        for c in calls:
+            if self.call_can_be_rolled(c):
+                rollable_calls.append(c)
+            elif self.call_can_be_closed(c):
+                closeable_calls.append(c)
+
         total_rollable_calls = math.floor(
             sum([abs(p.position) for p in rollable_calls])
+        )
+        total_closeable_calls = math.floor(
+            sum([abs(p.position) for p in closeable_calls])
         )
 
         click.echo()
         click.secho(f"{total_rollable_calls} calls can be rolled", fg="magenta")
+        click.secho(f"{total_closeable_calls} calls can be closed", fg="magenta")
 
         self.roll_calls(rollable_calls, account_summary, portfolio_positions)
+        self.close_calls(closeable_calls, account_summary, portfolio_positions)
 
     def get_maximum_new_contracts_for(self, symbol, primary_exchange, account_summary):
         total_buying_power = self.get_buying_power(account_summary)
@@ -772,11 +818,50 @@ class PortfolioManager:
 
         return
 
+    def close_puts(self, puts, account_summary):
+        return self.close_positions(puts, "P", account_summary)
+
     def roll_puts(self, puts, account_summary):
         return self.roll_positions(puts, "P", account_summary)
 
+    def close_calls(self, calls, account_summary, portfolio_positions):
+        return self.close_positions(calls, "C", account_summary, portfolio_positions)
+
     def roll_calls(self, calls, account_summary, portfolio_positions):
         return self.roll_positions(calls, "C", account_summary, portfolio_positions)
+
+    def close_positions(
+        self, positions, right, account_summary, portfolio_positions={}
+    ):
+        for position in positions:
+            try:
+                position.contract.exchange = "SMART"
+                buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
+                price = round(get_lowest_price(buy_ticker), 2)
+
+                order = LimitOrder(
+                    "BUY",
+                    position.position,
+                    price,
+                    algoStrategy="Adaptive",
+                    algoParams=[TagValue("adaptivePriority", "Patient")],
+                    tif="DAY",
+                )
+
+                trade = self.ib.placeOrder(buy_ticker.contract, order)
+                self.orders.append(trade)
+                click.echo()
+                click.secho(
+                    f"Order submitted, current position={abs(position.position)}, price={round(price,2)}, trade={trade}",
+                    fg="green",
+                )
+            except RuntimeError as e:
+                click.echo()
+                click.secho(str(e), fg="red")
+                click.secho(
+                    "Error occurred when trying to close position. Continuing anyway...",
+                    fg="yellow",
+                )
 
     def roll_positions(self, positions, right, account_summary, portfolio_positions={}):
         for position in positions:

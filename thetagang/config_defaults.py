@@ -6,6 +6,7 @@ DEFAULT_CONFIG = {
     "write_when": {"puts": {"red": False}, "calls": {"green": False}},
     "roll_when": {
         "min_pnl": 0.0,
+        "close_at_pnl": None,
         "calls": {"itm": True},
         "puts": {"itm": False},
     },
