@@ -118,11 +118,11 @@ def start(config):
             fg="cyan",
         )
     click.secho(
-        f"    Maximum new contracts   = {config['target']['maximum_new_contracts_percent'] * 100}% of buying power",
+        f"    Maximum new contracts     = {config['target']['maximum_new_contracts_percent'] * 100}% of buying power",
         fg="cyan",
     )
     click.secho(
-        f"    Minimum open interest   = {config['target']['minimum_open_interest']}",
+        f"    Minimum open interest     = {config['target']['minimum_open_interest']}",
         fg="cyan",
     )
 
