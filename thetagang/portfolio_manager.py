@@ -842,7 +842,7 @@ class PortfolioManager:
 
                 order = LimitOrder(
                     "BUY",
-                    position.position,
+                    abs(position.position),
                     price,
                     algoStrategy=self.get_algo_strategy(),
                     algoParams=self.get_algo_params(),
