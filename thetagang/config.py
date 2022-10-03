@@ -77,7 +77,7 @@ def validate_config(config):
             "orders": {
                 "algo": {
                     "strategy": And(str, len),
-                    "params": And([str], lambda p: len(p) == 2),
+                    "params": [And([str], lambda p: len(p) == 2)],
                 }
             },
             "option_chains": {
