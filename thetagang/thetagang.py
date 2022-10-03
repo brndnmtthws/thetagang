@@ -49,6 +49,10 @@ def start(config):
 
     click.secho("  Order settings:", fg="green")
     click.secho(
+        f"    Exchange                 = {config['orders']['exchange']}",
+        fg="cyan",
+    )
+    click.secho(
         f"    Strategy                 = {config['orders']['algo']['strategy']}",
         fg="cyan",
     )
