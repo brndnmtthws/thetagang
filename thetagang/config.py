@@ -75,10 +75,11 @@ def validate_config(config):
                 "market_data_type": And(int, lambda n: 1 <= n <= 4),
             },
             "orders": {
+                "exchange": And(str, len),
                 "algo": {
                     "strategy": And(str, len),
                     "params": [And([str], lambda p: len(p) == 2)],
-                }
+                },
             },
             "option_chains": {
                 "expirations": And(int, lambda n: 1 <= n),

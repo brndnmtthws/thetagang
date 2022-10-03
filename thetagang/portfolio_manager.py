@@ -834,7 +834,7 @@ class PortfolioManager:
     def close_positions(self, positions):
         for position in positions:
             try:
-                position.contract.exchange = "SMART"
+                position.contract.exchange = self.get_order_exchange()
                 buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
                 price = round(get_lowest_price(buy_ticker), 2)
 
@@ -871,7 +871,7 @@ class PortfolioManager:
             try:
                 symbol = position.contract.symbol
 
-                position.contract.exchange = "SMART"
+                position.contract.exchange = self.get_order_exchange()
                 buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
 
                 strike_limit = get_strike_limit(self.config, symbol, right)
@@ -929,13 +929,13 @@ class PortfolioManager:
                     ComboLeg(
                         conId=position.contract.conId,
                         ratio=1,
-                        exchange="SMART",
+                        exchange=self.get_order_exchange(),
                         action="BUY",
                     ),
                     ComboLeg(
                         conId=sell_ticker.contract.conId,
                         ratio=1,
-                        exchange="SMART",
+                        exchange=self.get_order_exchange(),
                         action="SELL",
                     ),
                 ]
@@ -945,7 +945,7 @@ class PortfolioManager:
                     secType="BAG",
                     symbol=symbol,
                     currency="USD",
-                    exchange="SMART",
+                    exchange=self.get_order_exchange(),
                     comboLegs=comboLegs,
                 )
 
@@ -1147,3 +1147,6 @@ class PortfolioManager:
 
     def get_algo_params(self):
         return [TagValue(p[0], p[1]) for p in self.config["orders"]["algo"]["params"]]
+
+    def get_order_exchange(self):
+        return self.config["orders"]["exchange"]

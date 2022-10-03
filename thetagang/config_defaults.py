@@ -1,5 +1,6 @@
 DEFAULT_CONFIG = {
     "orders": {
+        "exchange": "SMART",
         "algo": {
             "strategy": "Adaptive",
             "params": [["adaptivePriority", "Patient"]],
