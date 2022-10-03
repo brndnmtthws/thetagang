@@ -56,6 +56,7 @@ def start(config):
         f"    Params           = {config['orders']['algo']['params']}",
         fg="cyan",
     )
+    click.echo()
 
     if config["roll_when"]["close_at_pnl"] < 1.0:
         click.secho(
