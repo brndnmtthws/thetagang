@@ -820,13 +820,13 @@ class PortfolioManager:
         return
 
     def close_puts(self, puts):
-        return self.close_positions(puts, "P")
+        return self.close_positions(puts)
 
     def roll_puts(self, puts, account_summary):
         return self.roll_positions(puts, "P", account_summary)
 
     def close_calls(self, calls):
-        return self.close_positions(calls, "C")
+        return self.close_positions(calls)
 
     def roll_calls(self, calls, account_summary, portfolio_positions):
         return self.roll_positions(calls, "C", account_summary, portfolio_positions)
