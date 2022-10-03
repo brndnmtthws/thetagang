@@ -82,22 +82,22 @@ def start(config):
     click.echo()
     click.secho("  For underlying, only write new contracts when:", fg="green")
     click.secho(
-        f"    Puts, red               = {config['write_when']['puts']['red']}",
+        f"    Puts, red                = {config['write_when']['puts']['red']}",
         fg="cyan",
     )
     click.secho(
-        f"    Calls, green            = {config['write_when']['calls']['green']}",
+        f"    Calls, green             = {config['write_when']['calls']['green']}",
         fg="cyan",
     )
 
     click.echo()
     click.secho("  When contracts are ITM:", fg="green")
     click.secho(
-        f"    Roll puts               = {config['roll_when']['puts']['itm']}",
+        f"    Roll puts                = {config['roll_when']['puts']['itm']}",
         fg="cyan",
     )
     click.secho(
-        f"    Roll calls              = {config['roll_when']['calls']['itm']}",
+        f"    Roll calls               = {config['roll_when']['calls']['itm']}",
         fg="cyan",
     )
 
@@ -118,11 +118,11 @@ def start(config):
             fg="cyan",
         )
     click.secho(
-        f"    Maximum new contracts    = {config['target']['maximum_new_contracts_percent'] * 100}% of buying power",
+        f"    Maximum new contracts   = {config['target']['maximum_new_contracts_percent'] * 100}% of buying power",
         fg="cyan",
     )
     click.secho(
-        f"    Minimum open interest    = {config['target']['minimum_open_interest']}",
+        f"    Minimum open interest   = {config['target']['minimum_open_interest']}",
         fg="cyan",
     )
 

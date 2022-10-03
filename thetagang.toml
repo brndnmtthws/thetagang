@@ -35,9 +35,7 @@ margin_usage = 0.5
 # https://interactivebrokers.github.io/tws-api/market_data_type.html)
 market_data_type = 1
 
-[orders]
-
-[[algo]]
+[orders.algo]
 # By default we use adaptive orders with patient priority which gives reasonable
 # results. You can also experiment with TWAP or other options, however the
 # available order algos vary depending on what you trade.
