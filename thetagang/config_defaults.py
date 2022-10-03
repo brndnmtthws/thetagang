@@ -2,7 +2,7 @@ DEFAULT_CONFIG = {
     "orders": {
         "algo": {
             "strategy": "Adaptive",
-            "params": [("adaptivePriority", "Patient")],
+            "params": [["adaptivePriority", "Patient"]],
         },
     },
     "target": {
