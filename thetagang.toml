@@ -44,6 +44,10 @@ exchange = "SMART"
 # By default we use adaptive orders with patient priority which gives reasonable
 # results. You can also experiment with TWAP or other options, however the
 # available order algos vary depending on what you trade.
+#
+# Note that the algo orders don't seem to work with combo orders, which are used
+# when rolling positions, so AFAIK this has no effect for those orders. It only
+# seems to take effect with regular open/close orders.
 
 # Optional IBKR algo strategy. See
 # https://interactivebrokers.github.io/tws-api/ibalgos.html for option details.
