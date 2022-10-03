@@ -142,9 +142,9 @@ class PortfolioManager:
         if close_at_pnl:
             pnl = position_pnl(position)
 
-            if pnl >= close_at_pnl:
+            if pnl > close_at_pnl:
                 click.secho(
-                    f"  {position.contract.localSymbol} will be closed because P&L of {round(pnl * 100, 1)}% is >= {round(close_at_pnl * 100, 1)}",
+                    f"  {position.contract.localSymbol} will be closed because P&L of {round(pnl * 100, 1)}% is > {round(close_at_pnl * 100, 1)}",
                     fg="blue",
                 )
                 return True
