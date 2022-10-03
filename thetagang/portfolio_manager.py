@@ -543,8 +543,9 @@ class PortfolioManager:
             symbol,
             primary_exchange,
         )
+        price = midpoint_or_market_price(ticker)
 
-        return max([1, round((max_buying_power / ticker.marketPrice()) // 100)])
+        return max([1, round((max_buying_power / price) // 100)])
 
     def check_for_uncovered_positions(self, account_summary, portfolio_positions):
         for symbol in portfolio_positions:
