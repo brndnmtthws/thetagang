@@ -47,6 +47,21 @@ def start(config):
     )
     click.echo()
 
+    click.secho("  Order settings:", fg="green")
+    click.secho(
+        f"    Strategy         = {config['orders']['algo']['strategy']}",
+        fg="cyan",
+    )
+    click.secho(
+        f"    Params           = {config['orders']['algo']['params']}",
+        fg="cyan",
+    )
+
+    if config["roll_when"]["close_at_pnl"] < 1.0:
+        click.secho(
+            f"  Close options when P&L >= {config['roll_when']['close_at_pnl'] * 100}%",
+            fg="green",
+        )
     click.secho("  Roll options when either condition is true:", fg="green")
     click.secho(
         f"    Days to expiry          <= {config['roll_when']['dte']} and P&L >= {config['roll_when']['min_pnl']} ({config['roll_when']['min_pnl'] * 100}%)",
