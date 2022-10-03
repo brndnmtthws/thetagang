@@ -55,15 +55,6 @@ def normalize_config(config):
             "ERROR: roll_when.close_at_pnl needs to be greater than roll_when.min_pnl."
         )
 
-    if (
-        "orders" in config
-        and "algo" in config["orders"]
-        and "params" in config["orders"]["algo"]
-    ):
-        for param in config["orders"]["algo"]["params"]:
-            if len(param) != 2:
-                raise RuntimeError(f"ERROR: invalid algo param: {param}")
-
     return apply_default_values(config)
 
 
@@ -86,7 +77,7 @@ def validate_config(config):
             "orders": {
                 "algo": {
                     "strategy": And(str, len),
-                    "params": list,
+                    "params": And([str], lambda p: len(p) == 2),
                 }
             },
             "option_chains": {
