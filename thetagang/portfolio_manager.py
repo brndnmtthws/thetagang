@@ -643,8 +643,8 @@ class PortfolioManager:
             "SELL",
             quantity,
             round(get_highest_price(sell_ticker), 2),
-            algoStrategy="Adaptive",
-            algoParams=[TagValue("adaptivePriority", "Patient")],
+            algoStrategy=self.get_algo_strategy(),
+            algoParams=self.get_algo_params(),
             tif="DAY",
         )
 
@@ -689,8 +689,8 @@ class PortfolioManager:
             "SELL",
             quantity,
             round(get_highest_price(sell_ticker), 2),
-            algoStrategy="Adaptive",
-            algoParams=[TagValue("adaptivePriority", "Patient")],
+            algoStrategy=self.get_algo_strategy(),
+            algoParams=self.get_algo_params(),
             tif="DAY",
         )
 
@@ -843,8 +843,8 @@ class PortfolioManager:
                     "BUY",
                     position.position,
                     price,
-                    algoStrategy="Adaptive",
-                    algoParams=[TagValue("adaptivePriority", "Patient")],
+                    algoStrategy=self.get_algo_strategy(),
+                    algoParams=self.get_algo_params(),
                     tif="DAY",
                 )
 
@@ -951,8 +951,8 @@ class PortfolioManager:
                     "BUY",
                     qty_to_roll,
                     round(price, 2),
-                    algoStrategy="Adaptive",
-                    algoParams=[TagValue("adaptivePriority", "Patient")],
+                    algoStrategy=self.get_algo_strategy(),
+                    algoParams=self.get_algo_params(),
                     tif="DAY",
                 )
 
@@ -1138,3 +1138,9 @@ class PortfolioManager:
 
         # Return the first result
         return tickers[0]
+
+    def get_algo_strategy(self):
+        return self.config["orders"]["algo"]["strategy"]
+
+    def get_algo_params(self):
+        return [TagValue(p[0], p[1]) for p in self.config["orders"]["algo"]["params"]]
