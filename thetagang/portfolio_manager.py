@@ -842,7 +842,7 @@ class PortfolioManager:
 
                 if not price:
                     # if the price is zero, use the minimum price
-                    price = position.contract.minTick
+                    price = buy_ticker.minTick
 
                 order = LimitOrder(
                     "BUY",
