@@ -49,11 +49,11 @@ def start(config):
 
     click.secho("  Order settings:", fg="green")
     click.secho(
-        f"    Strategy         = {config['orders']['algo']['strategy']}",
+        f"    Strategy                 = {config['orders']['algo']['strategy']}",
         fg="cyan",
     )
     click.secho(
-        f"    Params           = {config['orders']['algo']['params']}",
+        f"    Params                   = {config['orders']['algo']['params']}",
         fg="cyan",
     )
     click.echo()
@@ -82,11 +82,11 @@ def start(config):
     click.echo()
     click.secho("  For underlying, only write new contracts when:", fg="green")
     click.secho(
-        f"    Puts, red           = {config['write_when']['puts']['red']}",
+        f"    Puts, red               = {config['write_when']['puts']['red']}",
         fg="cyan",
     )
     click.secho(
-        f"    Calls, green        = {config['write_when']['calls']['green']}",
+        f"    Calls, green            = {config['write_when']['calls']['green']}",
         fg="cyan",
     )
 
