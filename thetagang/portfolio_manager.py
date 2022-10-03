@@ -504,7 +504,7 @@ class PortfolioManager:
         click.secho(f"{total_closeable_puts} puts can be closed", fg="magenta")
 
         self.roll_puts(rollable_puts, account_summary)
-        self.close_puts(closeable_puts, account_summary)
+        self.close_puts(closeable_puts)
 
     def check_calls(self, account_summary, portfolio_positions):
         # Check for calls which may be rolled to the next expiration or a better price
@@ -532,7 +532,7 @@ class PortfolioManager:
         click.secho(f"{total_closeable_calls} calls can be closed", fg="magenta")
 
         self.roll_calls(rollable_calls, account_summary, portfolio_positions)
-        self.close_calls(closeable_calls, account_summary, portfolio_positions)
+        self.close_calls(closeable_calls)
 
     def get_maximum_new_contracts_for(self, symbol, primary_exchange, account_summary):
         total_buying_power = self.get_buying_power(account_summary)
@@ -819,21 +819,19 @@ class PortfolioManager:
 
         return
 
-    def close_puts(self, puts, account_summary):
-        return self.close_positions(puts, "P", account_summary)
+    def close_puts(self, puts):
+        return self.close_positions(puts, "P")
 
     def roll_puts(self, puts, account_summary):
         return self.roll_positions(puts, "P", account_summary)
 
-    def close_calls(self, calls, account_summary, portfolio_positions):
-        return self.close_positions(calls, "C", account_summary, portfolio_positions)
+    def close_calls(self, calls):
+        return self.close_positions(calls, "C")
 
     def roll_calls(self, calls, account_summary, portfolio_positions):
         return self.roll_positions(calls, "C", account_summary, portfolio_positions)
 
-    def close_positions(
-        self, positions, right, account_summary, portfolio_positions={}
-    ):
+    def close_positions(self, positions):
         for position in positions:
             try:
                 position.contract.exchange = "SMART"
