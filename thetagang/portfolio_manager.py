@@ -893,7 +893,10 @@ class PortfolioManager:
                             [strike_limit or sys.float_info.max]
                             + [
                                 position.contract.strike
-                                + (position.averageCost / position.contract.multiplier)
+                                + (
+                                    position.averageCost
+                                    / float(position.contract.multiplier)
+                                )
                                 - midpoint_or_market_price(buy_ticker)
                             ]
                         ),
