@@ -991,7 +991,8 @@ class PortfolioManager:
         click.echo()
         click.secho(
             f"Searching option chain for symbol={symbol} "
-            f"right={right}, this can take a while...",
+            f"right={right}, strike_limit={strike_limit}, "
+            "this can take a while...",
             fg="green",
         )
         click.echo()
