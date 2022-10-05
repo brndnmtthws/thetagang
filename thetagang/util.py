@@ -88,12 +88,16 @@ def get_highest_price(ticker):
     # the spread might be messed up. This may in some cases make it harder for
     # orders to fill in a given day, but I think that's a reasonable tradeoff to
     # avoid leaving money on the table.
-    return max([midpoint_or_market_price(ticker), ticker.modelGreeks.optPrice])
+    if ticker.modelGreeks:
+        return max([midpoint_or_market_price(ticker), ticker.modelGreeks.optPrice])
+    return midpoint_or_market_price(ticker)
 
 
 def get_lowest_price(ticker):
     # Same as get_highest_price(), except get the lower price instead.
-    return min([midpoint_or_market_price(ticker), ticker.modelGreeks.optPrice])
+    if ticker.modelGreeks:
+        return min([midpoint_or_market_price(ticker), ticker.modelGreeks.optPrice])
+    return midpoint_or_market_price(ticker)
 
 
 def midpoint_or_market_price(ticker):
