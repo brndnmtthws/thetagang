@@ -837,6 +837,13 @@ class PortfolioManager:
                 position.contract.exchange = self.get_order_exchange()
                 buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
                 price = round(get_lowest_price(buy_ticker), 2)
+                if util.isNan(price):
+                    click.secho(
+                        f"Unable to close {position.contract.localSymbol} "
+                        "because market price data unavailable, skipping",
+                        fg="yellow",
+                    )
+                    continue
 
                 if not price:
                     # if the price is zero, use the minimum price
