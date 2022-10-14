@@ -37,7 +37,7 @@ jobs:
           key: ${{ runner.os }}-publish-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -81,7 +81,7 @@ jobs:
           key: ${{ runner.os }}-publish-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: "3.7"
       - name: Install dependencies
