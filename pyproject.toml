@@ -21,7 +21,7 @@ schema = "^0.7.3"
 toml = "^0.10.2"
 
 [tool.poetry.dev-dependencies]
-autoflake = "^1.4"
+autoflake = "^1.7"
 autohooks = "^2.2.0"
 autohooks-plugin-black = "^1.2.0"
 autohooks-plugin-isort = "^1.0.0"
