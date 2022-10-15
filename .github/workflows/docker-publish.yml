@@ -18,6 +18,10 @@ env:
   DOCKERHUB_ACCOUNT: brndnmtthws
   DOCKER_BUILDKIT: 1
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
