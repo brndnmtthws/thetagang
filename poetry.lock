@@ -92,15 +92,15 @@ black = {version = ">=20.8b1,<=21.7b0", markers = "python_version >= \"3.6\" and
 
 [[package]]
 name = "autohooks-plugin-isort"
-version = "1.0.0"
-description = "Autohooks plugin for include sorting via isort"
+version = "22.3.0"
+description = "An autohooks plugin for python code formatting via isort"
 category = "dev"
 optional = false
-python-versions = ">=3.5"
+python-versions = ">=3.7,<4.0"
 
 [package.dependencies]
-autohooks = ">=1.1"
-isort = "*"
+autohooks = ">=21.6.0"
+isort = ">=5.8.0,<6.0.0"
 
 [[package]]
 name = "black"
@@ -663,7 +663,7 @@ testing = ["flake8 (<5)", "func-timeout", "jaraco.functools", "jaraco.itertools"
 [metadata]
 lock-version = "1.1"
 python-versions = ">=3.7,<4.0"
-content-hash = "2f0bd4629a1e5396d1fa78a281016793bb031a73155554607bd44c1ee1f2c107"
+content-hash = "060182d0da2be16e065dee449468f7ef9978a81e56c4804df8f79c07a3e2dafe"
 
 [metadata.files]
 anyio = [
@@ -684,6 +684,7 @@ attrs = [
 ]
 autoflake = [
     {file = "autoflake-1.7.5-py2.py3-none-any.whl", hash = "sha256:bedb29201b07876cd9cad3a804760b1127b9bf156cf9689762a12eabd1683b65"},
+    {file = "autoflake-1.7.5-py3-none-any.whl", hash = "sha256:5ce7977d4f9905b01ef12d572f69252406009718ec1bac95fb5d74eb4faca58b"},
     {file = "autoflake-1.7.5.tar.gz", hash = "sha256:9848061faca11745e6ca9feb010a8caa9d62ec3ea1817413c226eb3b58bbdada"},
 ]
 autohooks = [
@@ -695,8 +696,7 @@ autohooks-plugin-black = [
     {file = "autohooks_plugin_black-21.7.1-py3-none-any.whl", hash = "sha256:74f615a753e365c6c5f259a884eb3e277f339e6b71a24d31158ce19a41cb28aa"},
 ]
 autohooks-plugin-isort = [
-    {file = "autohooks-plugin-isort-1.0.0.tar.gz", hash = "sha256:3308b24fa60562c3193c6bc443051e213986216155b37d0550443db337f0f90b"},
-    {file = "autohooks_plugin_isort-1.0.0-py3-none-any.whl", hash = "sha256:a43442277aa2c1f4c9d6ac57ccbb87cc2508b1f29ab2e621a2f0b599773c250f"},
+    {file = "autohooks_plugin_isort-22.3.0-py3-none-any.whl", hash = "sha256:4b85ee96a501d6cb29c005dca44dc4638d0b548a0302e8bbfa1bea0fad7d3f40"},
 ]
 black = [
     {file = "black-21.6b0-py3-none-any.whl", hash = "sha256:dfb8c5a069012b2ab1e972e7b908f5fb42b6bbabcba0a788b86dc05067c7d9c7"},
