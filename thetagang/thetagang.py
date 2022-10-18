@@ -14,7 +14,7 @@ from .portfolio_manager import PortfolioManager
 util.patchAsyncio()
 
 
-def start(config, use_ibc=True):
+def start(config, noibc=False):
     import toml
 
     import thetagang.config_defaults as config_defaults  # NOQA
@@ -156,7 +156,7 @@ def start(config, use_ibc=True):
     if config.get("ib_insync", {}).get("logfile"):
         util.logToFile(config["ib_insync"]["logfile"])
 
-    if use_ibc:
+    if not noibc:
         # TWS version is pinned to current stable
         ibc_config = config.get("ibc", {})
         # Remove any config params that aren't valid keywords for IBC
@@ -170,7 +170,7 @@ def start(config, use_ibc=True):
         portfolio_manager.manage()
 
     ib = IB()
-    if use_ibc:
+    if not noibc:
         ib.RaiseRequestErrors = ibc_config.get("RaiseRequestErrors", False)
     ib.connectedEvent += onConnected
 
@@ -187,7 +187,7 @@ def start(config, use_ibc=True):
         exchange=probeContractConfig["exchange"],
     )
 
-    if use_ibc:
+    if not noibc:
         watchdog = Watchdog(ibc,
                             ib,
                             probeContract=probeContract,
@@ -199,7 +199,7 @@ def start(config, use_ibc=True):
                    clientId=watchdogConfig['clientId'],
                    timeout=watchdogConfig['probeTimeout'])
     ib.run(completion_future)
-    if use_ibc:
+    if not noibc:
         watchdog.stop()
         ibc.terminate()
     else:
