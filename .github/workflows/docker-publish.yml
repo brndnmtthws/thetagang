@@ -49,7 +49,7 @@ jobs:
         with:
           path: ~/.cache/pypoetry
           key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
-      - name: Run image
+      - name: Install poetry
         uses: abatilo/actions-poetry@v2
         with:
           poetry-version: ${{ matrix.poetry-version }}
@@ -100,7 +100,7 @@ jobs:
           path: ~/.cache/pypoetry
           key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
 
-      - name: Run image
+      - name: Install poetry
         uses: abatilo/actions-poetry@v2
         with:
           poetry-version: "1.2.2"
