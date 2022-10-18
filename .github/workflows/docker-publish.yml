@@ -49,10 +49,13 @@ jobs:
           path: ~/.cache/pypoetry
           key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
 
+      - name: Install poetry
+        run: |
+          python -m pip install --upgrade pip wheel poetry
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip poetry
-          poetry install
+          poetry install --no-dev --no-root
+
       - name: Test with pytest
         run: |
           poetry run py.test
@@ -97,9 +100,11 @@ jobs:
           path: ~/.cache/pypoetry
           key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
 
-      - name: Install dependencies
+      - name: Install poetry
         run: |
           python -m pip install --upgrade pip wheel poetry
+      - name: Install dependencies
+        run: |
           poetry install --no-dev --no-root
       - name: Build package
         run: |
