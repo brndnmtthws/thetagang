@@ -31,8 +31,8 @@ def start(config, without_ibc=False):
 
     click.secho("  Account details:", fg="green")
     click.secho(
-        f"    Number                   = {config['account']['number']}",
-        fg="cyan")
+        f"    Number                   = {config['account']['number']}", fg="cyan"
+    )
     click.secho(
         f"    Cancel existing orders   = {config['account']['cancel_orders']}",
         fg="cyan",
@@ -107,10 +107,10 @@ def start(config, without_ibc=False):
 
     click.echo()
     click.secho("  Write options with targets of:", fg="green")
-    click.secho(f"    Days to expiry          >= {config['target']['dte']}",
-                fg="cyan")
-    click.secho(f"    Default delta           <= {config['target']['delta']}",
-                fg="cyan")
+    click.secho(f"    Days to expiry          >= {config['target']['dte']}", fg="cyan")
+    click.secho(
+        f"    Default delta           <= {config['target']['delta']}", fg="cyan"
+    )
     if "puts" in config["target"]:
         click.secho(
             f"    Delta for puts          <= {config['target']['puts']['delta']}",
@@ -148,9 +148,12 @@ def start(config, without_ibc=False):
             f"    {s.rjust(5)} weight = {weight_p}%, delta = {p_delta}p, {c_delta}c{strike_limits}",
             fg="cyan",
         )
-    assert (round(
-        sum([config["symbols"][s]["weight"]
-             for s in config["symbols"].keys()]), 5) == 1.00000)
+    assert (
+        round(
+            sum([config["symbols"][s]["weight"] for s in config["symbols"].keys()]), 5
+        )
+        == 1.00000
+    )
     click.echo()
 
     if config.get("ib_insync", {}).get("logfile"):
@@ -161,8 +164,7 @@ def start(config, without_ibc=False):
         ibc_config = config.get("ibc", {})
         # Remove any config params that aren't valid keywords for IBC
         ibc_keywords = {
-            k: ibc_config[k]
-            for k in ibc_config if k not in ["RaiseRequestErrors"]
+            k: ibc_config[k] for k in ibc_config if k not in ["RaiseRequestErrors"]
         }
         ibc = IBC(1012, **ibc_keywords)
 
@@ -188,16 +190,15 @@ def start(config, without_ibc=False):
     )
 
     if not without_ibc:
-        watchdog = Watchdog(ibc,
-                            ib,
-                            probeContract=probeContract,
-                            **watchdogConfig)
+        watchdog = Watchdog(ibc, ib, probeContract=probeContract, **watchdogConfig)
         watchdog.start()
     else:
-        ib.connect(watchdogConfig['host'],
-                   watchdogConfig['port'],
-                   clientId=watchdogConfig['clientId'],
-                   timeout=watchdogConfig['probeTimeout'])
+        ib.connect(
+            watchdogConfig["host"],
+            watchdogConfig["port"],
+            clientId=watchdogConfig["clientId"],
+            timeout=watchdogConfig["probeTimeout"],
+        )
     ib.run(completion_future)
     if not without_ibc:
         watchdog.stop()
