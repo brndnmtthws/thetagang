@@ -28,6 +28,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.7", "3.8", "3.9", "3.10"]
+        poetry-version: ["1.2.2"]
 
     steps:
       - uses: actions/checkout@v3
@@ -48,10 +49,10 @@ jobs:
         with:
           path: ~/.cache/pypoetry
           key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
-
-      - name: Install poetry
-        run: |
-          python -m pip install --upgrade pip wheel poetry
+      - name: Run image
+        uses: abatilo/actions-poetry@v2
+        with:
+          poetry-version: ${{ matrix.poetry-version }}
       - name: Install dependencies
         run: |
           poetry install --no-dev --no-root
@@ -100,9 +101,10 @@ jobs:
           path: ~/.cache/pypoetry
           key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
 
-      - name: Install poetry
-        run: |
-          python -m pip install --upgrade pip wheel poetry
+      - name: Run image
+        uses: abatilo/actions-poetry@v2
+        with:
+          poetry-version: "1.2.2"
       - name: Install dependencies
         run: |
           poetry install --no-dev --no-root
