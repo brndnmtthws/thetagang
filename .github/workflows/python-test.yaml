@@ -45,4 +45,4 @@ jobs:
           poetry run pylint thetagang -E
       - name: Check formatting with black
         run: |
-          poetry run black thetagang --check
+          poetry run black thetagang --check --diff --color
