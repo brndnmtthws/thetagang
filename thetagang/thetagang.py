@@ -14,7 +14,7 @@ from .portfolio_manager import PortfolioManager
 util.patchAsyncio()
 
 
-def start(config):
+def start(config, use_ibc=True):
     import toml
 
     import thetagang.config_defaults as config_defaults  # NOQA
@@ -31,8 +31,8 @@ def start(config):
 
     click.secho("  Account details:", fg="green")
     click.secho(
-        f"    Number                   = {config['account']['number']}", fg="cyan"
-    )
+        f"    Number                   = {config['account']['number']}",
+        fg="cyan")
     click.secho(
         f"    Cancel existing orders   = {config['account']['cancel_orders']}",
         fg="cyan",
@@ -107,10 +107,10 @@ def start(config):
 
     click.echo()
     click.secho("  Write options with targets of:", fg="green")
-    click.secho(f"    Days to expiry          >= {config['target']['dte']}", fg="cyan")
-    click.secho(
-        f"    Default delta           <= {config['target']['delta']}", fg="cyan"
-    )
+    click.secho(f"    Days to expiry          >= {config['target']['dte']}",
+                fg="cyan")
+    click.secho(f"    Default delta           <= {config['target']['delta']}",
+                fg="cyan")
     if "puts" in config["target"]:
         click.secho(
             f"    Delta for puts          <= {config['target']['puts']['delta']}",
@@ -148,30 +148,30 @@ def start(config):
             f"    {s.rjust(5)} weight = {weight_p}%, delta = {p_delta}p, {c_delta}c{strike_limits}",
             fg="cyan",
         )
-    assert (
-        round(
-            sum([config["symbols"][s]["weight"] for s in config["symbols"].keys()]), 5
-        )
-        == 1.00000
-    )
+    assert (round(
+        sum([config["symbols"][s]["weight"]
+             for s in config["symbols"].keys()]), 5) == 1.00000)
     click.echo()
 
     if config.get("ib_insync", {}).get("logfile"):
         util.logToFile(config["ib_insync"]["logfile"])
 
-    # TWS version is pinned to current stable
-    ibc_config = config.get("ibc", {})
-    # Remove any config params that aren't valid keywords for IBC
-    ibc_keywords = {
-        k: ibc_config[k] for k in ibc_config if k not in ["RaiseRequestErrors"]
-    }
-    ibc = IBC(1012, **ibc_keywords)
+    if use_ibc:
+        # TWS version is pinned to current stable
+        ibc_config = config.get("ibc", {})
+        # Remove any config params that aren't valid keywords for IBC
+        ibc_keywords = {
+            k: ibc_config[k]
+            for k in ibc_config if k not in ["RaiseRequestErrors"]
+        }
+        ibc = IBC(1012, **ibc_keywords)
 
     def onConnected():
         portfolio_manager.manage()
 
     ib = IB()
-    ib.RaiseRequestErrors = ibc_config.get("RaiseRequestErrors", False)
+    if use_ibc:
+        ib.RaiseRequestErrors = ibc_config.get("RaiseRequestErrors", False)
     ib.connectedEvent += onConnected
 
     completion_future = asyncio.Future()
@@ -187,9 +187,20 @@ def start(config):
         exchange=probeContractConfig["exchange"],
     )
 
-    watchdog = Watchdog(ibc, ib, probeContract=probeContract, **watchdogConfig)
-
-    watchdog.start()
+    if use_ibc:
+        watchdog = Watchdog(ibc,
+                            ib,
+                            probeContract=probeContract,
+                            **watchdogConfig)
+        watchdog.start()
+    else:
+        ib.connect(watchdogConfig['host'],
+                   watchdogConfig['port'],
+                   clientId=watchdogConfig['clientId'],
+                   timeout=watchdogConfig['probeTimeout'])
     ib.run(completion_future)
-    watchdog.stop()
-    ibc.terminate()
+    if use_ibc:
+        watchdog.stop()
+        ibc.terminate()
+    else:
+        ib.disconnect()
