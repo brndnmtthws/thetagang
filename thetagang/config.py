@@ -64,7 +64,9 @@ def apply_default_values(config):
 
 def validate_config(config):
     if "minimum_cushion" in config["account"]:
-        raise "Config error: minimum_cushion is deprecated and replaced with margin_usage. See sample config for details."
+        raise RuntimeError(
+            "Config error: minimum_cushion is deprecated and replaced with margin_usage. See sample config for details."
+        )
 
     schema = Schema(
         {
