@@ -76,13 +76,16 @@ jobs:
         if: steps.cache-tws.outputs.cache-hit != 'true'
         run: ./extract-installer.sh
 
-      - name: Cache pip and pals
+      - name: Cache ~/.cache/pip
         uses: actions/cache@v3
-        env:
-          cache-name: cache-pip-${{ matrix.python-version }}
         with:
-          path: ~/.cache
-          key: ${{ runner.os }}-publish-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
+          path: ~/.cache/pip
+          key: python-${{ steps.setup-python.outputs.python-version }}
+      - name: Cache ~/.cache/pypoetry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pypoetry
+          key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
