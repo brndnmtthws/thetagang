@@ -32,13 +32,16 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Cache Poetry
+      - name: Cache ~/.cache/pip
         uses: actions/cache@v3
-        env:
-          cache-name: cache-poetry-${{ matrix.python-version }}
+        with:
+          path: ~/.cache/pip
+          key: python-${{ steps.setup-python.outputs.python-version }}
+      - name: Cache ~/.cache/pypoetry
+        uses: actions/cache@v3
         with:
           path: ~/.cache/pypoetry
-          key: ${{ runner.os }}-publish-${{ env.cache-name }}-${{ hashFiles('poetry.lock') }}
+          key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
