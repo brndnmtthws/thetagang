@@ -599,7 +599,9 @@ class PortfolioManager:
             )
 
             ok_to_write = (
-                not write_only_when_green or ticker.marketPrice() > ticker.close
+                not write_only_when_green
+                or ticker
+                and ticker.marketPrice() > ticker.close
             )
 
             if calls_to_write > 0 and ok_to_write:
@@ -1044,7 +1046,7 @@ class PortfolioManager:
             chain_strikes = self.config["option_chains"]["strikes"]
             if right.startswith("P"):
                 return strikes[-chain_strikes:]
-            if right.startswith("C"):
+            else:
                 return strikes[:chain_strikes]
 
         contracts = [
