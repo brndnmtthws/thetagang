@@ -60,9 +60,7 @@ jobs:
         run: |
           poetry run py.test
 
-  # Push image to GitHub Packages.
-  # See also https://docs.docker.com/docker-hub/builds/
-  push:
+  build-and-push:
     needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
