@@ -72,7 +72,7 @@ tomlkit = ">=0.5.11"
 
 [[package]]
 name = "autohooks-plugin-black"
-version = "22.8.1"
+version = "22.11.0"
 description = "An autohooks plugin for python code formatting via black"
 category = "dev"
 optional = false
@@ -663,7 +663,7 @@ testing = ["flake8 (<5)", "func-timeout", "jaraco.functools", "jaraco.itertools"
 [metadata]
 lock-version = "1.1"
 python-versions = ">=3.7,<4.0"
-content-hash = "dafe02b9c6fa8a185e32a748546dbb1f71a13309ec5a65359b664967e074ab72"
+content-hash = "a478faa9bee6b7a22e404c9a4af2c63c415a03c71fad5cc3e2d14e714c92bdbe"
 
 [metadata.files]
 anyio = [
@@ -687,8 +687,8 @@ autohooks = [
     {file = "autohooks-22.11.0.tar.gz", hash = "sha256:5106b2ff98f432b9f552d2fc66e8904cb8827b28c4be4e376c46b699666d30a6"},
 ]
 autohooks-plugin-black = [
-    {file = "autohooks-plugin-black-22.8.1.tar.gz", hash = "sha256:cf48a1951b12f8eac9e697fb18edb05ab3519da8f29e7b31135bfc1cdb74b3f5"},
-    {file = "autohooks_plugin_black-22.8.1-py3-none-any.whl", hash = "sha256:f4b6b083be62fc13740705b1a1a897801c4f8222654f3f7d8c7e6635b7640444"},
+    {file = "autohooks_plugin_black-22.11.0-py3-none-any.whl", hash = "sha256:e2fd93f1b8995c963356114dafa21ededbcb81f9f6273887a82f26bca5342fe7"},
+    {file = "autohooks_plugin_black-22.11.0.tar.gz", hash = "sha256:c67cfe2a5c008b5596d109a5384c48aa9421a00cf0b49a67c1f380c6fe55155b"},
 ]
 autohooks-plugin-isort = [
     {file = "autohooks-plugin-isort-22.8.0.tar.gz", hash = "sha256:ed798f3ff9a2046ca7943cc25cbdd13afde2ddf82935cead3d61da4e210d070b"},
