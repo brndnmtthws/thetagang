@@ -59,7 +59,7 @@ tomli = {version = ">=2.0.1", markers = "python_version < \"3.11\""}
 
 [[package]]
 name = "autohooks"
-version = "22.8.1"
+version = "22.11.0"
 description = "Library for managing git hooks"
 category = "dev"
 optional = false
@@ -663,7 +663,7 @@ testing = ["flake8 (<5)", "func-timeout", "jaraco.functools", "jaraco.itertools"
 [metadata]
 lock-version = "1.1"
 python-versions = ">=3.7,<4.0"
-content-hash = "f6e46bc0ff09ef393805c55fb508a76b0b69b0bb98b35a2896af89e56d09391f"
+content-hash = "dafe02b9c6fa8a185e32a748546dbb1f71a13309ec5a65359b664967e074ab72"
 
 [metadata.files]
 anyio = [
@@ -683,8 +683,8 @@ autoflake = [
     {file = "autoflake-1.7.7.tar.gz", hash = "sha256:c8e4fc41aa3eae0f5c94b939e3a3d50923d7a9306786a6cbf4866a077b8f6832"},
 ]
 autohooks = [
-    {file = "autohooks-22.8.1-py3-none-any.whl", hash = "sha256:3343c8f50e00c9f6d3fc5e69f23f938d32dcac9d86bfcf667213c9836e07560b"},
-    {file = "autohooks-22.8.1.tar.gz", hash = "sha256:4e68f8b615e32ea6da4b2576c2cfa459b81ee46ea98eaac80a05d59e0ffaa803"},
+    {file = "autohooks-22.11.0-py3-none-any.whl", hash = "sha256:107420e114c6d72cc697669cd7e998b5250f458fda4217f4f26c08f13a3da437"},
+    {file = "autohooks-22.11.0.tar.gz", hash = "sha256:5106b2ff98f432b9f552d2fc66e8904cb8827b28c4be4e376c46b699666d30a6"},
 ]
 autohooks-plugin-black = [
     {file = "autohooks-plugin-black-22.8.1.tar.gz", hash = "sha256:cf48a1951b12f8eac9e697fb18edb05ab3519da8f29e7b31135bfc1cdb74b3f5"},
