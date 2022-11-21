@@ -281,7 +281,7 @@ socks = ["socksio (>=1.0.0,<2.0.0)"]
 
 [[package]]
 name = "ib-insync"
-version = "0.9.74"
+version = "0.9.77"
 description = "Python sync/async framework for Interactive Brokers API"
 category = "main"
 optional = false
@@ -774,8 +774,8 @@ httpx = [
     {file = "httpx-0.23.0.tar.gz", hash = "sha256:f28eac771ec9eb4866d3fb4ab65abd42d38c424739e80c08d8d20570de60b0ef"},
 ]
 ib-insync = [
-    {file = "ib_insync-0.9.74-py3-none-any.whl", hash = "sha256:f61a5612a8a49b49af59431ea4895d0350a2fbce14833d87e45fb86813975588"},
-    {file = "ib_insync-0.9.74.tar.gz", hash = "sha256:4160dbb7e4c2e8ca1a7f2d0dfb27848e3b7878d923949e4818addc303edc16ff"},
+    {file = "ib_insync-0.9.77-py3-none-any.whl", hash = "sha256:2eaaa2d1b476bb688bb7cd04a78ddf3a5bcdbb60ae4949f536c6c51fe52dbd12"},
+    {file = "ib_insync-0.9.77.tar.gz", hash = "sha256:6ca994aa73a230ade02daaa7f023a4dae1678d6c8488fc7ec120d229bbd994d5"},
 ]
 idna = [
     {file = "idna-3.4-py3-none-any.whl", hash = "sha256:90b77e79eaa3eba6de819a0c442c0b4ceefc341a7a2ab77d7562bf49f425c5c2"},
