@@ -166,7 +166,7 @@ def start(config, without_ibc=False):
         ibc_keywords = {
             k: ibc_config[k] for k in ibc_config if k not in ["RaiseRequestErrors"]
         }
-        ibc = IBC(1012, **ibc_keywords)
+        ibc = IBC(1019, **ibc_keywords)
 
     def onConnected():
         portfolio_manager.manage()
