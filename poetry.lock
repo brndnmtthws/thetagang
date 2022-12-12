@@ -319,7 +319,7 @@ python-versions = ">=3.6.1"
 
 [[package]]
 name = "ib-insync"
-version = "0.9.79"
+version = "0.9.80"
 description = "Python sync/async framework for Interactive Brokers API"
 category = "main"
 optional = false
@@ -791,8 +791,8 @@ hyperframe = [
     {file = "hyperframe-6.0.1.tar.gz", hash = "sha256:ae510046231dc8e9ecb1a6586f63d2347bf4c8905914aa84ba585ae85f28a914"},
 ]
 ib-insync = [
-    {file = "ib_insync-0.9.79-py3-none-any.whl", hash = "sha256:6c81e063e1942534c8d3916dc2acf068c1bb921c90bdc7cbd496681b7a58451f"},
-    {file = "ib_insync-0.9.79.tar.gz", hash = "sha256:8b7eeb00e9cbccdef0ffce75b6bcbe9aa105a4d3a302d743aedaef03f1c18c94"},
+    {file = "ib_insync-0.9.80-py3-none-any.whl", hash = "sha256:29e0f709d7a1b83e7e7582588eb289d0f0a7e6043ac87111b1b680e2060a2fec"},
+    {file = "ib_insync-0.9.80.tar.gz", hash = "sha256:d9a61997c8f4cfabb534c7d8b071446c738e495eb3ac8ce815382942cb2133a1"},
 ]
 idna = [
     {file = "idna-3.4-py3-none-any.whl", hash = "sha256:90b77e79eaa3eba6de819a0c442c0b4ceefc341a7a2ab77d7562bf49f425c5c2"},
