@@ -22,7 +22,7 @@ toml = "^0.10.2"
 
 [tool.poetry.dev-dependencies]
 autoflake = "^2.0"
-autohooks = "^22.11.2"
+autohooks = "^23.1.0"
 autohooks-plugin-black = "^22.11.0"
 autohooks-plugin-isort = "^22.8.0"
 autohooks-plugin-pylint = "^22.8.1"
