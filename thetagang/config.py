@@ -103,9 +103,11 @@ def validate_config(config):
                 Optional("max_dte"): And(int, lambda n: 1 <= n),
                 Optional("calls"): {
                     "itm": bool,
+                    "credit_only": bool,
                 },
                 Optional("puts"): {
                     "itm": bool,
+                    "credit_only": bool,
                 },
             },
             "target": {

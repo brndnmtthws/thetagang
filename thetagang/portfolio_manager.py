@@ -396,10 +396,10 @@ class PortfolioManager:
             fg="green",
         )
 
-        for symbol in portfolio_positions.keys():
+        for (symbol, position) in portfolio_positions.items():
             click.secho(f"  {symbol}:", fg="cyan")
             sorted_positions = sorted(
-                portfolio_positions[symbol],
+                position,
                 key=lambda p: option_dte(p.contract.lastTradeDateOrContractMonth)
                 if isinstance(p.contract, Option)
                 else -1,  # Keep stonks on top
@@ -912,6 +912,14 @@ class PortfolioManager:
                         2,
                     )
 
+                kind = "calls" if right.startswith("C") else "puts"
+
+                minimum_price = (
+                    0.0
+                    if not self.config["roll_when"][kind]["credit_only"]
+                    else midpoint_or_market_price(buy_ticker)
+                )
+
                 sell_ticker = self.find_eligible_contracts(
                     symbol,
                     self.get_primary_exchange(symbol),
@@ -919,6 +927,7 @@ class PortfolioManager:
                     strike_limit,
                     exclude_expirations_before=position.contract.lastTradeDateOrContractMonth,
                     exclude_first_exp_strike=position.contract.strike,
+                    minimum_price=minimum_price,
                 )
 
                 qty_to_roll = abs(position.position)
@@ -999,11 +1008,12 @@ class PortfolioManager:
         strike_limit,
         exclude_expirations_before=None,
         exclude_first_exp_strike=None,
+        minimum_price=0.0,
     ):
         click.echo()
         click.secho(
             f"Searching option chain for symbol={symbol} "
-            f"right={right}, strike_limit={strike_limit}, "
+            f"right={right}, strike_limit={strike_limit}, minimum_price={minimum_price}"
             "this can take a while...",
             fg="green",
         )
@@ -1079,9 +1089,6 @@ class PortfolioManager:
 
         tickers = self.get_ticker_list_for(tuple(contracts))
 
-        # Filter out contracts which don't have a midpoint price
-        tickers = [t for t in tickers if not util.isNan(t.midpoint())]
-
         def open_interest_is_valid(ticker):
             def open_interest_is_not_ready():
                 if right.startswith("P"):
@@ -1128,11 +1135,9 @@ class PortfolioManager:
             )
 
         def price_is_valid(ticker):
-            return not util.isNan(ticker.midpoint()) or not util.isNan(
-                ticker.marketPrice()
-            )
+            return midpoint_or_market_price(ticker) > minimum_price
 
-        # Filter out tickers without prices
+        # Filter out tickers with invalid or unavailable prices
         tickers = [ticker for ticker in tickers if price_is_valid(ticker)]
         # Filter by delta and open interest
         tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]

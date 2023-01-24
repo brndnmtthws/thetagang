@@ -101,9 +101,17 @@ min_pnl = 0.0
 # true if not specified.
 itm = true
 
+# Only roll when there's a suitable contract available that will result in a
+# credit.
+credit_only = false
+
 [roll_when.puts]
 # Roll puts if they're in the money. Defaults to false if not specified.
 itm = false
+
+# Only roll when there's a suitable contract available that will result in a
+# credit.
+credit_only = false
 
 # optionally, only write calls or puts when they're green or red, respectively.
 [write_when.calls]
