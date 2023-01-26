@@ -1135,7 +1135,10 @@ class PortfolioManager:
             )
 
         def price_is_valid(ticker):
-            return midpoint_or_market_price(ticker) > minimum_price
+            return (
+                self.wait_for_midpoint_price(ticker)
+                and midpoint_or_market_price(ticker) > minimum_price
+            )
 
         # Filter out tickers with invalid or unavailable prices
         tickers = [ticker for ticker in tickers if price_is_valid(ticker)]
