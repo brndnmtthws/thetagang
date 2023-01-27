@@ -83,6 +83,15 @@ def start(config, without_ibc=False):
             fg="cyan",
         )
 
+    click.secho(
+        f"    Puts: credit only        = {config['roll_when']['puts']['credit_only']}",
+        fg="cyan",
+    )
+    click.secho(
+        f"    Calls: credit only       = {config['roll_when']['calls']['credit_only']}",
+        fg="cyan",
+    )
+
     click.echo()
     click.secho("  For underlying, only write new contracts when:", fg="green")
     click.secho(

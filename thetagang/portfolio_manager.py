@@ -1013,7 +1013,7 @@ class PortfolioManager:
         click.echo()
         click.secho(
             f"Searching option chain for symbol={symbol} "
-            f"right={right}, strike_limit={strike_limit}, minimum_price={minimum_price}"
+            f"right={right}, strike_limit={strike_limit}, minimum_price={minimum_price} "
             "this can take a while...",
             fg="green",
         )
