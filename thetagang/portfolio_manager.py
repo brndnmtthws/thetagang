@@ -92,7 +92,7 @@ class PortfolioManager:
                 lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
                 API_RESPONSE_WAIT_TIME,
             )
-        except:
+        except RuntimeError:
             return False
         return True
 

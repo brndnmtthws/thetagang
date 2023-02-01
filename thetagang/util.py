@@ -72,7 +72,7 @@ def wait_n_seconds(pred, body, seconds_to_wait, started_at=None):
         started_at = datetime.now()
     diff = datetime.now() - started_at
     remaining = seconds_to_wait - diff.seconds
-    if remaining <= 0:
+    if not remaining or remaining <= 0 or math.isclose(remaining, 0.0):
         raise RuntimeError(
             "Exhausted retries waiting on predicate. This shouldn't happen."
         )
