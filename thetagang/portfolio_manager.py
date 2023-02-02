@@ -1137,7 +1137,7 @@ class PortfolioManager:
         def price_is_valid(ticker):
             return (
                 self.wait_for_midpoint_price(
-                    ticker, wait_time=5
+                    ticker, wait_time=3
                 )  # need to keep the wait time relatively short to avoid blocking on slow stuff
                 and midpoint_or_market_price(ticker) > minimum_price
             )
