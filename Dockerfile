@@ -13,8 +13,8 @@ RUN apt update \
   xvfb \
   && python3 -m pip install --upgrade pip \
   && if test "$(dpkg --print-architecture)" = "armhf" ; then python3 -m pip config set global.extra-index-url https://www.piwheels.org/simple ; fi \
-  && echo '8508bbdbc61027942aff5db81d7d224ada9f8ceeeab94f185d8c72adcc3d31aa  ibc.zip' | tee ibc.zip.sha256 \
-  && curl -qL https://github.com/IbcAlpha/IBC/releases/download/3.14.0/IBCLinux-3.14.0.zip -o ibc.zip \
+  && echo 'a8056f3da6d6b642ddd3d2ed59dac5cf9bd39fd3327cc377655e27972c6ac4a8  ibc.zip' | tee ibc.zip.sha256 \
+  && curl -qL https://github.com/IbcAlpha/IBC/releases/download/3.16.0/IBCLinux-3.16.0.zip -o ibc.zip \
   && sha256sum -c ibc.zip.sha256 \
   && unzip ibc.zip -d /opt/ibc \
   && chmod o+x /opt/ibc/*.sh /opt/ibc/*/*.sh \
