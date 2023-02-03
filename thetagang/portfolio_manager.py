@@ -86,12 +86,12 @@ class PortfolioManager:
             return False
         return True
 
-    def wait_for_market_price(self, ticker):
+    def wait_for_market_price(self, ticker, wait_time=API_RESPONSE_WAIT_TIME):
         try:
             wait_n_seconds(
                 lambda: util.isNan(ticker.marketPrice()),
                 lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
-                API_RESPONSE_WAIT_TIME,
+                wait_time,
             )
         except RuntimeError:
             return False
@@ -1139,8 +1139,8 @@ class PortfolioManager:
 
         def price_is_valid(ticker):
             return (
-                self.wait_for_midpoint_price(
-                    ticker, wait_time=3
+                self.wait_for_market_price(
+                    ticker, wait_time=5
                 )  # need to keep the wait time relatively short to avoid blocking on slow stuff
                 and midpoint_or_market_price(ticker) > minimum_price
             )
