@@ -10,6 +10,7 @@ from ib_insync.order import LimitOrder
 from thetagang.util import (
     account_summary_to_dict,
     count_short_option_positions,
+    get_call_cap,
     get_highest_price,
     get_lowest_price,
     get_strike_limit,
@@ -572,7 +573,9 @@ class PortfolioManager:
                 )
             )
 
-            target_calls = max([0, stock_count // 100])
+            target_calls = max(
+                [0, math.floor(((stock_count * get_call_cap(self.config)) // 100))]
+            )
             new_contracts_needed = target_calls - call_count
             excess_calls = call_count - target_calls
 

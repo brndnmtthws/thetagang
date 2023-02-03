@@ -136,3 +136,13 @@ def get_strike_limit(config, symbol, right):
     ):
         return config["symbols"][symbol][p_or_c]["strike_limit"]
     return None
+
+
+def get_call_cap(config):
+    if (
+        "write_when" in config
+        and "calls" in config["write_when"]
+        and "cap_factor" in config["write_when"]["calls"]
+    ):
+        return max([0, min([1.0, config["write_when"]["calls"]["cap_factor"]])])
+    return 1.0

@@ -89,10 +89,11 @@ def validate_config(config):
             },
             Optional("write_when"): {
                 Optional("calls"): {
-                    "green": bool,
+                    Optional("green"): bool,
+                    Optional("cap_factor"): And(float, lambda n: 0 <= n <= 1),
                 },
                 Optional("puts"): {
-                    "red": bool,
+                    Optional("red"): bool,
                 },
             },
             "roll_when": {

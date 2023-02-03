@@ -113,10 +113,17 @@ itm = false
 # credit.
 credit_only = false
 
-# optionally, only write calls or puts when they're green or red, respectively.
 [write_when.calls]
+# Optionally, only write calls when the underlying is green
 green = true
+
+# With covered calls, we can cap the number of calls to write by this factor. At
+# 1.0, we write covered calls on 100% of our positions. At 0.5, we'd only write
+# on 50% of our positions. This value must be between 1 and 0 inclusive.
+cap_factor = 1.0
+
 [write_when.puts]
+# Optionally, only write puts when the underlying is red
 red = true
 
 [target]
