@@ -581,7 +581,7 @@ class PortfolioManager:
 
             if excess_calls > 0:
                 click.secho(
-                    f"Warning: {symbol} has {excess_calls} excess covered calls stock_count={stock_count}, call_count={call_count}",
+                    f"Warning: {symbol} has excess_calls={excess_calls} excess covered calls stock_count={stock_count}, call_count={call_count}, target_calls={target_calls}",
                     fg="yellow",
                 )
 

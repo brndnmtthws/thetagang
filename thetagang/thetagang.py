@@ -102,6 +102,10 @@ def start(config, without_ibc=False):
         f"    Calls, green             = {config['write_when']['calls']['green']}",
         fg="cyan",
     )
+    click.secho(
+        f"    Call cap factor          = {config['write_when']['calls']['cap_factor']}",
+        fg="cyan",
+    )
 
     click.echo()
     click.secho("  When contracts are ITM:", fg="green")
