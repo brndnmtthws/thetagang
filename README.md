@@ -176,8 +176,8 @@ To get started, grab a copy of `thetagang.toml` and `config.ini`:
 ```console
 $ mkdir ~/thetagang
 $ cd ~/thetagang
-$ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/thetagang.toml -o ~/thetagang/thetagang.toml
-$ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/ibc-config.ini -o ~/thetagang/config.ini
+$ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/thetagang.toml -o ./thetagang.toml
+$ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/ibc-config.ini -o ./config.ini
 ```
 
 Edit `~/thetagang/thetagang.toml` to suit your needs. Pay particular
@@ -199,7 +199,7 @@ something like this to your crontab (on systems with a cron installation, use
 `crontab -e` to edit your crontab):
 
 ```crontab
-0 9 * * 1-5 docker run --rm -i -v ~/ibc:/etc/thetagang brndnmtthws/thetagang:main --config /etc/thetagang/thetagang.toml
+0 9 * * 1-5 docker run --rm -i -v ~/thetagang:/etc/thetagang brndnmtthws/thetagang:main --config /etc/thetagang/thetagang.toml
 ```
 
 ## Determining which ETFs or stocks to run ThetaGang with
