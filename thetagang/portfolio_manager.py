@@ -397,7 +397,7 @@ class PortfolioManager:
             fg="green",
         )
 
-        for (symbol, position) in portfolio_positions.items():
+        for symbol, position in portfolio_positions.items():
             click.secho(f"  {symbol}:", fg="cyan")
             sorted_positions = sorted(
                 position,
