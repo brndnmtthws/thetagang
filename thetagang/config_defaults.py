@@ -20,7 +20,7 @@ DEFAULT_CONFIG = {
     "roll_when": {
         "min_pnl": 0.0,
         "close_at_pnl": 1.0,
-        "calls": {"itm": True, "credit_only": False},
+        "calls": {"itm": True, "credit_only": False, "has_excess_calls": True},
         "puts": {"itm": False, "credit_only": False},
     },
 }

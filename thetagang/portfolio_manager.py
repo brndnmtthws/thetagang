@@ -36,6 +36,7 @@ class PortfolioManager:
         self.ib = ib
         self.completion_future = completion_future
         self.ib.orderStatusEvent += self.orderStatusEvent
+        self.has_excess_calls = set()
 
     def orderStatusEvent(self, trade):
         if "Filled" in trade.orderStatus.status:
@@ -102,7 +103,7 @@ class PortfolioManager:
         return self.ib.reqSecDefOptParams(stock.symbol, "", stock.secType, stock.conId)
 
     @lru_cache(maxsize=32)
-    def get_ticker_for_stock(self, symbol, primary_exchange, midpoint=False):
+    def get_ticker_for_stock(self, symbol, primary_exchange):
         stock = Stock(symbol, "SMART", currency="USD", primaryExchange=primary_exchange)
         self.ib.qualifyContracts(stock)
         return self.get_ticker_for(stock)
@@ -217,6 +218,13 @@ class PortfolioManager:
         # Check if this call is ITM, and it's o.k. to roll
         if not self.config["roll_when"]["calls"]["itm"] and self.call_is_itm(
             call.contract
+        ):
+            return False
+
+        # Don't roll if there are excess CCs and we're configured not to roll
+        if (
+            call.symbol in self.has_excess_calls
+            and not self.config["roll_when"]["calls"]["has_excess_calls"]
         ):
             return False
 
@@ -406,27 +414,27 @@ class PortfolioManager:
                 else -1,  # Keep stonks on top
             )
 
-            def pad(col, id):
-                return position_values[id][col].rjust(padding[col])
+            def pad(col, pid):
+                return position_values[pid][col].rjust(padding[col])
 
             for p in sorted_positions:
-                id = p.contract.conId
-                qty = pad("qty", id)
-                mktPrice = pad("mktprice", id)
-                avgPrice = pad("avgprice", id)
-                value = pad("value", id)
-                cost = pad("cost", id)
-                pnl = pad("p&l", id)
+                conId = p.contract.conId
+                qty = pad("qty", conId)
+                mktPrice = pad("mktprice", conId)
+                avgPrice = pad("avgprice", conId)
+                value = pad("value", conId)
+                cost = pad("cost", conId)
+                pnl = pad("p&l", conId)
                 if isinstance(p.contract, Stock):
                     click.secho(
                         f"    Stock  {qty}  {mktPrice}  {avgPrice}  {value}  {cost}  {pnl}",
                         fg="cyan",
                     )
                 elif isinstance(p.contract, Option):
-                    strike = pad("strike", id)
-                    dte = pad("dte", id)
-                    exp = pad("exp", id)
-                    itm = pad("itm?", id)
+                    strike = pad("strike", conId)
+                    dte = pad("dte", conId)
+                    exp = pad("exp", conId)
+                    itm = pad("itm?", conId)
 
                     def p_or_c(p):
                         return "Call" if p.contract.right.startswith("C") else "Put "
@@ -580,6 +588,7 @@ class PortfolioManager:
             excess_calls = call_count - target_calls
 
             if excess_calls > 0:
+                self.has_excess_calls.add(symbol)
                 click.secho(
                     f"Warning: {symbol} has excess_calls={excess_calls} stock_count={stock_count}, call_count={call_count}, target_calls={target_calls}",
                     fg="yellow",
@@ -619,9 +628,9 @@ class PortfolioManager:
                         calls_to_write,
                         strike_limit,
                     )
-                except RuntimeError as e:
+                except RuntimeError as error:
                     click.echo()
-                    click.secho(str(e), fg="red")
+                    click.secho(str(error), fg="red")
                     click.secho(
                         f"Failed to write calls for {symbol}. Continuing anyway...",
                         fg="yellow",

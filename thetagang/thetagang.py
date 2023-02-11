@@ -17,9 +17,7 @@ util.patchAsyncio()
 def start(config, without_ibc=False):
     import toml
 
-    import thetagang.config_defaults as config_defaults  # NOQA
-
-    with open(config, "r") as f:
+    with open(config, "r", encoding="utf8") as f:
         config = toml.load(f)
 
     config = normalize_config(config)
@@ -89,6 +87,10 @@ def start(config, without_ibc=False):
     )
     click.secho(
         f"    Calls: credit only       = {config['roll_when']['calls']['credit_only']}",
+        fg="cyan",
+    )
+    click.secho(
+        f"    Calls: roll excess       = {config['roll_when']['calls']['has_excess_calls']}",
         fg="cyan",
     )
 
@@ -172,28 +174,17 @@ def start(config, without_ibc=False):
     if config.get("ib_insync", {}).get("logfile"):
         util.logToFile(config["ib_insync"]["logfile"])
 
-    if not without_ibc:
-        # TWS version is pinned to current stable
-        ibc_config = config.get("ibc", {})
-        # Remove any config params that aren't valid keywords for IBC
-        ibc_keywords = {
-            k: ibc_config[k] for k in ibc_config if k not in ["RaiseRequestErrors"]
-        }
-        ibc = IBC(1019, **ibc_keywords)
-
     def onConnected():
         portfolio_manager.manage()
 
     ib = IB()
-    if not without_ibc:
-        ib.RaiseRequestErrors = ibc_config.get("RaiseRequestErrors", False)
     ib.connectedEvent += onConnected
 
     completion_future = asyncio.Future()
     portfolio_manager = PortfolioManager(config, ib, completion_future)
 
     probeContractConfig = config["watchdog"]["probeContract"]
-    watchdogConfig = config.get("watchdog")
+    watchdogConfig = config.get("watchdog", {})
     del watchdogConfig["probeContract"]
     probeContract = Contract(
         secType=probeContractConfig["secType"],
@@ -203,8 +194,22 @@ def start(config, without_ibc=False):
     )
 
     if not without_ibc:
+        # TWS version is pinned to current stable
+        ibc_config = config.get("ibc", {})
+        # Remove any config params that aren't valid keywords for IBC
+        ibc_keywords = {
+            k: ibc_config[k] for k in ibc_config if k not in ["RaiseRequestErrors"]
+        }
+        ibc = IBC(1019, **ibc_keywords)
+
+        ib.RaiseRequestErrors = ibc_config.get("RaiseRequestErrors", False)
+
         watchdog = Watchdog(ibc, ib, probeContract=probeContract, **watchdogConfig)
         watchdog.start()
+
+        ib.run(completion_future)
+        watchdog.stop()
+        ibc.terminate()
     else:
         ib.connect(
             watchdogConfig["host"],
@@ -212,9 +217,5 @@ def start(config, without_ibc=False):
             clientId=watchdogConfig["clientId"],
             timeout=watchdogConfig["probeTimeout"],
         )
-    ib.run(completion_future)
-    if not without_ibc:
-        watchdog.stop()
-        ibc.terminate()
-    else:
+        ib.run(completion_future)
         ib.disconnect()

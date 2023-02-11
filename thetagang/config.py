@@ -103,12 +103,13 @@ def validate_config(config):
                 Optional("close_at_pnl"): float,
                 Optional("max_dte"): And(int, lambda n: 1 <= n),
                 Optional("calls"): {
-                    "itm": bool,
-                    "credit_only": bool,
+                    Optional("itm"): bool,
+                    Optional("credit_only"): bool,
+                    Optional("has_excess_calls"): bool,
                 },
                 Optional("puts"): {
-                    "itm": bool,
-                    "credit_only": bool,
+                    Optional("itm"): bool,
+                    Optional("credit_only"): bool,
                 },
             },
             "target": {
