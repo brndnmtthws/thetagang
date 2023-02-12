@@ -90,7 +90,7 @@ def start(config, without_ibc=False):
         fg="cyan",
     )
     click.secho(
-        f"    Calls: roll excess       = {config['roll_when']['calls']['has_excess_calls']}",
+        f"    Calls: roll excess       = {config['roll_when']['calls']['has_excess']}",
         fg="cyan",
     )
 

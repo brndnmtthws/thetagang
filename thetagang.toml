@@ -108,7 +108,7 @@ credit_only = false
 # If set to false, calls will not be rolled if there are any number of calls in
 # excess of the target call quantity. A truthy value means thetagang will keep
 # rolling calls regardless of the total quantity.
-has_excess_calls = true
+has_excess = true
 
 [roll_when.puts]
 # Roll puts if they're in the money. Defaults to false if not specified.
