@@ -462,11 +462,11 @@ class PortfolioManager:
             # Look for lots of stock that don't have covered calls
             self.check_for_uncovered_positions(account_summary, portfolio_positions)
 
-            self.check_puts(account_summary, portfolio_positions)
-            self.check_calls(account_summary, portfolio_positions)
-
             # Refresh positions, in case anything changed from the orders above
             portfolio_positions = self.get_portfolio_positions()
+
+            self.check_puts(account_summary, portfolio_positions)
+            self.check_calls(account_summary, portfolio_positions)
 
             # Wait for pending orders
             wait_n_seconds(
