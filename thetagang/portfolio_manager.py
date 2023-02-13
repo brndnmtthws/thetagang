@@ -223,7 +223,7 @@ class PortfolioManager:
 
         # Don't roll if there are excess CCs and we're configured not to roll
         if (
-            call.symbol in self.has_excess_calls
+            call.contract.symbol in self.has_excess_calls
             and not self.config["roll_when"]["calls"]["has_excess"]
         ):
             return False
