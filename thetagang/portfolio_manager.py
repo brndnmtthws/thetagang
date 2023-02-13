@@ -456,17 +456,17 @@ class PortfolioManager:
             click.echo()
             click.secho("Checking positions...", fg="green")
 
-            self.check_puts(account_summary, portfolio_positions)
-            self.check_calls(account_summary, portfolio_positions)
+            # Check if we have enough buying power to write some puts
+            self.check_if_can_write_puts(account_summary, portfolio_positions)
 
             # Look for lots of stock that don't have covered calls
             self.check_for_uncovered_positions(account_summary, portfolio_positions)
 
-            # Refresh positions, in case anything changed from the ordering above
-            portfolio_positions = self.get_portfolio_positions()
+            self.check_puts(account_summary, portfolio_positions)
+            self.check_calls(account_summary, portfolio_positions)
 
-            # Check if we have enough buying power to write some puts
-            self.check_if_can_write_puts(account_summary, portfolio_positions)
+            # Refresh positions, in case anything changed from the orders above
+            portfolio_positions = self.get_portfolio_positions()
 
             # Wait for pending orders
             wait_n_seconds(
