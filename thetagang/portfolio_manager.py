@@ -224,7 +224,7 @@ class PortfolioManager:
         # Don't roll if there are excess CCs and we're configured not to roll
         if (
             call.symbol in self.has_excess_calls
-            and not self.config["roll_when"]["calls"]["has_excess_calls"]
+            and not self.config["roll_when"]["calls"]["has_excess"]
         ):
             return False
 
@@ -1025,7 +1025,7 @@ class PortfolioManager:
         click.echo()
         click.secho(
             f"Searching option chain for symbol={symbol} "
-            f"right={right}, strike_limit={strike_limit}, minimum_price={minimum_price} "
+            f"right={right}, strike_limit={strike_limit}, minimum_price={minimum_price:.2f} "
             "this can take a while...",
             fg="green",
         )
