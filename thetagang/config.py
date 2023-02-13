@@ -105,7 +105,7 @@ def validate_config(config):
                 Optional("calls"): {
                     Optional("itm"): bool,
                     Optional("credit_only"): bool,
-                    Optional("has_excess_calls"): bool,
+                    Optional("has_excess"): bool,
                 },
                 Optional("puts"): {
                     Optional("itm"): bool,
