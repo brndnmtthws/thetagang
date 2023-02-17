@@ -118,6 +118,11 @@ itm = false
 # credit.
 credit_only = false
 
+# If set to false, puts will not be rolled if there are any number of puts in
+# excess of the target put quantity. A truthy value means thetagang will keep
+# rolling puts regardless of the total quantity.
+has_excess = true
+
 [write_when.calls]
 # Optionally, only write calls when the underlying is green
 green = true

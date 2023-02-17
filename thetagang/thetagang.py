@@ -86,6 +86,10 @@ def start(config, without_ibc=False):
         fg="cyan",
     )
     click.secho(
+        f"    Puts: roll excess       = {config['roll_when']['puts']['has_excess']}",
+        fg="cyan",
+    )
+    click.secho(
         f"    Calls: credit only       = {config['roll_when']['calls']['credit_only']}",
         fg="cyan",
     )

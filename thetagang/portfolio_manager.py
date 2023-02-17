@@ -37,6 +37,7 @@ class PortfolioManager:
         self.completion_future = completion_future
         self.ib.orderStatusEvent += self.orderStatusEvent
         self.has_excess_calls = set()
+        self.has_excess_puts = set()
 
     def orderStatusEvent(self, trade):
         if "Filled" in trade.orderStatus.status:
@@ -164,6 +165,13 @@ class PortfolioManager:
         # Check if this put is ITM, and if it's o.k. to roll
         if not self.config["roll_when"]["puts"]["itm"] and self.put_is_itm(
             put.contract
+        ):
+            return False
+
+        # Don't roll if there are excess puts and we're configured not to roll
+        if (
+            put.contract.symbol in self.has_excess_puts
+            and not self.config["roll_when"]["puts"]["has_excess"]
         ):
             return False
 
@@ -781,22 +789,25 @@ class PortfolioManager:
 
             ok_to_write = not write_only_when_red or ticker.marketPrice() < ticker.close
 
-            target_additional_quantity[symbol] = (
-                math.floor(target_quantity - current_position - 100 * put_count),
-                ok_to_write,
-            )
+            target_additional_quantity[symbol] = {
+                "qty": math.floor(target_quantity - current_position - 100 * put_count),
+                "ok_to_write": ok_to_write,
+            }
+
+            net_target_shares = target_additional_quantity[symbol]["qty"]
+            net_target_puts = net_target_shares // 100
 
             click.secho(
-                f"    Net quantity: {target_additional_quantity[symbol][0]:,d} shares, {target_additional_quantity[symbol][0] // 100} contracts",
+                f"    Net quantity: {net_target_shares:,d} shares, {net_target_puts} contracts",
                 fg="cyan",
             )
 
         click.echo()
 
         # Figure out how many additional puts are needed, if they're needed
-        for symbol in target_additional_quantity.keys():
-            ok_to_write = target_additional_quantity[symbol][1]
-            additional_quantity = target_additional_quantity[symbol][0] // 100
+        for symbol, target in target_additional_quantity.items():
+            ok_to_write = target["ok_to_write"]
+            additional_quantity = target["qty"] // 100
             # NOTE: it's possible there are non-standard option contract sizes,
             # like with futures, but we don't bother handling those cases.
             # Please don't use this code with futures.
@@ -829,6 +840,13 @@ class PortfolioManager:
                 click.secho(
                     f"Need {additional_quantity} additional for {symbol}, but won't write because {symbol} is green",
                     fg="cyan",
+                )
+            elif additional_quantity < 0:
+                excess_puts = -additional_quantity
+                self.has_excess_puts.add(symbol)
+                click.secho(
+                    f"Warning: {symbol} has excess_puts={excess_puts} based on net liquidation and target margin usage",
+                    fg="yellow",
                 )
 
         return

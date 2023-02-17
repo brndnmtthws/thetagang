@@ -110,6 +110,7 @@ def validate_config(config):
                 Optional("puts"): {
                     Optional("itm"): bool,
                     Optional("credit_only"): bool,
+                    Optional("has_excess"): bool,
                 },
             },
             "target": {
