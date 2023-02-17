@@ -174,7 +174,7 @@ class PortfolioManager:
             and not self.config["roll_when"]["puts"]["has_excess"]
         ):
             click.secho(
-                f"  {put.contract.localSymbol} can't be rolled because there are excess puts for {put.contract.symbol}",
+                f"  {put.contract.localSymbol} won't be rolled because there are excess puts for {put.contract.symbol}",
                 fg="yellow",
             )
             return False
@@ -239,7 +239,7 @@ class PortfolioManager:
             and not self.config["roll_when"]["calls"]["has_excess"]
         ):
             click.secho(
-                f"  {call.contract.localSymbol} can't be rolled because there are excess calls for {call.contract.symbol}",
+                f"  {call.contract.localSymbol} won't be rolled because there are excess calls for {call.contract.symbol}",
                 fg="yellow",
             )
             return False
