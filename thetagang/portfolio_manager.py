@@ -173,6 +173,10 @@ class PortfolioManager:
             put.contract.symbol in self.has_excess_puts
             and not self.config["roll_when"]["puts"]["has_excess"]
         ):
+            click.secho(
+                f"  {put.contract.localSymbol} can't be rolled because there are excess puts for {put.contract.symbol}",
+                fg="yellow",
+            )
             return False
 
         dte = option_dte(put.contract.lastTradeDateOrContractMonth)
@@ -234,6 +238,10 @@ class PortfolioManager:
             call.contract.symbol in self.has_excess_calls
             and not self.config["roll_when"]["calls"]["has_excess"]
         ):
+            click.secho(
+                f"  {call.contract.localSymbol} can't be rolled because there are excess calls for {call.contract.symbol}",
+                fg="yellow",
+            )
             return False
 
         dte = option_dte(call.contract.lastTradeDateOrContractMonth)
