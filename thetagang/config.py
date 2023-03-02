@@ -136,12 +136,15 @@ def validate_config(config):
                     ),
                     Optional("primary_exchange"): And(str, len),
                     Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                    Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
                     Optional("calls"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
                         Optional("strike_limit"): And(float, lambda n: n > 0),
                     },
                     Optional("puts"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
                         Optional("strike_limit"): And(float, lambda n: n > 0),
                     },
                 }

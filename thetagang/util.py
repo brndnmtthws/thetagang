@@ -41,7 +41,7 @@ def count_short_option_positions(symbol, portfolio_positions, right):
                     p.position
                     for p in portfolio_positions[symbol]
                     if isinstance(p.contract, Option)
-                    and p.contract.right.startswith(right)
+                    and p.contract.right.upper().startswith(right.upper())
                     and p.position < 0
                 ]
             )
@@ -58,7 +58,7 @@ def count_long_option_positions(symbol, portfolio_positions, right):
                     p.position
                     for p in portfolio_positions[symbol]
                     if isinstance(p.contract, Option)
-                    and p.contract.right.startswith(right)
+                    and p.contract.right.upper().startswith(right.upper())
                     and p.position > 0
                 ]
             )
@@ -115,7 +115,7 @@ def midpoint_or_market_price(ticker):
 
 
 def get_target_delta(config, symbol, right):
-    p_or_c = "calls" if right.startswith("C") else "puts"
+    p_or_c = "calls" if right.upper().startswith("C") else "puts"
     if (
         p_or_c in config["symbols"][symbol]
         and "delta" in config["symbols"][symbol][p_or_c]
@@ -129,7 +129,7 @@ def get_target_delta(config, symbol, right):
 
 
 def get_strike_limit(config, symbol, right):
-    p_or_c = "calls" if right.startswith("C") else "puts"
+    p_or_c = "calls" if right.upper().startswith("C") else "puts"
     if (
         p_or_c in config["symbols"][symbol]
         and "strike_limit" in config["symbols"][symbol][p_or_c]
@@ -146,3 +146,15 @@ def get_call_cap(config):
     ):
         return max([0, min([1.0, config["write_when"]["calls"]["cap_factor"]])])
     return 1.0
+
+
+def get_write_threshold(config, symbol, right):
+    p_or_c = "calls" if right.upper().startswith("C") else "puts"
+    if (
+        p_or_c in config["symbols"][symbol]
+        and "write_threshold" in config["symbols"][symbol][p_or_c]
+    ):
+        return config["symbols"][symbol][p_or_c]["write_threshold"]
+    if "write_threshold" in config["symbols"][symbol]:
+        return config["symbols"][symbol]["write_threshold"]
+    return 0.0
