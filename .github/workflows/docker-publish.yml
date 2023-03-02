@@ -12,6 +12,7 @@ on:
 
   # Run tests for any PRs.
   pull_request:
+    branches: [main]
 
 env:
   IMAGE_NAME: thetagang

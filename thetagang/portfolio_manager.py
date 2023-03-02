@@ -15,6 +15,7 @@ from thetagang.util import (
     get_lowest_price,
     get_strike_limit,
     get_target_delta,
+    get_write_threshold,
     midpoint_or_market_price,
     portfolio_positions_to_dict,
     position_pnl,
@@ -620,16 +621,17 @@ class PortfolioManager:
             )
 
             write_only_when_green = self.config["write_when"]["calls"]["green"]
+            write_threshold = get_write_threshold(self.config, symbol, "C")
             ticker = (
                 self.get_ticker_for_stock(symbol, self.get_primary_exchange(symbol))
                 if write_only_when_green
                 else None
             )
 
-            ok_to_write = (
-                not write_only_when_green
-                or ticker
+            ok_to_write = not write_only_when_green or (
+                ticker
                 and ticker.marketPrice() > ticker.close
+                and math.fabs(ticker.marketPrice() / ticker.close) >= write_threshold
             )
 
             if calls_to_write > 0 and ok_to_write:
@@ -794,8 +796,12 @@ class PortfolioManager:
             put_count = count_short_option_positions(symbol, portfolio_positions, "P")
 
             write_only_when_red = self.config["write_when"]["puts"]["red"]
+            write_threshold = get_write_threshold(self.config, symbol, "P")
 
-            ok_to_write = not write_only_when_red or ticker.marketPrice() < ticker.close
+            ok_to_write = not write_only_when_red or (
+                ticker.marketPrice() < ticker.close
+                and math.fabs(ticker.marketPrice() / ticker.close) >= write_threshold
+            )
 
             target_additional_quantity[symbol] = {
                 "qty": math.floor(target_quantity - current_position - 100 * put_count),

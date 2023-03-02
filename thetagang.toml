@@ -209,6 +209,16 @@ delta = 0.5
 # Interpreted as an upper bound for puts, and a lower bound for calls.
 strike_limit = 1000.0 # never write a put with a strike above $1000
 
+# Optionally, if we only write new contracts when the underlying is green or
+# red (`write_when.calls.green=true` or `write_when.puts.red=true`), specify a
+# minimum threshold as an absolute value daily percentage change (in this
+# example, use 1% for puts only, but could also be specified as
+# `symbols.QQQ.write_threshold`).
+#
+# In this example, we'd only write puts on QQQ when the daily change is -1% or
+# greater (provided that we also set `write_when.puts.red=true`).
+write_threshold = 0.01 # 1%, absolute value
+
 [symbols.QQQ.calls]
 strike_limit = 100.0 # never write a call with a strike below $100
 
