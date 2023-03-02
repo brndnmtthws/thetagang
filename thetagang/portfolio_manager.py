@@ -630,8 +630,10 @@ class PortfolioManager:
             def is_ok_to_write(
                 config, symbol, ticker, write_only_when_green, calls_to_write
             ):
-                if calls_to_write > 0 and not write_only_when_green or not ticker:
+                if not write_only_when_green:
                     return True
+                if not ticker or calls_to_write <= 0:
+                    return False
                 write_threshold = get_write_threshold(config, symbol, "C")
                 absolute_daily_change = math.fabs(ticker.marketPrice() / ticker.close)
                 green = ticker.marketPrice() > ticker.close
@@ -814,8 +816,10 @@ class PortfolioManager:
             def is_ok_to_write(
                 config, symbol, ticker, write_only_when_red, puts_to_write
             ):
-                if puts_to_write > 0 and not write_only_when_red:
+                if not write_only_when_red:
                     return True
+                if puts_to_write <= 0:
+                    return False
                 write_threshold = get_write_threshold(config, symbol, "P")
                 absolute_daily_change = math.fabs(ticker.marketPrice() / ticker.close)
                 red = ticker.marketPrice() < ticker.close
