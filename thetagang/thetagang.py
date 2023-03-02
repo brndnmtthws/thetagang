@@ -7,7 +7,7 @@ from ib_insync import IB, IBC, Watchdog, util
 from ib_insync.contract import Contract
 
 from thetagang.config import normalize_config, validate_config
-from thetagang.util import get_strike_limit, get_target_delta
+from thetagang.util import get_strike_limit, get_target_delta, get_write_threshold
 
 from .portfolio_manager import PortfolioManager
 
@@ -160,11 +160,20 @@ def start(config, without_ibc=False):
         c_limit = get_strike_limit(config, s, "C")
         p_limit = get_strike_limit(config, s, "P")
         if c_limit:
-            strike_limits += f", call strike >= ${c_limit:.2f}"
+            strike_limits += f", calls>=${c_limit:.2f}"
         if p_limit:
-            strike_limits += f", put strike <= ${p_limit:.2f}"
+            strike_limits += f", puts<=${p_limit:.2f}"
+        thresholds = ""
+        only_red = config["write_when"]["puts"]["red"]
+        only_green = config["write_when"]["puts"]["red"]
+        c_thresh = get_write_threshold(config, s, "C")
+        p_thresh = get_write_threshold(config, s, "P")
+        if only_green and c_thresh:
+            thresholds += f", threshold(green)>=${c_thresh:.2f}"
+        if only_red and p_thresh:
+            thresholds += f", threshold(red)>=${p_thresh:.2f}"
         click.secho(
-            f"    {s.rjust(5)} weight = {weight_p}%, delta = {p_delta}p, {c_delta}c{strike_limits}",
+            f"    {s.rjust(5)} weight={weight_p}%, delta={p_delta}p, {c_delta}c{strike_limits}{thresholds}",
             fg="cyan",
         )
     assert (
