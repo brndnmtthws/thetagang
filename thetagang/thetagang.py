@@ -86,7 +86,7 @@ def start(config, without_ibc=False):
         fg="cyan",
     )
     click.secho(
-        f"    Puts: roll excess       = {config['roll_when']['puts']['has_excess']}",
+        f"    Puts: roll excess        = {config['roll_when']['puts']['has_excess']}",
         fg="cyan",
     )
     click.secho(
@@ -155,7 +155,7 @@ def start(config, without_ibc=False):
         c = config["symbols"][s]
         c_delta = f"{get_target_delta(config, s, 'C'):.2f}".rjust(4)
         p_delta = f"{get_target_delta(config, s, 'P'):.2f}".rjust(4)
-        weight_p = f"{(c['weight'] * 100):.2f}".rjust(4)
+        weight_p = f"{(c['weight'] * 100):.2f}".rjust(5)
         strike_limits = ""
         c_limit = get_strike_limit(config, s, "C")
         p_limit = get_strike_limit(config, s, "P")
