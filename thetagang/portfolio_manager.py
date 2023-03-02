@@ -621,17 +621,36 @@ class PortfolioManager:
             )
 
             write_only_when_green = self.config["write_when"]["calls"]["green"]
-            write_threshold = get_write_threshold(self.config, symbol, "C")
             ticker = (
                 self.get_ticker_for_stock(symbol, self.get_primary_exchange(symbol))
                 if write_only_when_green
                 else None
             )
 
-            ok_to_write = not write_only_when_green or (
-                ticker
-                and ticker.marketPrice() > ticker.close
-                and math.fabs(ticker.marketPrice() / ticker.close) >= write_threshold
+            def is_ok_to_write(
+                config, symbol, ticker, write_only_when_green, calls_to_write
+            ):
+                if not write_only_when_green or not ticker:
+                    return True
+                write_threshold = get_write_threshold(config, symbol, "C")
+                absolute_daily_change = math.fabs(ticker.marketPrice() / ticker.close)
+                green = ticker.marketPrice() > ticker.close
+                if not green:
+                    click.secho(
+                        f"Need to write {calls_to_write} calls for {symbol}, but skipping because underlying is not green",
+                        fg="green",
+                    )
+                    return False
+                if absolute_daily_change < write_threshold:
+                    click.secho(
+                        f"Need to write {calls_to_write} calls for {symbol}, but skipping because daily_change={absolute_daily_change:.3f} less than write_threshold={write_threshold:.3f}",
+                        fg="green",
+                    )
+                    return False
+                return True
+
+            ok_to_write = is_ok_to_write(
+                self.config, symbol, ticker, write_only_when_green, calls_to_write
             )
 
             if calls_to_write > 0 and ok_to_write:
@@ -653,11 +672,6 @@ class PortfolioManager:
                         f"Failed to write calls for {symbol}. Continuing anyway...",
                         fg="yellow",
                     )
-            elif calls_to_write > 0:
-                click.secho(
-                    f"Need to write {calls_to_write} calls for {symbol}, but skipping because underlying is red",
-                    fg="green",
-                )
 
     def write_calls(self, symbol, primary_exchange, quantity, strike_limit):
         sell_ticker = self.find_eligible_contracts(
@@ -796,15 +810,39 @@ class PortfolioManager:
             put_count = count_short_option_positions(symbol, portfolio_positions, "P")
 
             write_only_when_red = self.config["write_when"]["puts"]["red"]
-            write_threshold = get_write_threshold(self.config, symbol, "P")
 
-            ok_to_write = not write_only_when_red or (
-                ticker.marketPrice() < ticker.close
-                and math.fabs(ticker.marketPrice() / ticker.close) >= write_threshold
+            def is_ok_to_write(
+                config, symbol, ticker, write_only_when_red, puts_to_write
+            ):
+                if not write_only_when_red:
+                    return True
+                write_threshold = get_write_threshold(config, symbol, "P")
+                absolute_daily_change = math.fabs(ticker.marketPrice() / ticker.close)
+                red = ticker.marketPrice() < ticker.close
+                if not red:
+                    click.secho(
+                        f"Need to write {puts_to_write} puts for {symbol}, but skipping because underlying is not red",
+                        fg="green",
+                    )
+                    return False
+                if absolute_daily_change < write_threshold:
+                    click.secho(
+                        f"Need to write {puts_to_write} puts for {symbol}, but skipping because daily_change={absolute_daily_change:.3f} less than write_threshold={write_threshold:.3f}",
+                        fg="green",
+                    )
+                    return False
+                return True
+
+            puts_to_write = math.floor(
+                target_quantity - current_position - 100 * put_count
+            )
+
+            ok_to_write = is_ok_to_write(
+                self.config, symbol, ticker, write_only_when_red, puts_to_write
             )
 
             target_additional_quantity[symbol] = {
-                "qty": math.floor(target_quantity - current_position - 100 * put_count),
+                "qty": puts_to_write,
                 "ok_to_write": ok_to_write,
             }
 
@@ -850,11 +888,6 @@ class PortfolioManager:
                         puts_to_write,
                         strike_limit,
                     )
-            elif additional_quantity >= 1:
-                click.secho(
-                    f"Need {additional_quantity} additional for {symbol}, but won't write because {symbol} is green",
-                    fg="cyan",
-                )
             elif additional_quantity < 0:
                 excess_puts = -additional_quantity
                 self.has_excess_puts.add(symbol)
