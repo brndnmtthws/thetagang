@@ -171,7 +171,7 @@ def start(config, without_ibc=False):
         if only_green and c_thresh:
             thresholds += f", threshold(green)>={100*c_thresh:.2f}%"
         if only_red and p_thresh:
-            thresholds += f", threshold(red)>={100*p_thresh:.2f}%"
+            thresholds += f", threshold(red)<={100*p_thresh:.2f}%"
         click.secho(
             f"    {s.rjust(5)} weight={weight_p}%, delta={p_delta}p, {c_delta}c{strike_limits}{thresholds}",
             fg="cyan",
