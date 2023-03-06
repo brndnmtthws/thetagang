@@ -627,7 +627,7 @@ class PortfolioManager:
                 else None
             )
 
-            def is_ok_to_write(
+            def is_ok_to_write_calls(
                 config, symbol, ticker, write_only_when_green, calls_to_write
             ):
                 if not write_only_when_green:
@@ -635,7 +635,9 @@ class PortfolioManager:
                 if not ticker or calls_to_write <= 0:
                     return False
                 write_threshold = get_write_threshold(config, symbol, "C")
-                absolute_daily_change = math.fabs(ticker.marketPrice() / ticker.close)
+                absolute_daily_change = math.fabs(
+                    (ticker.marketPrice() - ticker.close) / ticker.close
+                )
                 green = ticker.marketPrice() > ticker.close
                 if not green:
                     click.secho(
@@ -651,7 +653,7 @@ class PortfolioManager:
                     return False
                 return True
 
-            ok_to_write = is_ok_to_write(
+            ok_to_write = is_ok_to_write_calls(
                 self.config, symbol, ticker, write_only_when_green, calls_to_write
             )
 
@@ -813,7 +815,7 @@ class PortfolioManager:
 
             write_only_when_red = self.config["write_when"]["puts"]["red"]
 
-            def is_ok_to_write(
+            def is_ok_to_write_puts(
                 config, symbol, ticker, write_only_when_red, puts_to_write
             ):
                 if not write_only_when_red:
@@ -821,7 +823,9 @@ class PortfolioManager:
                 if puts_to_write <= 0:
                     return False
                 write_threshold = get_write_threshold(config, symbol, "P")
-                absolute_daily_change = math.fabs(ticker.marketPrice() / ticker.close)
+                absolute_daily_change = math.fabs(
+                    (ticker.marketPrice() - ticker.close) / ticker.close
+                )
                 red = ticker.marketPrice() < ticker.close
                 if not red:
                     click.secho(
@@ -841,7 +845,7 @@ class PortfolioManager:
                 target_quantity - current_position - 100 * put_count
             )
 
-            ok_to_write = is_ok_to_write(
+            ok_to_write = is_ok_to_write_puts(
                 self.config, symbol, ticker, write_only_when_red, puts_to_write
             )
 
