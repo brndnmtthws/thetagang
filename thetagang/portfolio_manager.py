@@ -815,6 +815,14 @@ class PortfolioManager:
 
             write_only_when_red = self.config["write_when"]["puts"]["red"]
 
+            net_target_shares = target_additional_quantity[symbol]["qty"]
+            net_target_puts = net_target_shares // 100
+
+            click.secho(
+                f"    Net quantity: {net_target_shares:,d} shares, {net_target_puts} contracts",
+                fg="cyan",
+            )
+
             def is_ok_to_write_puts(
                 config, symbol, ticker, write_only_when_red, puts_to_write
             ):
@@ -841,9 +849,7 @@ class PortfolioManager:
                     return False
                 return True
 
-            puts_to_write = math.floor(
-                target_quantity - current_position - 100 * put_count
-            )
+            puts_to_write = max([net_target_puts, 0])
 
             ok_to_write = is_ok_to_write_puts(
                 self.config, symbol, ticker, write_only_when_red, puts_to_write
@@ -853,14 +859,6 @@ class PortfolioManager:
                 "qty": puts_to_write,
                 "ok_to_write": ok_to_write,
             }
-
-            net_target_shares = target_additional_quantity[symbol]["qty"]
-            net_target_puts = net_target_shares // 100
-
-            click.secho(
-                f"    Net quantity: {net_target_shares:,d} shares, {net_target_puts} contracts",
-                fg="cyan",
-            )
 
         click.echo()
 
