@@ -820,7 +820,6 @@ class PortfolioManager:
             )
             net_target_shares = qty_to_write
             net_target_puts = net_target_shares // 100
-            puts_to_write = max([net_target_puts, 0])
 
             click.secho(
                 f"    Net quantity: {net_target_shares:,d} shares, {net_target_puts} contracts",
@@ -854,11 +853,11 @@ class PortfolioManager:
                 return True
 
             ok_to_write = is_ok_to_write_puts(
-                self.config, symbol, ticker, write_only_when_red, puts_to_write
+                self.config, symbol, ticker, write_only_when_red, net_target_puts
             )
 
             target_additional_quantity[symbol] = {
-                "qty": puts_to_write,
+                "qty": net_target_puts,
                 "ok_to_write": ok_to_write,
             }
 
@@ -867,7 +866,7 @@ class PortfolioManager:
         # Figure out how many additional puts are needed, if they're needed
         for symbol, target in target_additional_quantity.items():
             ok_to_write = target["ok_to_write"]
-            additional_quantity = target["qty"] // 100
+            additional_quantity = target["qty"]
             # NOTE: it's possible there are non-standard option contract sizes,
             # like with futures, but we don't bother handling those cases.
             # Please don't use this code with futures.
