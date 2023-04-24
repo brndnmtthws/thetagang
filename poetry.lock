@@ -92,20 +92,18 @@ black = ">=20.8"
 
 [[package]]
 name = "autohooks-plugin-isort"
-version = "22.8.0"
+version = "23.4.0"
 description = "An autohooks plugin for python code formatting via isort"
 category = "dev"
 optional = false
 python-versions = ">=3.7,<4.0"
 files = [
-    {file = "autohooks-plugin-isort-22.8.0.tar.gz", hash = "sha256:ed798f3ff9a2046ca7943cc25cbdd13afde2ddf82935cead3d61da4e210d070b"},
-    {file = "autohooks_plugin_isort-22.8.0-py3-none-any.whl", hash = "sha256:711ba763f962245cecf74b8d5014a5d5a13dcc1e55c775c4d00c85de8291fa90"},
+    {file = "autohooks_plugin_isort-23.4.0-py3-none-any.whl", hash = "sha256:ada2aad42a2c6e12b4b931a524c971968b4f2426bd7bc96f7806867e1237e449"},
+    {file = "autohooks_plugin_isort-23.4.0.tar.gz", hash = "sha256:309188365bfed8f2841545f7484bc9e4872d031ef8d495128a86e409483c5b6a"},
 ]
 
 [package.dependencies]
 autohooks = ">=21.6.0"
-autohooks-plugin-black = ">=22.7.0"
-autohooks-plugin-pylint = ">=21.6.0"
 isort = ">=5.8.0,<6.0.0"
 
 [[package]]
@@ -1040,4 +1038,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.8,<4.0"
-content-hash = "b0b94f3ff86c1cf1e9ffadc896131c190a08543791bc7c374204dd96df4f4573"
+content-hash = "6d3051d610a10bf464df490d8377f9a1ac81acc78ce4f2b91486cfd03c65e20b"
