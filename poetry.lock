@@ -108,19 +108,19 @@ isort = ">=5.8.0,<6.0.0"
 
 [[package]]
 name = "autohooks-plugin-pylint"
-version = "22.8.1"
+version = "23.4.0"
 description = "An autohooks plugin for python code linting via pylint"
 category = "dev"
 optional = false
-python-versions = ">=3.7,<4.0"
+python-versions = ">=3.7.2,<4.0.0"
 files = [
-    {file = "autohooks-plugin-pylint-22.8.1.tar.gz", hash = "sha256:d348a61b2b027ad51275dace830ec3643cf14416519eb68167a4bdadfe44ac7e"},
-    {file = "autohooks_plugin_pylint-22.8.1-py3-none-any.whl", hash = "sha256:a7195e0f6a568cd8e0e4a964ebcecf2eb4e457a17a8b3dbc6283dfc546a474c2"},
+    {file = "autohooks_plugin_pylint-23.4.0-py3-none-any.whl", hash = "sha256:2dd581c3764949ef9c1041f5a34206cac796a342a900f47e5f42346e80598009"},
+    {file = "autohooks_plugin_pylint-23.4.0.tar.gz", hash = "sha256:746c24a73bb312e9883f531d13db16da4bd05949969e7adeee3e8d1105a9c6c2"},
 ]
 
 [package.dependencies]
 autohooks = ">=2.2.0"
-pylint = ">=2.8.3,<3.0.0"
+pylint = ">=2.8.3"
 
 [[package]]
 name = "backports-zoneinfo"
@@ -1038,4 +1038,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.8,<4.0"
-content-hash = "6d3051d610a10bf464df490d8377f9a1ac81acc78ce4f2b91486cfd03c65e20b"
+content-hash = "b697b572ef3798e0235e1880a8a81ff94feb30de6e2c6cad47bab5c4e8f6bfe5"
