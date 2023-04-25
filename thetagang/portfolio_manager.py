@@ -32,6 +32,7 @@ API_RESPONSE_WAIT_TIME = 120
 
 class PortfolioManager:
     def __init__(self, config, ib, completion_future):
+        self.account_number = config["account"]["number"]
         self.orders = []
         self.config = config
         self.ib = ib
@@ -288,14 +289,14 @@ class PortfolioManager:
         return [
             item
             for item in portfolio_positions
-            if item.account == self.config["account"]["number"]
+            if item.account == self.account_number
             and item.contract.symbol in symbols
             and item.position != 0
             and item.averageCost != 0
         ]
 
     def get_portfolio_positions(self):
-        portfolio_positions = self.ib.portfolio()
+        portfolio_positions = self.ib.portfolio(account=self.account_number)
         return portfolio_positions_to_dict(self.filter_positions(portfolio_positions))
 
     def initialize_account(self):
@@ -310,7 +311,7 @@ class PortfolioManager:
                     self.ib.cancelOrder(trade.order)
 
     def summarize_account(self):
-        account_summary = self.ib.accountSummary(self.config["account"]["number"])
+        account_summary = self.ib.accountSummary(self.account_number)
         click.echo()
         click.secho("Account summary:", fg="green")
         click.echo()
@@ -697,6 +698,7 @@ class PortfolioManager:
             algoStrategy=self.get_algo_strategy(),
             algoParams=self.get_algo_params(),
             tif="DAY",
+            account=self.account_number,
         )
 
         # Submit order
@@ -743,6 +745,7 @@ class PortfolioManager:
             algoStrategy=self.get_algo_strategy(),
             algoParams=self.get_algo_params(),
             tif="DAY",
+            account=self.account_number,
         )
 
         # Submit order
@@ -942,6 +945,7 @@ class PortfolioManager:
                     algoStrategy=self.get_algo_strategy(),
                     algoParams=self.get_algo_params(),
                     tif="DAY",
+                    account=self.account_number,
                 )
 
                 trade = self.ib.placeOrder(buy_ticker.contract, order)
@@ -1062,6 +1066,7 @@ class PortfolioManager:
                     algoStrategy=self.get_algo_strategy(),
                     algoParams=self.get_algo_params(),
                     tif="DAY",
+                    account=self.account_number,
                 )
 
                 to_dte = option_dte(sell_ticker.contract.lastTradeDateOrContractMonth)
