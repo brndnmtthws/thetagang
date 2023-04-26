@@ -229,6 +229,7 @@ def start(config, without_ibc=False):
             watchdogConfig["port"],
             clientId=watchdogConfig["clientId"],
             timeout=watchdogConfig["probeTimeout"],
+            account=config["account"]["number"],
         )
         ib.run(completion_future)
         ib.disconnect()
