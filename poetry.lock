@@ -428,14 +428,14 @@ files = [
 
 [[package]]
 name = "ib-insync"
-version = "0.9.81"
+version = "0.9.82"
 description = "Python sync/async framework for Interactive Brokers API"
 category = "main"
 optional = false
 python-versions = ">=3.6"
 files = [
-    {file = "ib_insync-0.9.81-py3-none-any.whl", hash = "sha256:bd038c4f619139109ade1c60436b5040594d1bdfe086975b4ef50cc6efe517f9"},
-    {file = "ib_insync-0.9.81.tar.gz", hash = "sha256:c1acd0875fe2821889d77e28ad6ded219e2a281427643404d7cd4441e2c6ad15"},
+    {file = "ib_insync-0.9.82-py3-none-any.whl", hash = "sha256:752899d649f130aacef01e4a0886d39c15e05462d302851e4134c1e6a57be662"},
+    {file = "ib_insync-0.9.82.tar.gz", hash = "sha256:1abd28dae1c95d596dad03d34b052849eff93af1c65df631bceadadb33a73301"},
 ]
 
 [package.dependencies]
