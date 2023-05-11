@@ -1014,7 +1014,10 @@ class PortfolioManager:
                     right,
                     strike_limit,
                     exclude_expirations_before=position.contract.lastTradeDateOrContractMonth,
-                    exclude_exp_strike=(position.contract.strike, position.contract.lastTradeDateOrContractMonth),
+                    exclude_exp_strike=(
+                        position.contract.strike,
+                        position.contract.lastTradeDateOrContractMonth
+                    ),
                     minimum_price=minimum_price,
                 )
 
@@ -1172,7 +1175,8 @@ class PortfolioManager:
                 if (
                     c.lastTradeDateOrContractMonth == exclude_exp_strike[1]
                     and c.strike != exclude_exp_strike[0]
-                ) or c.lastTradeDateOrContractMonth != exclude_exp_strike[1]
+                )
+                or c.lastTradeDateOrContractMonth != exclude_exp_strike[1]
             ]
 
         tickers = self.get_ticker_list_for(tuple(contracts))
