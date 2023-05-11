@@ -1016,7 +1016,7 @@ class PortfolioManager:
                     exclude_expirations_before=position.contract.lastTradeDateOrContractMonth,
                     exclude_exp_strike=(
                         position.contract.strike,
-                        position.contract.lastTradeDateOrContractMonth
+                        position.contract.lastTradeDateOrContractMonth,
                     ),
                     minimum_price=minimum_price,
                 )
