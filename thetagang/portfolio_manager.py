@@ -1014,7 +1014,7 @@ class PortfolioManager:
                     right,
                     strike_limit,
                     exclude_expirations_before=position.contract.lastTradeDateOrContractMonth,
-                    exclude_first_exp_strike=position.contract.strike,
+                    exclude_exp_strike=(position.contract.strike, position.contract.lastTradeDateOrContractMonth),
                     minimum_price=minimum_price,
                 )
 
@@ -1096,7 +1096,7 @@ class PortfolioManager:
         right,
         strike_limit,
         exclude_expirations_before=None,
-        exclude_first_exp_strike=None,
+        exclude_exp_strike=None,
         minimum_price=0.0,
     ):
         click.echo()
@@ -1165,15 +1165,14 @@ class PortfolioManager:
         contracts = self.ib.qualifyContracts(*contracts)
 
         # exclude strike, but only for the first exp
-        if exclude_first_exp_strike:
+        if exclude_exp_strike:
             contracts = [
                 c
                 for c in contracts
                 if (
-                    c.lastTradeDateOrContractMonth == expirations[0]
-                    and c.strike != exclude_first_exp_strike
-                )
-                or c.lastTradeDateOrContractMonth != expirations[0]
+                    c.lastTradeDateOrContractMonth == exclude_exp_strike[1]
+                    and c.strike != exclude_exp_strike[0]
+                ) or c.lastTradeDateOrContractMonth != exclude_exp_strike[1]
             ]
 
         tickers = self.get_ticker_list_for(tuple(contracts))
