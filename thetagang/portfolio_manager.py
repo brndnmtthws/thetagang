@@ -10,7 +10,6 @@ from ib_insync.order import LimitOrder
 
 from thetagang.util import (
     account_summary_to_dict,
-    count_long_option_positions,
     count_short_option_positions,
     get_call_cap,
     get_highest_price,
@@ -19,6 +18,7 @@ from thetagang.util import (
     get_target_delta,
     get_write_threshold,
     midpoint_or_market_price,
+    net_option_positions,
     portfolio_positions_to_dict,
     position_pnl,
     wait_n_seconds,
@@ -1352,9 +1352,7 @@ class PortfolioManager:
             )
 
         click.echo()
-        net_vix_call_count = count_long_option_positions(
-            "VIX", portfolio_positions, "C"
-        )
+        net_vix_call_count = net_option_positions("VIX", portfolio_positions, "C")
         if net_vix_call_count > 0:
             click.secho(
                 f"VIX hedging: net_vix_call_count={net_vix_call_count}, checking if we need to close positions...",

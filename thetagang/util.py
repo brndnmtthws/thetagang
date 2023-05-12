@@ -67,6 +67,22 @@ def count_long_option_positions(symbol, portfolio_positions, right):
     return 0
 
 
+def net_option_positions(symbol, portfolio_positions, right):
+    if symbol in portfolio_positions:
+        return math.floor(
+            sum(
+                [
+                    p.position
+                    for p in portfolio_positions[symbol]
+                    if isinstance(p.contract, Option)
+                    and p.contract.right.upper().startswith(right.upper())
+                ]
+            )
+        )
+
+    return 0
+
+
 def wait_n_seconds(pred, body, seconds_to_wait, started_at=None):
     if not started_at:
         started_at = datetime.now()
