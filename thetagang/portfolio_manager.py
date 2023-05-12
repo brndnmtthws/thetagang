@@ -1237,7 +1237,8 @@ class PortfolioManager:
                 # position
                 return (
                     right.startswith("C")
-                    or ticker.strike <= midpoint_or_market_price(ticker) + stock_price
+                    or ticker.contract.strike
+                    <= midpoint_or_market_price(ticker) + stock_price
                 )
 
             return (
