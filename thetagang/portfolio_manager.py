@@ -1113,8 +1113,8 @@ class PortfolioManager:
         stock = Stock(symbol, "SMART", currency="USD", primaryExchange=primary_exchange)
         self.ib.qualifyContracts(stock)
 
-        ticker = self.get_ticker_for(stock)
-        ticker_price = midpoint_or_market_price(ticker)
+        stock_ticker = self.get_ticker_for(stock)
+        stock_price = midpoint_or_market_price(stock_ticker)
 
         chains = self.get_chains_for_stock(stock)
         chain = next(c for c in chains if c.exchange == "SMART")
@@ -1122,18 +1122,16 @@ class PortfolioManager:
         def valid_strike(strike):
             if right.startswith("P") and strike_limit:
                 return (
-                    strike <= ticker_price + 0.1 * ticker_price
-                    and strike <= strike_limit
+                    strike <= stock_price + 0.1 * stock_price and strike <= strike_limit
                 )
             elif right.startswith("P"):
-                return strike <= ticker_price + 0.1 * ticker_price
+                return strike <= stock_price + 0.1 * stock_price
             elif right.startswith("C") and strike_limit:
                 return (
-                    strike >= ticker_price - 0.1 * ticker_price
-                    and strike >= strike_limit
+                    strike >= stock_price - 0.1 * stock_price and strike >= strike_limit
                 )
             elif right.startswith("C"):
-                return strike >= ticker_price - 0.1 * ticker_price
+                return strike >= stock_price - 0.1 * stock_price
             return False
 
         chain_expirations = self.config["option_chains"]["expirations"]
@@ -1232,11 +1230,22 @@ class PortfolioManager:
             )
 
         def price_is_valid(ticker):
+            def cost_doesnt_exceed_market_price(ticker):
+                # when writing puts, we need to be sure that the strike +
+                # credit is less than or equal to the current market price, so
+                # that we don't exceed the target capital allocation for this
+                # position
+                return (
+                    right.startswith("C")
+                    or ticker.strike <= midpoint_or_market_price(ticker) + stock_price
+                )
+
             return (
                 self.wait_for_market_price(
                     ticker, wait_time=5
                 )  # need to keep the wait time relatively short to avoid blocking on slow stuff
                 and midpoint_or_market_price(ticker) > minimum_price
+                and cost_doesnt_exceed_market_price(ticker)
             )
 
         # Filter out tickers with invalid or unavailable prices
