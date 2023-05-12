@@ -183,6 +183,18 @@ def validate_config(config):
                     Optional("symbol"): And(str, len),
                 },
             },
+            Optional("vix_call_hedge"): {
+                "enabled": bool,
+                Optional("delta"): And(float, lambda n: 0 <= n <= 1),
+                Optional("close_hedges_when_vix_exceeds"): float,
+                Optional("allocation"): [
+                    {
+                        Optional("lower_bound"): float,
+                        Optional("upper_bound"): float,
+                        Optional("weight"): float,
+                    },
+                ],
+            },
         }
     )
     schema.validate(config)

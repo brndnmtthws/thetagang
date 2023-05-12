@@ -1,14 +1,16 @@
+import logging
 import math
 import sys
 from functools import lru_cache
 
 import click
 from ib_insync import util
-from ib_insync.contract import ComboLeg, Contract, Option, Stock, TagValue
+from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
 from ib_insync.order import LimitOrder
 
 from thetagang.util import (
     account_summary_to_dict,
+    count_long_option_positions,
     count_short_option_positions,
     get_call_cap,
     get_highest_price,
@@ -28,6 +30,11 @@ from .options import option_dte
 # Sometimes it can take a while to retrieve data, and it's lazy-loaded by the
 # API, so getting this number right is largely a matter of guesswork.
 API_RESPONSE_WAIT_TIME = 120
+
+
+# Turn off some of the more annoying logging output from ib_insync
+logging.getLogger("ib_insync.ib").setLevel(logging.ERROR)
+logging.getLogger("ib_insync.wrapper").setLevel(logging.CRITICAL)
 
 
 class PortfolioManager:
@@ -102,12 +109,19 @@ class PortfolioManager:
         return True
 
     @lru_cache(maxsize=32)
-    def get_chains_for_stock(self, stock):
-        return self.ib.reqSecDefOptParams(stock.symbol, "", stock.secType, stock.conId)
+    def get_chains_for_contract(self, contract):
+        return self.ib.reqSecDefOptParams(
+            contract.symbol, "", contract.secType, contract.conId
+        )
 
     @lru_cache(maxsize=32)
     def get_ticker_for_stock(self, symbol, primary_exchange):
-        stock = Stock(symbol, "SMART", currency="USD", primaryExchange=primary_exchange)
+        stock = Stock(
+            symbol,
+            self.get_order_exchange(),
+            currency="USD",
+            primaryExchange=primary_exchange,
+        )
         self.ib.qualifyContracts(stock)
         return self.get_ticker_for(stock)
 
@@ -217,6 +231,14 @@ class PortfolioManager:
         return False
 
     def call_is_itm(self, contract):
+        # Special case for handling VIX
+        if contract.symbol == "VIX":
+            vix_contract = Index("VIX", "CBOE", "USD")
+            self.ib.qualifyContracts(vix_contract)
+            self.ib.reqMktData(vix_contract)
+            vix_ticker = self.get_ticker_for(vix_contract)
+            return contract.strike <= vix_ticker.marketPrice()
+
         ticker = self.get_ticker_for_stock(contract.symbol, contract.primaryExchange)
 
         return contract.strike <= ticker.marketPrice()
@@ -290,7 +312,7 @@ class PortfolioManager:
             item
             for item in portfolio_positions
             if item.account == self.account_number
-            and item.contract.symbol in symbols
+            and (item.contract.symbol in symbols or item.contract.symbol == "VIX")
             and item.position != 0
             and item.averageCost != 0
         ]
@@ -306,7 +328,13 @@ class PortfolioManager:
             # Cancel any existing orders
             open_trades = self.ib.openTrades()
             for trade in open_trades:
-                if not trade.isDone() and trade.contract.symbol in self.get_symbols():
+                if not trade.isDone() and (
+                    trade.contract.symbol in self.get_symbols()
+                    or (
+                        self.config["vix_call_hedge"]["enabled"]
+                        and trade.contract.symbol == "VIX"
+                    )
+                ):
                     click.secho(f"Canceling order {trade.order}", fg="red")
                     self.ib.cancelOrder(trade.order)
 
@@ -367,36 +395,36 @@ class PortfolioManager:
 
         position_values = {}
 
-        def is_itm(p):
-            if p.contract.right.startswith("C") and self.call_is_itm(p.contract):
+        def is_itm(pos):
+            if pos.contract.right.startswith("C") and self.call_is_itm(pos.contract):
                 return "*"
-            elif p.contract.right.startswith("P") and self.put_is_itm(p.contract):
+            elif pos.contract.right.startswith("P") and self.put_is_itm(pos.contract):
                 return "*"
             return " "
 
-        for symbol in portfolio_positions.keys():
-            for p in portfolio_positions[symbol]:
-                position_values[p.contract.conId] = {
-                    "qty": str(int(p.position)),
-                    "mktprice": f"{p.marketPrice:,.2f}",
-                    "avgprice": f"{p.averageCost:,.2f}",
-                    "value": f"{p.marketValue:,.0f}",
-                    "cost": f"{(p.averageCost * p.position):,.0f}",
-                    "p&l": f"{(position_pnl(p) * 100):.2f}%",
-                    "itm?": is_itm(p),
+        for symbol, position in portfolio_positions.items():
+            for pos in position:
+                position_values[pos.contract.conId] = {
+                    "qty": str(int(pos.position)),
+                    "mktprice": f"{pos.marketPrice:,.2f}",
+                    "avgprice": f"{pos.averageCost:,.2f}",
+                    "value": f"{pos.marketValue:,.0f}",
+                    "cost": f"{(pos.averageCost * pos.position):,.0f}",
+                    "p&l": f"{(position_pnl(pos) * 100):.2f}%",
+                    "itm?": is_itm(pos),
                 }
-                if isinstance(p.contract, Option):
-                    position_values[p.contract.conId][
+                if isinstance(pos.contract, Option):
+                    position_values[pos.contract.conId][
                         "avgprice"
-                    ] = f"{p.averageCost/float(p.contract.multiplier):,.2f}"
-                    position_values[p.contract.conId][
+                    ] = f"{pos.averageCost/float(pos.contract.multiplier):,.2f}"
+                    position_values[pos.contract.conId][
                         "strike"
-                    ] = f"{float(p.contract.strike):,.2f}"
-                    position_values[p.contract.conId]["dte"] = str(
-                        option_dte(p.contract.lastTradeDateOrContractMonth)
+                    ] = f"{float(pos.contract.strike):,.2f}"
+                    position_values[pos.contract.conId]["dte"] = str(
+                        option_dte(pos.contract.lastTradeDateOrContractMonth)
                     )
-                    position_values[p.contract.conId]["exp"] = str(
-                        p.contract.lastTradeDateOrContractMonth
+                    position_values[pos.contract.conId]["exp"] = str(
+                        pos.contract.lastTradeDateOrContractMonth
                     )
         padding = {
             "qty": len("Qty"),
@@ -410,13 +438,13 @@ class PortfolioManager:
             "exp": len("Exp"),
             "itm?": len("ITM?"),
         }
-        for _id, p in position_values.items():
-            for col, value in p.items():
+        for pos in position_values.values():
+            for col, value in pos.items():
                 padding[col] = max(padding[col], len(value))
 
         # Print column headers
-        def print_col(c):
-            return c.rjust(padding[c.lower()])
+        def print_col(col):
+            return col.rjust(padding[col.lower()])
 
         click.secho(
             f"           {print_col('Qty')}  {print_col('MktPrice')}  {print_col('AvgPrice')}  {print_col('Value')}  {print_col('Cost')}  {print_col('P&L')}  {print_col('Strike')}  {print_col('DTE')}  {print_col('Exp')}  {print_col('ITM?')}",
@@ -435,34 +463,34 @@ class PortfolioManager:
             def pad(col, pid):
                 return position_values[pid][col].rjust(padding[col])
 
-            for p in sorted_positions:
-                conId = p.contract.conId
+            for pos in sorted_positions:
+                conId = pos.contract.conId
                 qty = pad("qty", conId)
                 mktPrice = pad("mktprice", conId)
                 avgPrice = pad("avgprice", conId)
                 value = pad("value", conId)
                 cost = pad("cost", conId)
                 pnl = pad("p&l", conId)
-                if isinstance(p.contract, Stock):
+                if isinstance(pos.contract, Stock):
                     click.secho(
                         f"    Stock  {qty}  {mktPrice}  {avgPrice}  {value}  {cost}  {pnl}",
                         fg="cyan",
                     )
-                elif isinstance(p.contract, Option):
+                elif isinstance(pos.contract, Option):
                     strike = pad("strike", conId)
                     dte = pad("dte", conId)
                     exp = pad("exp", conId)
                     itm = pad("itm?", conId)
 
-                    def p_or_c(p):
-                        return "Call" if p.contract.right.startswith("C") else "Put "
+                    def p_or_c(pos):
+                        return "Call" if pos.contract.right.startswith("C") else "Put "
 
                     click.secho(
-                        f"    {p_or_c(p)}   {qty}  {mktPrice}  {avgPrice}  {value}  {cost}  {pnl}  {strike}  {dte}  {exp}  {itm}",
+                        f"    {p_or_c(pos)}   {qty}  {mktPrice}  {avgPrice}  {value}  {cost}  {pnl}  {strike}  {dte}  {exp}  {itm}",
                         fg="cyan",
                     )
                 else:
-                    click.secho(f"    {p.contract}", fg="cyan")
+                    click.secho(f"    {pos.contract}", fg="cyan")
 
         return (account_summary, portfolio_positions)
 
@@ -485,6 +513,9 @@ class PortfolioManager:
 
             self.check_puts(account_summary, portfolio_positions)
             self.check_calls(account_summary, portfolio_positions)
+
+            # check if we should do VIX call hedging
+            self.do_vix_hedging(account_summary, portfolio_positions)
 
             # Wait for pending orders
             wait_n_seconds(
@@ -608,7 +639,8 @@ class PortfolioManager:
             if excess_calls > 0:
                 self.has_excess_calls.add(symbol)
                 click.secho(
-                    f"Warning: {symbol} has excess_calls={excess_calls} stock_count={stock_count}, call_count={call_count}, target_calls={target_calls}",
+                    f"Warning: {symbol} has excess_calls={excess_calls} stock_count={stock_count},"
+                    " call_count={call_count}, target_calls={target_calls}",
                     fg="yellow",
                 )
 
@@ -642,13 +674,16 @@ class PortfolioManager:
                 green = ticker.marketPrice() > ticker.close
                 if not green:
                     click.secho(
-                        f"Need to write {calls_to_write} calls for {symbol}, but skipping because underlying is not green",
+                        f"Need to write {calls_to_write} calls for {symbol}, "
+                        "but skipping because underlying is not green",
                         fg="green",
                     )
                     return False
                 if absolute_daily_change < write_threshold:
                     click.secho(
-                        f"Need to write {calls_to_write} calls for {symbol}, but skipping because daily_change={absolute_daily_change:.3f} less than write_threshold={write_threshold:.3f}",
+                        f"Need to write {calls_to_write} calls for {symbol}, "
+                        "but skipping because daily_change={absolute_daily_change:.3f}"
+                        " less than write_threshold={write_threshold:.3f}",
                         fg="green",
                     )
                     return False
@@ -660,7 +695,9 @@ class PortfolioManager:
 
             if calls_to_write > 0 and ok_to_write:
                 click.secho(
-                    f"Will write {calls_to_write} calls, {new_contracts_needed} needed for {symbol}, capped at {maximum_new_contracts}, at or above strike ${strike_limit} (target_calls={target_calls}, call_count={call_count})",
+                    f"Will write {calls_to_write} calls, {new_contracts_needed} needed for "
+                    "{symbol}, capped at {maximum_new_contracts}, at or above strike ${strike_limit}"
+                    " (target_calls={target_calls}, call_count={call_count})",
                     fg="green",
                 )
                 try:
@@ -680,7 +717,14 @@ class PortfolioManager:
 
     def write_calls(self, symbol, primary_exchange, quantity, strike_limit):
         sell_ticker = self.find_eligible_contracts(
-            symbol, primary_exchange, "C", strike_limit
+            Stock(
+                symbol,
+                self.get_order_exchange(),
+                currency="USD",
+                primaryExchange=primary_exchange,
+            ),
+            "C",
+            strike_limit,
         )
 
         if not self.wait_for_midpoint_price(sell_ticker):
@@ -719,7 +763,14 @@ class PortfolioManager:
     def write_puts(self, symbol, primary_exchange, quantity, strike_limit):
         try:
             sell_ticker = self.find_eligible_contracts(
-                symbol, primary_exchange, "P", strike_limit
+                Stock(
+                    symbol,
+                    self.get_order_exchange(),
+                    currency="USD",
+                    primaryExchange=primary_exchange,
+                ),
+                "P",
+                strike_limit,
             )
         except RuntimeError as err:
             click.echo()
@@ -938,9 +989,10 @@ class PortfolioManager:
                     # if the price is zero, use the minimum price
                     price = buy_ticker.minTick
 
+                qty = abs(position.position)
                 order = LimitOrder(
                     "BUY",
-                    abs(position.position),
+                    qty,
                     price,
                     algoStrategy=self.get_algo_strategy(),
                     algoParams=self.get_algo_params(),
@@ -952,7 +1004,7 @@ class PortfolioManager:
                 self.orders.append(trade)
                 click.echo()
                 click.secho(
-                    f"Order submitted, current position={abs(position.position)}, price={round(price,2)}, trade={trade}",
+                    f"Order submitted, current qty={qty}, price={round(price,2)}, trade={trade}",
                     fg="green",
                 )
             except RuntimeError as err:
@@ -1009,8 +1061,12 @@ class PortfolioManager:
                 )
 
                 sell_ticker = self.find_eligible_contracts(
-                    symbol,
-                    self.get_primary_exchange(symbol),
+                    Stock(
+                        symbol,
+                        self.get_order_exchange(),
+                        "USD",
+                        primaryExchange=self.get_primary_exchange(symbol),
+                    ),
                     right,
                     strike_limit,
                     exclude_expirations_before=position.contract.lastTradeDateOrContractMonth,
@@ -1094,44 +1150,52 @@ class PortfolioManager:
 
     def find_eligible_contracts(
         self,
-        symbol,
-        primary_exchange,
+        main_contract,
         right,
         strike_limit,
         exclude_expirations_before=None,
         exclude_exp_strike=None,
         minimum_price=0.0,
+        target_dte=None,
+        target_delta=None,
     ):
+        if not target_dte:
+            target_dte = self.config["target"]["dte"]
+        if not target_delta:
+            target_delta = get_target_delta(self.config, main_contract.symbol, right)
+
         click.echo()
         click.secho(
-            f"Searching option chain for symbol={symbol} "
+            f"Searching option chain for symbol={main_contract.symbol} "
             f"right={right}, strike_limit={strike_limit}, minimum_price={minimum_price:.2f} "
             "this can take a while...",
             fg="green",
         )
         click.echo()
-        stock = Stock(symbol, "SMART", currency="USD", primaryExchange=primary_exchange)
-        self.ib.qualifyContracts(stock)
 
-        stock_ticker = self.get_ticker_for(stock)
-        stock_price = midpoint_or_market_price(stock_ticker)
+        self.ib.qualifyContracts(main_contract)
 
-        chains = self.get_chains_for_stock(stock)
-        chain = next(c for c in chains if c.exchange == "SMART")
+        main_contract_ticker = self.get_ticker_for(main_contract)
+        main_contract_price = midpoint_or_market_price(main_contract_ticker)
+
+        chains = self.get_chains_for_contract(main_contract)
+        chain = next(c for c in chains if c.exchange == main_contract.exchange)
 
         def valid_strike(strike):
             if right.startswith("P") and strike_limit:
                 return (
-                    strike <= stock_price + 0.1 * stock_price and strike <= strike_limit
+                    strike <= main_contract_price + 0.1 * main_contract_price
+                    and strike <= strike_limit
                 )
             elif right.startswith("P"):
-                return strike <= stock_price + 0.1 * stock_price
+                return strike <= main_contract_price + 0.1 * main_contract_price
             elif right.startswith("C") and strike_limit:
                 return (
-                    strike >= stock_price - 0.1 * stock_price and strike >= strike_limit
+                    strike >= main_contract_price - 0.1 * main_contract_price
+                    and strike >= strike_limit
                 )
             elif right.startswith("C"):
-                return strike >= stock_price - 0.1 * stock_price
+                return strike >= main_contract_price - 0.1 * main_contract_price
             return False
 
         chain_expirations = self.config["option_chains"]["expirations"]
@@ -1143,8 +1207,7 @@ class PortfolioManager:
         expirations = sorted(
             exp
             for exp in chain.expirations
-            if option_dte(exp) >= self.config["target"]["dte"]
-            and option_dte(exp) >= min_dte
+            if option_dte(exp) >= target_dte and option_dte(exp) >= min_dte
         )[:chain_expirations]
         rights = [right]
 
@@ -1157,11 +1220,11 @@ class PortfolioManager:
 
         contracts = [
             Option(
-                symbol,
+                main_contract.symbol,
                 expiration,
                 strike,
                 right,
-                "SMART",
+                self.get_order_exchange(),
                 # tradingClass=chain.tradingClass,
             )
             for right in rights
@@ -1225,8 +1288,7 @@ class PortfolioManager:
                 ticker.modelGreeks
                 and not util.isNan(ticker.modelGreeks.delta)
                 and ticker.modelGreeks.delta is not None
-                and abs(ticker.modelGreeks.delta)
-                <= get_target_delta(self.config, symbol, right)
+                and abs(ticker.modelGreeks.delta) <= target_delta
             )
 
         def price_is_valid(ticker):
@@ -1238,7 +1300,7 @@ class PortfolioManager:
                 return (
                     right.startswith("C")
                     or ticker.contract.strike
-                    <= midpoint_or_market_price(ticker) + stock_price
+                    <= midpoint_or_market_price(ticker) + main_contract_price
                 )
 
             return (
@@ -1251,14 +1313,14 @@ class PortfolioManager:
 
         # Filter out tickers with invalid or unavailable prices
         tickers = [ticker for ticker in tickers if price_is_valid(ticker)]
-        # Filter by delta and open interest
+        # Filter by delta
         tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
         # Fetch market data
         tickers = [
             self.ib.reqMktData(ticker.contract, genericTickList="101")
             for ticker in tickers
         ]
-        # Fetch open interest
+        # Filter by open interest
         tickers = [ticker for ticker in tickers if open_interest_is_valid(ticker)]
         # Sort by delta first, then expiry date
         tickers = sorted(
@@ -1267,7 +1329,9 @@ class PortfolioManager:
         )
 
         if len(tickers) == 0:
-            raise RuntimeError(f"No valid contracts found for {symbol}. Aborting.")
+            raise RuntimeError(
+                f"No valid contracts found for {main_contract.symbol}. Aborting."
+            )
 
         # Return the first result
         return tickers[0]
@@ -1280,3 +1344,151 @@ class PortfolioManager:
 
     def get_order_exchange(self):
         return self.config["orders"]["exchange"]
+
+    def do_vix_hedging(self, account_summary, portfolio_positions):
+        if not self.config["vix_call_hedge"]["enabled"]:
+            click.secho(
+                f"VIX call hedging not enabled, skipping",
+            )
+
+        click.echo()
+        net_vix_call_count = count_long_option_positions(
+            "VIX", portfolio_positions, "C"
+        )
+        if net_vix_call_count > 0:
+            click.secho(
+                f"net_vix_call_count={net_vix_call_count}, checking if we need to close positions...",
+            )
+            if "close_hedges_when_vix_exceeds" in self.config["vix_call_hedge"]:
+                vix_contract = Index("VIX", "CBOE", "USD")
+                self.ib.qualifyContracts(vix_contract)
+                self.ib.reqMktData(vix_contract)
+                vix_ticker = self.get_ticker_for(vix_contract)
+                if (
+                    vix_ticker.marketPrice()
+                    > self.config["vix_call_hedge"]["close_hedges_when_vix_exceeds"]
+                ):
+                    for position in portfolio_positions["VIX"]:
+                        if (
+                            position.contract.right.startswith("C")
+                            and position.position < 0
+                        ):
+                            # only applies to long calls
+                            continue
+                        position.contract.exchange = self.get_order_exchange()
+                        sell_ticker = self.get_ticker_for(
+                            position.contract, midpoint=True
+                        )
+                        price = round(get_lowest_price(sell_ticker), 2)
+                        qty = abs(position.position)
+                        order = LimitOrder(
+                            "SELL",
+                            qty,
+                            price,
+                            tif="DAY",
+                            account=self.account_number,
+                        )
+
+                        trade = self.ib.placeOrder(sell_ticker.contract, order)
+                        self.orders.append(trade)
+                        click.echo()
+                        click.secho(
+                            f"Order submitted, current qty={qty}, price={round(price,2)}, trade={trade}",
+                            fg="green",
+                        )
+
+            return
+        else:
+            click.secho(
+                f"net_vix_call_count={net_vix_call_count}, "
+                "checking against target allocations to see if we should open new positions...",
+            )
+
+        try:
+            vixmo_contract = Index("VIXMO", "CBOE", "USD")
+            self.ib.qualifyContracts(vixmo_contract)
+            self.ib.reqMktData(vixmo_contract)
+            vixmo_ticker = self.get_ticker_for(vixmo_contract)
+
+            weight = 0.0
+
+            for allocation in self.config["vix_call_hedge"]["allocation"]:
+                if (
+                    "lower_bound" in allocation
+                    and "upper_bound" in allocation
+                    and allocation["lower_bound"]
+                    <= vixmo_ticker.marketPrice()
+                    < allocation["upper_bound"]
+                ):
+                    weight = allocation["weight"]
+                    break
+                elif (
+                    "lower_bound" in allocation
+                    and allocation["lower_bound"] <= vixmo_ticker.marketPrice()
+                ):
+                    weight = allocation["weight"]
+                    break
+                elif (
+                    "upper_bound" in allocation
+                    and vixmo_ticker.marketPrice() < allocation["upper_bound"]
+                ):
+                    weight = allocation["weight"]
+                    break
+
+            click.secho(
+                f"VIXMO={vixmo_ticker.marketPrice()}, target call hedge weight={weight}",
+            )
+
+            click.echo()
+            allocation_amount = float(account_summary["NetLiquidation"].value) * weight
+            delta = self.config["vix_call_hedge"]["delta"]
+            if weight > 0:
+                click.secho(
+                    f"Current VIXMO spot price prescribes an allocation of up to "
+                    f"${allocation_amount:.2f} for purchasing VIX calls, at or above delta={delta} with a DTE >= 30",
+                    fg="green",
+                )
+            else:
+                click.secho(
+                    f"Based on current VIXMO value and rules, no VIX calls will be purchased",
+                    fg="green",
+                )
+                return
+
+            vix_contract = Index("VIX", "CBOE", "USD")
+            self.ib.qualifyContracts(vix_contract)
+            self.ib.reqMktData(vix_contract)
+
+            buy_ticker = self.find_eligible_contracts(
+                vix_contract, "C", 0, target_delta=delta, target_dte=30
+            )
+            print(buy_ticker)
+            price = round(get_lowest_price(buy_ticker), 2)
+            qty = math.floor(
+                allocation_amount / price / float(buy_ticker.contract.multiplier)
+            )
+
+            order = LimitOrder(
+                "BUY",
+                qty,
+                price,
+                tif="DAY",
+                account=self.account_number,
+            )
+
+            trade = self.ib.placeOrder(buy_ticker.contract, order)
+            self.orders.append(trade)
+            click.echo()
+            click.secho(
+                f"Order submitted, current qty={qty}, price={round(price,2)}, trade={trade}",
+                fg="green",
+            )
+        except RuntimeError as err:
+            click.echo()
+            click.secho(str(err), fg="red")
+            click.secho(
+                "Error occurred when VIX call hedging. Continuing anyway...",
+                fg="yellow",
+            )
+
+        click.echo()
