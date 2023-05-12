@@ -708,9 +708,9 @@ class PortfolioManager:
             click.echo()
             click.secho("Order submitted", fg="green")
             click.secho(f"{trade}", fg="green")
-        except RuntimeError as e:
+        except RuntimeError as err:
             click.echo()
-            click.secho(str(e), fg="red")
+            click.secho(str(err), fg="red")
             click.secho(
                 "Order trade submission seems to have failed, or a response wasn't received in time. Continuing anyway...",
                 fg="yellow",
@@ -721,9 +721,9 @@ class PortfolioManager:
             sell_ticker = self.find_eligible_contracts(
                 symbol, primary_exchange, "P", strike_limit
             )
-        except RuntimeError as e:
+        except RuntimeError as err:
             click.echo()
-            click.secho(str(e), fg="red")
+            click.secho(str(err), fg="red")
             click.secho(
                 f"Finding eligible contracts for {symbol} failed. Continuing anyway...",
                 fg="yellow",
@@ -955,9 +955,9 @@ class PortfolioManager:
                     f"Order submitted, current position={abs(position.position)}, price={round(price,2)}, trade={trade}",
                     fg="green",
                 )
-            except RuntimeError as e:
+            except RuntimeError as err:
                 click.echo()
-                click.secho(str(e), fg="red")
+                click.secho(str(err), fg="red")
                 click.secho(
                     "Error occurred when trying to close position. Continuing anyway...",
                     fg="yellow",
@@ -1084,9 +1084,9 @@ class PortfolioManager:
                     f"Order submitted, current position={abs(position.position)}, qty_to_roll={qty_to_roll}, from_dte={from_dte}, to_dte={to_dte}, from_strike={from_strike}, to_strike={to_strike}, price={round(price,2)}, trade={trade}",
                     fg="green",
                 )
-            except RuntimeError as e:
+            except RuntimeError as err:
                 click.echo()
-                click.secho(str(e), fg="red")
+                click.secho(str(err), fg="red")
                 click.secho(
                     "Error occurred when trying to roll position. Continuing anyway...",
                     fg="yellow",
@@ -1114,20 +1114,26 @@ class PortfolioManager:
         self.ib.qualifyContracts(stock)
 
         ticker = self.get_ticker_for(stock)
-        tickerValue = ticker.marketPrice()
+        ticker_price = midpoint_or_market_price(ticker)
 
         chains = self.get_chains_for_stock(stock)
         chain = next(c for c in chains if c.exchange == "SMART")
 
         def valid_strike(strike):
             if right.startswith("P") and strike_limit:
-                return strike <= tickerValue and strike <= strike_limit
+                return (
+                    strike <= ticker_price + 0.1 * ticker_price
+                    and strike <= strike_limit
+                )
             elif right.startswith("P"):
-                return strike <= tickerValue
+                return strike <= ticker_price + 0.1 * ticker_price
             elif right.startswith("C") and strike_limit:
-                return strike >= tickerValue and strike >= strike_limit
+                return (
+                    strike >= ticker_price - 0.1 * ticker_price
+                    and strike >= strike_limit
+                )
             elif right.startswith("C"):
-                return strike >= tickerValue
+                return strike >= ticker_price - 0.1 * ticker_price
             return False
 
         chain_expirations = self.config["option_chains"]["expirations"]
