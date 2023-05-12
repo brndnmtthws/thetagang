@@ -499,6 +499,9 @@ class PortfolioManager:
             self.initialize_account()
             (account_summary, portfolio_positions) = self.summarize_account()
 
+            # check if we should do VIX call hedging
+            self.do_vix_hedging(account_summary, portfolio_positions)
+
             click.echo()
             click.secho("Checking positions...", fg="green")
 
@@ -513,9 +516,6 @@ class PortfolioManager:
 
             self.check_puts(account_summary, portfolio_positions)
             self.check_calls(account_summary, portfolio_positions)
-
-            # check if we should do VIX call hedging
-            self.do_vix_hedging(account_summary, portfolio_positions)
 
             # Wait for pending orders
             wait_n_seconds(
@@ -1357,7 +1357,7 @@ class PortfolioManager:
         )
         if net_vix_call_count > 0:
             click.secho(
-                f"net_vix_call_count={net_vix_call_count}, checking if we need to close positions...",
+                f"VIX hedging: net_vix_call_count={net_vix_call_count}, checking if we need to close positions...",
             )
             if "close_hedges_when_vix_exceeds" in self.config["vix_call_hedge"]:
                 vix_contract = Index("VIX", "CBOE", "USD")
@@ -1385,6 +1385,8 @@ class PortfolioManager:
                             "SELL",
                             qty,
                             price,
+                            algoStrategy=self.get_algo_strategy(),
+                            algoParams=self.get_algo_params(),
                             tif="DAY",
                             account=self.account_number,
                         )
@@ -1400,7 +1402,7 @@ class PortfolioManager:
             return
         else:
             click.secho(
-                f"net_vix_call_count={net_vix_call_count}, "
+                f"VIX hedging: net_vix_call_count={net_vix_call_count}, "
                 "checking against target allocations to see if we should open new positions...",
             )
 
@@ -1472,6 +1474,8 @@ class PortfolioManager:
                 "BUY",
                 qty,
                 price,
+                algoStrategy=self.get_algo_strategy(),
+                algoParams=self.get_algo_params(),
                 tif="DAY",
                 account=self.account_number,
             )
