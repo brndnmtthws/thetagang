@@ -23,4 +23,15 @@ DEFAULT_CONFIG = {
         "calls": {"itm": True, "credit_only": False, "has_excess": True},
         "puts": {"itm": False, "credit_only": False, "has_excess": True},
     },
+    "vix_call_hedge": {
+        "enabled": False,
+        "delta": 0.3,
+        "close_hedges_when_vix_exceeds": 50.0,
+        "allocation": [
+            {"upper_bound": 15.0, "weight": 0.0},
+            {"lower_bound": 15.0, "upper_bound": 30.0, "weight": 0.01},
+            {"lower_bound": 30.0, "upper_bound": 50.0, "weight": 0.005},
+            {"lower_bound": 50.0, "weight": 0.0},
+        ],
+    },
 }

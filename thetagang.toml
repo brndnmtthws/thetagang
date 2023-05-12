@@ -290,3 +290,42 @@ currency = 'USD'
 exchange = 'SMART'
 secType = 'STK'
 symbol = 'SPY'
+
+# Optional VIX call hedging, based on the methodology described by the Cboe VIX
+# Tail Hedge Index, described here:
+# https://www.cboe.com/us/indices/dashboard/vxth/
+[vix_call_hedge]
+enabled = false
+# Target delta for calls that are purchased
+delta = 0.30
+# If the current spot VIX exceeds this value, long VIX call positions will be
+# closed
+close_hedges_when_vix_exceeds = 50.0
+
+# The allocations are specified as an ordered list of allocation weights
+# according to an upper/lower bound on VIXMO (the 30 day VIX). Default values
+# are the same as those described in the VXTH methodology. These are evaluated
+# in order, and the weight from the first allocation that matches will be
+# applied. The lower bound is inclusive, and the upper bound is exclusive
+# (.i.e., the code checks that lower <= VIXMO < upper). The upper/lower bounds
+# are only checked if they're present.
+#
+# The allocation weights are multiplied by the account's net liquidation value,
+# and that amount is allocated to purchasing VIX calls.
+[[vix_call_hedge.allocation]]
+upper_bound = 15.0
+weight = 0.00
+
+[[vix_call_hedge.allocation]]
+lower_bound = 15.0
+upper_bound = 30.0
+weight = 0.01
+
+[[vix_call_hedge.allocation]]
+lower_bound = 30.0
+upper_bound = 50.0
+weight = 0.005
+
+[[vix_call_hedge.allocation]]
+lower_bound = 50.0
+weight = 0.00
