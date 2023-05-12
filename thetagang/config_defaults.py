@@ -21,6 +21,6 @@ DEFAULT_CONFIG = {
         "min_pnl": 0.0,
         "close_at_pnl": 1.0,
         "calls": {"itm": True, "credit_only": False, "has_excess": True},
-        "puts": {"itm": False, "credit_only": False},
+        "puts": {"itm": False, "credit_only": False, "has_excess": True},
     },
 }
