@@ -499,9 +499,6 @@ class PortfolioManager:
             self.initialize_account()
             (account_summary, portfolio_positions) = self.summarize_account()
 
-            # check if we should do VIX call hedging
-            self.do_vix_hedging(account_summary, portfolio_positions)
-
             click.echo()
             click.secho("Checking positions...", fg="green")
 
@@ -516,6 +513,9 @@ class PortfolioManager:
 
             self.check_puts(account_summary, portfolio_positions)
             self.check_calls(account_summary, portfolio_positions)
+
+            # check if we should do VIX call hedging
+            self.do_vix_hedging(account_summary, portfolio_positions)
 
             # Wait for pending orders
             wait_n_seconds(
