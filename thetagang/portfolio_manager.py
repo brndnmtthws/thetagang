@@ -3,11 +3,15 @@ import math
 import sys
 from functools import lru_cache
 
-import click
 from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
 from ib_insync.order import LimitOrder
+from rich import inspect
+from rich.console import Console
+from rich.progress import track
+from rich.table import Table
 
+from thetagang.fmt import dfmt, ifmt, pfmt
 from thetagang.util import (
     account_summary_to_dict,
     count_short_option_positions,
@@ -26,6 +30,8 @@ from thetagang.util import (
 
 from .options import option_dte
 
+console = Console()
+
 # Typically the amount of time needed when waiting on data from the IBKR API.
 # Sometimes it can take a while to retrieve data, and it's lazy-loaded by the
 # API, so getting this number right is largely a matter of guesswork.
@@ -40,29 +46,27 @@ logging.getLogger("ib_insync.wrapper").setLevel(logging.CRITICAL)
 class PortfolioManager:
     def __init__(self, config, ib, completion_future):
         self.account_number = config["account"]["number"]
-        self.orders = []
         self.config = config
         self.ib = ib
         self.completion_future = completion_future
         self.ib.orderStatusEvent += self.orderStatusEvent
         self.has_excess_calls = set()
         self.has_excess_puts = set()
+        self.orders = []
+        self.trades = []
 
     def orderStatusEvent(self, trade):
         if "Filled" in trade.orderStatus.status:
-            click.secho(
-                f"Order filled, symbol={trade.contract.symbol}",
-                fg="green",
+            console.print(
+                f"[green]Order filled, symbol={trade.contract.symbol}[/green]",
             )
         if "Cancelled" in trade.orderStatus.status:
-            click.secho(
-                f"Order cancelled, symbol={trade.contract.symbol} log={trade.log}",
-                fg="red",
+            console.print(
+                f"[red]Order cancelled, symbol={trade.contract.symbol} log={trade.log}[/red]",
             )
         else:
-            click.secho(
-                f"Order updated, symbol={trade.contract.symbol} status={trade.orderStatus.status}",
-                fg="blue",
+            console.print(
+                f"[bright_green]Order updated, symbol={trade.contract.symbol} status={trade.orderStatus.status}[/bright_green]",
             )
 
     def get_calls(self, portfolio_positions):
@@ -156,24 +160,25 @@ class PortfolioManager:
 
         return contract.strike >= ticker.marketPrice()
 
-    def position_can_be_closed(self, position):
+    def position_can_be_closed(self, position, table):
         close_at_pnl = self.config["roll_when"]["close_at_pnl"]
         if close_at_pnl:
             pnl = position_pnl(position)
 
             if pnl > close_at_pnl:
-                click.secho(
-                    f"  {position.contract.localSymbol} will be closed because P&L of {round(pnl * 100, 1)}% is > {round(close_at_pnl * 100, 1)}",
-                    fg="blue",
+                table.add_row(
+                    position.contract.symbol,
+                    position.contract.localSymbol,
+                    f"[blue]Will be closed because P&L of {pfmt(pnl, 1)} is > {pfmt(close_at_pnl, 1)}[/blue]",
                 )
                 return True
 
         return False
 
-    def put_can_be_closed(self, put):
-        return self.position_can_be_closed(put)
+    def put_can_be_closed(self, put, table):
+        return self.position_can_be_closed(put, table)
 
-    def put_can_be_rolled(self, put):
+    def put_can_be_rolled(self, put, table):
         # Ignore long positions, we only roll shorts
         if put.position > 0:
             return False
@@ -189,9 +194,10 @@ class PortfolioManager:
             put.contract.symbol in self.has_excess_puts
             and not self.config["roll_when"]["puts"]["has_excess"]
         ):
-            click.secho(
-                f"  {put.contract.localSymbol} won't be rolled because there are excess puts for {put.contract.symbol}",
-                fg="yellow",
+            table.add_row(
+                put.contract.symbol,
+                put.contract.localSymbol,
+                "[cyan1]Won't be rolled because there are excess puts[/cyan1]",
             )
             return False
 
@@ -210,21 +216,22 @@ class PortfolioManager:
 
         if dte <= roll_when_dte:
             if pnl >= roll_when_min_pnl:
-                click.secho(
-                    f"  {put.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_min_pnl * 100, 1)}%",
-                    fg="blue",
+                table.add_row(
+                    put.contract.symbol,
+                    put.contract.localSymbol,
+                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}[/blue]",
                 )
-                return True
-            else:
-                click.secho(
-                    f"  {put.contract.localSymbol} can't be rolled because P&L of {round(pnl * 100, 1)}% is < {round(roll_when_min_pnl * 100, 1)}%",
-                    fg="red",
-                )
+            table.add_row(
+                put.contract.symbol,
+                put.contract.localSymbol,
+                f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl, 1)}[/cyan1]",
+            )
 
         if pnl >= roll_when_pnl:
-            click.secho(
-                f"  {put.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_pnl * 100, 1)}",
-                fg="blue",
+            table.add_row(
+                put.contract.symbol,
+                put.contract.localSymbol,
+                f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}[/blue]",
             )
             return True
 
@@ -235,7 +242,6 @@ class PortfolioManager:
         if contract.symbol == "VIX":
             vix_contract = Index("VIX", "CBOE", "USD")
             self.ib.qualifyContracts(vix_contract)
-            self.ib.reqMktData(vix_contract)
             vix_ticker = self.get_ticker_for(vix_contract)
             return contract.strike <= vix_ticker.marketPrice()
 
@@ -243,10 +249,10 @@ class PortfolioManager:
 
         return contract.strike <= ticker.marketPrice()
 
-    def call_can_be_closed(self, call):
-        return self.position_can_be_closed(call)
+    def call_can_be_closed(self, call, table):
+        return self.position_can_be_closed(call, table)
 
-    def call_can_be_rolled(self, call):
+    def call_can_be_rolled(self, call, table):
         # Ignore long positions, we only roll shorts
         if call.position > 0:
             return False
@@ -262,9 +268,10 @@ class PortfolioManager:
             call.contract.symbol in self.has_excess_calls
             and not self.config["roll_when"]["calls"]["has_excess"]
         ):
-            click.secho(
-                f"  {call.contract.localSymbol} won't be rolled because there are excess calls for {call.contract.symbol}",
-                fg="yellow",
+            table.add_row(
+                call.contract.symbol,
+                call.contract.localSymbol,
+                f"[cyan1]Won't be rolled because there are excess calls for {call.contract.symbol}[/cyan1]",
             )
             return False
 
@@ -283,28 +290,31 @@ class PortfolioManager:
 
         if dte <= roll_when_dte:
             if pnl >= roll_when_min_pnl:
-                click.secho(
-                    f"  {call.contract.localSymbol} can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_min_pnl * 100, 1)}%",
-                    fg="blue",
+                table.add_row(
+                    call.contract.symbol,
+                    call.contract.localSymbol,
+                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']}"
+                    f" and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}[/blue]",
                 )
                 return True
-            else:
-                click.secho(
-                    f"  {call.contract.localSymbol} can't be rolled because P&L of {round(pnl * 100, 1)}% is < {round(roll_when_min_pnl * 100, 1)}%",
-                    fg="red",
-                )
+            table.add_row(
+                call.contract.symbol,
+                call.contract.localSymbol,
+                f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl , 1)}[/cyan1]",
+            )
 
         if pnl >= roll_when_pnl:
-            click.secho(
-                f"  {call.contract.localSymbol} can be rolled because P&L of {round(pnl * 100, 1)}% is >= {round(roll_when_pnl * 100, 1)}",
-                fg="blue",
+            table.add_row(
+                call.contract.symbol,
+                call.contract.localSymbol,
+                f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}[blue]",
             )
             return True
 
         return False
 
     def get_symbols(self):
-        return [s for s in self.config["symbols"].keys()]
+        return list(self.config["symbols"].keys())
 
     def filter_positions(self, portfolio_positions):
         symbols = self.get_symbols()
@@ -335,14 +345,11 @@ class PortfolioManager:
                         and trade.contract.symbol == "VIX"
                     )
                 ):
-                    click.secho(f"Canceling order {trade.order}", fg="red")
+                    console.print(f"[red]Canceling order {trade.order}[/red]")
                     self.ib.cancelOrder(trade.order)
 
     def summarize_account(self):
         account_summary = self.ib.accountSummary(self.account_number)
-        click.echo()
-        click.secho("Account summary:", fg="green")
-        click.echo()
         account_summary = account_summary_to_dict(account_summary)
 
         if "NetLiquidation" not in account_summary:
@@ -350,109 +357,87 @@ class PortfolioManager:
                 f"Account number {self.config['account']['number']} appears invalid (no account data returned)"
             )
 
-        justified_values = {
-            "ExcessLiquidity": f"{float(account_summary['ExcessLiquidity'].value):,.0f}",
-            "NetLiquidation": f"{float(account_summary['NetLiquidation'].value):,.0f}",
-            "FullMaintMarginReq": f"{float(account_summary['FullMaintMarginReq'].value):,.0f}",
-            "BuyingPower": f"{float(account_summary['BuyingPower'].value):,.0f}",
-            "TotalCashValue": f"{float(account_summary['TotalCashValue'].value):,.0f}",
-            "Cushion": f"{float(account_summary['Cushion'].value) * 100:.1f}%",
-        }
-
-        padding = max([len(v) for v in justified_values.values()])
-        justified_values = {k: v.rjust(padding) for k, v in justified_values.items()}
-
-        click.secho(
-            f"  Net liquidation   = {justified_values['NetLiquidation']}",
-            fg="cyan",
+        table = Table(title="Account summary")
+        table.add_column("Name")
+        table.add_column("Value", justify="right")
+        table.add_row(
+            "Net liquidation", dfmt(account_summary["NetLiquidation"].value, 0)
         )
-        click.secho(
-            f"  Excess liquidity  = {justified_values['ExcessLiquidity']}",
-            fg="cyan",
+        table.add_row(
+            "Excess liquidity", dfmt(account_summary["ExcessLiquidity"].value, 0)
         )
-        click.secho(
-            f"  Full maint margin = {justified_values['FullMaintMarginReq']}",
-            fg="cyan",
+        table.add_row("Initial margin", dfmt(account_summary["InitMarginReq"].value, 0))
+        table.add_row(
+            "Maintenance margin", dfmt(account_summary["FullMaintMarginReq"].value, 0)
         )
-        click.secho(
-            f"  Buying power      = {justified_values['BuyingPower']}",
-            fg="cyan",
+        table.add_row("Buying power", dfmt(account_summary["BuyingPower"].value, 0))
+        table.add_row("Total cash", dfmt(account_summary["TotalCashValue"].value, 0))
+        table.add_row("Cushion", pfmt(account_summary["Cushion"].value, 0))
+        table.add_section()
+        table.add_row(
+            "Target buying power usage", dfmt(self.get_buying_power(account_summary), 0)
         )
-        click.secho(
-            f"  Total cash value  = {justified_values['TotalCashValue']}",
-            fg="cyan",
-        )
-        click.secho(
-            f"  Cushion           = {justified_values['Cushion']}",
-            fg="cyan",
-        )
+        console.print(table)
 
         portfolio_positions = self.get_portfolio_positions()
-
-        click.echo()
-        click.secho("Portfolio positions:", fg="green")
-        click.echo()
 
         position_values = {}
 
         def is_itm(pos):
             if pos.contract.right.startswith("C") and self.call_is_itm(pos.contract):
-                return "*"
-            elif pos.contract.right.startswith("P") and self.put_is_itm(pos.contract):
-                return "*"
-            return " "
+                return ":white_check_mark:"
+            if pos.contract.right.startswith("P") and self.put_is_itm(pos.contract):
+                return ":white_check_mark:"
+            return ""
 
-        for symbol, position in portfolio_positions.items():
+        for symbol, position in track(
+            portfolio_positions.items(), description="Loading portfolio positions..."
+        ):
             for pos in position:
                 position_values[pos.contract.conId] = {
-                    "qty": str(int(pos.position)),
-                    "mktprice": f"{pos.marketPrice:,.2f}",
-                    "avgprice": f"{pos.averageCost:,.2f}",
-                    "value": f"{pos.marketValue:,.0f}",
-                    "cost": f"{(pos.averageCost * pos.position):,.0f}",
-                    "p&l": f"{(position_pnl(pos) * 100):.2f}%",
+                    "qty": ifmt(int(pos.position)),
+                    "mktprice": dfmt(pos.marketPrice),
+                    "avgprice": dfmt(pos.averageCost),
+                    "value": dfmt(pos.marketValue, 0),
+                    "cost": dfmt(pos.averageCost * pos.position, 0),
+                    "unrealized": dfmt(pos.unrealizedPNL, 0),
+                    "p&l": pfmt(position_pnl(pos), 1),
                     "itm?": is_itm(pos),
                 }
                 if isinstance(pos.contract, Option):
-                    position_values[pos.contract.conId][
-                        "avgprice"
-                    ] = f"{pos.averageCost/float(pos.contract.multiplier):,.2f}"
-                    position_values[pos.contract.conId][
-                        "strike"
-                    ] = f"{float(pos.contract.strike):,.2f}"
+                    position_values[pos.contract.conId]["avgprice"] = dfmt(
+                        pos.averageCost / float(pos.contract.multiplier)
+                    )
+                    position_values[pos.contract.conId]["strike"] = dfmt(
+                        pos.contract.strike
+                    )
                     position_values[pos.contract.conId]["dte"] = str(
                         option_dte(pos.contract.lastTradeDateOrContractMonth)
                     )
                     position_values[pos.contract.conId]["exp"] = str(
                         pos.contract.lastTradeDateOrContractMonth
                     )
-        padding = {
-            "qty": len("Qty"),
-            "mktprice": len("MktPrice"),
-            "avgprice": len("AvgPrice"),
-            "value": len("Value"),
-            "cost": len("Cost"),
-            "p&l": len("P&L"),
-            "strike": len("Strike"),
-            "dte": len("DTE"),
-            "exp": len("Exp"),
-            "itm?": len("ITM?"),
-        }
-        for pos in position_values.values():
-            for col, value in pos.items():
-                padding[col] = max(padding[col], len(value))
 
-        # Print column headers
-        def print_col(col):
-            return col.rjust(padding[col.lower()])
-
-        click.secho(
-            f"           {print_col('Qty')}  {print_col('MktPrice')}  {print_col('AvgPrice')}  {print_col('Value')}  {print_col('Cost')}  {print_col('P&L')}  {print_col('Strike')}  {print_col('DTE')}  {print_col('Exp')}  {print_col('ITM?')}",
-            fg="green",
-        )
-
+        table = Table(title="Portfolio positions")
+        table.add_column("Symbol")
+        table.add_column("R")
+        table.add_column("Qty", justify="right")
+        table.add_column("MktPrice", justify="right")
+        table.add_column("AvgPrice", justify="right")
+        table.add_column("Value", justify="right")
+        table.add_column("Cost", justify="right")
+        table.add_column("Unrealized P&L", justify="right")
+        table.add_column("P&L", justify="right")
+        table.add_column("Strike", justify="right")
+        table.add_column("Exp", justify="right")
+        table.add_column("DTE", justify="right")
+        table.add_column("ITM?")
+        first = True
         for symbol, position in portfolio_positions.items():
-            click.secho(f"  {symbol}:", fg="cyan")
+            if not first:
+                table.add_section()
+            first = False
+            table.add_row(symbol)
             sorted_positions = sorted(
                 position,
                 key=lambda p: option_dte(p.contract.lastTradeDateOrContractMonth)
@@ -460,37 +445,41 @@ class PortfolioManager:
                 else -1,  # Keep stonks on top
             )
 
-            def pad(col, pid):
-                return position_values[pid][col].rjust(padding[col])
+            def getval(col, conId):
+                return position_values[conId][col]
 
             for pos in sorted_positions:
                 conId = pos.contract.conId
-                qty = pad("qty", conId)
-                mktPrice = pad("mktprice", conId)
-                avgPrice = pad("avgprice", conId)
-                value = pad("value", conId)
-                cost = pad("cost", conId)
-                pnl = pad("p&l", conId)
                 if isinstance(pos.contract, Stock):
-                    click.secho(
-                        f"    Stock  {qty}  {mktPrice}  {avgPrice}  {value}  {cost}  {pnl}",
-                        fg="cyan",
+                    table.add_row(
+                        "",
+                        "S",
+                        getval("qty", conId),
+                        getval("mktprice", conId),
+                        getval("avgprice", conId),
+                        getval("value", conId),
+                        getval("cost", conId),
+                        getval("unrealized", conId),
+                        getval("p&l", conId),
                     )
                 elif isinstance(pos.contract, Option):
-                    strike = pad("strike", conId)
-                    dte = pad("dte", conId)
-                    exp = pad("exp", conId)
-                    itm = pad("itm?", conId)
-
-                    def p_or_c(pos):
-                        return "Call" if pos.contract.right.startswith("C") else "Put "
-
-                    click.secho(
-                        f"    {p_or_c(pos)}   {qty}  {mktPrice}  {avgPrice}  {value}  {cost}  {pnl}  {strike}  {dte}  {exp}  {itm}",
-                        fg="cyan",
+                    table.add_row(
+                        "",
+                        pos.contract.right,
+                        getval("qty", conId),
+                        getval("mktprice", conId),
+                        getval("avgprice", conId),
+                        getval("value", conId),
+                        getval("cost", conId),
+                        getval("unrealized", conId),
+                        getval("p&l", conId),
+                        getval("strike", conId),
+                        getval("exp", conId),
+                        getval("dte", conId),
+                        getval("itm?", conId),
                     )
-                else:
-                    click.secho(f"    {pos.contract}", fg="cyan")
+
+        console.print(table)
 
         return (account_summary, portfolio_positions)
 
@@ -498,9 +487,6 @@ class PortfolioManager:
         try:
             self.initialize_account()
             (account_summary, portfolio_positions) = self.summarize_account()
-
-            click.echo()
-            click.secho("Checking positions...", fg="green")
 
             # Check if we have enough buying power to write some puts
             self.check_if_can_write_puts(account_summary, portfolio_positions)
@@ -517,21 +503,25 @@ class PortfolioManager:
             # check if we should do VIX call hedging
             self.do_vix_hedging(account_summary, portfolio_positions)
 
+            self.submit_orders()
+
             # Wait for pending orders
             wait_n_seconds(
                 lambda: any(
-                    "Pending" in trade.orderStatus.status for trade in self.orders
+                    "Pending" in trade.orderStatus.status
+                    for trade in self.trades
+                    if trade
                 ),
                 lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
                 API_RESPONSE_WAIT_TIME,
             )
 
-            click.echo()
-            click.secho("ThetaGang is done, shutting down! Cya next time.", fg="yellow")
+            console.print(
+                "[bright_yellow]ThetaGang is done, shutting down! Cya next time. :sparkles:[/bright_yellow]"
+            )
 
         except:
-            click.secho("An exception was raised, exiting", fg="red")
-            click.secho("Check log for details", fg="red")
+            console.print_exception()
             raise
 
         finally:
@@ -546,10 +536,15 @@ class PortfolioManager:
         rollable_puts = []
         closeable_puts = []
 
+        table = Table(title="Rollable & closeable puts")
+        table.add_column("Underlying")
+        table.add_column("Contract")
+        table.add_column("Detail")
+
         for p in puts:
-            if self.put_can_be_rolled(p):
+            if self.put_can_be_rolled(p, table):
                 rollable_puts.append(p)
-            elif self.put_can_be_closed(p):
+            elif self.put_can_be_closed(p, table):
                 closeable_puts.append(p)
 
         total_rollable_puts = math.floor(sum([abs(p.position) for p in rollable_puts]))
@@ -557,9 +552,11 @@ class PortfolioManager:
             sum([abs(p.position) for p in closeable_puts])
         )
 
-        click.echo()
-        click.secho(f"{total_rollable_puts} puts can be rolled", fg="magenta")
-        click.secho(f"{total_closeable_puts} puts can be closed", fg="magenta")
+        console.print(f"[magenta]{total_rollable_puts} puts can be rolled[/magenta]")
+        console.print(f"[magenta]{total_closeable_puts} puts can be closed[/magenta]")
+
+        if total_closeable_puts + total_rollable_puts > 0:
+            console.print(table)
 
         self.roll_puts(rollable_puts, account_summary)
         self.close_puts(closeable_puts)
@@ -572,10 +569,15 @@ class PortfolioManager:
         rollable_calls = []
         closeable_calls = []
 
+        table = Table(title="Rollable & closeable calls")
+        table.add_column("Underlying")
+        table.add_column("Contract")
+        table.add_column("Detail")
+
         for c in calls:
-            if self.call_can_be_rolled(c):
+            if self.call_can_be_rolled(c, table):
                 rollable_calls.append(c)
-            elif self.call_can_be_closed(c):
+            elif self.call_can_be_closed(c, table):
                 closeable_calls.append(c)
 
         total_rollable_calls = math.floor(
@@ -585,9 +587,11 @@ class PortfolioManager:
             sum([abs(p.position) for p in closeable_calls])
         )
 
-        click.echo()
-        click.secho(f"{total_rollable_calls} calls can be rolled", fg="magenta")
-        click.secho(f"{total_closeable_calls} calls can be closed", fg="magenta")
+        console.print(f"[magenta]{total_rollable_calls} calls can be rolled[/magenta]")
+        console.print(f"[magenta]{total_closeable_calls} calls can be closed[/magenta]")
+
+        if total_closeable_calls + total_rollable_calls > 0:
+            console.print(table)
 
         self.roll_calls(rollable_calls, account_summary, portfolio_positions)
         self.close_calls(closeable_calls)
@@ -606,7 +610,15 @@ class PortfolioManager:
         return max([1, round((max_buying_power / price) // 100)])
 
     def check_for_uncovered_positions(self, account_summary, portfolio_positions):
+        table = Table(title="Call writing summary")
+        table.add_column("Symbol")
+        table.add_column("Action")
+        table.add_column("Detail")
+        to_write = []
         for symbol in portfolio_positions:
+            if symbol == "VIX":
+                # skip VIX positions
+                continue
             call_count = max(
                 [0, count_short_option_positions(symbol, portfolio_positions, "C")]
             )
@@ -638,10 +650,11 @@ class PortfolioManager:
 
             if excess_calls > 0:
                 self.has_excess_calls.add(symbol)
-                click.secho(
-                    f"Warning: {symbol} has excess_calls={excess_calls} stock_count={stock_count},"
-                    " call_count={call_count}, target_calls={target_calls}",
-                    fg="yellow",
+                table.add_row(
+                    symbol,
+                    "None",
+                    f"[yellow]Warning: excess_calls={excess_calls} stock_count={stock_count},"
+                    f" call_count={call_count}, target_calls={target_calls}[/yellow]",
                 )
 
             maximum_new_contracts = self.get_maximum_new_contracts_for(
@@ -673,18 +686,20 @@ class PortfolioManager:
                 )
                 green = ticker.marketPrice() > ticker.close
                 if not green:
-                    click.secho(
-                        f"Need to write {calls_to_write} calls for {symbol}, "
-                        "but skipping because underlying is not green",
-                        fg="green",
+                    table.add_row(
+                        symbol,
+                        "None",
+                        f"[cyan1]Need to write {calls_to_write} calls, "
+                        "but skipping because underlying is not green[/cyan1]",
                     )
                     return False
                 if absolute_daily_change < write_threshold:
-                    click.secho(
-                        f"Need to write {calls_to_write} calls for {symbol}, "
+                    table.add_row(
+                        symbol,
+                        "None",
+                        f"[cyan1]Need to write {calls_to_write} calls, "
                         "but skipping because daily_change={absolute_daily_change:.3f}"
-                        " less than write_threshold={write_threshold:.3f}",
-                        fg="green",
+                        " less than write_threshold={write_threshold:.3f}[/cyan1]",
                     )
                     return False
                 return True
@@ -694,26 +709,29 @@ class PortfolioManager:
             )
 
             if calls_to_write > 0 and ok_to_write:
-                click.secho(
-                    f"Will write {calls_to_write} calls, {new_contracts_needed} needed for "
-                    "{symbol}, capped at {maximum_new_contracts}, at or above strike ${strike_limit}"
-                    " (target_calls={target_calls}, call_count={call_count})",
-                    fg="green",
+                table.add_row(
+                    symbol,
+                    "Write",
+                    f"[green]Will write {calls_to_write} calls, {new_contracts_needed} needed, "
+                    f"capped at {maximum_new_contracts}, at or above strike ${strike_limit}"
+                    f" (target_calls={target_calls}, call_count={call_count})[/green]",
                 )
-                try:
-                    self.write_calls(
+                to_write.append(
+                    (
                         symbol,
                         self.get_primary_exchange(symbol),
                         calls_to_write,
                         strike_limit,
                     )
-                except RuntimeError as error:
-                    click.echo()
-                    click.secho(str(error), fg="red")
-                    click.secho(
-                        f"Failed to write calls for {symbol}. Continuing anyway...",
-                        fg="yellow",
-                    )
+                )
+        for call in to_write:
+            try:
+                self.write_calls(*call)
+            except RuntimeError:
+                console.print_exception()
+                console.print(
+                    f"[yellow]Failed to write calls for {call[0]}. Continuing anyway...[/yellow]",
+                )
 
     def write_calls(self, symbol, primary_exchange, quantity, strike_limit):
         sell_ticker = self.find_eligible_contracts(
@@ -728,9 +746,8 @@ class PortfolioManager:
         )
 
         if not self.wait_for_midpoint_price(sell_ticker):
-            click.secho(
-                f"Couldn't get midpoint price for {sell_ticker}, skipping for now",
-                fg="red",
+            console.print(
+                f"[red]Couldn't get midpoint price for {sell_ticker}, skipping for now[/red]",
             )
             return
 
@@ -745,20 +762,8 @@ class PortfolioManager:
             account=self.account_number,
         )
 
-        # Submit order
-        try:
-            trade = self.ib.placeOrder(sell_ticker.contract, order)
-            self.orders.append(trade)
-            click.echo()
-            click.secho("Order submitted", fg="green")
-            click.secho(f"{trade}", fg="green")
-        except RuntimeError as err:
-            click.echo()
-            click.secho(str(err), fg="red")
-            click.secho(
-                "Order trade submission seems to have failed, or a response wasn't received in time. Continuing anyway...",
-                fg="yellow",
-            )
+        # Enqueue order
+        self.enqueue_order(sell_ticker.contract, order)
 
     def write_puts(self, symbol, primary_exchange, quantity, strike_limit):
         try:
@@ -772,19 +777,16 @@ class PortfolioManager:
                 "P",
                 strike_limit,
             )
-        except RuntimeError as err:
-            click.echo()
-            click.secho(str(err), fg="red")
-            click.secho(
-                f"Finding eligible contracts for {symbol} failed. Continuing anyway...",
-                fg="yellow",
+        except RuntimeError:
+            console.print_exception()
+            console.print(
+                f"[yellow]Finding eligible contracts for {symbol} failed. Continuing anyway...[/yellow]",
             )
             return
 
         if not self.wait_for_midpoint_price(sell_ticker):
-            click.secho(
-                "Couldn't get midpoint price for contract={sell_ticker}, skipping for now",
-                fg="red",
+            console.print(
+                f"[red]Couldn't get midpoint price for contract={sell_ticker}, skipping for now[/red]",
             )
             return
 
@@ -799,12 +801,8 @@ class PortfolioManager:
             account=self.account_number,
         )
 
-        # Submit order
-        trade = self.ib.placeOrder(sell_ticker.contract, order)
-        self.orders.append(trade)
-        click.echo()
-        click.secho("Order submitted", fg="green")
-        click.secho(f"{trade}", fg="green")
+        # Enqueue order
+        self.enqueue_order(sell_ticker.contract, order)
 
     def get_primary_exchange(self, symbol):
         return self.config["symbols"][symbol].get("primary_exchange", "")
@@ -826,13 +824,6 @@ class PortfolioManager:
 
         total_buying_power = self.get_buying_power(account_summary)
 
-        click.echo()
-        click.secho(
-            f"Total buying power: ${total_buying_power:,.0f} at {round(self.config['account']['margin_usage'] * 100, 1)}% margin usage",
-            fg="green",
-        )
-        click.echo()
-
         stock_symbols = dict()
         for stock in stock_positions:
             symbol = stock.contract.symbol
@@ -841,10 +832,24 @@ class PortfolioManager:
         targets = dict()
         target_additional_quantity = dict()
 
-        # Determine target quantity of each stock
-        for symbol in self.config["symbols"].keys():
-            click.secho(f"  {symbol}", fg="green")
+        table = Table(title="Position summary")
+        table.add_column("Symbol")
+        table.add_column("Cur shares", justify="right")
+        table.add_column("Cur net contracts", justify="right")
+        table.add_column("Target value", justify="right")
+        table.add_column("Target share qty", justify="right")
+        table.add_column("Net shares", justify="right")
+        table.add_column("Net contracts", justify="right")
 
+        actions = Table(title="Put writing summary")
+        actions.add_column("Symbol")
+        actions.add_column("Action")
+        actions.add_column("Detail")
+
+        # Determine target quantity of each stock
+        for symbol in track(
+            self.config["symbols"].keys(), description="Calculating target positions..."
+        ):
             ticker = self.get_ticker_for_stock(
                 symbol, self.get_primary_exchange(symbol)
             )
@@ -852,17 +857,11 @@ class PortfolioManager:
             current_position = math.floor(
                 stock_symbols[symbol].position if symbol in stock_symbols else 0
             )
-            click.secho(
-                f"    Current position quantity: {current_position} shares",
-                fg="cyan",
-            )
 
             targets[symbol] = round(
                 self.config["symbols"][symbol]["weight"] * total_buying_power, 2
             )
-            click.secho(f"    Target value: ${targets[symbol]:,.0f}", fg="cyan")
             target_quantity = math.floor(targets[symbol] / ticker.marketPrice())
-            click.secho(f"    Target share quantity: {target_quantity:,d}", fg="cyan")
 
             # Current number of short puts
             put_count = count_short_option_positions(symbol, portfolio_positions, "P")
@@ -875,9 +874,14 @@ class PortfolioManager:
             net_target_shares = qty_to_write
             net_target_puts = net_target_shares // 100
 
-            click.secho(
-                f"    Net quantity: {net_target_shares:,d} shares, {net_target_puts} contracts",
-                fg="cyan",
+            table.add_row(
+                symbol,
+                ifmt(current_position),
+                ifmt(put_count),
+                dfmt(targets[symbol]),
+                ifmt(target_quantity),
+                ifmt(net_target_shares),
+                ifmt(net_target_puts),
             )
 
             def is_ok_to_write_puts(
@@ -893,15 +897,17 @@ class PortfolioManager:
                 )
                 red = ticker.marketPrice() < ticker.close
                 if not red:
-                    click.secho(
-                        f"Need to write {puts_to_write} puts for {symbol}, but skipping because underlying is not red",
-                        fg="green",
+                    actions.add_row(
+                        symbol,
+                        "None",
+                        f"[cyan1]Need to write {puts_to_write} puts, but skipping because underlying is not red[/cyan1]",
                     )
                     return False
                 if absolute_daily_change < write_threshold:
-                    click.secho(
-                        f"Need to write {puts_to_write} puts for {symbol}, but skipping because daily_change={absolute_daily_change:.3f} less than write_threshold={write_threshold:.3f}",
-                        fg="green",
+                    actions.add_row(
+                        symbol,
+                        "None",
+                        f"[cyan1]Need to write {puts_to_write} puts, but skipping because daily_change={absolute_daily_change:.3f} less than write_threshold={write_threshold:.3f}[/cyan1]",
                     )
                     return False
                 return True
@@ -915,7 +921,9 @@ class PortfolioManager:
                 "ok_to_write": ok_to_write,
             }
 
-        click.echo()
+        console.print(table)
+
+        to_write = []
 
         # Figure out how many additional puts are needed, if they're needed
         for symbol, target in target_additional_quantity.items():
@@ -934,30 +942,40 @@ class PortfolioManager:
                 if puts_to_write > 0:
                     strike_limit = get_strike_limit(self.config, symbol, "P")
                     if strike_limit:
-                        click.secho(
-                            f"Will write {puts_to_write} puts, {additional_quantity} needed for {symbol}, capped at {maximum_new_contracts}, at or below strike ${strike_limit}",
-                            fg="cyan",
+                        actions.add_row(
+                            symbol,
+                            "Write",
+                            f"[green]Will write {puts_to_write} puts, {additional_quantity}"
+                            f" needed, capped at {maximum_new_contracts}, at or below strike ${strike_limit}[/green]",
                         )
                     else:
-                        click.secho(
-                            f"Will write {puts_to_write} puts, {additional_quantity} needed for {symbol}, capped at {maximum_new_contracts}",
-                            fg="cyan",
+                        actions.add_row(
+                            symbol,
+                            "Write",
+                            f"[green]Will write {puts_to_write} puts, {additional_quantity}"
+                            f" needed, capped at {maximum_new_contracts}[green]",
                         )
-                    self.write_puts(
-                        symbol,
-                        self.get_primary_exchange(symbol),
-                        puts_to_write,
-                        strike_limit,
-                    )
+                        to_write.append(
+                            (
+                                symbol,
+                                self.get_primary_exchange(symbol),
+                                puts_to_write,
+                                strike_limit,
+                            )
+                        )
             elif additional_quantity < 0:
-                excess_puts = -additional_quantity
                 self.has_excess_puts.add(symbol)
-                click.secho(
-                    f"Warning: {symbol} has excess_puts={excess_puts} based on net liquidation and target margin usage",
-                    fg="yellow",
+                actions.add_row(
+                    symbol,
+                    "None",
+                    "[yellow]Warning: excess positions based "
+                    "on net liquidation and target margin usage[/yellow]",
                 )
 
-        return
+        console.print(actions)
+
+        for put in to_write:
+            self.write_puts(*put)
 
     def close_puts(self, puts):
         return self.close_positions(puts)
@@ -978,10 +996,9 @@ class PortfolioManager:
                 buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
                 price = round(get_lowest_price(buy_ticker), 2)
                 if util.isNan(price):
-                    click.secho(
-                        f"Unable to close {position.contract.localSymbol} "
-                        "because market price data unavailable, skipping",
-                        fg="yellow",
+                    console.print(
+                        f"[yellow]Unable to close {position.contract.localSymbol} "
+                        "because market price data unavailable, skipping[/yellow]",
                     )
                     continue
 
@@ -1000,19 +1017,11 @@ class PortfolioManager:
                     account=self.account_number,
                 )
 
-                trade = self.ib.placeOrder(buy_ticker.contract, order)
-                self.orders.append(trade)
-                click.echo()
-                click.secho(
-                    f"Order submitted, current qty={qty}, price={round(price,2)}, trade={trade}",
-                    fg="green",
-                )
-            except RuntimeError as err:
-                click.echo()
-                click.secho(str(err), fg="red")
-                click.secho(
-                    "Error occurred when trying to close position. Continuing anyway...",
-                    fg="yellow",
+                self.enqueue_order(buy_ticker.contract, order)
+            except RuntimeError:
+                console.print_exception()
+                console.print(
+                    "[yellow]Error occurred when trying to close position. Continuing anyway...[/yellow]",
                 )
 
     def roll_positions(self, positions, right, account_summary, portfolio_positions={}):
@@ -1128,24 +1137,16 @@ class PortfolioManager:
                     account=self.account_number,
                 )
 
-                to_dte = option_dte(sell_ticker.contract.lastTradeDateOrContractMonth)
-                from_strike = position.contract.strike
-                to_strike = sell_ticker.contract.strike
+                # to_dte = option_dte(sell_ticker.contract.lastTradeDateOrContractMonth)
+                # from_strike = position.contract.strike
+                # to_strike = sell_ticker.contract.strike
 
-                # Submit order
-                trade = self.ib.placeOrder(combo, order)
-                self.orders.append(trade)
-                click.echo()
-                click.secho(
-                    f"Order submitted, current position={abs(position.position)}, qty_to_roll={qty_to_roll}, from_dte={from_dte}, to_dte={to_dte}, from_strike={from_strike}, to_strike={to_strike}, price={round(price,2)}, trade={trade}",
-                    fg="green",
-                )
-            except RuntimeError as err:
-                click.echo()
-                click.secho(str(err), fg="red")
-                click.secho(
+                # Enqueue order
+                self.enqueue_order(combo, order)
+            except RuntimeError:
+                console.print_exception()
+                console.print(
                     "Error occurred when trying to roll position. Continuing anyway...",
-                    fg="yellow",
                 )
 
     def find_eligible_contracts(
@@ -1164,14 +1165,11 @@ class PortfolioManager:
         if not target_delta:
             target_delta = get_target_delta(self.config, main_contract.symbol, right)
 
-        click.echo()
-        click.secho(
-            f"Searching option chain for symbol={main_contract.symbol} "
+        console.print(
+            f"[green]Searching option chain for symbol={main_contract.symbol} "
             f"right={right}, strike_limit={strike_limit}, minimum_price={minimum_price:.2f} "
-            "this can take a while...",
-            fg="green",
+            "this can take a while...[/green]",
         )
-        click.echo()
 
         self.ib.qualifyContracts(main_contract)
 
@@ -1261,10 +1259,8 @@ class PortfolioManager:
                     API_RESPONSE_WAIT_TIME,
                 )
             except RuntimeError:
-                click.secho(
-                    f"Timeout waiting on market data for "
-                    f"{ticker.contract}. Continuing...",
-                    fg="yellow",
+                console.print(
+                    f"Timeout waiting on market data for {ticker.contract}, continuing...",
                 )
                 return False
             finally:
@@ -1312,7 +1308,11 @@ class PortfolioManager:
             )
 
         # Filter out tickers with invalid or unavailable prices
-        tickers = [ticker for ticker in tickers if price_is_valid(ticker)]
+        tickers = [
+            ticker
+            for ticker in track(tickers, description="Scanning chains...")
+            if price_is_valid(ticker)
+        ]
         # Filter by delta
         tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
         # Fetch market data
@@ -1321,7 +1321,11 @@ class PortfolioManager:
             for ticker in tickers
         ]
         # Filter by open interest
-        tickers = [ticker for ticker in tickers if open_interest_is_valid(ticker)]
+        tickers = [
+            ticker
+            for ticker in track(tickers, description="Scanning chains...")
+            if open_interest_is_valid(ticker)
+        ]
         # Sort by delta first, then expiry date
         tickers = sorted(
             reversed(sorted(tickers, key=lambda t: abs(t.modelGreeks.delta))),
@@ -1347,20 +1351,18 @@ class PortfolioManager:
 
     def do_vix_hedging(self, account_summary, portfolio_positions):
         if not self.config["vix_call_hedge"]["enabled"]:
-            click.secho(
-                f"VIX call hedging not enabled, skipping",
+            console.print(
+                "VIX call hedging not enabled, skipping",
             )
 
-        click.echo()
         net_vix_call_count = net_option_positions("VIX", portfolio_positions, "C")
         if net_vix_call_count > 0:
-            click.secho(
+            console.print(
                 f"VIX hedging: net_vix_call_count={net_vix_call_count}, checking if we need to close positions...",
             )
             if "close_hedges_when_vix_exceeds" in self.config["vix_call_hedge"]:
                 vix_contract = Index("VIX", "CBOE", "USD")
                 self.ib.qualifyContracts(vix_contract)
-                self.ib.reqMktData(vix_contract)
                 vix_ticker = self.get_ticker_for(vix_contract)
                 if (
                     vix_ticker.marketPrice()
@@ -1389,17 +1391,11 @@ class PortfolioManager:
                             account=self.account_number,
                         )
 
-                        trade = self.ib.placeOrder(sell_ticker.contract, order)
-                        self.orders.append(trade)
-                        click.echo()
-                        click.secho(
-                            f"Order submitted, current qty={qty}, price={round(price,2)}, trade={trade}",
-                            fg="green",
-                        )
+                        self.enqueue_order(sell_ticker.contract, order)
 
             return
         else:
-            click.secho(
+            console.print(
                 f"VIX hedging: net_vix_call_count={net_vix_call_count}, "
                 "checking against target allocations to see if we should open new positions...",
             )
@@ -1407,7 +1403,6 @@ class PortfolioManager:
         try:
             vixmo_contract = Index("VIXMO", "CBOE", "USD")
             self.ib.qualifyContracts(vixmo_contract)
-            self.ib.reqMktData(vixmo_contract)
             vixmo_ticker = self.get_ticker_for(vixmo_contract)
 
             weight = 0.0
@@ -1435,34 +1430,29 @@ class PortfolioManager:
                     weight = allocation["weight"]
                     break
 
-            click.secho(
+            console.print(
                 f"VIXMO={vixmo_ticker.marketPrice()}, target call hedge weight={weight}",
             )
 
-            click.echo()
             allocation_amount = float(account_summary["NetLiquidation"].value) * weight
             delta = self.config["vix_call_hedge"]["delta"]
             if weight > 0:
-                click.secho(
-                    f"Current VIXMO spot price prescribes an allocation of up to "
-                    f"${allocation_amount:.2f} for purchasing VIX calls, at or above delta={delta} with a DTE >= 30",
-                    fg="green",
+                console.print(
+                    f"[green]Current VIXMO spot price prescribes an allocation of up to "
+                    f"${allocation_amount:.2f} for purchasing VIX calls, at or above delta={delta} with a DTE >= 30[/green]",
                 )
             else:
-                click.secho(
-                    f"Based on current VIXMO value and rules, no VIX calls will be purchased",
-                    fg="green",
+                console.print(
+                    "[green]Based on current VIXMO value and rules, no VIX calls will be purchased[/green]",
                 )
                 return
 
             vix_contract = Index("VIX", "CBOE", "USD")
             self.ib.qualifyContracts(vix_contract)
-            self.ib.reqMktData(vix_contract)
 
             buy_ticker = self.find_eligible_contracts(
                 vix_contract, "C", 0, target_delta=delta, target_dte=30
             )
-            print(buy_ticker)
             price = round(get_lowest_price(buy_ticker), 2)
             qty = math.floor(
                 allocation_amount / price / float(buy_ticker.contract.multiplier)
@@ -1478,19 +1468,38 @@ class PortfolioManager:
                 account=self.account_number,
             )
 
-            trade = self.ib.placeOrder(buy_ticker.contract, order)
-            self.orders.append(trade)
-            click.echo()
-            click.secho(
-                f"Order submitted, current qty={qty}, price={round(price,2)}, trade={trade}",
-                fg="green",
-            )
-        except RuntimeError as err:
-            click.echo()
-            click.secho(str(err), fg="red")
-            click.secho(
-                "Error occurred when VIX call hedging. Continuing anyway...",
-                fg="yellow",
+            self.enqueue_order(buy_ticker.contract, order)
+        except RuntimeError:
+            console.print_exception()
+            console.print(
+                "[yellow]Error occurred when VIX call hedging. Continuing anyway...[/yellow]",
             )
 
-        click.echo()
+    def enqueue_order(self, contract, order):
+        self.orders.append((contract, order))
+
+    def submit_orders(self):
+        def submit(contract, order):
+            try:
+                trade = self.ib.placeOrder(contract, order)
+                return trade
+            except RuntimeError:
+                console.print_exception()
+            return None
+
+        if len(self.orders) > 0:
+            table = Table(title="Order submissions")
+            table.add_column("Contract")
+            table.add_column("Order")
+            for contract, order in self.orders:
+                table.add_row(contract, order)
+            console.print(table)
+
+        self.trades = [submit(order[0], order[1]) for order in self.orders]
+
+        if len(self.trades) > 0:
+            table = Table(title="Trades submitted")
+            table.add_column("Trade")
+            for trade in self.trades:
+                table.add_row(f"{trade}")
+            console.print(table)

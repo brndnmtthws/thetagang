@@ -5,13 +5,6 @@ from ib_insync import util
 from ib_insync.contract import Option
 
 
-def to_camel_case(snake_str):
-    components = snake_str.split("_")
-    # We capitalize the first letter of each component except the first one
-    # with the 'title' method and join them together.
-    return components[0] + "".join(x.title() for x in components[1:])
-
-
 def account_summary_to_dict(account_summary):
     d = dict()
     for s in account_summary:
