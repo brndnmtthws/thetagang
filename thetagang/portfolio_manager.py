@@ -6,7 +6,6 @@ from functools import lru_cache
 from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
 from ib_insync.order import LimitOrder
-from rich import inspect
 from rich.console import Console
 from rich.progress import track
 from rich.table import Table
