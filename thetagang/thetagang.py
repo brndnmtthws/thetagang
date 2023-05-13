@@ -2,16 +2,22 @@
 
 import asyncio
 
-import click
 from ib_insync import IB, IBC, Watchdog, util
 from ib_insync.contract import Contract
+from rich import box
+from rich.console import Console, Group
+from rich.panel import Panel
+from rich.table import Table
 
 from thetagang.config import normalize_config, validate_config
+from thetagang.fmt import dfmt, ffmt, pfmt
 from thetagang.util import get_strike_limit, get_target_delta, get_write_threshold
 
 from .portfolio_manager import PortfolioManager
 
 util.patchAsyncio()
+
+console = Console()
 
 
 def start(config, without_ibc=False):
@@ -24,157 +30,187 @@ def start(config, without_ibc=False):
 
     validate_config(config)
 
-    click.secho("Config:", fg="green")
-    click.echo()
+    config_table = Table(title="Config", box=box.SIMPLE_HEAVY)
+    config_table.add_column("Section")
+    config_table.add_column("Setting")
+    config_table.add_column("")
+    config_table.add_column("Value")
 
-    click.secho("  Account details:", fg="green")
-    click.secho(
-        f"    Number                   = {config['account']['number']}", fg="cyan"
+    config_table.add_row("[spring_green1]Account details")
+    config_table.add_row("", "Account number", "=", config["account"]["number"])
+    config_table.add_row(
+        "", "Cancel existing orders", "=", f'{config["account"]["cancel_orders"]}'
     )
-    click.secho(
-        f"    Cancel existing orders   = {config['account']['cancel_orders']}",
-        fg="cyan",
+    config_table.add_row(
+        "",
+        "Margin usage",
+        "=",
+        f"{config['account']['margin_usage']} ({pfmt(config['account']['margin_usage'],0)})",
     )
-    click.secho(
-        f"    Margin usage             = {config['account']['margin_usage']} ({config['account']['margin_usage'] * 100}%)",
-        fg="cyan",
+    config_table.add_row(
+        "", "Market data type", "=", f'{config["account"]["market_data_type"]}'
     )
-    click.secho(
-        f"    Market data type         = {config['account']['market_data_type']}",
-        fg="cyan",
-    )
-    click.echo()
 
-    click.secho("  Order settings:", fg="green")
-    click.secho(
-        f"    Exchange                 = {config['orders']['exchange']}",
-        fg="cyan",
+    config_table.add_section()
+    config_table.add_row("[spring_green1]Order settings")
+    config_table.add_row(
+        "",
+        "Exchange",
+        "=",
+        f"= {config['orders']['exchange']}",
     )
-    click.secho(
-        f"    Strategy                 = {config['orders']['algo']['strategy']}",
-        fg="cyan",
+    config_table.add_row(
+        "",
+        "Params",
+        "=",
+        f"{config['orders']['algo']['params']}",
     )
-    click.secho(
-        f"    Params                   = {config['orders']['algo']['params']}",
-        fg="cyan",
-    )
-    click.echo()
 
-    if config["roll_when"]["close_at_pnl"] < 1.0:
-        click.secho(
-            f"  Close options when P&L >= {config['roll_when']['close_at_pnl'] * 100}%",
-            fg="green",
-        )
-    click.secho("  Roll options when either condition is true:", fg="green")
-    click.secho(
-        f"    Days to expiry          <= {config['roll_when']['dte']} and P&L >= {config['roll_when']['min_pnl']} ({config['roll_when']['min_pnl'] * 100}%)",
-        fg="cyan",
+    config_table.add_section()
+    config_table.add_row("[spring_green1]Close option positions")
+    config_table.add_row(
+        "",
+        "When P&L",
+        ">=",
+        f"{pfmt(config['roll_when']['close_at_pnl'],0)}",
+    )
+
+    config_table.add_section()
+    config_table.add_row("[spring_green1]Roll options when either condition is true")
+    config_table.add_row(
+        "",
+        "Days to expiry",
+        "<=",
+        f"{config['roll_when']['dte']} and P&L >= {config['roll_when']['min_pnl']} ({pfmt(config['roll_when']['min_pnl'],0)})",
     )
     if "max_dte" in config["roll_when"]:
-        click.secho(
-            f"    P&L                     >= {config['roll_when']['pnl']} ({config['roll_when']['pnl'] * 100}%) and DTE < {config['roll_when']['max_dte']}",
-            fg="cyan",
+        config_table.add_row(
+            "",
+            "P&L",
+            ">=",
+            f"{config['roll_when']['pnl']} ({pfmt(config['roll_when']['pnl'],0)}) and DTE < {config['roll_when']['max_dte']}",
         )
     else:
-        click.secho(
-            f"    P&L                     >= {config['roll_when']['pnl']} ({config['roll_when']['pnl'] * 100}%)",
-            fg="cyan",
+        config_table.add_row(
+            "",
+            "P&L",
+            ">=",
+            f"{config['roll_when']['pnl']} ({pfmt(config['roll_when']['pnl'],0)})",
         )
 
-    click.secho(
-        f"    Puts: credit only        = {config['roll_when']['puts']['credit_only']}",
-        fg="cyan",
+    config_table.add_row(
+        "",
+        "Puts: credit only",
+        "=",
+        f"{config['roll_when']['puts']['credit_only']}",
     )
-    click.secho(
-        f"    Puts: roll excess        = {config['roll_when']['puts']['has_excess']}",
-        fg="cyan",
+    config_table.add_row(
+        "",
+        "Puts: roll excess",
+        "=",
+        f"{config['roll_when']['puts']['has_excess']}",
     )
-    click.secho(
-        f"    Calls: credit only       = {config['roll_when']['calls']['credit_only']}",
-        fg="cyan",
+    config_table.add_row(
+        "",
+        "Calls: credit only",
+        "=",
+        f"{config['roll_when']['calls']['credit_only']}",
     )
-    click.secho(
-        f"    Calls: roll excess       = {config['roll_when']['calls']['has_excess']}",
-        fg="cyan",
-    )
-
-    click.echo()
-    click.secho("  For underlying, only write new contracts when:", fg="green")
-    click.secho(
-        f"    Puts, red                = {config['write_when']['puts']['red']}",
-        fg="cyan",
-    )
-    click.secho(
-        f"    Calls, green             = {config['write_when']['calls']['green']}",
-        fg="cyan",
-    )
-    click.secho(
-        f"    Call cap factor          = {config['write_when']['calls']['cap_factor']}",
-        fg="cyan",
+    config_table.add_row(
+        "",
+        "Calls: roll excess",
+        "=",
+        f"{config['roll_when']['calls']['has_excess']}",
     )
 
-    click.echo()
-    click.secho("  When contracts are ITM:", fg="green")
-    click.secho(
-        f"    Roll puts                = {config['roll_when']['puts']['itm']}",
-        fg="cyan",
+    config_table.add_section()
+    config_table.add_row("[spring_green1]For underlying, only write new contracts when")
+    config_table.add_row(
+        "",
+        "Puts, red",
+        "=",
+        f"{config['write_when']['puts']['red']}",
     )
-    click.secho(
-        f"    Roll calls               = {config['roll_when']['calls']['itm']}",
-        fg="cyan",
+    config_table.add_row(
+        "",
+        "Calls, green",
+        "=",
+        f"{config['write_when']['calls']['green']}",
+    )
+    config_table.add_row(
+        "",
+        "Call cap factor",
+        "=",
+        f"{config['write_when']['calls']['cap_factor']}",
     )
 
-    click.echo()
-    click.secho("  Write options with targets of:", fg="green")
-    click.secho(f"    Days to expiry          >= {config['target']['dte']}", fg="cyan")
-    click.secho(
-        f"    Default delta           <= {config['target']['delta']}", fg="cyan"
+    config_table.add_section()
+    config_table.add_row("[spring_green1]When contracts are ITM")
+    config_table.add_row(
+        "",
+        "Roll puts",
+        "=",
+        f"{config['roll_when']['puts']['itm']}",
     )
+    config_table.add_row(
+        "",
+        "Roll calls",
+        "=",
+        f"{config['roll_when']['calls']['itm']}",
+    )
+
+    config_table.add_section()
+    config_table.add_row("[spring_green1]Write options with targets of")
+    config_table.add_row("", "Days to expiry", ">=", f"{config['target']['dte']}")
+    config_table.add_row("", "Default delta", "<=", f"{config['target']['delta']}")
     if "puts" in config["target"]:
-        click.secho(
-            f"    Delta for puts          <= {config['target']['puts']['delta']}",
-            fg="cyan",
+        config_table.add_row(
+            "",
+            "Delta for puts",
+            "<=",
+            f"{config['target']['puts']['delta']}",
         )
     if "calls" in config["target"]:
-        click.secho(
-            f"    Delta for calls         <= {config['target']['calls']['delta']}",
-            fg="cyan",
+        config_table.add_row(
+            "",
+            "Delta for calls",
+            "<=",
+            f"{config['target']['calls']['delta']}",
         )
-    click.secho(
-        f"    Maximum new contracts    = {config['target']['maximum_new_contracts_percent'] * 100}% of buying power",
-        fg="cyan",
+    config_table.add_row(
+        "",
+        "Maximum new contracts",
+        "=",
+        f"{pfmt(config['target']['maximum_new_contracts_percent'],0)} of buying power",
     )
-    click.secho(
-        f"    Minimum open interest    = {config['target']['minimum_open_interest']}",
-        fg="cyan",
+    config_table.add_row(
+        "",
+        "Minimum open interest",
+        "=",
+        f"{config['target']['minimum_open_interest']}",
     )
 
-    click.echo()
-    click.secho("  Symbols:", fg="green")
-    for s in config["symbols"].keys():
-        c = config["symbols"][s]
-        c_delta = f"{get_target_delta(config, s, 'C'):.2f}".rjust(4)
-        p_delta = f"{get_target_delta(config, s, 'P'):.2f}".rjust(4)
-        weight_p = f"{(c['weight'] * 100):.2f}".rjust(5)
-        strike_limits = ""
-        c_limit = get_strike_limit(config, s, "C")
-        p_limit = get_strike_limit(config, s, "P")
-        if c_limit:
-            strike_limits += f", calls>=${c_limit:.2f}"
-        if p_limit:
-            strike_limits += f", puts<=${p_limit:.2f}"
-        thresholds = ""
-        only_red = config["write_when"]["puts"]["red"]
-        only_green = config["write_when"]["puts"]["red"]
-        c_thresh = get_write_threshold(config, s, "C")
-        p_thresh = get_write_threshold(config, s, "P")
-        if only_green and c_thresh:
-            thresholds += f", threshold(green)>={100*c_thresh:.2f}%"
-        if only_red and p_thresh:
-            thresholds += f", threshold(red)<={100*p_thresh:.2f}%"
-        click.secho(
-            f"    {s.rjust(5)} weight={weight_p}%, delta={p_delta}p, {c_delta}c{strike_limits}{thresholds}",
-            fg="cyan",
+    symbols_table = Table(
+        title="Configured symbols and target weights", box=box.ROUNDED
+    )
+    symbols_table.add_column("Symbol")
+    symbols_table.add_column("Weight", justify="right")
+    symbols_table.add_column("Call delta", justify="right")
+    symbols_table.add_column("Call strike limit", justify="right")
+    symbols_table.add_column("Call threshold", justify="right")
+    symbols_table.add_column("Put delta", justify="right")
+    symbols_table.add_column("Put strike limit", justify="right")
+    symbols_table.add_column("Put threshold", justify="right")
+    for symbol, sconfig in config["symbols"].items():
+        symbols_table.add_row(
+            symbol,
+            pfmt(sconfig["weight"]),
+            ffmt(get_target_delta(config, symbol, "C")),
+            dfmt(get_strike_limit(config, symbol, "C")),
+            pfmt(get_write_threshold(config, symbol, "C")),
+            ffmt(get_target_delta(config, symbol, "P")),
+            dfmt(get_strike_limit(config, symbol, "P")),
+            pfmt(get_write_threshold(config, symbol, "P")),
         )
     assert (
         round(
@@ -182,7 +218,7 @@ def start(config, without_ibc=False):
         )
         == 1.00000
     )
-    click.echo()
+    console.print(Panel(Group(config_table, symbols_table)))
 
     if config.get("ib_insync", {}).get("logfile"):
         util.logToFile(config["ib_insync"]["logfile"])

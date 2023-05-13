@@ -1,10 +1,13 @@
 import math
 
-import click
+from rich.console import Console
 from schema import And, Optional, Or, Schema
 
 import thetagang.config_defaults as config_defaults
 from thetagang.dict_merge import dict_merge
+
+error_console = Console(stderr=True, style="bold red")
+console = Console()
 
 
 def normalize_config(config):
@@ -12,20 +15,16 @@ def normalize_config(config):
     # defaults, deprecated values, config changes, etc.
 
     if "twsVersion" in config["ibc"]:
-        click.secho(
+        error_console.print(
             "WARNING: config param ibc.twsVersion is deprecated, please remove it from your config.",
-            fg="yellow",
-            err=True,
         )
 
         # TWS version is pinned to latest stable, delete any existing config if it's present
         del config["ibc"]["twsVersion"]
 
     if "maximum_new_contracts" in config["target"]:
-        click.secho(
+        error_console.print(
             "WARNING: config param target.maximum_new_contracts is deprecated, please remove it from your config.",
-            fg="yellow",
-            err=True,
         )
 
         del config["target"]["maximum_new_contracts"]
