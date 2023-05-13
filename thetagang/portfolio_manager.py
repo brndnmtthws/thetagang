@@ -1170,175 +1170,179 @@ class PortfolioManager:
             f"right={right}, strike_limit={strike_limit}, minimum_price={minimum_price:.2f} "
             "this can take a while...[/green]",
         )
+        with console.status(
+            "[bold blue_violet]Hunting for juicy contracts... 😎"
+        ) as status:
+            self.ib.qualifyContracts(main_contract)
 
-        self.ib.qualifyContracts(main_contract)
+            main_contract_ticker = self.get_ticker_for(main_contract)
+            main_contract_price = midpoint_or_market_price(main_contract_ticker)
 
-        main_contract_ticker = self.get_ticker_for(main_contract)
-        main_contract_price = midpoint_or_market_price(main_contract_ticker)
+            chains = self.get_chains_for_contract(main_contract)
+            chain = next(c for c in chains if c.exchange == main_contract.exchange)
 
-        chains = self.get_chains_for_contract(main_contract)
-        chain = next(c for c in chains if c.exchange == main_contract.exchange)
+            def valid_strike(strike):
+                if right.startswith("P") and strike_limit:
+                    return (
+                        strike <= main_contract_price + 0.1 * main_contract_price
+                        and strike <= strike_limit
+                    )
+                elif right.startswith("P"):
+                    return strike <= main_contract_price + 0.1 * main_contract_price
+                elif right.startswith("C") and strike_limit:
+                    return (
+                        strike >= main_contract_price - 0.1 * main_contract_price
+                        and strike >= strike_limit
+                    )
+                elif right.startswith("C"):
+                    return strike >= main_contract_price - 0.1 * main_contract_price
+                return False
 
-        def valid_strike(strike):
-            if right.startswith("P") and strike_limit:
-                return (
-                    strike <= main_contract_price + 0.1 * main_contract_price
-                    and strike <= strike_limit
-                )
-            elif right.startswith("P"):
-                return strike <= main_contract_price + 0.1 * main_contract_price
-            elif right.startswith("C") and strike_limit:
-                return (
-                    strike >= main_contract_price - 0.1 * main_contract_price
-                    and strike >= strike_limit
-                )
-            elif right.startswith("C"):
-                return strike >= main_contract_price - 0.1 * main_contract_price
-            return False
-
-        chain_expirations = self.config["option_chains"]["expirations"]
-        min_dte = (
-            option_dte(exclude_expirations_before) if exclude_expirations_before else 0
-        )
-
-        strikes = sorted(strike for strike in chain.strikes if valid_strike(strike))
-        expirations = sorted(
-            exp
-            for exp in chain.expirations
-            if option_dte(exp) >= target_dte and option_dte(exp) >= min_dte
-        )[:chain_expirations]
-        rights = [right]
-
-        def nearest_strikes(strikes):
-            chain_strikes = self.config["option_chains"]["strikes"]
-            if right.startswith("P"):
-                return strikes[-chain_strikes:]
-            else:
-                return strikes[:chain_strikes]
-
-        contracts = [
-            Option(
-                main_contract.symbol,
-                expiration,
-                strike,
-                right,
-                self.get_order_exchange(),
-                # tradingClass=chain.tradingClass,
+            chain_expirations = self.config["option_chains"]["expirations"]
+            min_dte = (
+                option_dte(exclude_expirations_before)
+                if exclude_expirations_before
+                else 0
             )
-            for right in rights
-            for expiration in expirations
-            for strike in nearest_strikes(strikes)
-        ]
 
-        contracts = self.ib.qualifyContracts(*contracts)
+            strikes = sorted(strike for strike in chain.strikes if valid_strike(strike))
+            expirations = sorted(
+                exp
+                for exp in chain.expirations
+                if option_dte(exp) >= target_dte and option_dte(exp) >= min_dte
+            )[:chain_expirations]
+            rights = [right]
 
-        # exclude strike, but only for the first exp
-        if exclude_exp_strike:
+            def nearest_strikes(strikes):
+                chain_strikes = self.config["option_chains"]["strikes"]
+                if right.startswith("P"):
+                    return strikes[-chain_strikes:]
+                else:
+                    return strikes[:chain_strikes]
+
             contracts = [
-                c
-                for c in contracts
-                if (
-                    c.lastTradeDateOrContractMonth != exclude_exp_strike[1]
-                    or c.strike != exclude_exp_strike[0]
+                Option(
+                    main_contract.symbol,
+                    expiration,
+                    strike,
+                    right,
+                    self.get_order_exchange(),
+                    # tradingClass=chain.tradingClass,
                 )
+                for right in rights
+                for expiration in expirations
+                for strike in nearest_strikes(strikes)
             ]
 
-        tickers = self.get_ticker_list_for(tuple(contracts))
+            contracts = self.ib.qualifyContracts(*contracts)
 
-        def open_interest_is_valid(ticker):
-            def open_interest_is_not_ready():
+            # exclude strike, but only for the first exp
+            if exclude_exp_strike:
+                contracts = [
+                    c
+                    for c in contracts
+                    if (
+                        c.lastTradeDateOrContractMonth != exclude_exp_strike[1]
+                        or c.strike != exclude_exp_strike[0]
+                    )
+                ]
+
+            tickers = self.get_ticker_list_for(tuple(contracts))
+
+            def open_interest_is_valid(ticker):
+                def open_interest_is_not_ready():
+                    if right.startswith("P"):
+                        return util.isNan(ticker.putOpenInterest)
+                    if right.startswith("C"):
+                        return util.isNan(ticker.callOpenInterest)
+
+                try:
+                    wait_n_seconds(
+                        open_interest_is_not_ready,
+                        lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                        API_RESPONSE_WAIT_TIME,
+                    )
+                except RuntimeError:
+                    console.print(
+                        f"Timeout waiting on market data for {ticker.contract}, continuing...",
+                    )
+                    return False
+                finally:
+                    self.ib.cancelMktData(ticker.contract)
+
+                # The open interest value is never present when using historical
+                # data, so just ignore it when the value is None
                 if right.startswith("P"):
-                    return util.isNan(ticker.putOpenInterest)
+                    return (
+                        ticker.putOpenInterest
+                        >= self.config["target"]["minimum_open_interest"]
+                    )
                 if right.startswith("C"):
-                    return util.isNan(ticker.callOpenInterest)
+                    return (
+                        ticker.callOpenInterest
+                        >= self.config["target"]["minimum_open_interest"]
+                    )
 
-            try:
-                wait_n_seconds(
-                    open_interest_is_not_ready,
-                    lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
-                    API_RESPONSE_WAIT_TIME,
-                )
-            except RuntimeError:
-                console.print(
-                    f"Timeout waiting on market data for {ticker.contract}, continuing...",
-                )
-                return False
-            finally:
-                self.ib.cancelMktData(ticker.contract)
-
-            # The open interest value is never present when using historical
-            # data, so just ignore it when the value is None
-            if right.startswith("P"):
+            def delta_is_valid(ticker):
                 return (
-                    ticker.putOpenInterest
-                    >= self.config["target"]["minimum_open_interest"]
-                )
-            if right.startswith("C"):
-                return (
-                    ticker.callOpenInterest
-                    >= self.config["target"]["minimum_open_interest"]
+                    ticker.modelGreeks
+                    and not util.isNan(ticker.modelGreeks.delta)
+                    and ticker.modelGreeks.delta is not None
+                    and abs(ticker.modelGreeks.delta) <= target_delta
                 )
 
-        def delta_is_valid(ticker):
-            return (
-                ticker.modelGreeks
-                and not util.isNan(ticker.modelGreeks.delta)
-                and ticker.modelGreeks.delta is not None
-                and abs(ticker.modelGreeks.delta) <= target_delta
+            def price_is_valid(ticker):
+                def cost_doesnt_exceed_market_price(ticker):
+                    # when writing puts, we need to be sure that the strike +
+                    # credit is less than or equal to the current market price, so
+                    # that we don't exceed the target capital allocation for this
+                    # position
+                    return (
+                        right.startswith("C")
+                        or ticker.contract.strike
+                        <= midpoint_or_market_price(ticker) + main_contract_price
+                    )
+
+                return (
+                    self.wait_for_market_price(
+                        ticker, wait_time=5
+                    )  # need to keep the wait time relatively short to avoid blocking on slow stuff
+                    and midpoint_or_market_price(ticker) > minimum_price
+                    and cost_doesnt_exceed_market_price(ticker)
+                )
+
+            # Filter out tickers with invalid or unavailable prices
+            tickers = [
+                ticker
+                for ticker in track(tickers, description="Scanning chains...")
+                if price_is_valid(ticker)
+            ]
+            # Filter by delta
+            tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
+            # Fetch market data
+            tickers = [
+                self.ib.reqMktData(ticker.contract, genericTickList="101")
+                for ticker in tickers
+            ]
+            # Filter by open interest
+            tickers = [
+                ticker
+                for ticker in track(tickers, description="Scanning chains...")
+                if open_interest_is_valid(ticker)
+            ]
+            # Sort by delta first, then expiry date
+            tickers = sorted(
+                reversed(sorted(tickers, key=lambda t: abs(t.modelGreeks.delta))),
+                key=lambda t: option_dte(t.contract.lastTradeDateOrContractMonth),
             )
 
-        def price_is_valid(ticker):
-            def cost_doesnt_exceed_market_price(ticker):
-                # when writing puts, we need to be sure that the strike +
-                # credit is less than or equal to the current market price, so
-                # that we don't exceed the target capital allocation for this
-                # position
-                return (
-                    right.startswith("C")
-                    or ticker.contract.strike
-                    <= midpoint_or_market_price(ticker) + main_contract_price
+            if len(tickers) == 0:
+                raise RuntimeError(
+                    f"No valid contracts found for {main_contract.symbol}. Aborting."
                 )
 
-            return (
-                self.wait_for_market_price(
-                    ticker, wait_time=5
-                )  # need to keep the wait time relatively short to avoid blocking on slow stuff
-                and midpoint_or_market_price(ticker) > minimum_price
-                and cost_doesnt_exceed_market_price(ticker)
-            )
-
-        # Filter out tickers with invalid or unavailable prices
-        tickers = [
-            ticker
-            for ticker in track(tickers, description="Scanning chains...")
-            if price_is_valid(ticker)
-        ]
-        # Filter by delta
-        tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
-        # Fetch market data
-        tickers = [
-            self.ib.reqMktData(ticker.contract, genericTickList="101")
-            for ticker in tickers
-        ]
-        # Filter by open interest
-        tickers = [
-            ticker
-            for ticker in track(tickers, description="Scanning chains...")
-            if open_interest_is_valid(ticker)
-        ]
-        # Sort by delta first, then expiry date
-        tickers = sorted(
-            reversed(sorted(tickers, key=lambda t: abs(t.modelGreeks.delta))),
-            key=lambda t: option_dte(t.contract.lastTradeDateOrContractMonth),
-        )
-
-        if len(tickers) == 0:
-            raise RuntimeError(
-                f"No valid contracts found for {main_contract.symbol}. Aborting."
-            )
-
-        # Return the first result
-        return tickers[0]
+            # Return the first result
+            return tickers[0]
 
     def get_algo_strategy(self):
         return self.config["orders"]["algo"]["strategy"]

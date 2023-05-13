@@ -8,6 +8,7 @@ from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
+from rich.tree import Tree
 
 from thetagang.config import normalize_config, validate_config
 from thetagang.fmt import dfmt, ffmt, pfmt
@@ -20,17 +21,17 @@ util.patchAsyncio()
 console = Console()
 
 
-def start(config, without_ibc=False):
+def start(config_path, without_ibc=False):
     import toml
 
-    with open(config, "r", encoding="utf8") as f:
-        config = toml.load(f)
+    with open(config_path, "r", encoding="utf8") as file:
+        config = toml.load(file)
 
     config = normalize_config(config)
 
     validate_config(config)
 
-    config_table = Table(title="Config", box=box.SIMPLE_HEAVY)
+    config_table = Table(box=box.SIMPLE_HEAVY)
     config_table.add_column("Section")
     config_table.add_column("Setting")
     config_table.add_column("")
@@ -218,7 +219,11 @@ def start(config, without_ibc=False):
         )
         == 1.00000
     )
-    console.print(Panel(Group(config_table, symbols_table)))
+
+    tree = Tree("🎛️")
+    tree.add(Group(f"🗄️ Loaded from {config_path}", config_table))
+    tree.add(Group("☯️ Symbology", symbols_table))
+    console.print(Panel(tree, title="Config"))
 
     if config.get("ib_insync", {}).get("logfile"):
         util.logToFile(config["ib_insync"]["logfile"])
