@@ -1172,7 +1172,7 @@ class PortfolioManager:
         )
         with console.status(
             "[bold blue_violet]Hunting for juicy contracts... 😎"
-        ) as status:
+        ) as _status:
             self.ib.qualifyContracts(main_contract)
 
             main_contract_ticker = self.get_ticker_for(main_contract)
