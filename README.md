@@ -73,7 +73,7 @@ In normal usage, you would run the script as a cronjob on a daily, weekly, or
 monthly basis according to your preferences. Running more frequently than
 daily is not recommended, but the choice is yours.
 
-![Paper account sample output](sample.gif)
+![Paper account sample output](sample.png)
 
 ## Project status
 
