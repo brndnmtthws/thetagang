@@ -858,7 +858,7 @@ class PortfolioManager:
         table = Table(title="Position summary")
         table.add_column("Symbol")
         table.add_column("Cur shares", justify="right")
-        table.add_column("Cur net contracts", justify="right")
+        table.add_column("Short puts", justify="right")
         table.add_column("Target value", justify="right")
         table.add_column("Target share qty", justify="right")
         table.add_column("Net shares", justify="right")
