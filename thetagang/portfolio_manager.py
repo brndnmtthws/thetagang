@@ -6,9 +6,11 @@ from functools import lru_cache
 from ib_insync import util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
 from ib_insync.order import LimitOrder
-from rich.console import Console
+from rich.console import Console, Group
+from rich.panel import Panel
 from rich.progress import track
 from rich.table import Table
+from rich.text import Text
 
 from thetagang.fmt import dfmt, ifmt, pfmt
 from thetagang.util import (
@@ -168,7 +170,8 @@ class PortfolioManager:
                 table.add_row(
                     position.contract.symbol,
                     position.contract.localSymbol,
-                    f"[blue]Will be closed because P&L of {pfmt(pnl, 1)} is > {pfmt(close_at_pnl, 1)}[/blue]",
+                    "[deep_sky_blue1]Close",
+                    f"[deep_sky_blue1]Will be closed because P&L of {pfmt(pnl, 1)} is > {pfmt(close_at_pnl, 1)}",
                 )
                 return True
 
@@ -196,7 +199,8 @@ class PortfolioManager:
             table.add_row(
                 put.contract.symbol,
                 put.contract.localSymbol,
-                "[cyan1]Won't be rolled because there are excess puts[/cyan1]",
+                "[cyan1]None",
+                "[cyan1]Won't be rolled because there are excess puts",
             )
             return False
 
@@ -218,19 +222,22 @@ class PortfolioManager:
                 table.add_row(
                     put.contract.symbol,
                     put.contract.localSymbol,
-                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}[/blue]",
+                    "[blue]Roll",
+                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}",
                 )
             table.add_row(
                 put.contract.symbol,
                 put.contract.localSymbol,
-                f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl, 1)}[/cyan1]",
+                "[cyan1]None",
+                f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl, 1)}",
             )
 
         if pnl >= roll_when_pnl:
             table.add_row(
                 put.contract.symbol,
                 put.contract.localSymbol,
-                f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}[/blue]",
+                "[blue]Roll",
+                f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
             )
             return True
 
@@ -270,7 +277,8 @@ class PortfolioManager:
             table.add_row(
                 call.contract.symbol,
                 call.contract.localSymbol,
-                f"[cyan1]Won't be rolled because there are excess calls for {call.contract.symbol}[/cyan1]",
+                "[cyan1]None",
+                f"[cyan1]Won't be rolled because there are excess calls for {call.contract.symbol}",
             )
             return False
 
@@ -292,21 +300,24 @@ class PortfolioManager:
                 table.add_row(
                     call.contract.symbol,
                     call.contract.localSymbol,
+                    "[blue]Roll",
                     f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']}"
-                    f" and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}[/blue]",
+                    f" and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}",
                 )
                 return True
             table.add_row(
                 call.contract.symbol,
                 call.contract.localSymbol,
-                f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl , 1)}[/cyan1]",
+                "[cyan1]None",
+                f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl , 1)}",
             )
 
         if pnl >= roll_when_pnl:
             table.add_row(
                 call.contract.symbol,
                 call.contract.localSymbol,
-                f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}[blue]",
+                "[blue]Roll",
+                f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
             )
             return True
 
@@ -357,7 +368,7 @@ class PortfolioManager:
             )
 
         table = Table(title="Account summary")
-        table.add_column("Name")
+        table.add_column("Item")
         table.add_column("Value", justify="right")
         table.add_row(
             "Net liquidation", dfmt(account_summary["NetLiquidation"].value, 0)
@@ -376,7 +387,7 @@ class PortfolioManager:
         table.add_row(
             "Target buying power usage", dfmt(self.get_buying_power(account_summary), 0)
         )
-        console.print(table)
+        console.print(Panel(table))
 
         portfolio_positions = self.get_portfolio_positions()
 
@@ -478,7 +489,7 @@ class PortfolioManager:
                         getval("itm?", conId),
                     )
 
-        console.print(table)
+        console.print(Panel(table))
 
         return (account_summary, portfolio_positions)
 
@@ -496,8 +507,18 @@ class PortfolioManager:
             # Refresh positions, in case anything changed from the orders above
             portfolio_positions = self.get_portfolio_positions()
 
-            self.check_puts(account_summary, portfolio_positions)
-            self.check_calls(account_summary, portfolio_positions)
+            (rollable_puts, closeable_puts, group1) = self.check_puts(
+                account_summary, portfolio_positions
+            )
+            (rollable_calls, closeable_calls, group2) = self.check_calls(
+                account_summary, portfolio_positions
+            )
+            console.print(Panel(Group(group1, group2)))
+
+            self.roll_puts(rollable_puts, account_summary)
+            self.close_puts(closeable_puts)
+            self.roll_calls(rollable_calls, account_summary, portfolio_positions)
+            self.close_calls(closeable_calls)
 
             # check if we should do VIX call hedging
             self.do_vix_hedging(account_summary, portfolio_positions)
@@ -538,6 +559,7 @@ class PortfolioManager:
         table = Table(title="Rollable & closeable puts")
         table.add_column("Underlying")
         table.add_column("Contract")
+        table.add_column("Action")
         table.add_column("Detail")
 
         for p in puts:
@@ -551,14 +573,15 @@ class PortfolioManager:
             sum([abs(p.position) for p in closeable_puts])
         )
 
-        console.print(f"[magenta]{total_rollable_puts} puts can be rolled[/magenta]")
-        console.print(f"[magenta]{total_closeable_puts} puts can be closed[/magenta]")
+        text1 = f"[magenta]{total_rollable_puts} puts can be rolled"
+        text2 = f"[magenta]{total_closeable_puts} puts can be closed"
 
         if total_closeable_puts + total_rollable_puts > 0:
-            console.print(table)
+            group = Group(text1, text2, table)
+        else:
+            group = Group(text1, text2)
 
-        self.roll_puts(rollable_puts, account_summary)
-        self.close_puts(closeable_puts)
+        return (rollable_puts, closeable_puts, group)
 
     def check_calls(self, account_summary, portfolio_positions):
         # Check for calls which may be rolled to the next expiration or a better price
@@ -586,14 +609,15 @@ class PortfolioManager:
             sum([abs(p.position) for p in closeable_calls])
         )
 
-        console.print(f"[magenta]{total_rollable_calls} calls can be rolled[/magenta]")
-        console.print(f"[magenta]{total_closeable_calls} calls can be closed[/magenta]")
+        text1 = f"[magenta]{total_rollable_calls} calls can be rolled"
+        text2 = f"[magenta]{total_closeable_calls} calls can be closed"
 
         if total_closeable_calls + total_rollable_calls > 0:
-            console.print(table)
+            group = Group(text1, text2, table)
+        else:
+            group = Group(text1, text2)
 
-        self.roll_calls(rollable_calls, account_summary, portfolio_positions)
-        self.close_calls(closeable_calls)
+        return (rollable_calls, closeable_calls, group)
 
     def get_maximum_new_contracts_for(self, symbol, primary_exchange, account_summary):
         total_buying_power = self.get_buying_power(account_summary)
@@ -651,9 +675,9 @@ class PortfolioManager:
                 self.has_excess_calls.add(symbol)
                 table.add_row(
                     symbol,
-                    "None",
+                    "[yellow]None",
                     f"[yellow]Warning: excess_calls={excess_calls} stock_count={stock_count},"
-                    f" call_count={call_count}, target_calls={target_calls}[/yellow]",
+                    f" call_count={call_count}, target_calls={target_calls}",
                 )
 
             maximum_new_contracts = self.get_maximum_new_contracts_for(
@@ -687,18 +711,18 @@ class PortfolioManager:
                 if not green:
                     table.add_row(
                         symbol,
-                        "None",
+                        "[cyan1]None",
                         f"[cyan1]Need to write {calls_to_write} calls, "
-                        "but skipping because underlying is not green[/cyan1]",
+                        "but skipping because underlying is not green",
                     )
                     return False
                 if absolute_daily_change < write_threshold:
                     table.add_row(
                         symbol,
-                        "None",
+                        "[cyan1]None",
                         f"[cyan1]Need to write {calls_to_write} calls, "
                         "but skipping because daily_change={absolute_daily_change:.3f}"
-                        " less than write_threshold={write_threshold:.3f}[/cyan1]",
+                        " less than write_threshold={write_threshold:.3f}",
                     )
                     return False
                 return True
@@ -710,7 +734,7 @@ class PortfolioManager:
             if calls_to_write > 0 and ok_to_write:
                 table.add_row(
                     symbol,
-                    "Write",
+                    "[green]Write",
                     f"[green]Will write {calls_to_write} calls, {new_contracts_needed} needed, "
                     f"capped at {maximum_new_contracts}, at or above strike ${strike_limit}"
                     f" (target_calls={target_calls}, call_count={call_count})[/green]",
@@ -898,14 +922,14 @@ class PortfolioManager:
                 if not red:
                     actions.add_row(
                         symbol,
-                        "None",
+                        "[cyan1]None",
                         f"[cyan1]Need to write {puts_to_write} puts, but skipping because underlying is not red[/cyan1]",
                     )
                     return False
                 if absolute_daily_change < write_threshold:
                     actions.add_row(
                         symbol,
-                        "None",
+                        "[cyan1]None",
                         f"[cyan1]Need to write {puts_to_write} puts, but skipping because daily_change={absolute_daily_change:.3f} less than write_threshold={write_threshold:.3f}[/cyan1]",
                     )
                     return False
@@ -919,8 +943,6 @@ class PortfolioManager:
                 "qty": net_target_puts,
                 "ok_to_write": ok_to_write,
             }
-
-        console.print(table)
 
         to_write = []
 
@@ -943,16 +965,16 @@ class PortfolioManager:
                     if strike_limit:
                         actions.add_row(
                             symbol,
-                            "Write",
+                            "[green]Write",
                             f"[green]Will write {puts_to_write} puts, {additional_quantity}"
-                            f" needed, capped at {maximum_new_contracts}, at or below strike ${strike_limit}[/green]",
+                            f" needed, capped at {maximum_new_contracts}, at or below strike ${strike_limit}",
                         )
                     else:
                         actions.add_row(
                             symbol,
-                            "Write",
+                            "[green]Write",
                             f"[green]Will write {puts_to_write} puts, {additional_quantity}"
-                            f" needed, capped at {maximum_new_contracts}[green]",
+                            f" needed, capped at {maximum_new_contracts}",
                         )
                         to_write.append(
                             (
@@ -966,12 +988,12 @@ class PortfolioManager:
                 self.has_excess_puts.add(symbol)
                 actions.add_row(
                     symbol,
-                    "None",
+                    "[yellow]None",
                     "[yellow]Warning: excess positions based "
-                    "on net liquidation and target margin usage[/yellow]",
+                    "on net liquidation and target margin usage",
                 )
 
-        console.print(actions)
+        console.print(Panel(Group(table, actions)))
 
         for put in to_write:
             self.write_puts(*put)
@@ -1353,130 +1375,167 @@ class PortfolioManager:
         return self.config["orders"]["exchange"]
 
     def do_vix_hedging(self, account_summary, portfolio_positions):
-        if not self.config["vix_call_hedge"]["enabled"]:
-            console.print(
-                "VIX call hedging not enabled, skipping",
-            )
+        to_print = []
 
-        net_vix_call_count = net_option_positions("VIX", portfolio_positions, "C")
-        if net_vix_call_count > 0:
-            console.print(
-                f"VIX hedging: net_vix_call_count={net_vix_call_count}, checking if we need to close positions...",
-            )
-            if "close_hedges_when_vix_exceeds" in self.config["vix_call_hedge"]:
-                vix_contract = Index("VIX", "CBOE", "USD")
-                self.ib.qualifyContracts(vix_contract)
-                vix_ticker = self.get_ticker_for(vix_contract)
-                if (
-                    vix_ticker.marketPrice()
-                    > self.config["vix_call_hedge"]["close_hedges_when_vix_exceeds"]
-                ):
-                    for position in portfolio_positions["VIX"]:
-                        if (
-                            position.contract.right.startswith("C")
-                            and position.position < 0
-                        ):
-                            # only applies to long calls
-                            continue
-                        position.contract.exchange = self.get_order_exchange()
-                        sell_ticker = self.get_ticker_for(
-                            position.contract, midpoint=True
-                        )
-                        price = round(get_lowest_price(sell_ticker), 2)
-                        qty = abs(position.position)
-                        order = LimitOrder(
-                            "SELL",
-                            qty,
-                            price,
-                            algoStrategy=self.get_algo_strategy(),
-                            algoParams=self.get_algo_params(),
-                            tif="DAY",
-                            account=self.account_number,
-                        )
-
-                        self.enqueue_order(sell_ticker.contract, order)
-
-            return
-        else:
-            console.print(
-                f"VIX hedging: net_vix_call_count={net_vix_call_count}, "
-                "checking against target allocations to see if we should open new positions...",
-            )
-
-        try:
-            vixmo_contract = Index("VIXMO", "CBOE", "USD")
-            self.ib.qualifyContracts(vixmo_contract)
-            vixmo_ticker = self.get_ticker_for(vixmo_contract)
-
-            weight = 0.0
-
-            for allocation in self.config["vix_call_hedge"]["allocation"]:
-                if (
-                    "lower_bound" in allocation
-                    and "upper_bound" in allocation
-                    and allocation["lower_bound"]
-                    <= vixmo_ticker.marketPrice()
-                    < allocation["upper_bound"]
-                ):
-                    weight = allocation["weight"]
-                    break
-                elif (
-                    "lower_bound" in allocation
-                    and allocation["lower_bound"] <= vixmo_ticker.marketPrice()
-                ):
-                    weight = allocation["weight"]
-                    break
-                elif (
-                    "upper_bound" in allocation
-                    and vixmo_ticker.marketPrice() < allocation["upper_bound"]
-                ):
-                    weight = allocation["weight"]
-                    break
-
-            console.print(
-                f"VIXMO={vixmo_ticker.marketPrice()}, target call hedge weight={weight}",
-            )
-
-            allocation_amount = float(account_summary["NetLiquidation"].value) * weight
-            delta = self.config["vix_call_hedge"]["delta"]
-            if weight > 0:
-                console.print(
-                    f"[green]Current VIXMO spot price prescribes an allocation of up to "
-                    f"${allocation_amount:.2f} for purchasing VIX calls, at or above delta={delta} with a DTE >= 30[/green]",
-                )
-            else:
-                console.print(
-                    "[green]Based on current VIXMO value and rules, no VIX calls will be purchased[/green]",
+        def inner_handler():
+            if not self.config["vix_call_hedge"]["enabled"]:
+                to_print.append(
+                    "🛑 VIX call hedging not enabled, skipping",
                 )
                 return
 
-            vix_contract = Index("VIX", "CBOE", "USD")
-            self.ib.qualifyContracts(vix_contract)
+            with console.status(
+                "[bold blue_violet]Checking on our VIX call hedge..."
+            ) as status:
+                net_vix_call_count = net_option_positions(
+                    "VIX", portfolio_positions, "C"
+                )
+                if net_vix_call_count > 0:
+                    status.update(
+                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count}, checking if we need to close positions...",
+                    )
+                    if "close_hedges_when_vix_exceeds" in self.config["vix_call_hedge"]:
+                        vix_contract = Index("VIX", "CBOE", "USD")
+                        self.ib.qualifyContracts(vix_contract)
+                        vix_ticker = self.get_ticker_for(vix_contract)
+                        close_hedges_when_vix_exceeds = self.config["vix_call_hedge"][
+                            "close_hedges_when_vix_exceeds"
+                        ]
+                        if vix_ticker.marketPrice() > close_hedges_when_vix_exceeds:
+                            to_print.append(
+                                f"[deep_sky_blue1]VIX={vix_ticker.marketPrice()}, which exceeds "
+                                f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}"
+                            )
+                            status.update(
+                                f"[bold blue_violet]VIX={vix_ticker.marketPrice()}, which exceeds "
+                                f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}, "
+                                "checking if we need to close positions...",
+                            )
+                            for position in portfolio_positions["VIX"]:
+                                if (
+                                    position.contract.right.startswith("C")
+                                    and position.position < 0
+                                ):
+                                    # only applies to long calls
+                                    continue
+                                to_print.append(
+                                    f"[blue]Closing position {position.contract.localSymbol}"
+                                )
+                                status.update(
+                                    f"[bold blue_violet]Creating closing order for {position.contract.localSymbol}..."
+                                )
+                                position.contract.exchange = self.get_order_exchange()
+                                sell_ticker = self.get_ticker_for(
+                                    position.contract, midpoint=True
+                                )
+                                price = round(get_lowest_price(sell_ticker), 2)
+                                qty = abs(position.position)
+                                order = LimitOrder(
+                                    "SELL",
+                                    qty,
+                                    price,
+                                    algoStrategy=self.get_algo_strategy(),
+                                    algoParams=self.get_algo_params(),
+                                    tif="DAY",
+                                    account=self.account_number,
+                                )
 
-            buy_ticker = self.find_eligible_contracts(
-                vix_contract, "C", 0, target_delta=delta, target_dte=30
-            )
-            price = round(get_lowest_price(buy_ticker), 2)
-            qty = math.floor(
-                allocation_amount / price / float(buy_ticker.contract.multiplier)
-            )
+                                self.enqueue_order(sell_ticker.contract, order)
 
-            order = LimitOrder(
-                "BUY",
-                qty,
-                price,
-                algoStrategy=self.get_algo_strategy(),
-                algoParams=self.get_algo_params(),
-                tif="DAY",
-                account=self.account_number,
-            )
+                    to_print.append(
+                        f"[cyan1]net_vix_call_count={net_vix_call_count}, no action is needed at this time",
+                    )
+                    return
+                else:
+                    status.update(
+                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count}, checking against target allocations to see if we should open new positions...",
+                    )
 
-            self.enqueue_order(buy_ticker.contract, order)
-        except RuntimeError:
-            console.print_exception()
-            console.print(
-                "[yellow]Error occurred when VIX call hedging. Continuing anyway...[/yellow]",
-            )
+                try:
+                    vixmo_contract = Index("VIXMO", "CBOE", "USD")
+                    self.ib.qualifyContracts(vixmo_contract)
+                    vixmo_ticker = self.get_ticker_for(vixmo_contract)
+
+                    weight = 0.0
+
+                    for allocation in self.config["vix_call_hedge"]["allocation"]:
+                        if (
+                            "lower_bound" in allocation
+                            and "upper_bound" in allocation
+                            and allocation["lower_bound"]
+                            <= vixmo_ticker.marketPrice()
+                            < allocation["upper_bound"]
+                        ):
+                            weight = allocation["weight"]
+                            break
+                        elif (
+                            "lower_bound" in allocation
+                            and allocation["lower_bound"] <= vixmo_ticker.marketPrice()
+                        ):
+                            weight = allocation["weight"]
+                            break
+                        elif (
+                            "upper_bound" in allocation
+                            and vixmo_ticker.marketPrice() < allocation["upper_bound"]
+                        ):
+                            weight = allocation["weight"]
+                            break
+
+                    to_print.append(
+                        f"VIXMO={vixmo_ticker.marketPrice()}, target call hedge weight={weight}",
+                    )
+
+                    allocation_amount = (
+                        float(account_summary["NetLiquidation"].value) * weight
+                    )
+                    delta = self.config["vix_call_hedge"]["delta"]
+                    if weight > 0:
+                        to_print.append(
+                            f"[green]Current VIXMO spot price prescribes an allocation of up to "
+                            f"${allocation_amount:.2f} for purchasing VIX calls, at or above delta={delta} with a DTE >= 30",
+                        )
+                    else:
+                        to_print.append(
+                            "[cyan1]Based on current VIXMO value and rules, no action is needed",
+                        )
+                        return
+
+                    status.update(
+                        "[bold blue_violet]Scanning VIX option chain for eligible contracts...",
+                    )
+                    vix_contract = Index("VIX", "CBOE", "USD")
+                    self.ib.qualifyContracts(vix_contract)
+
+                    buy_ticker = self.find_eligible_contracts(
+                        vix_contract, "C", 0, target_delta=delta, target_dte=30
+                    )
+                    price = round(get_lowest_price(buy_ticker), 2)
+                    qty = math.floor(
+                        allocation_amount
+                        / price
+                        / float(buy_ticker.contract.multiplier)
+                    )
+
+                    order = LimitOrder(
+                        "BUY",
+                        qty,
+                        price,
+                        algoStrategy=self.get_algo_strategy(),
+                        algoParams=self.get_algo_params(),
+                        tif="DAY",
+                        account=self.account_number,
+                    )
+
+                    self.enqueue_order(buy_ticker.contract, order)
+                except RuntimeError:
+                    console.print_exception()
+                    console.print(
+                        "[yellow]Error occurred when VIX call hedging. Continuing anyway...[/yellow]",
+                    )
+
+        inner_handler()
+
+        console.print(Panel(Group(*to_print), title="VIX call hedging"))
 
     def enqueue_order(self, contract, order):
         self.orders.append((contract, order))
@@ -1505,4 +1564,4 @@ class PortfolioManager:
             table.add_column("Trade")
             for trade in self.trades:
                 table.add_row(f"{trade}")
-            console.print(table)
+            console.print(Panel(table))

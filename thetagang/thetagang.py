@@ -192,7 +192,9 @@ def start(config_path, without_ibc=False):
     )
 
     symbols_table = Table(
-        title="Configured symbols and target weights", box=box.ROUNDED
+        title="Configured symbols and target weights",
+        box=box.SIMPLE_HEAVY,
+        show_lines=True,
     )
     symbols_table.add_column("Symbol")
     symbols_table.add_column("Weight", justify="right")
