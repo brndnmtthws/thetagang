@@ -59,15 +59,16 @@ class PortfolioManager:
     def orderStatusEvent(self, trade):
         if "Filled" in trade.orderStatus.status:
             console.print(
-                f"[green]Order filled, symbol={trade.contract.symbol}[/green]",
+                f"[green]Order filled, symbol={trade.contract.symbol}",
             )
         if "Cancelled" in trade.orderStatus.status:
             console.print(
-                f"[red]Order cancelled, symbol={trade.contract.symbol} log={trade.log}[/red]",
+                f"[red]Order cancelled, symbol={trade.contract.symbol} log={trade.log}",
             )
         else:
             console.print(
-                f"[bright_green]Order updated, symbol={trade.contract.symbol} status={trade.orderStatus.status}[/bright_green]",
+                f"[bright_green]Order updated, symbol={trade.contract.symbol}"
+                f" status={trade.orderStatus.status}",
             )
 
     def get_calls(self, portfolio_positions):
