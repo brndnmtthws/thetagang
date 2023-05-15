@@ -10,7 +10,6 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.progress import track
 from rich.table import Table
-from rich.text import Text
 
 from thetagang.fmt import dfmt, ifmt, pfmt
 from thetagang.util import (
@@ -529,7 +528,10 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: any(
                     "Pending" in trade.orderStatus.status
-                    for trade in self.trades
+                    for trade in track(
+                        self.trades,
+                        description="Waiting on pending order submissions...",
+                    )
                     if trade
                 ),
                 lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
