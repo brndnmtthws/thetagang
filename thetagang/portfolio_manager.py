@@ -8,6 +8,7 @@ from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValu
 from ib_insync.order import LimitOrder
 from rich.console import Console, Group
 from rich.panel import Panel
+from rich.pretty import Pretty
 from rich.progress import track
 from rich.table import Table
 
@@ -76,9 +77,9 @@ class PortfolioManager:
         return self.get_options(portfolio_positions, "P")
 
     def get_options(self, portfolio_positions, right):
-        r = []
+        ret = []
         for symbol in portfolio_positions:
-            r = r + list(
+            ret = ret + list(
                 filter(
                     lambda p: (
                         isinstance(p.contract, Option)
@@ -88,7 +89,7 @@ class PortfolioManager:
                 )
             )
 
-        return r
+        return ret
 
     def wait_for_midpoint_price(self, ticker, wait_time=API_RESPONSE_WAIT_TIME):
         try:
@@ -141,13 +142,8 @@ class PortfolioManager:
         return ticker
 
     @lru_cache(maxsize=32)
-    def get_ticker_list_for(self, contracts, status=None):
+    def get_ticker_list_for(self, contracts):
         ticker_list = self.ib.reqTickers(*contracts)
-
-        def body(remaining):
-            if status:
-                status.update("Waiting for tickers to load...")
-            self.ib.waitOnUpdate(timeout=remaining)
 
         try:
             wait_n_seconds(
@@ -172,7 +168,8 @@ class PortfolioManager:
 
             if pnl > close_at_pnl:
                 table.add_row(
-                    f"{position.contract.symbol}" f"{position.contract.localSymbol}",
+                    f"{position.contract.symbol}",
+                    f"{position.contract.localSymbol}",
                     "[deep_sky_blue1]Close",
                     f"[deep_sky_blue1]Will be closed because P&L of {pfmt(pnl, 1)} is > {pfmt(close_at_pnl, 1)}",
                 )
@@ -200,7 +197,8 @@ class PortfolioManager:
             and not self.config["roll_when"]["puts"]["has_excess"]
         ):
             table.add_row(
-                f"{put.contract.symbol}" f"{put.contract.localSymbol}",
+                f"{put.contract.symbol}",
+                f"{put.contract.localSymbol}",
                 "[cyan1]None",
                 "[cyan1]Won't be rolled because there are excess puts",
             )
@@ -222,7 +220,8 @@ class PortfolioManager:
         if dte <= roll_when_dte:
             if pnl >= roll_when_min_pnl:
                 table.add_row(
-                    f"{put.contract.symbol}" f"{put.contract.localSymbol}",
+                    f"{put.contract.symbol}",
+                    f"{put.contract.localSymbol}",
                     "[blue]Roll",
                     f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}",
                 )
@@ -276,7 +275,8 @@ class PortfolioManager:
             and not self.config["roll_when"]["calls"]["has_excess"]
         ):
             table.add_row(
-                f"{call.contract.symbol}" f"{call.contract.localSymbol}",
+                f"{call.contract.symbol}",
+                f"{call.contract.localSymbol}",
                 "[cyan1]None",
                 f"[cyan1]Won't be rolled because there are excess calls for {call.contract.symbol}",
             )
@@ -298,21 +298,24 @@ class PortfolioManager:
         if dte <= roll_when_dte:
             if pnl >= roll_when_min_pnl:
                 table.add_row(
-                    f"{call.contract.symbol}" f"{call.contract.localSymbol}",
+                    f"{call.contract.symbol}",
+                    f"{call.contract.localSymbol}",
                     "[blue]Roll",
                     f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']}"
                     f" and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}",
                 )
                 return True
             table.add_row(
-                f"{call.contract.symbol}" f"{call.contract.localSymbol}",
+                f"{call.contract.symbol}",
+                f"{call.contract.localSymbol}",
                 "[cyan1]None",
                 f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl , 1)}",
             )
 
         if pnl >= roll_when_pnl:
             table.add_row(
-                f"{call.contract.symbol}" f"{call.contract.localSymbol}",
+                f"{call.contract.symbol}",
+                f"{call.contract.localSymbol}",
                 "[blue]Roll",
                 f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
             )
@@ -525,9 +528,11 @@ class PortfolioManager:
             # Wait for pending orders
             wait_n_seconds(
                 lambda: any(
-                    "Pending" in trade.orderStatus.status
-                    for trade in self.trades
-                    if trade
+                    [
+                        "Pending" in trade.orderStatus.status
+                        for trade in self.trades
+                        if trade
+                    ]
                 ),
                 lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
                 API_RESPONSE_WAIT_TIME,
@@ -1266,7 +1271,7 @@ class PortfolioManager:
                 ]
 
             status.update("[bold blue_violet]Requesting tickers... 🤓")
-            tickers = self.get_ticker_list_for(tuple(contracts), status)
+            tickers = self.get_ticker_list_for(tuple(contracts))
             status.update("[bold blue_violet]Filtering contracts... 🧐")
 
             def open_interest_is_valid(ticker):
@@ -1559,19 +1564,18 @@ class PortfolioManager:
                 console.print_exception()
             return None
 
-        if len(self.orders) > 0:
-            table = Table(title="Order submissions")
-            table.add_column("Contract")
-            table.add_column("Order")
-            for contract, order in self.orders:
-                table.add_row(f"{contract}", f"{order}")
-            console.print(table)
-
         self.trades = [submit(order[0], order[1]) for order in self.orders]
 
         if len(self.trades) > 0:
-            table = Table(title="Trades submitted")
-            table.add_column("Trade")
+            table = Table(title="Orders submitted")
+            table.add_column("Contract")
+            table.add_column("Order")
+            table.add_column("Status")
             for trade in self.trades:
-                table.add_row(f"{trade}")
-            console.print(Panel(table))
+                if trade:
+                    table.add_row(
+                        Pretty(trade.contract),
+                        Pretty(trade.order),
+                        Pretty(trade.orderStatus),
+                    )
+            console.print(table)
