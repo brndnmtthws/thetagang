@@ -3,7 +3,7 @@ import math
 import sys
 from functools import lru_cache
 
-from ib_insync import util
+from ib_insync import Order, util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
 from ib_insync.order import LimitOrder
 from rich.console import Console, Group
@@ -36,7 +36,7 @@ console = Console()
 # Typically the amount of time needed when waiting on data from the IBKR API.
 # Sometimes it can take a while to retrieve data, and it's lazy-loaded by the
 # API, so getting this number right is largely a matter of guesswork.
-API_RESPONSE_WAIT_TIME = 120
+API_RESPONSE_WAIT_TIME = 90
 
 
 # Turn off some of the more annoying logging output from ib_insync
@@ -1542,7 +1542,7 @@ class PortfolioManager:
 
         console.print(Panel(Group(*to_print), title="VIX call hedging"))
 
-    def enqueue_order(self, contract, order):
+    def enqueue_order(self, contract: Contract, order: Order):
         self.orders.append((contract, order))
 
     def submit_orders(self):
