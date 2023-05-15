@@ -6,7 +6,6 @@ from functools import lru_cache
 from ib_insync import Order, util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
 from ib_insync.order import LimitOrder
-from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.pretty import Pretty
@@ -108,6 +107,18 @@ class PortfolioManager:
         try:
             wait_n_seconds(
                 lambda: util.isNan(ticker.marketPrice()),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                wait_time,
+            )
+        except RuntimeError:
+            return False
+        return True
+
+    def wait_for_greeks(self, ticker, wait_time=API_RESPONSE_WAIT_TIME):
+        try:
+            wait_n_seconds(
+                lambda: ticker.modelGreeks is None
+                or util.isNan(ticker.modelGreeks.delta),
                 lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
                 wait_time,
             )
@@ -492,10 +503,23 @@ class PortfolioManager:
             (account_summary, portfolio_positions) = self.summarize_account()
 
             # Check if we have enough buying power to write some puts
-            self.check_if_can_write_puts(account_summary, portfolio_positions)
+            (
+                positions_table,
+                put_actions_table,
+                puts_to_write,
+            ) = self.check_if_can_write_puts(account_summary, portfolio_positions)
 
             # Look for lots of stock that don't have covered calls
-            self.check_for_uncovered_positions(account_summary, portfolio_positions)
+            (call_actions_table, calls_to_write) = self.check_for_uncovered_positions(
+                account_summary, portfolio_positions
+            )
+
+            console.print(
+                Panel(Group(positions_table, put_actions_table, call_actions_table))
+            )
+
+            self.write_puts(puts_to_write)
+            self.write_calls(calls_to_write)
 
             # Refresh positions, in case anything changed from the orders above
             portfolio_positions = self.get_portfolio_positions()
@@ -518,18 +542,21 @@ class PortfolioManager:
 
             self.submit_orders()
 
-            # Wait for pending orders
-            wait_n_seconds(
-                lambda: any(
-                    [
-                        "Pending" in trade.orderStatus.status
-                        for trade in self.trades
-                        if trade
-                    ]
-                ),
-                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
-                API_RESPONSE_WAIT_TIME,
-            )
+            with console.status(
+                "[bold blue_violet]Waiting for orders to submit..."
+            ) as _status:
+                # Wait for pending orders
+                wait_n_seconds(
+                    lambda: any(
+                        [
+                            "Pending" in trade.orderStatus.status
+                            for trade in self.trades
+                            if trade
+                        ]
+                    ),
+                    lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                    API_RESPONSE_WAIT_TIME,
+                )
 
             console.print(
                 "[bright_yellow]ThetaGang is done, shutting down! Cya next time. :sparkles:[/bright_yellow]"
@@ -626,10 +653,10 @@ class PortfolioManager:
         return max([1, round((max_buying_power / price) // 100)])
 
     def check_for_uncovered_positions(self, account_summary, portfolio_positions):
-        table = Table(title="Call writing summary")
-        table.add_column("Symbol")
-        table.add_column("Action")
-        table.add_column("Detail")
+        call_actions_table = Table(title="Call writing summary")
+        call_actions_table.add_column("Symbol")
+        call_actions_table.add_column("Action")
+        call_actions_table.add_column("Detail")
         to_write = []
         for symbol in portfolio_positions:
             if symbol == "VIX":
@@ -666,7 +693,7 @@ class PortfolioManager:
 
             if excess_calls > 0:
                 self.has_excess_calls.add(symbol)
-                table.add_row(
+                call_actions_table.add_row(
                     symbol,
                     "[yellow]None",
                     f"[yellow]Warning: excess_calls={excess_calls} stock_count={stock_count},"
@@ -702,7 +729,7 @@ class PortfolioManager:
                 )
                 green = ticker.marketPrice() > ticker.close
                 if not green:
-                    table.add_row(
+                    call_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
                         f"[cyan1]Need to write {calls_to_write} calls, "
@@ -710,7 +737,7 @@ class PortfolioManager:
                     )
                     return False
                 if absolute_daily_change < write_threshold:
-                    table.add_row(
+                    call_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
                         f"[cyan1]Need to write {calls_to_write} calls, "
@@ -725,7 +752,7 @@ class PortfolioManager:
             )
 
             if calls_to_write > 0 and ok_to_write:
-                table.add_row(
+                call_actions_table.add_row(
                     symbol,
                     "[green]Write",
                     f"[green]Will write {calls_to_write} calls, {new_contracts_needed} needed, "
@@ -740,85 +767,88 @@ class PortfolioManager:
                         strike_limit,
                     )
                 )
-        for call in to_write:
+
+        return (call_actions_table, to_write)
+
+    def write_calls(self, calls):
+        for symbol, primary_exchange, quantity, strike_limit in calls:
             try:
-                self.write_calls(*call)
+                sell_ticker = self.find_eligible_contracts(
+                    Stock(
+                        symbol,
+                        self.get_order_exchange(),
+                        currency="USD",
+                        primaryExchange=primary_exchange,
+                    ),
+                    "C",
+                    strike_limit,
+                )
             except RuntimeError:
                 console.print_exception()
                 console.print(
-                    f"[yellow]Failed to write calls for {call[0]}. Continuing anyway...[/yellow]",
+                    f"[yellow]Finding eligible contracts for {symbol} failed. Continuing anyway...",
                 )
+                continue
 
-    def write_calls(self, symbol, primary_exchange, quantity, strike_limit):
-        sell_ticker = self.find_eligible_contracts(
-            Stock(
-                symbol,
-                self.get_order_exchange(),
-                currency="USD",
-                primaryExchange=primary_exchange,
-            ),
-            "C",
-            strike_limit,
-        )
+            if not self.wait_for_midpoint_price(sell_ticker):
+                console.print(
+                    f"[red]Couldn't get midpoint price for {sell_ticker}, skipping for now[/red]",
+                )
+                continue
 
-        if not self.wait_for_midpoint_price(sell_ticker):
-            console.print(
-                f"[red]Couldn't get midpoint price for {sell_ticker}, skipping for now[/red]",
+            # Create order
+            order = LimitOrder(
+                "SELL",
+                quantity,
+                round(get_highest_price(sell_ticker), 2),
+                algoStrategy=self.get_algo_strategy(),
+                algoParams=self.get_algo_params(),
+                tif="DAY",
+                account=self.account_number,
             )
-            return
 
-        # Create order
-        order = LimitOrder(
-            "SELL",
-            quantity,
-            round(get_highest_price(sell_ticker), 2),
-            algoStrategy=self.get_algo_strategy(),
-            algoParams=self.get_algo_params(),
-            tif="DAY",
-            account=self.account_number,
-        )
+            # Enqueue order
+            self.enqueue_order(sell_ticker.contract, order)
 
-        # Enqueue order
-        self.enqueue_order(sell_ticker.contract, order)
+    def write_puts(self, puts):
+        for symbol, primary_exchange, quantity, strike_limit in puts:
+            try:
+                sell_ticker = self.find_eligible_contracts(
+                    Stock(
+                        symbol,
+                        self.get_order_exchange(),
+                        currency="USD",
+                        primaryExchange=primary_exchange,
+                    ),
+                    "P",
+                    strike_limit,
+                )
+            except RuntimeError:
+                console.print_exception()
+                console.print(
+                    f"[yellow]Finding eligible contracts for {symbol} failed. Continuing anyway...",
+                )
+                continue
 
-    def write_puts(self, symbol, primary_exchange, quantity, strike_limit):
-        try:
-            sell_ticker = self.find_eligible_contracts(
-                Stock(
-                    symbol,
-                    self.get_order_exchange(),
-                    currency="USD",
-                    primaryExchange=primary_exchange,
-                ),
-                "P",
-                strike_limit,
+            if not self.wait_for_midpoint_price(sell_ticker):
+                console.print(
+                    f"[red]Couldn't get midpoint price for contract={sell_ticker}, skipping for now",
+                )
+                continue
+
+            # Create order
+            order = LimitOrder(
+                "SELL",
+                quantity,
+                round(get_highest_price(sell_ticker), 2),
+                algoStrategy=self.get_algo_strategy(),
+                algoParams=self.get_algo_params(),
+                tif="DAY",
+                account=self.account_number,
             )
-        except RuntimeError:
-            console.print_exception()
-            console.print(
-                f"[yellow]Finding eligible contracts for {symbol} failed. Continuing anyway...[/yellow]",
-            )
-            return
 
-        if not self.wait_for_midpoint_price(sell_ticker):
-            console.print(
-                f"[red]Couldn't get midpoint price for contract={sell_ticker}, skipping for now[/red]",
-            )
-            return
-
-        # Create order
-        order = LimitOrder(
-            "SELL",
-            quantity,
-            round(get_highest_price(sell_ticker), 2),
-            algoStrategy=self.get_algo_strategy(),
-            algoParams=self.get_algo_params(),
-            tif="DAY",
-            account=self.account_number,
-        )
-
-        # Enqueue order
-        self.enqueue_order(sell_ticker.contract, order)
+            # Enqueue order
+            self.enqueue_order(sell_ticker.contract, order)
 
     def get_primary_exchange(self, symbol):
         return self.config["symbols"][symbol].get("primary_exchange", "")
@@ -848,14 +878,14 @@ class PortfolioManager:
         targets = dict()
         target_additional_quantity = dict()
 
-        table = Table(title="Position summary")
-        table.add_column("Symbol")
-        table.add_column("Cur shares", justify="right")
-        table.add_column("Short puts", justify="right")
-        table.add_column("Target value", justify="right")
-        table.add_column("Target share qty", justify="right")
-        table.add_column("Net shares", justify="right")
-        table.add_column("Net contracts", justify="right")
+        positions_summary_table = Table(title="Position summary")
+        positions_summary_table.add_column("Symbol")
+        positions_summary_table.add_column("Cur shares", justify="right")
+        positions_summary_table.add_column("Short puts", justify="right")
+        positions_summary_table.add_column("Target value", justify="right")
+        positions_summary_table.add_column("Target share qty", justify="right")
+        positions_summary_table.add_column("Net shares", justify="right")
+        positions_summary_table.add_column("Net contracts", justify="right")
 
         actions = Table(title="Put writing summary")
         actions.add_column("Symbol")
@@ -890,7 +920,7 @@ class PortfolioManager:
             net_target_shares = qty_to_write
             net_target_puts = net_target_shares // 100
 
-            table.add_row(
+            positions_summary_table.add_row(
                 symbol,
                 ifmt(current_position),
                 ifmt(put_count),
@@ -986,10 +1016,7 @@ class PortfolioManager:
                     "on net liquidation and target margin usage",
                 )
 
-        console.print(Panel(Group(table, actions)))
-
-        for put in to_write:
-            self.write_puts(*put)
+        return (positions_summary_table, actions, to_write)
 
     def close_puts(self, puts):
         return self.close_positions(puts)
@@ -1035,7 +1062,7 @@ class PortfolioManager:
             except RuntimeError:
                 console.print_exception()
                 console.print(
-                    "[yellow]Error occurred when trying to close position. Continuing anyway...[/yellow]",
+                    "[yellow]Error occurred when trying to close position. Continuing anyway...",
                 )
 
     def roll_positions(self, positions, right, account_summary, portfolio_positions={}):
@@ -1160,7 +1187,7 @@ class PortfolioManager:
             except RuntimeError:
                 console.print_exception()
                 console.print(
-                    "Error occurred when trying to roll position. Continuing anyway...",
+                    "[yellow]Error occurred when trying to roll position. Continuing anyway...",
                 )
 
     def find_eligible_contracts(
@@ -1198,18 +1225,18 @@ class PortfolioManager:
             def valid_strike(strike):
                 if right.startswith("P") and strike_limit:
                     return (
-                        strike <= main_contract_price + 0.1 * main_contract_price
+                        strike <= main_contract_price + 0.02 * main_contract_price
                         and strike <= strike_limit
                     )
                 elif right.startswith("P"):
-                    return strike <= main_contract_price + 0.1 * main_contract_price
+                    return strike <= main_contract_price + 0.02 * main_contract_price
                 elif right.startswith("C") and strike_limit:
                     return (
-                        strike >= main_contract_price - 0.1 * main_contract_price
+                        strike >= main_contract_price - 0.02 * main_contract_price
                         and strike >= strike_limit
                     )
                 elif right.startswith("C"):
-                    return strike >= main_contract_price - 0.1 * main_contract_price
+                    return strike >= main_contract_price - 0.02 * main_contract_price
                 return False
 
             chain_expirations = self.config["option_chains"]["expirations"]
@@ -1301,7 +1328,10 @@ class PortfolioManager:
 
             def delta_is_valid(ticker):
                 return (
-                    ticker.modelGreeks
+                    self.wait_for_greeks(
+                        ticker, wait_time=5
+                    )  # need to keep the wait time relatively short to avoid blocking on slow stuff
+                    and ticker.modelGreeks
                     and not util.isNan(ticker.modelGreeks.delta)
                     and ticker.modelGreeks.delta is not None
                     and abs(ticker.modelGreeks.delta) <= target_delta
@@ -1339,7 +1369,7 @@ class PortfolioManager:
             status.start()
             # Filter by delta
             tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
-            # Fetch market data
+            # Fetch market data for open interest
             tickers = [
                 self.ib.reqMktData(ticker.contract, genericTickList="101")
                 for ticker in tickers
@@ -1536,7 +1566,7 @@ class PortfolioManager:
                 except RuntimeError:
                     console.print_exception()
                     console.print(
-                        "[yellow]Error occurred when VIX call hedging. Continuing anyway...[/yellow]",
+                        "[yellow]Error occurred when VIX call hedging. Continuing anyway...",
                     )
 
         inner_handler()
@@ -1558,15 +1588,15 @@ class PortfolioManager:
         self.trades = [submit(order[0], order[1]) for order in self.orders]
 
         if len(self.trades) > 0:
-            table = Table(title="Orders submitted", box=box.SIMPLE_HEAVY)
-            table.add_column("Contract")
-            table.add_column("Order")
+            table = Table(title="Orders submitted", show_lines=True, show_edge=False)
+            table.add_column("Symbol")
+            table.add_column("Exchange")
             table.add_column("Status")
             for trade in self.trades:
                 if trade:
                     table.add_row(
-                        Pretty(trade.contract),
-                        Pretty(trade.order),
-                        Pretty(trade.orderStatus),
+                        Pretty(trade.contract, indent_size=2),
+                        Pretty(trade.order, indent_size=2),
+                        Pretty(trade.orderStatus, indent_size=2),
                     )
             console.print(table)
