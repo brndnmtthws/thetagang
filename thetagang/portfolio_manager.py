@@ -169,7 +169,6 @@ class PortfolioManager:
 
             if pnl > close_at_pnl:
                 table.add_row(
-                    f"{position.contract.symbol}",
                     f"{position.contract.localSymbol}",
                     "[deep_sky_blue1]Close",
                     f"[deep_sky_blue1]Will be closed because P&L of {pfmt(pnl, 1)} is > {pfmt(close_at_pnl, 1)}",
@@ -198,7 +197,6 @@ class PortfolioManager:
             and not self.config["roll_when"]["puts"]["has_excess"]
         ):
             table.add_row(
-                f"{put.contract.symbol}",
                 f"{put.contract.localSymbol}",
                 "[cyan1]None",
                 "[cyan1]Won't be rolled because there are excess puts",
@@ -221,13 +219,11 @@ class PortfolioManager:
         if dte <= roll_when_dte:
             if pnl >= roll_when_min_pnl:
                 table.add_row(
-                    f"{put.contract.symbol}",
                     f"{put.contract.localSymbol}",
                     "[blue]Roll",
                     f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}",
                 )
             table.add_row(
-                f"{put.contract.symbol}",
                 f"{put.contract.localSymbol}",
                 "[cyan1]None",
                 f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl, 1)}",
@@ -235,7 +231,6 @@ class PortfolioManager:
 
         if pnl >= roll_when_pnl:
             table.add_row(
-                f"{put.contract.symbol}",
                 f"{put.contract.localSymbol}",
                 "[blue]Roll",
                 f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
@@ -276,7 +271,6 @@ class PortfolioManager:
             and not self.config["roll_when"]["calls"]["has_excess"]
         ):
             table.add_row(
-                f"{call.contract.symbol}",
                 f"{call.contract.localSymbol}",
                 "[cyan1]None",
                 f"[cyan1]Won't be rolled because there are excess calls for {call.contract.symbol}",
@@ -299,7 +293,6 @@ class PortfolioManager:
         if dte <= roll_when_dte:
             if pnl >= roll_when_min_pnl:
                 table.add_row(
-                    f"{call.contract.symbol}",
                     f"{call.contract.localSymbol}",
                     "[blue]Roll",
                     f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']}"
@@ -307,7 +300,6 @@ class PortfolioManager:
                 )
                 return True
             table.add_row(
-                f"{call.contract.symbol}",
                 f"{call.contract.localSymbol}",
                 "[cyan1]None",
                 f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl , 1)}",
@@ -315,7 +307,6 @@ class PortfolioManager:
 
         if pnl >= roll_when_pnl:
             table.add_row(
-                f"{call.contract.symbol}",
                 f"{call.contract.localSymbol}",
                 "[blue]Roll",
                 f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
@@ -560,7 +551,6 @@ class PortfolioManager:
         closeable_puts = []
 
         table = Table(title="Rollable & closeable puts")
-        table.add_column("Underlying")
         table.add_column("Contract")
         table.add_column("Action")
         table.add_column("Detail")
@@ -595,7 +585,6 @@ class PortfolioManager:
         closeable_calls = []
 
         table = Table(title="Rollable & closeable calls")
-        table.add_column("Underlying")
         table.add_column("Contract")
         table.add_column("Detail")
 

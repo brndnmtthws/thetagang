@@ -222,9 +222,9 @@ def start(config_path, without_ibc=False):
         == 1.00000
     )
 
-    tree = Tree("🎛️")
-    tree.add(Group(f"🗄️ Loaded from {config_path}", config_table))
-    tree.add(Group("☯️ Symbology", symbols_table))
+    tree = Tree(":control_knobs:")
+    tree.add(Group(f":file_cabinet: Loaded from {config_path}", config_table))
+    tree.add(Group(":yin_yang: Symbology", symbols_table))
     console.print(Panel(tree, title="Config"))
 
     if config.get("ib_insync", {}).get("logfile"):
