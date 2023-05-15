@@ -741,8 +741,8 @@ class PortfolioManager:
                         symbol,
                         "[cyan1]None",
                         f"[cyan1]Need to write {calls_to_write} calls, "
-                        "but skipping because daily_change={absolute_daily_change:.3f}"
-                        " less than write_threshold={write_threshold:.3f}",
+                        f"but skipping because daily_change={absolute_daily_change:.3f}"
+                        f" less than write_threshold={write_threshold:.3f}",
                     )
                     return False
                 return True
@@ -1253,6 +1253,10 @@ class PortfolioManager:
                 if option_dte(exp) >= target_dte and option_dte(exp) >= min_dte
             )[:chain_expirations]
             rights = [right]
+            console.print(
+                f"Scanning between strikes of {strikes[0]} and {strikes[-1]}"
+                f" from expirations {expirations[0]} to {expirations[-1]}"
+            )
 
             def nearest_strikes(strikes):
                 chain_strikes = self.config["option_chains"]["strikes"]
