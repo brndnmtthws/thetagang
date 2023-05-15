@@ -6,6 +6,7 @@ from functools import lru_cache
 from ib_insync import Order, util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
 from ib_insync.order import LimitOrder
+from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.pretty import Pretty
@@ -1557,7 +1558,7 @@ class PortfolioManager:
         self.trades = [submit(order[0], order[1]) for order in self.orders]
 
         if len(self.trades) > 0:
-            table = Table(title="Orders submitted")
+            table = Table(title="Orders submitted", box=box.SIMPLE_HEAVY)
             table.add_column("Contract")
             table.add_column("Order")
             table.add_column("Status")
