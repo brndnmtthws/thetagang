@@ -141,8 +141,13 @@ class PortfolioManager:
         return ticker
 
     @lru_cache(maxsize=32)
-    def get_ticker_list_for(self, contracts):
+    def get_ticker_list_for(self, contracts, status=None):
         ticker_list = self.ib.reqTickers(*contracts)
+
+        def body(remaining):
+            if status:
+                status.update("Waiting for tickers to load...")
+            self.ib.waitOnUpdate(timeout=remaining)
 
         try:
             wait_n_seconds(
@@ -167,8 +172,7 @@ class PortfolioManager:
 
             if pnl > close_at_pnl:
                 table.add_row(
-                    position.contract.symbol,
-                    position.contract.localSymbol,
+                    f"{position.contract.symbol}" f"{position.contract.localSymbol}",
                     "[deep_sky_blue1]Close",
                     f"[deep_sky_blue1]Will be closed because P&L of {pfmt(pnl, 1)} is > {pfmt(close_at_pnl, 1)}",
                 )
@@ -196,8 +200,7 @@ class PortfolioManager:
             and not self.config["roll_when"]["puts"]["has_excess"]
         ):
             table.add_row(
-                put.contract.symbol,
-                put.contract.localSymbol,
+                f"{put.contract.symbol}" f"{put.contract.localSymbol}",
                 "[cyan1]None",
                 "[cyan1]Won't be rolled because there are excess puts",
             )
@@ -219,22 +222,21 @@ class PortfolioManager:
         if dte <= roll_when_dte:
             if pnl >= roll_when_min_pnl:
                 table.add_row(
-                    put.contract.symbol,
-                    put.contract.localSymbol,
+                    f"{put.contract.symbol}" f"{put.contract.localSymbol}",
                     "[blue]Roll",
                     f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}",
                 )
             table.add_row(
-                put.contract.symbol,
-                put.contract.localSymbol,
+                f"{put.contract.symbol}",
+                f"{put.contract.localSymbol}",
                 "[cyan1]None",
                 f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl, 1)}",
             )
 
         if pnl >= roll_when_pnl:
             table.add_row(
-                put.contract.symbol,
-                put.contract.localSymbol,
+                f"{put.contract.symbol}",
+                f"{put.contract.localSymbol}",
                 "[blue]Roll",
                 f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
             )
@@ -274,8 +276,7 @@ class PortfolioManager:
             and not self.config["roll_when"]["calls"]["has_excess"]
         ):
             table.add_row(
-                call.contract.symbol,
-                call.contract.localSymbol,
+                f"{call.contract.symbol}" f"{call.contract.localSymbol}",
                 "[cyan1]None",
                 f"[cyan1]Won't be rolled because there are excess calls for {call.contract.symbol}",
             )
@@ -297,24 +298,21 @@ class PortfolioManager:
         if dte <= roll_when_dte:
             if pnl >= roll_when_min_pnl:
                 table.add_row(
-                    call.contract.symbol,
-                    call.contract.localSymbol,
+                    f"{call.contract.symbol}" f"{call.contract.localSymbol}",
                     "[blue]Roll",
                     f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']}"
                     f" and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}",
                 )
                 return True
             table.add_row(
-                call.contract.symbol,
-                call.contract.localSymbol,
+                f"{call.contract.symbol}" f"{call.contract.localSymbol}",
                 "[cyan1]None",
                 f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl , 1)}",
             )
 
         if pnl >= roll_when_pnl:
             table.add_row(
-                call.contract.symbol,
-                call.contract.localSymbol,
+                f"{call.contract.symbol}" f"{call.contract.localSymbol}",
                 "[blue]Roll",
                 f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
             )
@@ -528,10 +526,7 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: any(
                     "Pending" in trade.orderStatus.status
-                    for trade in track(
-                        self.trades,
-                        description="Waiting on pending order submissions...",
-                    )
+                    for trade in self.trades
                     if trade
                 ),
                 lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
@@ -1195,7 +1190,7 @@ class PortfolioManager:
         )
         with console.status(
             "[bold blue_violet]Hunting for juicy contracts... 😎"
-        ) as _status:
+        ) as status:
             self.ib.qualifyContracts(main_contract)
 
             main_contract_ticker = self.get_ticker_for(main_contract)
@@ -1270,7 +1265,9 @@ class PortfolioManager:
                     )
                 ]
 
-            tickers = self.get_ticker_list_for(tuple(contracts))
+            status.update("[bold blue_violet]Requesting tickers... 🤓")
+            tickers = self.get_ticker_list_for(tuple(contracts), status)
+            status.update("[bold blue_violet]Filtering contracts... 🧐")
 
             def open_interest_is_valid(ticker):
                 def open_interest_is_not_ready():
@@ -1335,11 +1332,15 @@ class PortfolioManager:
                 )
 
             # Filter out tickers with invalid or unavailable prices
+            status.stop()
             tickers = [
                 ticker
-                for ticker in track(tickers, description="Scanning chains...")
+                for ticker in track(
+                    tickers, description="[royal_blue1]Filtering invalid prices..."
+                )
                 if price_is_valid(ticker)
             ]
+            status.start()
             # Filter by delta
             tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
             # Fetch market data
@@ -1348,11 +1349,15 @@ class PortfolioManager:
                 for ticker in tickers
             ]
             # Filter by open interest
+            status.stop()
             tickers = [
                 ticker
-                for ticker in track(tickers, description="Scanning chains...")
+                for ticker in track(
+                    tickers, description="[royal_blue1]Filtering by open interest..."
+                )
                 if open_interest_is_valid(ticker)
             ]
+            status.start()
             # Sort by delta first, then expiry date
             tickers = sorted(
                 reversed(sorted(tickers, key=lambda t: abs(t.modelGreeks.delta))),
@@ -1450,12 +1455,13 @@ class PortfolioManager:
                     return
                 else:
                     status.update(
-                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count}, checking against target allocations to see if we should open new positions...",
+                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count}, checking if we should open new positions...",
                     )
 
                 try:
                     vixmo_contract = Index("VIXMO", "CBOE", "USD")
                     self.ib.qualifyContracts(vixmo_contract)
+                    self.ib.reqMktData(vixmo_contract)
                     vixmo_ticker = self.get_ticker_for(vixmo_contract)
 
                     weight = 0.0
@@ -1508,9 +1514,11 @@ class PortfolioManager:
                     vix_contract = Index("VIX", "CBOE", "USD")
                     self.ib.qualifyContracts(vix_contract)
 
+                    status.stop()
                     buy_ticker = self.find_eligible_contracts(
                         vix_contract, "C", 0, target_delta=delta, target_dte=30
                     )
+                    status.start()
                     price = round(get_lowest_price(buy_ticker), 2)
                     qty = math.floor(
                         allocation_amount
@@ -1556,7 +1564,7 @@ class PortfolioManager:
             table.add_column("Contract")
             table.add_column("Order")
             for contract, order in self.orders:
-                table.add_row(contract, order)
+                table.add_row(f"{contract}", f"{order}")
             console.print(table)
 
         self.trades = [submit(order[0], order[1]) for order in self.orders]
