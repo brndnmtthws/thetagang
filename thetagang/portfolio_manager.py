@@ -1253,17 +1253,18 @@ class PortfolioManager:
                 if option_dte(exp) >= target_dte and option_dte(exp) >= min_dte
             )[:chain_expirations]
             rights = [right]
-            console.print(
-                f"Scanning between strikes of {strikes[0]} and {strikes[-1]}"
-                f" from expirations {expirations[0]} to {expirations[-1]}"
-            )
 
             def nearest_strikes(strikes):
                 chain_strikes = self.config["option_chains"]["strikes"]
                 if right.startswith("P"):
                     return strikes[-chain_strikes:]
-                else:
-                    return strikes[:chain_strikes]
+                return strikes[:chain_strikes]
+
+            strikes = nearest_strikes(strikes)
+            console.print(
+                f"Scanning between strikes {strikes[0]} and {strikes[-1]},"
+                f" from expirations {expirations[0]} to {expirations[-1]}"
+            )
 
             contracts = [
                 Option(
@@ -1276,7 +1277,7 @@ class PortfolioManager:
                 )
                 for right in rights
                 for expiration in expirations
-                for strike in nearest_strikes(strikes)
+                for strike in strikes
             ]
 
             contracts = self.ib.qualifyContracts(*contracts)
