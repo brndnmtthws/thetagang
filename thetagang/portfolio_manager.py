@@ -493,7 +493,7 @@ class PortfolioManager:
                         getval("itm?", conId),
                     )
 
-        console.print(Panel(table))
+        console.print(table)
 
         return (account_summary, portfolio_positions)
 
