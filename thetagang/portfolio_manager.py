@@ -793,7 +793,7 @@ class PortfolioManager:
 
             if not self.wait_for_midpoint_price(sell_ticker):
                 console.print(
-                    f"[red]Couldn't get midpoint price for {sell_ticker}, skipping for now[/red]",
+                    f"[red]Couldn't get midpoint price for contract={sell_ticker.contract}, skipping for now",
                 )
                 continue
 
@@ -833,7 +833,7 @@ class PortfolioManager:
 
             if not self.wait_for_midpoint_price(sell_ticker):
                 console.print(
-                    f"[red]Couldn't get midpoint price for contract={sell_ticker}, skipping for now",
+                    f"[red]Couldn't get midpoint price for contract={sell_ticker.contract}, skipping for now",
                 )
                 continue
 
@@ -1600,12 +1600,23 @@ class PortfolioManager:
             table = Table(title="Orders submitted", show_lines=True, show_edge=False)
             table.add_column("Symbol")
             table.add_column("Exchange")
+            table.add_column("Legs")
+            table.add_column("Action")
+            table.add_column("Price")
+            table.add_column("Qty")
             table.add_column("Status")
+            table.add_column("Filled")
+
             for trade in self.trades:
                 if trade:
                     table.add_row(
-                        Pretty(trade.contract, indent_size=2),
-                        Pretty(trade.order, indent_size=2),
-                        Pretty(trade.orderStatus, indent_size=2),
+                        trade.contract.symbol,
+                        trade.contract.exchange,
+                        Pretty(trade.contract.comboLegs, indent_size=2),
+                        trade.order.action,
+                        dfmt(trade.order.lmtPrice),
+                        trade.order.totalQuantity,
+                        trade.orderStatus.status,
+                        trade.orderStatus.filled,
                     )
             console.print(table)
