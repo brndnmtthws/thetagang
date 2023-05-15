@@ -235,6 +235,7 @@ class PortfolioManager:
                     "[blue]Roll",
                     f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['dte']} and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}",
                 )
+                return True
             table.add_row(
                 f"{put.contract.localSymbol}",
                 "[cyan1]None",
@@ -583,11 +584,11 @@ class PortfolioManager:
         table.add_column("Action")
         table.add_column("Detail")
 
-        for p in puts:
-            if self.put_can_be_rolled(p, table):
-                rollable_puts.append(p)
-            elif self.put_can_be_closed(p, table):
-                closeable_puts.append(p)
+        for put in puts:
+            if self.put_can_be_rolled(put, table):
+                rollable_puts.append(put)
+            elif self.put_can_be_closed(put, table):
+                closeable_puts.append(put)
 
         total_rollable_puts = math.floor(sum([abs(p.position) for p in rollable_puts]))
         total_closeable_puts = math.floor(
@@ -1178,9 +1179,12 @@ class PortfolioManager:
                     account=self.account_number,
                 )
 
-                # to_dte = option_dte(sell_ticker.contract.lastTradeDateOrContractMonth)
-                # from_strike = position.contract.strike
-                # to_strike = sell_ticker.contract.strike
+                to_dte = option_dte(sell_ticker.contract.lastTradeDateOrContractMonth)
+                from_strike = position.contract.strike
+                to_strike = sell_ticker.contract.strike
+                console.print(
+                    f"Rolling symbol={symbol} from_strike={from_strike} to_strike={to_strike} from_dte={from_dte} to_dte={to_dte} price={dfmt(price)} qty_to_roll={qty_to_roll}"
+                )
 
                 # Enqueue order
                 self.enqueue_order(combo, order)
