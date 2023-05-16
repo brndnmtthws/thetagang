@@ -5,7 +5,7 @@ def redgreen(value):
 
 
 def dfmt(amount, precision=2):
-    if amount:
+    if amount is not None:
         amount = float(amount)
         rg = redgreen(amount)
         return f"[{rg}]${amount:,.{precision}f}[/{rg}]"
@@ -13,7 +13,7 @@ def dfmt(amount, precision=2):
 
 
 def pfmt(amount, precision=2):
-    if amount:
+    if amount is not None:
         amount = float(amount) * 100.0
         rg = redgreen(amount)
         return f"[{rg}]{amount:.{precision}f}%[/{rg}]"
@@ -21,7 +21,7 @@ def pfmt(amount, precision=2):
 
 
 def ffmt(amount, precision=2):
-    if amount:
+    if amount is not None:
         amount = float(amount)
         rg = redgreen(amount)
         return f"[{rg}]{amount:.{precision}f}[/{rg}]"

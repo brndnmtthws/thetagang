@@ -3,16 +3,17 @@ import math
 import sys
 from functools import lru_cache
 
-from ib_insync import Order, util
+from ib_insync import Order, Ticker, util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
 from ib_insync.order import LimitOrder
+from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.pretty import Pretty
 from rich.progress import track
 from rich.table import Table
 
-from thetagang.fmt import dfmt, ifmt, pfmt
+from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.util import (
     account_summary_to_dict,
     count_short_option_positions,
@@ -125,6 +126,61 @@ class PortfolioManager:
         except RuntimeError:
             return False
         return True
+
+    def wait_for_market_price_for(
+        self, tickers: list[Ticker], wait_time=API_RESPONSE_WAIT_TIME
+    ):
+        try:
+            wait_n_seconds(
+                lambda: any(util.isNan(ticker.marketPrice()) for ticker in tickers),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                wait_time,
+            )
+        except RuntimeError:
+            return False
+        return True
+
+    def wait_for_greeks_for(
+        self, tickers: list[Ticker], wait_time=API_RESPONSE_WAIT_TIME
+    ):
+        try:
+            wait_n_seconds(
+                lambda: any(
+                    ticker.modelGreeks is None
+                    or ticker.modelGreeks.delta is None
+                    or util.isNan(ticker.modelGreeks.delta)
+                    for ticker in tickers
+                ),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                wait_time,
+            )
+        except RuntimeError:
+            return False
+        return True
+
+    def wait_for_open_interest_for(
+        self, tickers: list[Ticker], wait_time=API_RESPONSE_WAIT_TIME
+    ):
+        def open_interest_is_not_ready(ticker):
+            if ticker.contract.right.startswith("P"):
+                return util.isNan(ticker.putOpenInterest)
+            return util.isNan(ticker.callOpenInterest)
+
+        try:
+            wait_n_seconds(
+                lambda: any(open_interest_is_not_ready(ticker) for ticker in tickers),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                wait_time,
+            )
+        except RuntimeError:
+            console.print(
+                f"Timeout waiting on market data for contracts={[ticker.contract for ticker in tickers if open_interest_is_not_ready(ticker)]}, continuing...",
+            )
+            return False
+        finally:
+            for ticker in tickers:
+                if open_interest_is_not_ready(ticker):
+                    self.ib.cancelMktData(ticker.contract)
 
     @lru_cache(maxsize=32)
     def get_chains_for_contract(self, contract):
@@ -433,7 +489,7 @@ class PortfolioManager:
                         pos.contract.lastTradeDateOrContractMonth
                     )
 
-        table = Table(title="Portfolio positions")
+        table = Table(title="Portfolio positions", box=box.MINIMAL_HEAVY_HEAD)
         table.add_column("Symbol")
         table.add_column("R")
         table.add_column("Qty", justify="right")
@@ -544,13 +600,14 @@ class PortfolioManager:
             self.submit_orders()
 
             with console.status(
-                "[bold blue_violet]Waiting for orders to submit..."
+                f"[bold blue_violet]Waiting for {len(self.trades)} orders to submit..."
             ) as _status:
                 # Wait for pending orders
                 wait_n_seconds(
                     lambda: any(
                         [
-                            "Pending" in trade.orderStatus.status
+                            trade.orderStatus.status
+                            in ["PendingSubmit", "PreSubmitted"]
                             for trade in self.trades
                             if trade
                         ]
@@ -879,10 +936,11 @@ class PortfolioManager:
         targets = dict()
         target_additional_quantity = dict()
 
-        positions_summary_table = Table(title="Position summary")
+        positions_summary_table = Table(title="Positions summary")
         positions_summary_table.add_column("Symbol")
-        positions_summary_table.add_column("Cur shares", justify="right")
+        positions_summary_table.add_column("Shares", justify="right")
         positions_summary_table.add_column("Short puts", justify="right")
+        positions_summary_table.add_column("Short calls", justify="right")
         positions_summary_table.add_column("Target value", justify="right")
         positions_summary_table.add_column("Target share qty", justify="right")
         positions_summary_table.add_column("Net shares", justify="right")
@@ -912,6 +970,8 @@ class PortfolioManager:
 
             # Current number of short puts
             put_count = count_short_option_positions(symbol, portfolio_positions, "P")
+            # Current number of short calls
+            call_count = count_short_option_positions(symbol, portfolio_positions, "C")
 
             write_only_when_red = self.config["write_when"]["puts"]["red"]
 
@@ -925,6 +985,7 @@ class PortfolioManager:
                 symbol,
                 ifmt(current_position),
                 ifmt(put_count),
+                ifmt(call_count),
                 dfmt(targets[symbol]),
                 ifmt(target_quantity),
                 ifmt(net_target_shares),
@@ -1183,7 +1244,7 @@ class PortfolioManager:
                 from_strike = position.contract.strike
                 to_strike = sell_ticker.contract.strike
                 console.print(
-                    f"Rolling symbol={symbol} from_strike={from_strike} to_strike={to_strike} from_dte={from_dte} to_dte={to_dte} price={dfmt(price)} qty_to_roll={qty_to_roll}"
+                    f"Rolling symbol={symbol} from_strike={from_strike} to_strike={to_strike} from_dte={from_dte} to_dte={to_dte} price={dfmt(price,3)} qty_to_roll={qty_to_roll}"
                 )
 
                 # Enqueue order
@@ -1212,7 +1273,7 @@ class PortfolioManager:
 
         console.print(
             f"[green]Searching option chain for symbol={main_contract.symbol} "
-            f"right={right}, strike_limit={strike_limit}, minimum_price={minimum_price:.2f} "
+            f"right={right}, strike_limit={strike_limit}, minimum_price={dfmt(minimum_price,3)} "
             "this can take a while...[/green]",
         )
         with console.status(
@@ -1297,31 +1358,15 @@ class PortfolioManager:
                     )
                 ]
 
-            status.update("[bold blue_violet]Requesting tickers... 🤓")
+            status.update(
+                f"[bold blue_violet]Requesting tickers for {len(contracts)} {main_contract.symbol} contracts... 🤓"
+            )
             tickers = self.get_ticker_list_for(tuple(contracts))
-            status.update("[bold blue_violet]Filtering contracts... 🧐")
+            status.update(
+                f"[bold blue_violet]Filtering contracts for {main_contract.symbol} from {len(tickers)} tickers... 🧐"
+            )
 
             def open_interest_is_valid(ticker):
-                def open_interest_is_not_ready():
-                    if right.startswith("P"):
-                        return util.isNan(ticker.putOpenInterest)
-                    if right.startswith("C"):
-                        return util.isNan(ticker.callOpenInterest)
-
-                try:
-                    wait_n_seconds(
-                        open_interest_is_not_ready,
-                        lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
-                        API_RESPONSE_WAIT_TIME,
-                    )
-                except RuntimeError:
-                    console.print(
-                        f"Timeout waiting on market data for contract={ticker.contract}, continuing...",
-                    )
-                    return False
-                finally:
-                    self.ib.cancelMktData(ticker.contract)
-
                 # The open interest value is never present when using historical
                 # data, so just ignore it when the value is None
                 if right.startswith("P"):
@@ -1337,10 +1382,7 @@ class PortfolioManager:
 
             def delta_is_valid(ticker):
                 return (
-                    self.wait_for_greeks(
-                        ticker, wait_time=5
-                    )  # need to keep the wait time relatively short to avoid blocking on slow stuff
-                    and ticker.modelGreeks
+                    ticker.modelGreeks
                     and not util.isNan(ticker.modelGreeks.delta)
                     and ticker.modelGreeks.delta is not None
                     and abs(ticker.modelGreeks.delta) <= target_delta
@@ -1358,25 +1400,24 @@ class PortfolioManager:
                         <= midpoint_or_market_price(ticker) + main_contract_price
                     )
 
-                return (
-                    self.wait_for_market_price(
-                        ticker, wait_time=5
-                    )  # need to keep the wait time relatively short to avoid blocking on slow stuff
-                    and midpoint_or_market_price(ticker) > minimum_price
-                    and cost_doesnt_exceed_market_price(ticker)
-                )
+                return midpoint_or_market_price(
+                    ticker
+                ) > minimum_price and cost_doesnt_exceed_market_price(ticker)
 
             # Filter out tickers with invalid or unavailable prices
+            self.wait_for_market_price_for(tickers)
             status.stop()
             tickers = [
                 ticker
                 for ticker in track(
-                    tickers, description="[royal_blue1]Filtering invalid prices..."
+                    tickers,
+                    description=f"[royal_blue1]Filtering invalid prices for {main_contract.symbol} from {len(tickers)} tickers...",
                 )
                 if price_is_valid(ticker)
             ]
             status.start()
             # Filter by delta
+            self.wait_for_greeks_for(tickers)
             tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
             # Fetch market data for open interest
             tickers = [
@@ -1384,11 +1425,13 @@ class PortfolioManager:
                 for ticker in tickers
             ]
             # Filter by open interest
+            self.wait_for_open_interest_for(tickers)
             status.stop()
             tickers = [
                 ticker
                 for ticker in track(
-                    tickers, description="[royal_blue1]Filtering by open interest..."
+                    tickers,
+                    description=f"[royal_blue1]Filtering by open interest for {main_contract.symbol} from {len(tickers)} tickers...",
                 )
                 if open_interest_is_valid(ticker)
             ]
@@ -1401,11 +1444,19 @@ class PortfolioManager:
 
             if len(tickers) == 0:
                 raise RuntimeError(
-                    f"No valid contracts found for {main_contract.symbol}. Aborting."
+                    f"No valid contracts found for {main_contract.symbol}. Continuing anyway..."
                 )
 
             # Return the first result
-            return tickers[0]
+            ticker = tickers[0]
+
+            console.print(
+                f"[sea_green2]Found suitable contract for {main_contract.symbol} at "
+                f"strike={ticker.contract.strike} dte={option_dte(ticker.contract.lastTradeDateOrContractMonth)}"
+                f" price={dfmt(ticker.marketPrice(),3)}"
+            )
+
+            return ticker
 
     def get_algo_strategy(self):
         return self.config["orders"]["algo"]["strategy"]
@@ -1597,10 +1648,12 @@ class PortfolioManager:
         self.trades = [submit(order[0], order[1]) for order in self.orders]
 
         if len(self.trades) > 0:
-            table = Table(title="Orders submitted", show_lines=True, show_edge=False)
+            table = Table(
+                title="Orders submitted", show_lines=True, box=box.MINIMAL_HEAVY_HEAD
+            )
             table.add_column("Symbol")
             table.add_column("Exchange")
-            table.add_column("Legs")
+            table.add_column("Contract")
             table.add_column("Action")
             table.add_column("Price")
             table.add_column("Qty")
@@ -1612,11 +1665,11 @@ class PortfolioManager:
                     table.add_row(
                         trade.contract.symbol,
                         trade.contract.exchange,
-                        Pretty(trade.contract.comboLegs, indent_size=2),
+                        Pretty(trade.contract, indent_size=2),
                         trade.order.action,
                         dfmt(trade.order.lmtPrice),
-                        trade.order.totalQuantity,
+                        ifmt(trade.order.totalQuantity),
                         trade.orderStatus.status,
-                        trade.orderStatus.filled,
+                        ffmt(trade.orderStatus.filled, 0),
                     )
             console.print(table)
