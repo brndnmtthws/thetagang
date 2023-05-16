@@ -1316,7 +1316,7 @@ class PortfolioManager:
                     )
                 except RuntimeError:
                     console.print(
-                        f"Timeout waiting on market data for {ticker.contract}, continuing...",
+                        f"Timeout waiting on market data for contract={ticker.contract}, continuing...",
                     )
                     return False
                 finally:
