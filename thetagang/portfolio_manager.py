@@ -489,7 +489,9 @@ class PortfolioManager:
                         pos.contract.lastTradeDateOrContractMonth
                     )
 
-        table = Table(title="Portfolio positions", box=box.MINIMAL_HEAVY_HEAD)
+        table = Table(
+            title="Portfolio positions",
+        )
         table.add_column("Symbol")
         table.add_column("R")
         table.add_column("Qty", justify="right")
