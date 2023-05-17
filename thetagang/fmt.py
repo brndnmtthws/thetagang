@@ -29,8 +29,11 @@ def ffmt(amount, precision=2):
 
 
 def ifmt(amount):
-    rg = redgreen(amount)
-    return f"[{rg}]{amount:,d}[/{rg}]"
+    if amount is not None:
+        amount = int(amount)
+        rg = redgreen(amount)
+        return f"[{rg}]{amount:,d}[/{rg}]"
+    return ""
 
 
 def to_camel_case(snake_str):
