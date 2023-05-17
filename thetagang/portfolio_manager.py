@@ -18,8 +18,8 @@ from thetagang.util import (
     account_summary_to_dict,
     count_short_option_positions,
     get_call_cap,
-    get_highest_price,
-    get_lowest_price,
+    get_higher_price,
+    get_lower_price,
     get_strike_limit,
     get_target_delta,
     get_write_threshold,
@@ -858,7 +858,7 @@ class PortfolioManager:
             order = LimitOrder(
                 "SELL",
                 quantity,
-                round(get_highest_price(sell_ticker), 2),
+                round(get_higher_price(sell_ticker), 2),
                 algoStrategy=self.get_algo_strategy(),
                 algoParams=self.get_algo_params(),
                 tif="DAY",
@@ -898,7 +898,7 @@ class PortfolioManager:
             order = LimitOrder(
                 "SELL",
                 quantity,
-                round(get_highest_price(sell_ticker), 2),
+                round(get_higher_price(sell_ticker), 2),
                 algoStrategy=self.get_algo_strategy(),
                 algoParams=self.get_algo_params(),
                 tif="DAY",
@@ -1096,8 +1096,13 @@ class PortfolioManager:
         for position in positions:
             try:
                 position.contract.exchange = self.get_order_exchange()
-                buy_ticker = self.get_ticker_for(position.contract, midpoint=True)
-                price = round(get_lowest_price(buy_ticker), 2)
+                ticker = self.get_ticker_for(position.contract, midpoint=True)
+                is_short = position.position < 0
+                price = (
+                    round(get_lower_price(ticker), 2)
+                    if is_short
+                    else round(get_higher_price(ticker), 2)
+                )
                 if util.isNan(price):
                     console.print(
                         f"[yellow]Unable to close {position.contract.localSymbol} "
@@ -1106,12 +1111,12 @@ class PortfolioManager:
                     continue
 
                 if not price:
-                    # if the price is zero, use the minimum price
-                    price = buy_ticker.minTick
+                    # if the price is near zero, use the minimum price
+                    price = ticker.minTick
 
-                qty = abs(position.position)
+                qty = -position.position
                 order = LimitOrder(
-                    "BUY",
+                    "BUY" if is_short else "SELL",
                     qty,
                     price,
                     algoStrategy=self.get_algo_strategy(),
@@ -1120,7 +1125,7 @@ class PortfolioManager:
                     account=self.account_number,
                 )
 
-                self.enqueue_order(buy_ticker.contract, order)
+                self.enqueue_order(ticker.contract, order)
             except RuntimeError:
                 console.print_exception()
                 console.print(
@@ -1521,7 +1526,7 @@ class PortfolioManager:
                                 sell_ticker = self.get_ticker_for(
                                     position.contract, midpoint=True
                                 )
-                                price = round(get_lowest_price(sell_ticker), 2)
+                                price = round(get_lower_price(sell_ticker), 2)
                                 qty = abs(position.position)
                                 order = LimitOrder(
                                     "SELL",
@@ -1605,7 +1610,7 @@ class PortfolioManager:
                         vix_contract, "C", 0, target_delta=delta, target_dte=30
                     )
                     status.start()
-                    price = round(get_lowest_price(buy_ticker), 2)
+                    price = round(get_lower_price(buy_ticker), 2)
                     qty = math.floor(
                         allocation_amount
                         / price

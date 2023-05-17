@@ -90,7 +90,7 @@ def wait_n_seconds(pred, body, seconds_to_wait, started_at=None):
         wait_n_seconds(pred, body, seconds_to_wait, started_at)
 
 
-def get_highest_price(ticker):
+def get_higher_price(ticker):
     # Returns the highest of either the option model price, the midpoint, or the
     # market price. The midpoint is usually a bit higher than the IB model's
     # pricing, but we want to avoid leaving money on the table in cases where
@@ -102,7 +102,7 @@ def get_highest_price(ticker):
     return midpoint_or_market_price(ticker)
 
 
-def get_lowest_price(ticker):
+def get_lower_price(ticker):
     # Same as get_highest_price(), except get the lower price instead.
     if ticker.modelGreeks:
         return min([midpoint_or_market_price(ticker), ticker.modelGreeks.optPrice])
