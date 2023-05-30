@@ -1178,6 +1178,7 @@ class PortfolioManager:
                     if not self.config["roll_when"][kind]["credit_only"]
                     else midpoint_or_market_price(buy_ticker)
                 )
+                preferred_minimum_price = midpoint_or_market_price(buy_ticker)
 
                 sell_ticker = self.find_eligible_contracts(
                     Stock(
@@ -1194,6 +1195,7 @@ class PortfolioManager:
                         position.contract.lastTradeDateOrContractMonth,
                     ),
                     minimum_price=minimum_price,
+                    preferred_minimum_price=preferred_minimum_price,
                 )
 
                 qty_to_roll = abs(position.position)
@@ -1270,6 +1272,7 @@ class PortfolioManager:
         exclude_expirations_before=None,
         exclude_exp_strike=None,
         minimum_price=0.0,
+        preferred_minimum_price=None,
         target_dte=None,
         target_delta=None,
     ):
@@ -1280,7 +1283,7 @@ class PortfolioManager:
 
         console.print(
             f"[green]Searching option chain for symbol={main_contract.symbol} "
-            f"right={right}, strike_limit={strike_limit}, minimum_price={dfmt(minimum_price,3)} "
+            f"right={right}, strike_limit={strike_limit}, minimum_price={dfmt(minimum_price,3)} preferred_minimum_price={dfmt(preferred_minimum_price,3)}"
             "this can take a while...[/green]",
         )
         with console.status(
@@ -1454,16 +1457,25 @@ class PortfolioManager:
                     f"No valid contracts found for {main_contract.symbol}. Continuing anyway..."
                 )
 
-            # Return the first result
-            ticker = tickers[0]
+            the_chosen_ticker = None
+            if preferred_minimum_price is not None:
+                # if there's a preferred minimum price specified, try to find contracts that are at least that price first
+                for ticker in tickers:
+                    if midpoint_or_market_price(ticker) > preferred_minimum_price:
+                        the_chosen_ticker = ticker
+                        break
+
+            if not the_chosen_ticker:
+                # fall back to the first suitable result
+                the_chosen_ticker = tickers[0]
 
             console.print(
                 f"[sea_green2]Found suitable contract for {main_contract.symbol} at "
-                f"strike={ticker.contract.strike} dte={option_dte(ticker.contract.lastTradeDateOrContractMonth)}"
-                f" price={dfmt(ticker.marketPrice(),3)}"
+                f"strike={the_chosen_ticker.contract.strike} dte={option_dte(the_chosen_ticker.contract.lastTradeDateOrContractMonth)}"
+                f" price={dfmt(the_chosen_ticker.marketPrice(),3)}"
             )
 
-            return ticker
+            return the_chosen_ticker
 
     def get_algo_strategy(self):
         return self.config["orders"]["algo"]["strategy"]
