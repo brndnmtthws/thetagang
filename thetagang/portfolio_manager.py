@@ -1465,7 +1465,7 @@ class PortfolioManager:
                         the_chosen_ticker = ticker
                         break
 
-            if not the_chosen_ticker:
+            if the_chosen_ticker is None:
                 # fall back to the first suitable result
                 the_chosen_ticker = tickers[0]
 
