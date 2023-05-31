@@ -1284,7 +1284,7 @@ class PortfolioManager:
         console.print(
             f"[green]Searching option chain for symbol={main_contract.symbol} "
             f"right={right}, strike_limit={strike_limit}, minimum_price={dfmt(minimum_price,3)} preferred_minimum_price={dfmt(preferred_minimum_price,3)}"
-            "this can take a while...[/green]",
+            " this can take a while...[/green]",
         )
         with console.status(
             "[bold blue_violet]Hunting for juicy contracts... 😎"
