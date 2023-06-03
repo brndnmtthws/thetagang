@@ -1441,14 +1441,15 @@ class PortfolioManager:
                 ticker
                 for ticker in track(
                     tickers,
-                    description=f"[royal_blue1]Filtering by open interest for {main_contract.symbol} from {len(tickers)} tickers...",
+                    description=f"[royal_blue1]Filtering by open interest for "
+                    f"{main_contract.symbol} from {len(tickers)} tickers...",
                 )
                 if open_interest_is_valid(ticker)
             ]
             status.start()
             # Sort by delta first, then expiry date
             tickers = sorted(
-                reversed(sorted(tickers, key=lambda t: abs(t.modelGreeks.delta))),
+                sorted(tickers, key=lambda t: abs(t.modelGreeks.delta), reverse=True),
                 key=lambda t: option_dte(t.contract.lastTradeDateOrContractMonth),
             )
 
@@ -1459,11 +1460,19 @@ class PortfolioManager:
 
             the_chosen_ticker = None
             if preferred_minimum_price is not None:
-                # if there's a preferred minimum price specified, try to find contracts that are at least that price first
+                # if there's a preferred minimum price specified, try to find
+                # contracts that are at least that price first
                 for ticker in tickers:
                     if midpoint_or_market_price(ticker) > preferred_minimum_price:
                         the_chosen_ticker = ticker
                         break
+                if the_chosen_ticker is None:
+                    # uh of, if we make it here then all of these options are
+                    # net debits, so let's at least choose the ticker that will
+                    # result in the smallest debit (i.e., minimize the max loss)
+                    tickers = sorted(
+                        tickers, key=midpoint_or_market_price, reverse=True
+                    )
 
             if the_chosen_ticker is None:
                 # fall back to the first suitable result
@@ -1471,7 +1480,8 @@ class PortfolioManager:
 
             console.print(
                 f"[sea_green2]Found suitable contract for {main_contract.symbol} at "
-                f"strike={the_chosen_ticker.contract.strike} dte={option_dte(the_chosen_ticker.contract.lastTradeDateOrContractMonth)}"
+                f"strike={the_chosen_ticker.contract.strike} "
+                f"dte={option_dte(the_chosen_ticker.contract.lastTradeDateOrContractMonth)}"
                 f" price={dfmt(the_chosen_ticker.marketPrice(),3)}"
             )
 
