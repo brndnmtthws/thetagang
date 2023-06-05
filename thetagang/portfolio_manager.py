@@ -2,6 +2,7 @@ import logging
 import math
 import sys
 from functools import lru_cache
+from typing import Optional
 
 from ib_insync import Order, Ticker, util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
@@ -1506,6 +1507,21 @@ class PortfolioManager:
                 )
                 return
 
+            def vix_calls_should_be_closed() -> (
+                tuple[bool, Optional[Ticker], Optional[float]]
+            ):
+                if "close_hedges_when_vix_exceeds" in self.config["vix_call_hedge"]:
+                    vix_contract = Index("VIX", "CBOE", "USD")
+                    self.ib.qualifyContracts(vix_contract)
+                    vix_ticker = self.get_ticker_for(vix_contract)
+                    close_hedges_when_vix_exceeds = self.config["vix_call_hedge"][
+                        "close_hedges_when_vix_exceeds"
+                    ]
+                    if vix_ticker.marketPrice() > close_hedges_when_vix_exceeds:
+                        return (True, vix_ticker, close_hedges_when_vix_exceeds)
+                    return (False, vix_ticker, close_hedges_when_vix_exceeds)
+                return (False, None, None)
+
             with console.status(
                 "[bold blue_violet]Checking on our VIX call hedge..."
             ) as status:
@@ -1514,55 +1530,54 @@ class PortfolioManager:
                 )
                 if net_vix_call_count > 0:
                     status.update(
-                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count}, checking if we need to close positions...",
+                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count}, "
+                        "checking if we need to close positions...",
                     )
-                    if "close_hedges_when_vix_exceeds" in self.config["vix_call_hedge"]:
-                        vix_contract = Index("VIX", "CBOE", "USD")
-                        self.ib.qualifyContracts(vix_contract)
-                        vix_ticker = self.get_ticker_for(vix_contract)
-                        close_hedges_when_vix_exceeds = self.config["vix_call_hedge"][
-                            "close_hedges_when_vix_exceeds"
-                        ]
-                        if vix_ticker.marketPrice() > close_hedges_when_vix_exceeds:
+                    (
+                        close_vix_calls,
+                        vix_ticker,
+                        close_hedges_when_vix_exceeds,
+                    ) = vix_calls_should_be_closed()
+                    if close_vix_calls and vix_ticker and close_hedges_when_vix_exceeds:
+                        to_print.append(
+                            f"[deep_sky_blue1]VIX={vix_ticker.marketPrice()}, which exceeds "
+                            f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}"
+                        )
+                        status.update(
+                            f"[bold blue_violet]VIX={vix_ticker.marketPrice()}, which exceeds "
+                            f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}, "
+                            "checking if we need to close positions...",
+                        )
+                        for position in portfolio_positions["VIX"]:
+                            if (
+                                position.contract.right.startswith("C")
+                                and position.position < 0
+                            ):
+                                # only applies to long calls
+                                continue
                             to_print.append(
-                                f"[deep_sky_blue1]VIX={vix_ticker.marketPrice()}, which exceeds "
-                                f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}"
+                                f"[blue]Closing position {position.contract.localSymbol}"
                             )
                             status.update(
-                                f"[bold blue_violet]VIX={vix_ticker.marketPrice()}, which exceeds "
-                                f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}, "
-                                "checking if we need to close positions...",
+                                f"[bold blue_violet]Creating closing order for {position.contract.localSymbol}..."
                             )
-                            for position in portfolio_positions["VIX"]:
-                                if (
-                                    position.contract.right.startswith("C")
-                                    and position.position < 0
-                                ):
-                                    # only applies to long calls
-                                    continue
-                                to_print.append(
-                                    f"[blue]Closing position {position.contract.localSymbol}"
-                                )
-                                status.update(
-                                    f"[bold blue_violet]Creating closing order for {position.contract.localSymbol}..."
-                                )
-                                position.contract.exchange = self.get_order_exchange()
-                                sell_ticker = self.get_ticker_for(
-                                    position.contract, midpoint=True
-                                )
-                                price = round(get_lower_price(sell_ticker), 2)
-                                qty = abs(position.position)
-                                order = LimitOrder(
-                                    "SELL",
-                                    qty,
-                                    price,
-                                    algoStrategy=self.get_algo_strategy(),
-                                    algoParams=self.get_algo_params(),
-                                    tif="DAY",
-                                    account=self.account_number,
-                                )
+                            position.contract.exchange = self.get_order_exchange()
+                            sell_ticker = self.get_ticker_for(
+                                position.contract, midpoint=True
+                            )
+                            price = round(get_lower_price(sell_ticker), 2)
+                            qty = abs(position.position)
+                            order = LimitOrder(
+                                "SELL",
+                                qty,
+                                price,
+                                algoStrategy=self.get_algo_strategy(),
+                                algoParams=self.get_algo_params(),
+                                tif="DAY",
+                                account=self.account_number,
+                            )
 
-                                self.enqueue_order(sell_ticker.contract, order)
+                            self.enqueue_order(sell_ticker.contract, order)
 
                     to_print.append(
                         f"[cyan1]net_vix_call_count={net_vix_call_count}, no action is needed at this time",
@@ -1573,90 +1588,99 @@ class PortfolioManager:
                         f"[bold blue_violet]net_vix_call_count={net_vix_call_count}, checking if we should open new positions...",
                     )
 
-                try:
-                    vixmo_contract = Index("VIXMO", "CBOE", "USD")
-                    self.ib.qualifyContracts(vixmo_contract)
-                    self.ib.reqMktData(vixmo_contract)
-                    vixmo_ticker = self.get_ticker_for(vixmo_contract)
+                (
+                    close_vix_calls,
+                    vix_ticker,
+                    close_hedges_when_vix_exceeds,
+                ) = vix_calls_should_be_closed()
+                # we never want to write calls if we're simultaneously ready to close calls
+                if not close_vix_calls:
+                    try:
+                        vixmo_contract = Index("VIXMO", "CBOE", "USD")
+                        self.ib.qualifyContracts(vixmo_contract)
+                        self.ib.reqMktData(vixmo_contract)
+                        vixmo_ticker = self.get_ticker_for(vixmo_contract)
 
-                    weight = 0.0
+                        weight = 0.0
 
-                    for allocation in self.config["vix_call_hedge"]["allocation"]:
-                        if (
-                            "lower_bound" in allocation
-                            and "upper_bound" in allocation
-                            and allocation["lower_bound"]
-                            <= vixmo_ticker.marketPrice()
-                            < allocation["upper_bound"]
-                        ):
-                            weight = allocation["weight"]
-                            break
-                        elif (
-                            "lower_bound" in allocation
-                            and allocation["lower_bound"] <= vixmo_ticker.marketPrice()
-                        ):
-                            weight = allocation["weight"]
-                            break
-                        elif (
-                            "upper_bound" in allocation
-                            and vixmo_ticker.marketPrice() < allocation["upper_bound"]
-                        ):
-                            weight = allocation["weight"]
-                            break
+                        for allocation in self.config["vix_call_hedge"]["allocation"]:
+                            if (
+                                "lower_bound" in allocation
+                                and "upper_bound" in allocation
+                                and allocation["lower_bound"]
+                                <= vixmo_ticker.marketPrice()
+                                < allocation["upper_bound"]
+                            ):
+                                weight = allocation["weight"]
+                                break
+                            elif (
+                                "lower_bound" in allocation
+                                and allocation["lower_bound"]
+                                <= vixmo_ticker.marketPrice()
+                            ):
+                                weight = allocation["weight"]
+                                break
+                            elif (
+                                "upper_bound" in allocation
+                                and vixmo_ticker.marketPrice()
+                                < allocation["upper_bound"]
+                            ):
+                                weight = allocation["weight"]
+                                break
 
-                    to_print.append(
-                        f"VIXMO={vixmo_ticker.marketPrice()}, target call hedge weight={weight}",
-                    )
-
-                    allocation_amount = (
-                        float(account_summary["NetLiquidation"].value) * weight
-                    )
-                    delta = self.config["vix_call_hedge"]["delta"]
-                    if weight > 0:
                         to_print.append(
-                            f"[green]Current VIXMO spot price prescribes an allocation of up to "
-                            f"${allocation_amount:.2f} for purchasing VIX calls, at or above delta={delta} with a DTE >= 30",
+                            f"VIXMO={vixmo_ticker.marketPrice()}, target call hedge weight={weight}",
                         )
-                    else:
-                        to_print.append(
-                            "[cyan1]Based on current VIXMO value and rules, no action is needed",
+
+                        allocation_amount = (
+                            float(account_summary["NetLiquidation"].value) * weight
                         )
-                        return
+                        delta = self.config["vix_call_hedge"]["delta"]
+                        if weight > 0:
+                            to_print.append(
+                                f"[green]Current VIXMO spot price prescribes an allocation of up to "
+                                f"${allocation_amount:.2f} for purchasing VIX calls, at or above delta={delta} with a DTE >= 30",
+                            )
+                        else:
+                            to_print.append(
+                                "[cyan1]Based on current VIXMO value and rules, no action is needed",
+                            )
+                            return
 
-                    status.update(
-                        "[bold blue_violet]Scanning VIX option chain for eligible contracts...",
-                    )
-                    vix_contract = Index("VIX", "CBOE", "USD")
-                    self.ib.qualifyContracts(vix_contract)
+                        status.update(
+                            "[bold blue_violet]Scanning VIX option chain for eligible contracts...",
+                        )
+                        vix_contract = Index("VIX", "CBOE", "USD")
+                        self.ib.qualifyContracts(vix_contract)
 
-                    status.stop()
-                    buy_ticker = self.find_eligible_contracts(
-                        vix_contract, "C", 0, target_delta=delta, target_dte=30
-                    )
-                    status.start()
-                    price = round(get_lower_price(buy_ticker), 2)
-                    qty = math.floor(
-                        allocation_amount
-                        / price
-                        / float(buy_ticker.contract.multiplier)
-                    )
+                        status.stop()
+                        buy_ticker = self.find_eligible_contracts(
+                            vix_contract, "C", 0, target_delta=delta, target_dte=30
+                        )
+                        status.start()
+                        price = round(get_lower_price(buy_ticker), 2)
+                        qty = math.floor(
+                            allocation_amount
+                            / price
+                            / float(buy_ticker.contract.multiplier)
+                        )
 
-                    order = LimitOrder(
-                        "BUY",
-                        qty,
-                        price,
-                        algoStrategy=self.get_algo_strategy(),
-                        algoParams=self.get_algo_params(),
-                        tif="DAY",
-                        account=self.account_number,
-                    )
+                        order = LimitOrder(
+                            "BUY",
+                            qty,
+                            price,
+                            algoStrategy=self.get_algo_strategy(),
+                            algoParams=self.get_algo_params(),
+                            tif="DAY",
+                            account=self.account_number,
+                        )
 
-                    self.enqueue_order(buy_ticker.contract, order)
-                except RuntimeError:
-                    console.print_exception()
-                    console.print(
-                        "[yellow]Error occurred when VIX call hedging. Continuing anyway...",
-                    )
+                        self.enqueue_order(buy_ticker.contract, order)
+                    except RuntimeError:
+                        console.print_exception()
+                        console.print(
+                            "[yellow]Error occurred when VIX call hedging. Continuing anyway...",
+                        )
 
         inner_handler()
 
