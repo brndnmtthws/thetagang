@@ -81,12 +81,14 @@ class PortfolioManager:
 
     def get_options(self, portfolio_positions, right):
         ret = []
+        symbols = set(self.get_symbols())
         for symbol in portfolio_positions:
             ret = ret + list(
                 filter(
                     lambda p: (
                         isinstance(p.contract, Option)
                         and p.contract.right.startswith(right)
+                        and p.contract.symbol in symbols
                     ),
                     portfolio_positions[symbol],
                 )
