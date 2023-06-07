@@ -38,7 +38,7 @@ console = Console()
 # Typically the amount of time needed when waiting on data from the IBKR API.
 # Sometimes it can take a while to retrieve data, and it's lazy-loaded by the
 # API, so getting this number right is largely a matter of guesswork.
-API_RESPONSE_WAIT_TIME = 90
+API_RESPONSE_WAIT_TIME = 60
 
 
 # Turn off some of the more annoying logging output from ib_insync
