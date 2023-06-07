@@ -316,6 +316,7 @@ class PortfolioManager:
         if contract.symbol == "VIX":
             vix_contract = Index("VIX", "CBOE", "USD")
             self.ib.qualifyContracts(vix_contract)
+            self.ib.reqMktData(vix_contract)
             vix_ticker = self.get_ticker_for(vix_contract)
             return contract.strike <= vix_ticker.marketPrice()
 
@@ -1294,7 +1295,7 @@ class PortfolioManager:
         ) as status:
             self.ib.qualifyContracts(main_contract)
 
-            main_contract_ticker = self.get_ticker_for(main_contract)
+            main_contract_ticker = self.get_ticker_for(main_contract, midpoint=True)
             main_contract_price = midpoint_or_market_price(main_contract_ticker)
 
             chains = self.get_chains_for_contract(main_contract)
@@ -1323,7 +1324,6 @@ class PortfolioManager:
                 if exclude_expirations_before
                 else 0
             )
-
             strikes = sorted(strike for strike in chain.strikes if valid_strike(strike))
             expirations = sorted(
                 exp
@@ -1515,6 +1515,7 @@ class PortfolioManager:
                 if "close_hedges_when_vix_exceeds" in self.config["vix_call_hedge"]:
                     vix_contract = Index("VIX", "CBOE", "USD")
                     self.ib.qualifyContracts(vix_contract)
+                    self.ib.reqMktData(vix_contract)
                     vix_ticker = self.get_ticker_for(vix_contract)
                     close_hedges_when_vix_exceeds = self.config["vix_call_hedge"][
                         "close_hedges_when_vix_exceeds"
@@ -1654,6 +1655,7 @@ class PortfolioManager:
                         )
                         vix_contract = Index("VIX", "CBOE", "USD")
                         self.ib.qualifyContracts(vix_contract)
+                        self.ib.reqMktData(vix_contract)
 
                         status.stop()
                         buy_ticker = self.find_eligible_contracts(
