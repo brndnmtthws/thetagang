@@ -4,7 +4,7 @@
 
 # Θ ThetaGang Θ
 
-*Beat the capitalists at their own game with ThetaGang 📈*
+_Beat the capitalists at their own game with ThetaGang 📈_
 
 ![Decay my sweet babies](thetagang.jpg)
 
@@ -75,6 +75,27 @@ daily is not recommended, but the choice is yours.
 
 ![Paper account sample output](sample.png)
 
+### VIX call hedging
+
+ThetaGang can optionally hedge your account by purchasing VIX calls for the
+next month based on specified parameters. The strategy is based on the [Cboe
+VIX Tail Hedge Index](https://www.cboe.com/us/indices/dashboard/vxth/), which
+you can read about on the internet. You can enable this feature in `thetagang.toml` with:
+
+```toml
+[vix_call_hedge]
+enabled = false
+```
+
+Default values are provided, based on the VXTH index, but you may configure
+them to your taste (refer to
+[`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/6eab3823120c10c0563e02c5d7f30dfcc0e333fc/thetagang.toml#L294-L331)
+for details).
+
+Buying VIX calls is not free, and it _will_ create some drag on your portfolio,
+but in times of extreme volatility–such as the COVID-related 2020 market
+panic–VIX calls can provide outsized returns.
+
 ## Project status
 
 This project is, in its current state, considered to be complete. I'm open
@@ -87,15 +108,14 @@ If you find something that you think is a bug, or some other issue, please
 ## "Show me your gains bro" – i.e., what are the returns?
 
 As discussed elsewhere in this README, you must conduct your own research,
-and I suggest starting with resources such as CBOE's BXM and BXDM indices,
-and comparing those to SPX. I've had a lot of people complain because "that
+and I suggest starting with resources such as CBOE's BXM and BXDM indices and comparing those to SPX. I've had a lot of people complain because "that
 strategy isn't better than buy and hold BRUH"–let me assure you, that is not
 my goal with this.
 
 There are conflicting opinions about whether selling options is good or bad,
-more or less risky, yadda yadda, but generally the risk profile for covered
+more or less risky, yadda yadda, but generally, the risk profile for covered
 calls and naked puts is no worse than the worst case for simply holding an
-ETF or stock. In fact, I'd argue that selling a naked put is better than
+ETF or stock. I'd argue that selling a naked put is better than
 buying SPY with a limit order, because at least if SPY goes to zero you keep
 the premium from selling the option. The main downside is that returns are
 capped on the upside. Depending on your goals, this may not matter. If you're
@@ -105,7 +125,7 @@ of potential upside.
 Generally speaking, the point of selling options is not to exceed the returns
 of the underlying, but rather to reduce risk. Reducing risk is an important
 feature because it, in turn, allows one to increase risk in other ways
-(i.e., allocate higher percentage to stocks or buy riskier assets).
+(i.e., allocate a higher percentage to stocks or buy riskier assets).
 
 Whether you use this or not is up to you. I have not one single fuck to give,
 whether you use it or not. I am not here to convince you to use it, I merely
@@ -137,11 +157,11 @@ call capitalism works.
 
 ## Installation
 
-*Before running ThetaGang, you should set up an IBKR paper account to test the
-code.*
+_Before running ThetaGang, you should set up an IBKR paper account to test the
+code._
 
 ```console
-$ pip install thetagang
+pip install thetagang
 ```
 
 It's recommended you familiarize yourself with
@@ -153,7 +173,7 @@ much, consider [running ThetaGang with Docker](#running-with-docker).
 ## Usage
 
 ```console
-$ thetagang -h
+thetagang -h
 ```
 
 ## Up and running with Docker
@@ -174,10 +194,10 @@ volume.
 To get started, grab a copy of `thetagang.toml` and `config.ini`:
 
 ```console
-$ mkdir ~/thetagang
-$ cd ~/thetagang
-$ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/thetagang.toml -o ./thetagang.toml
-$ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/ibc-config.ini -o ./config.ini
+mkdir ~/thetagang
+cd ~/thetagang
+curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/thetagang.toml -o ./thetagang.toml
+curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/ibc-config.ini -o ./config.ini
 ```
 
 Edit `~/thetagang/thetagang.toml` to suit your needs. Pay particular
@@ -188,7 +208,7 @@ trading move from paper to live when needed.
 Now, to run ThetaGang with Docker:
 
 ```console
-$ docker run --rm -i --net host \
+docker run --rm -i --net host \
     -v ~/thetagang:/etc/thetagang \
     brndnmtthws/thetagang:main \
     --config /etc/thetagang/thetagang.toml
@@ -209,16 +229,15 @@ recommendations and resources:
 
 ### Recommendations
 
-* Stick with high volume ETFs or stocks
-* Careful with margin usage, you'll want to calculate the worst case scenario
+- Stick with high volume ETFs or stocks
+- Careful with margin usage, you'll want to calculate the worst case scenario
   and provide plenty of cushion for yourself based on your portfolio
-
 
 ### Resources
 
-* For discussions about selling options, check out
+- For discussions about selling options, check out
   [r/thetagang](https://www.reddit.com/r/thetagang/)
-* For backtesting portfolios, you can use [this
+- For backtesting portfolios, you can use [this
   tool](https://www.portfoliovisualizer.com/backtest-portfolio) and [this
   tool](https://www.portfoliovisualizer.com/optimize-portfolio) to get an idea
   of drawdown and typical volatility
@@ -227,22 +246,21 @@ recommendations and resources:
 
 Check out the code to your local machine and install the Python dependencies:
 
-```shell
-$ poetry install
-$ poetry run autohooks activate
-$ poetry run thetagang -h
-...
+```console
+poetry install
+poetry run autohooks activate
+poetry run thetagang -h
 ```
 
 You are now ready to make a splash! 🐳
 
 ## FAQ
 
-| Error                                                                                                      | Cause                                                                                                                            | Resolution                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Requested market data is not subscribed.                                                                   | Requisite market data subscriptions have not been set up on IBKR.                                                                | [Configure](https://www.interactivebrokers.com/en/software/am3/am/settings/marketdatasubscriptions.htm) your market data subscriptions. The default config that ships with this script uses the `Cboe One Add-On Bundle` and the `US Equity and Options Add-On Streaming Bundle`. **Note**: You _must_ fund your account before IBKR will send data for subscriptions. Without funding you can still subscribe but you will get an error from ibc. |
-| No market data during competing live session                                                               | Your account is logged in somewhere else, such as the IBKR web portal, the desktop app, or even another instance of this script. | Log out of all sessions and then re-run the script.                                                                                                                                                                                                                                                                                                                                                                                                |
-| `ib_insync.wrapper ERROR Error 200, reqId 10: The contract description specified for SYMBOL is ambiguous.` | IBKR needs to know which exchange is the primary exchange for a given symbol.                                                    | You need to specify the primary exchange for the stock. This is normal for companies, typically. For ETFs it usually isn't required. Specify the `primary_exchange` parameter for the symbol, i.e., `primary_exchange = "NYSE"`.                                                                                                                                                                                                                   |
+| Error | Cause | Resolution |
+|---|---|---|
+| Requested market data is not subscribed. | Requisite market data subscriptions have not been set up on IBKR. | [Configure](https://www.interactivebrokers.com/en/software/am3/am/settings/marketdatasubscriptions.htm) your market data subscriptions. The default config that ships with this script uses the `Cboe One Add-On Bundle` and the `US Equity and Options Add-On Streaming Bundle`. **Note**: You _must_ fund your account before IBKR will send data for subscriptions. Without funding you can still subscribe but you will get an error from ibc. |
+| No market data during competing live session | Your account is logged in somewhere else, such as the IBKR web portal, the desktop app, or even another instance of this script. | Log out of all sessions and then re-run the script. |
+| `ib_insync.wrapper ERROR Error 200, reqId 10: The contract description specified for SYMBOL is ambiguous.` | IBKR needs to know which exchange is the primary exchange for a given symbol. | You need to specify the primary exchange for the stock. This is normal for companies, typically. For ETFs it usually isn't required. Specify the `primary_exchange` parameter for the symbol, i.e., `primary_exchange = "NYSE"`. |
 
 ## Support and sponsorship
 
