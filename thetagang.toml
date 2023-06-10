@@ -102,7 +102,10 @@ min_pnl = 0.0
 itm = true
 
 # Only roll when there's a suitable contract available that will result in a
-# credit.
+# credit. Enabling this may result in the target delta value being ignored in
+# circumstances where we can't find a contract that will result in both a
+# credit _and_ satisfying the target delta (i.e., having a credit takes
+# precedence).
 credit_only = false
 
 # If set to false, calls will not be rolled if there are any number of calls in
@@ -115,7 +118,10 @@ has_excess = true
 itm = false
 
 # Only roll when there's a suitable contract available that will result in a
-# credit.
+# credit. Enabling this may result in the target delta value being ignored in
+# circumstances where we can't find a contract that will result in both a
+# credit _and_ satisfying the target delta (i.e., having a credit takes
+# precedence).
 credit_only = false
 
 # If set to false, puts will not be rolled if there are any number of puts in

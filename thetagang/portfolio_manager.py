@@ -7,6 +7,7 @@ from typing import Optional
 from ib_insync import Order, Ticker, util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
 from ib_insync.order import LimitOrder
+from more_itertools import partition
 from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -1425,45 +1426,66 @@ class PortfolioManager:
                 ticker
                 for ticker in track(
                     tickers,
-                    description=f"[royal_blue1]Filtering invalid prices for {main_contract.symbol} from {len(tickers)} tickers...",
+                    description=f"[royal_blue1]Filtering invalid prices for "
+                    f"{main_contract.symbol} from {len(tickers)} tickers...",
                 )
                 if price_is_valid(ticker)
             ]
             status.start()
             # Filter by delta
             self.wait_for_greeks_for(tickers)
-            tickers = [ticker for ticker in tickers if delta_is_valid(ticker)]
-            # Fetch market data for open interest
-            tickers = [
-                self.ib.reqMktData(ticker.contract, genericTickList="101")
-                for ticker in tickers
-            ]
-            # Filter by open interest
-            self.wait_for_open_interest_for(tickers)
-            status.stop()
-            tickers = [
-                ticker
-                for ticker in track(
-                    tickers,
-                    description=f"[royal_blue1]Filtering by open interest for "
-                    f"{main_contract.symbol} from {len(tickers)} tickers...",
-                )
-                if open_interest_is_valid(ticker)
-            ]
-            status.start()
-            # Sort by delta first, then expiry date
-            tickers = sorted(
-                sorted(tickers, key=lambda t: abs(t.modelGreeks.delta), reverse=True),
-                key=lambda t: option_dte(t.contract.lastTradeDateOrContractMonth),
-            )
+            delta_reject_tickers, tickers = partition(delta_is_valid, tickers)
 
-            if len(tickers) == 0:
-                raise RuntimeError(
-                    f"No valid contracts found for {main_contract.symbol}. Continuing anyway..."
+            def filter_remaining_tickers(tickers, delta_ord_desc):
+                # Fetch market data for open interest
+                tickers = [
+                    self.ib.reqMktData(ticker.contract, genericTickList="101")
+                    for ticker in tickers
+                ]
+                # Filter by open interest
+                self.wait_for_open_interest_for(tickers)
+                status.stop()
+                tickers = [
+                    ticker
+                    for ticker in track(
+                        tickers,
+                        description=f"[royal_blue1]Filtering by open interest for "
+                        f"{main_contract.symbol} from {len(tickers)} tickers...",
+                    )
+                    if open_interest_is_valid(ticker)
+                ]
+                status.start()
+                # Sort by delta first, then expiry date
+                tickers = sorted(
+                    sorted(
+                        tickers,
+                        key=lambda t: abs(t.modelGreeks.delta),
+                        reverse=delta_ord_desc,
+                    ),
+                    key=lambda t: option_dte(t.contract.lastTradeDateOrContractMonth),
                 )
+                return tickers
+
+            tickers = filter_remaining_tickers(tickers, True)
 
             the_chosen_ticker = None
-            if preferred_minimum_price is not None:
+            if len(tickers) == 0:
+                if not math.isclose(minimum_price, 0.0):
+                    # if we arrive here, it means that 1) we expect to roll for a
+                    # credit only, but 2) we didn't find any suitable contracts,
+                    # most likely because we can't roll out and up/down to the
+                    # target delta
+                    #
+                    # because of this, we'll allow rolling to a less-than-optimal
+                    # strike, provided it's still a credit
+                    tickers = filter_remaining_tickers(delta_reject_tickers, False)
+                if len(tickers) == 0:
+                    # if there are _still_ no tickers remaining, there's nothing
+                    # more we can do
+                    raise RuntimeError(
+                        f"No valid contracts found for {main_contract.symbol}. Continuing anyway..."
+                    )
+            elif preferred_minimum_price is not None:
                 # if there's a preferred minimum price specified, try to find
                 # contracts that are at least that price first
                 for ticker in tickers:
