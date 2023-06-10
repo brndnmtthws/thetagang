@@ -84,7 +84,7 @@ you can read about on the internet. You can enable this feature in `thetagang.to
 
 ```toml
 [vix_call_hedge]
-enabled = false
+enabled = true
 ```
 
 Default values are provided, based on the VXTH index, but you may configure
