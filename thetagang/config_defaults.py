@@ -26,7 +26,6 @@ DEFAULT_CONFIG = {
     "vix_call_hedge": {
         "enabled": False,
         "delta": 0.3,
-        "close_hedges_when_vix_exceeds": 50.0,
         "allocation": [
             {"upper_bound": 15.0, "weight": 0.0},
             {"lower_bound": 15.0, "upper_bound": 30.0, "weight": 0.01},
