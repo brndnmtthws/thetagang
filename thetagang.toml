@@ -305,7 +305,7 @@ enabled = false
 # Target delta for calls that are purchased
 delta = 0.30
 # If the current spot VIX exceeds this value, long VIX call positions will be
-# closed
+# closed. Comment out to disable.
 close_hedges_when_vix_exceeds = 50.0
 
 # The allocations are specified as an ordered list of allocation weights
