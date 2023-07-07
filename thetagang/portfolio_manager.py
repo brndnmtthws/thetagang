@@ -36,11 +36,6 @@ from .options import option_dte
 
 console = Console()
 
-# Typically the amount of time needed when waiting on data from the IBKR API.
-# Sometimes it can take a while to retrieve data, and it's lazy-loaded by the
-# API, so getting this number right is largely a matter of guesswork.
-API_RESPONSE_WAIT_TIME = 60
-
 
 # Turn off some of the more annoying logging output from ib_insync
 logging.getLogger("ib_insync.ib").setLevel(logging.ERROR)
@@ -58,6 +53,9 @@ class PortfolioManager:
         self.has_excess_puts = set()
         self.orders = []
         self.trades = []
+
+    def api_response_wait_time(self):
+        return self.config["ib_insync"]["api_response_wait_time"]
 
     def orderStatusEvent(self, trade):
         if "Filled" in trade.orderStatus.status:
@@ -97,7 +95,7 @@ class PortfolioManager:
 
         return ret
 
-    def wait_for_midpoint_price(self, ticker, wait_time=API_RESPONSE_WAIT_TIME):
+    def wait_for_midpoint_price(self, ticker, wait_time):
         try:
             wait_n_seconds(
                 lambda: util.isNan(ticker.midpoint()),
@@ -108,7 +106,7 @@ class PortfolioManager:
             return False
         return True
 
-    def wait_for_market_price(self, ticker, wait_time=API_RESPONSE_WAIT_TIME):
+    def wait_for_market_price(self, ticker, wait_time):
         try:
             wait_n_seconds(
                 lambda: util.isNan(ticker.marketPrice()),
@@ -119,7 +117,7 @@ class PortfolioManager:
             return False
         return True
 
-    def wait_for_greeks(self, ticker, wait_time=API_RESPONSE_WAIT_TIME):
+    def wait_for_greeks(self, ticker, wait_time):
         try:
             wait_n_seconds(
                 lambda: ticker.modelGreeks is None
@@ -131,9 +129,7 @@ class PortfolioManager:
             return False
         return True
 
-    def wait_for_market_price_for(
-        self, tickers: list[Ticker], wait_time=API_RESPONSE_WAIT_TIME
-    ):
+    def wait_for_market_price_for(self, tickers: list[Ticker], wait_time):
         try:
             wait_n_seconds(
                 lambda: any(util.isNan(ticker.marketPrice()) for ticker in tickers),
@@ -144,9 +140,7 @@ class PortfolioManager:
             return False
         return True
 
-    def wait_for_greeks_for(
-        self, tickers: list[Ticker], wait_time=API_RESPONSE_WAIT_TIME
-    ):
+    def wait_for_greeks_for(self, tickers: list[Ticker], wait_time):
         try:
             wait_n_seconds(
                 lambda: any(
@@ -162,9 +156,7 @@ class PortfolioManager:
             return False
         return True
 
-    def wait_for_open_interest_for(
-        self, tickers: list[Ticker], wait_time=API_RESPONSE_WAIT_TIME
-    ):
+    def wait_for_open_interest_for(self, tickers: list[Ticker], wait_time):
         def open_interest_is_not_ready(ticker):
             if ticker.contract.right.startswith("P"):
                 return util.isNan(ticker.putOpenInterest)
@@ -208,9 +200,11 @@ class PortfolioManager:
         [ticker] = self.ib.reqTickers(contract)
 
         if midpoint:
-            self.wait_for_midpoint_price(ticker)
+            self.wait_for_midpoint_price(
+                ticker, wait_time=self.api_response_wait_time()
+            )
         else:
-            self.wait_for_market_price(ticker)
+            self.wait_for_market_price(ticker, wait_time=self.api_response_wait_time())
 
         return ticker
 
@@ -222,7 +216,7 @@ class PortfolioManager:
             wait_n_seconds(
                 lambda: any([util.isNan(t.midpoint()) for t in ticker_list]),
                 lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
-                API_RESPONSE_WAIT_TIME,
+                self.api_response_wait_time(),
             )
         except RuntimeError:
             pass
@@ -632,7 +626,7 @@ class PortfolioManager:
                         ]
                     ),
                     lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
-                    API_RESPONSE_WAIT_TIME,
+                    self.api_response_wait_time(),
                 )
 
             console.print(
@@ -868,7 +862,9 @@ class PortfolioManager:
                 )
                 continue
 
-            if not self.wait_for_midpoint_price(sell_ticker):
+            if not self.wait_for_midpoint_price(
+                sell_ticker, wait_time=self.api_response_wait_time()
+            ):
                 console.print(
                     f"[red]Couldn't get midpoint price for contract={sell_ticker.contract}, skipping for now",
                 )
@@ -908,7 +904,9 @@ class PortfolioManager:
                 )
                 continue
 
-            if not self.wait_for_midpoint_price(sell_ticker):
+            if not self.wait_for_midpoint_price(
+                sell_ticker, wait_time=self.api_response_wait_time()
+            ):
                 console.print(
                     f"[red]Couldn't get midpoint price for contract={sell_ticker.contract}, skipping for now",
                 )
@@ -1433,7 +1431,9 @@ class PortfolioManager:
                 ) > minimum_price and cost_doesnt_exceed_market_price(ticker)
 
             # Filter out tickers with invalid or unavailable prices
-            self.wait_for_market_price_for(tickers)
+            self.wait_for_market_price_for(
+                tickers, wait_time=self.api_response_wait_time()
+            )
             status.stop()
             tickers = [
                 ticker
@@ -1446,7 +1446,7 @@ class PortfolioManager:
             ]
             status.start()
             # Filter by delta
-            self.wait_for_greeks_for(tickers)
+            self.wait_for_greeks_for(tickers, wait_time=self.api_response_wait_time())
             delta_reject_tickers, tickers = partition(delta_is_valid, tickers)
 
             def filter_remaining_tickers(tickers, delta_ord_desc):
@@ -1456,7 +1456,9 @@ class PortfolioManager:
                     for ticker in tickers
                 ]
                 # Filter by open interest
-                self.wait_for_open_interest_for(tickers)
+                self.wait_for_open_interest_for(
+                    tickers, wait_time=self.api_response_wait_time()
+                )
                 status.stop()
                 tickers = [
                     ticker

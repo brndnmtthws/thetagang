@@ -233,6 +233,11 @@ weight = 0.05
 [ib_insync]
 logfile = '/etc/thetagang/ib_insync.log'
 
+# Typically the amount of time needed when waiting on data from the IBKR API.
+# Sometimes it can take a while to retrieve data, and it's lazy-loaded by the
+# API, so getting this number right is largely a matter of guesswork.
+api_response_wait_time = 60
+
 [ibc]
 # IBC configuration parameters. See
 # https://ib-insync.readthedocs.io/api.html#ibc for details.
