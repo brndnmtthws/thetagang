@@ -18,6 +18,7 @@ from rich.table import Table
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.util import (
     account_summary_to_dict,
+    algo_params_from,
     count_short_option_positions,
     get_call_cap,
     get_higher_price,
@@ -1532,7 +1533,7 @@ class PortfolioManager:
         return self.config["orders"]["algo"]["strategy"]
 
     def get_algo_params(self):
-        return [TagValue(p[0], p[1]) for p in self.config["orders"]["algo"]["params"]]
+        return algo_params_from(self.config["orders"]["algo"]["params"])
 
     def get_order_exchange(self):
         return self.config["orders"]["exchange"]
@@ -1814,7 +1815,7 @@ class PortfolioManager:
                         abs(qty),
                         round(price, 2),
                         algoStrategy=algo["strategy"],
-                        algoParams=algo["params"],
+                        algoParams=algo_params_from(algo["params"]),
                         tif="DAY",
                         account=self.account_number,
                         transmit=True,

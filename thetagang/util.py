@@ -1,7 +1,7 @@
 import math
 from datetime import datetime
 
-from ib_insync import util
+from ib_insync import TagValue, util
 from ib_insync.contract import Option
 
 
@@ -167,3 +167,7 @@ def get_write_threshold(config, symbol, right):
     if "write_threshold" in config["symbols"][symbol]:
         return config["symbols"][symbol]["write_threshold"]
     return 0.0
+
+
+def algo_params_from(params):
+    return [TagValue(p[0], p[1]) for p in params]
