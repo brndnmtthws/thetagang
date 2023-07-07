@@ -96,6 +96,34 @@ Buying VIX calls is not free, and it _will_ create some drag on your portfolio,
 but in times of extreme volatility–such as the COVID-related 2020 market
 panic–VIX calls can provide outsized returns.
 
+### Cash management
+
+At the time of writing, interest rates have reached yields that make bonds look
+attractive. To squeeze a little more juice, thetagang can do some simple cash
+management by purchasing a fund when you have extra cash. Although you do earn
+a yield on your cash balance, it's not the juiciest yield you can get, so a
+little optimization might help you earn 1 or 2 extra pennies to take the edge
+off your rent payments.
+
+There are quite a few ETFs that might be a decent place to stash your cash, and
+you should do some internet searches to find the most appropriate one for you
+and your feelings. Here are some internet web searches that you can test out to
+get some information on cash funds (ETFs):
+
+- ["cash etf reddit"](https://www.google.com/search?q=cash+etf+reddit)
+- ["sgov reddit"](https://www.google.com/search?q=sgov+reddit)
+- ["shv reddit"](https://www.google.com/search?q=shv+reddit)
+- ["short term government bond etf reddit"](https://www.google.com/search?q=short+term+government+bond+etf+reddit)
+
+You can enable cash management with:
+
+```toml
+[cash_management]
+enabled = true
+```
+
+Refer to [`thetagang.toml`](thetagang.toml) for all the options.
+
 ## Project status
 
 This project is, in its current state, considered to be complete. I'm open
@@ -107,10 +135,11 @@ If you find something that you think is a bug, or some other issue, please
 
 ## "Show me your gains bro" – i.e., what are the returns?
 
-As discussed elsewhere in this README, you must conduct your own research,
-and I suggest starting with resources such as CBOE's BXM and BXDM indices and comparing those to SPX. I've had a lot of people complain because "that
-strategy isn't better than buy and hold BRUH"–let me assure you, that is not
-my goal with this.
+As discussed elsewhere in this README, you must conduct your own research, and
+I suggest starting with resources such as CBOE's BXM and BXDM indices and
+comparing those to SPX. I've had a lot of people complain because "that
+strategy isn't better than buy and hold BRUH"–let me assure you, that is not my
+goal with this.
 
 There are conflicting opinions about whether selling options is good or bad,
 more or less risky, yadda yadda, but generally, the risk profile for covered

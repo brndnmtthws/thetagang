@@ -33,4 +33,12 @@ DEFAULT_CONFIG = {
             {"lower_bound": 50.0, "weight": 0.0},
         ],
     },
+    "cash_management": {
+        "enabled": False,
+        "cash_fund": "SGOV",
+        "target_cash_balance": 0,
+        "buy_threshold": 10000,
+        "sell_threshold": 10000,
+        "orders": {"exchange": "SMART", "algo": {"strategy": "Vwap", "params": []}},
+    },
 }
