@@ -1766,7 +1766,7 @@ class PortfolioManager:
                     )
 
                     amount = cash_balance - target_cash_balance
-                    price = midpoint_or_market_price(ticker)
+                    price = ticker.ask
                     qty = amount // price
 
                     if qty > 0:
