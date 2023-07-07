@@ -122,7 +122,7 @@ You can enable cash management with:
 enabled = true
 ```
 
-Refer to [`thetagang.toml`](thetagang.toml) for all the options.
+Refer to [`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/4fc34653786ec17fe6ce6ec2406b2d861277f934/thetagang.toml#L330-L377) for all the options.
 
 ## Project status
 
