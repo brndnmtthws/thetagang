@@ -1,4 +1,7 @@
 DEFAULT_CONFIG = {
+    "ib_insync": {
+        "api_response_wait_time": 60,
+    },
     "orders": {
         "exchange": "SMART",
         "algo": {

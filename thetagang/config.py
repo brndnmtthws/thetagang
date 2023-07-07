@@ -150,7 +150,10 @@ def validate_config(config):
                     },
                 }
             },
-            Optional("ib_insync"): {Optional("logfile"): And(str, len)},
+            Optional("ib_insync"): {
+                Optional("logfile"): And(str, len),
+                Optional("api_response_wait_time"): int,
+            },
             "ibc": {
                 Optional("password"): And(str, len),
                 Optional("userid"): And(str, len),
