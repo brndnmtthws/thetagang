@@ -67,6 +67,11 @@ def validate_config(config):
             "Config error: minimum_cushion is deprecated and replaced with margin_usage. See sample config for details."
         )
 
+    algo_settings = {
+        "strategy": And(str, len),
+        "params": [And([str], lambda p: len(p) == 2)],
+    }
+
     schema = Schema(
         {
             "account": {
@@ -77,10 +82,7 @@ def validate_config(config):
             },
             "orders": {
                 "exchange": And(str, len),
-                "algo": {
-                    "strategy": And(str, len),
-                    "params": [And([str], lambda p: len(p) == 2)],
-                },
+                "algo": algo_settings,
             },
             "option_chains": {
                 "expirations": And(int, lambda n: 1 <= n),
@@ -193,6 +195,19 @@ def validate_config(config):
                         Optional("weight"): float,
                     },
                 ],
+            },
+            Optional("cash_management"): {
+                Optional("enabled"): bool,
+                Optional("cash_fund"): And(str, len),
+                Optional("primary_exchange"): And(str, len),
+                Optional("target_cash_balance"): int,
+                Optional("buy_threshold"): And(int, lambda n: n > 0),
+                Optional("sell_threshold"): And(int, lambda n: n > 0),
+                Optional("primary_exchange"): And(str, len),
+                Optional("orders"): {
+                    "exchange": And(str, len),
+                    "algo": algo_settings,
+                },
             },
         }
     )

@@ -6,14 +6,11 @@
 #
 # Should you decide to use ThetaGang, please experiment with a paper trading
 # account before trying on a live account.
-
 [account]
 # The account number to operate on
 number = "DU1234567"
-
 # Cancel any existing orders for the symbols configured at startup
 cancel_orders = true
-
 # Maximum amount of margin to use, as a ratio of net liquidation. IB lets
 # you use varying amounts of margin, depending on the assets. To use up to 4x
 # margin, set this to 4. It's recommended you always leave some additional
@@ -30,7 +27,6 @@ cancel_orders = true
 # In other words, ThetaGang's buying power is calculated by taking your NLV and
 # multiplying it by margin_usage.
 margin_usage = 0.5
-
 # Market data type (see
 # https://interactivebrokers.github.io/tws-api/market_data_type.html)
 market_data_type = 1
@@ -48,7 +44,6 @@ exchange = "SMART"
 # Note that the algo orders don't seem to work with combo orders, which are used
 # when rolling positions, so AFAIK this has no effect for those orders. It only
 # seems to take effect with regular open/close orders.
-
 # Optional IBKR algo strategy. See
 # https://interactivebrokers.github.io/tws-api/ibalgos.html for option details.
 strategy = "Adaptive"
@@ -74,7 +69,6 @@ strikes = 15
 [roll_when]
 # Roll when P&L reaches 90%
 pnl = 0.9
-
 # Or, roll options when there are <= 15 days to expiry and P&L is at least
 # min_pnl (min_pnl defaults to 0)
 #
@@ -88,26 +82,22 @@ min_pnl = 0.0
 # Optional: Don't roll contracts when the current DTE is greater than this
 # number of days. This helps avoid cases where you end up rolling out to LEAPs.
 # max_dte = 180
-
 # Optional: Create a closing order when the P&L reaches this threshold. This
 # overrides the other parameters, i.e., it ignores DTE and everything else.
 # If not specified, it has no effect. This can handle the case where you have
 # long-dated options that have slowly become worthless and you just want to get
 # them out of your portfolio.
 # close_at_pnl = 0.99
-
 [roll_when.calls]
 # Roll calls to the next expiration even if they're in the money. Defaults to
 # true if not specified.
 itm = true
-
 # Only roll when there's a suitable contract available that will result in a
 # credit. Enabling this may result in the target delta value being ignored in
 # circumstances where we can't find a contract that will result in both a
 # credit _and_ satisfying the target delta (i.e., having a credit takes
 # precedence).
 credit_only = false
-
 # If set to false, calls will not be rolled if there are any number of calls in
 # excess of the target call quantity. A truthy value means thetagang will keep
 # rolling calls regardless of the total quantity.
@@ -116,14 +106,12 @@ has_excess = true
 [roll_when.puts]
 # Roll puts if they're in the money. Defaults to false if not specified.
 itm = false
-
 # Only roll when there's a suitable contract available that will result in a
 # credit. Enabling this may result in the target delta value being ignored in
 # circumstances where we can't find a contract that will result in both a
 # credit _and_ satisfying the target delta (i.e., having a credit takes
 # precedence).
 credit_only = false
-
 # If set to false, puts will not be rolled if there are any number of puts in
 # excess of the target put quantity. A truthy value means thetagang will keep
 # rolling puts regardless of the total quantity.
@@ -132,7 +120,6 @@ has_excess = true
 [write_when.calls]
 # Optionally, only write calls when the underlying is green
 green = true
-
 # With covered calls, we can cap the number of calls to write by this factor. At
 # 1.0, we write covered calls on 100% of our positions. At 0.5, we'd only write
 # on 50% of our positions. This value must be between 1 and 0 inclusive.
@@ -145,10 +132,8 @@ red = true
 [target]
 # Target 45 or more days to expiry
 dte = 45
-
 # Target delta of 0.3 or less. Defaults to 0.3 if not specified.
 delta = 0.3
-
 # When writing new contracts (either covered calls or naked puts), or rolling
 # before `roll_when.dte` is reached, never write more than this amount of
 # contracts at once. This can be useful to avoid bunching by spreading contract
@@ -157,14 +142,13 @@ delta = 0.3
 # contracts to the next expiration. This value is expressed as a percentage of
 # buying power based on the market price of the underlying ticker, as a range
 # from [0.0-1.0].
-# 
+#
 # Once the `roll_when.dte` date is reached, all the remaining positions are
 # rolled regardless of the current position quantity.
 #
 # Defaults to 5% of buying power. Set this to 1.0 to effectively disable the
 # limit.
 maximum_new_contracts_percent = 0.05
-
 # Minimum amount of open interest for a contract to qualify
 minimum_open_interest = 10
 
@@ -175,7 +159,6 @@ minimum_open_interest = 10
 #  delta = 0.5
 #  [target.calls]
 #  delta = 0.3
-
 [symbols]
 
 # NOTE: Please change these symbols and weights according to your preferences.
@@ -199,22 +182,20 @@ minimum_open_interest = 10
 # symbol, or override individually for puts/calls.
 [symbols.SPY]
 weight = 0.4
+
 # OR: specify in terms of parts. Must use either weight or parts, but cannot mix
 # both.
 # parts = 40
-
 [symbols.QQQ]
 weight = 0.3
-# parts = 30
 
+# parts = 30
 [symbols.QQQ.puts]
 # Override delta just for QQQ puts
 delta = 0.5
-
 # Also, optionally specify a strike limit, for either puts or calls.
 # Interpreted as an upper bound for puts, and a lower bound for calls.
 strike_limit = 1000.0 # never write a put with a strike above $1000
-
 # Optionally, if we only write new contracts when the underlying is green or
 # red (`write_when.calls.green=true` or `write_when.puts.red=true`), specify a
 # minimum threshold as an absolute value daily percentage change (in this
@@ -239,16 +220,16 @@ delta = 0.4
 # you must specify the primary exchange.
 primary_exchange = "NASDAQ"
 weight = 0.05
-# parts = 5
 
+# parts = 5
 # Sometimes you may need to wrap the symbol in quotes.
 [symbols."BRK B"]
 # For symbols that require an exchange, which is typically any company stock,
 # you must specify the primary exchange.
 primary_exchange = "NYSE"
 weight = 0.05
-# parts = 5
 
+# parts = 5
 [ib_insync]
 logfile = '/etc/thetagang/ib_insync.log'
 
@@ -258,18 +239,14 @@ logfile = '/etc/thetagang/ib_insync.log'
 gateway = true
 ibcPath = '/opt/ibc'
 tradingMode = 'paper'
-
 # Set this to true if you want to raise an exception on request errors. Under
 # normal operation this should be false because we often try to make "invalid"
 # requests when scanning option chains for example.
 RaiseRequestErrors = false
-
 password = 'demo'
 userid = 'demo'
-
 # Change this to point to your config.ini for IBC
 ibcIni = '/etc/thetagang/config.ini'
-
 # Change or unset this to use something other than the Docker bundled OpenJDK.
 javaPath = '/opt/java/openjdk/bin'
 
@@ -277,7 +254,6 @@ javaPath = '/opt/java/openjdk/bin'
 # twsSettingsPath = ''
 # fixuserid       = ''
 # fixpassword     = ''
-
 [watchdog]
 # Watchdog configuration params. See
 # https://ib-insync.readthedocs.io/api.html#watchdog for details.
@@ -335,3 +311,48 @@ weight = 0.005
 [[vix_call_hedge.allocation]]
 lower_bound = 50.0
 weight = 0.00
+
+[cash_management]
+# Cash management gives us a way to earn a little extra yield from excess cash
+# sitting in your account. When the cash balance exceeds a threshold, we buy
+# the cash fund, and when the cash balance drops below the cash threshold we
+# sell the cash fund to get back to the target cash balance.
+#
+# Enables cash management
+enabled = false
+# The fund to purchase with your cash. Example of cash funds are SGOV or SHV,
+# which are short-term treasury ETFs with reasonable fees. Be sure to check the
+# expense ratio before jumping in on ETFs that appear juicier.
+cash_fund = "SGOV"
+# You don't usually need to specify the primary exchange for ETFs, but if you
+# do, you can do so with this:
+# primary_exchange = "NYSE"
+#
+# The cash balance to target. This is used as a lower bound, so with a value of
+# 0, we try not to let the cash balance go below zero. Simple enough.
+target_cash_balance = 0
+# We don't want to transact too frequently because of commissions, so the buy
+# threshold is the amount above target_cash_balance we need to reach before
+# placing a buy order.
+buy_threshold = 10000
+# The sell threshold is the amount below target_cash_balance where we'll place
+# a sell order to shore up cash.
+sell_threshold = 10000
+
+[cash_management.orders]
+# The exchange to route orders to. Can be overridden if desired. This is also
+# used for fetching tickers/prices.
+exchange = "SMART"
+
+[cash_management.orders.algo]
+# By default, use a VWAP order for cash trades. You can comment out the whole
+# `cash_management.orders` section to use the same value as `orders` and
+# `orders.algo`.
+strategy = "Vwap"
+params = [
+    # Optionally, uncomment the following line to be opportunistic by avoiding
+    # taking liquidity. This gives us somewhat better pricing and lower
+    # commissions, at the expense of possibly not getting the order filled in
+    # the day.
+    # ["noTakeLiq", "1"],
+]

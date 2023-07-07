@@ -193,10 +193,10 @@ class PortfolioManager:
         )
 
     @lru_cache(maxsize=32)
-    def get_ticker_for_stock(self, symbol, primary_exchange):
+    def get_ticker_for_stock(self, symbol, primary_exchange, order_exchange=None):
         stock = Stock(
             symbol,
-            self.get_order_exchange(),
+            order_exchange or self.get_order_exchange(),
             currency="USD",
             primaryExchange=primary_exchange,
         )
@@ -398,7 +398,11 @@ class PortfolioManager:
             item
             for item in portfolio_positions
             if item.account == self.account_number
-            and (item.contract.symbol in symbols or item.contract.symbol == "VIX")
+            and (
+                item.contract.symbol in symbols
+                or item.contract.symbol == "VIX"
+                or item.contract.symbol == self.config["cash_management"]["cash_fund"]
+            )
             and item.position != 0
             and item.averageCost != 0
         ]
@@ -419,6 +423,11 @@ class PortfolioManager:
                     or (
                         self.config["vix_call_hedge"]["enabled"]
                         and trade.contract.symbol == "VIX"
+                    )
+                    or (
+                        self.config["cash_management"]["enabled"]
+                        and trade.contract.symbol
+                        == self.config["cash_management"]["cash_fund"]
                     )
                 ):
                     console.print(f"[red]Canceling order {trade.order}[/red]")
@@ -604,6 +613,9 @@ class PortfolioManager:
             # check if we should do VIX call hedging
             self.do_vix_hedging(account_summary, portfolio_positions)
 
+            # manage dat cash
+            self.do_cashman(account_summary, portfolio_positions)
+
             self.submit_orders()
 
             with console.status(
@@ -723,9 +735,10 @@ class PortfolioManager:
         call_actions_table.add_column("Action")
         call_actions_table.add_column("Detail")
         to_write = []
+        symbols = set(self.get_symbols())
         for symbol in portfolio_positions:
-            if symbol == "VIX":
-                # skip VIX positions
+            if symbol not in symbols:
+                # skip positions we don't care about
                 continue
             call_count = max(
                 [0, count_short_option_positions(symbol, portfolio_positions, "C")]
@@ -1528,7 +1541,7 @@ class PortfolioManager:
         def inner_handler():
             if not self.config["vix_call_hedge"]["enabled"]:
                 to_print.append(
-                    "🛑 VIX call hedging not enabled, skipping",
+                    "[red]🛑 VIX call hedging not enabled, skipping",
                 )
                 return
 
@@ -1712,6 +1725,116 @@ class PortfolioManager:
         inner_handler()
 
         console.print(Panel(Group(*to_print), title="VIX call hedging"))
+
+    def do_cashman(self, account_summary, portfolio_positions):
+        to_print = []
+
+        def inner_handler():
+            if not self.config["cash_management"]["enabled"]:
+                to_print.append(
+                    "[red]🛑 Cash managementnot enabled, skipping",
+                )
+                return
+
+            target_cash_balance = self.config["cash_management"]["target_cash_balance"]
+            buy_threshold = self.config["cash_management"]["buy_threshold"]
+            sell_threshold = self.config["cash_management"]["sell_threshold"]
+            cash_balance = math.floor(float(account_summary["TotalCashValue"].value))
+
+            try:
+
+                def make_order():
+                    symbol = self.config["cash_management"]["cash_fund"]
+                    primary_exchange = self.config["cash_management"].get(
+                        "primary_exchange", ""
+                    )
+                    order_exchange = (
+                        self.config["cash_management"]["orders"]["exchange"]
+                        if "orders" in self.config["cash_management"]
+                        else None
+                    )
+                    ticker = self.get_ticker_for_stock(
+                        symbol, primary_exchange, order_exchange
+                    )
+                    algo = (
+                        self.config["cash_management"]["orders"]["algo"]
+                        if "orders" in self.config["cash_management"]
+                        else self.config["orders"]["algo"]
+                    )
+
+                    amount = cash_balance - target_cash_balance
+                    price = midpoint_or_market_price(ticker)
+                    qty = amount // price
+
+                    if qty > 0:
+                        to_print.append(
+                            f"[green]cash_balance={cash_balance} which exceeds "
+                            f"(target_cash_balance + buy_threshold)={(target_cash_balance + buy_threshold)}"
+                        )
+                        to_print.append(
+                            f"[green]Will buy {symbol} with qty={qty} shares at price={price}"
+                        )
+
+                    # make sure qty does not exceed balance if it's a negative value
+                    if qty < 0:
+                        # subtract 1 to keep cash balance above target
+                        qty -= 1
+                        to_print.append(
+                            f"[green]cash_balance={cash_balance} which is less than "
+                            f"(target_cash_balance - sell_threshold)={(target_cash_balance + sell_threshold)}"
+                        )
+                        if symbol not in portfolio_positions:
+                            # we don't have any positions to sell
+                            to_print.append(
+                                f"[red]Will sell {symbol} with qty={-qty} at"
+                                f" price={price}, but we have no position to sell"
+                            )
+                            return (None, None)
+                        positions = [
+                            p.position
+                            for p in portfolio_positions[symbol]
+                            if isinstance(p.contract, Stock)
+                        ]
+                        position = positions[0] if len(positions) > 0 else 0
+                        qty = min([max([-position, qty]), 0])
+                        # if for some reason the qty is zero, do nothing
+                        if qty == 0:
+                            to_print.append(
+                                f"[red]Will sell {symbol} with qty={-qty} at price={price}, but we don't have any shares to sell"
+                            )
+                            return (None, None)
+                        to_print.append(
+                            f"[green]Will sell {symbol} with qty={-qty} at price={price}"
+                        )
+
+                    order = LimitOrder(
+                        "BUY" if qty > 0 else "SELL",
+                        abs(qty),
+                        round(price, 2),
+                        algoStrategy=algo["strategy"],
+                        algoParams=algo["params"],
+                        tif="DAY",
+                        account=self.account_number,
+                        transmit=True,
+                    )
+                    return (ticker, order)
+
+                if (
+                    cash_balance > target_cash_balance + buy_threshold
+                    or cash_balance < target_cash_balance - sell_threshold
+                ):
+                    (ticker, order) = make_order()
+                    self.enqueue_order(ticker.contract, order)
+
+            except RuntimeError:
+                console.print_exception()
+                console.print(
+                    "[yellow]Error occurred when VIX call hedging. Continuing anyway...",
+                )
+
+        inner_handler()
+
+        console.print(Panel(Group(*to_print), title="Cash management"))
 
     def enqueue_order(self, contract: Contract, order: Order):
         self.orders.append((contract, order))
