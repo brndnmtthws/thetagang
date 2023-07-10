@@ -4,6 +4,8 @@ from datetime import datetime
 from ib_insync import TagValue, util
 from ib_insync.contract import Option
 
+from thetagang.options import option_dte
+
 
 def account_summary_to_dict(account_summary):
     d = dict()
@@ -60,7 +62,7 @@ def count_long_option_positions(symbol, portfolio_positions, right):
     return 0
 
 
-def net_option_positions(symbol, portfolio_positions, right):
+def net_option_positions(symbol, portfolio_positions, right, ignore_zero_dte=False):
     if symbol in portfolio_positions:
         return math.floor(
             sum(
@@ -69,6 +71,7 @@ def net_option_positions(symbol, portfolio_positions, right):
                     for p in portfolio_positions[symbol]
                     if isinstance(p.contract, Option)
                     and p.contract.right.upper().startswith(right.upper())
+                    and (not ignore_zero_dte or option_dte(p.contract) > 0)
                 ]
             )
         )

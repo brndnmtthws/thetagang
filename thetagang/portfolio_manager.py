@@ -1568,11 +1568,11 @@ class PortfolioManager:
                 "[bold blue_violet]Checking on our VIX call hedge..."
             ) as status:
                 net_vix_call_count = net_option_positions(
-                    "VIX", portfolio_positions, "C"
+                    "VIX", portfolio_positions, "C", ignore_zero_dte=True
                 )
                 if net_vix_call_count > 0:
                     status.update(
-                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count}, "
+                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count} (0dte contracts ignored), "
                         "checking if we need to close positions...",
                     )
                     (
