@@ -1894,8 +1894,8 @@ class PortfolioManager:
             self.ib.sleep(1)
 
         unfilled = [
-            trade
-            for trade in self.trades
+            (idx, trade)
+            for idx, trade in enumerate(self.trades)
             if trade
             and trade.contract.symbol in self.config["symbols"]
             and self.config["symbols"][trade.contract.symbol].get(
@@ -1903,7 +1903,7 @@ class PortfolioManager:
             )
             and not trade.isDone()
         ]
-        for trade in unfilled:
+        for idx, trade in unfilled:
             try:
                 (
                     contract,
@@ -1927,7 +1927,8 @@ class PortfolioManager:
                     order.algoStrategy = self.get_algo_strategy()
                     order.algoParams = self.get_algo_params()
 
-                    self.ib.placeOrder(contract, order)
+                    # put the trade back from whence it came
+                    self.trades[idx] = self.ib.placeOrder(contract, order)
             except RuntimeError:
                 console.print_exception()
 
