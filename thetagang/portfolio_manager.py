@@ -4,7 +4,7 @@ import sys
 from functools import lru_cache
 from typing import Optional
 
-from ib_insync import Order, Ticker, util
+from ib_insync import Order, Ticker, Trade, util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
 from ib_insync.order import LimitOrder
 from more_itertools import partition
@@ -613,22 +613,9 @@ class PortfolioManager:
 
             self.submit_orders()
 
-            with console.status(
-                f"[bold blue_violet]Waiting for {len(self.trades)} orders to submit..."
-            ) as _status:
-                # Wait for pending orders
-                wait_n_seconds(
-                    lambda: any(
-                        [
-                            trade.orderStatus.status
-                            in ["PendingSubmit", "PreSubmitted"]
-                            for trade in self.trades
-                            if trade
-                        ]
-                    ),
-                    lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
-                    self.api_response_wait_time(),
-                )
+            self.wait_for_pending_orders()
+
+            self.adjust_prices()
 
             console.print(
                 "[bright_yellow]ThetaGang is done, shutting down! Cya next time. :sparkles:[/bright_yellow]"
@@ -1843,7 +1830,7 @@ class PortfolioManager:
         self.orders.append((contract, order))
 
     def submit_orders(self):
-        def submit(contract, order):
+        def submit(contract, order) -> Optional[Trade]:
             try:
                 trade = self.ib.placeOrder(contract, order)
                 return trade
@@ -1879,3 +1866,86 @@ class PortfolioManager:
                         ffmt(trade.orderStatus.filled, 0),
                     )
             console.print(table)
+
+    def adjust_prices(self):
+        if (
+            any(
+                [
+                    not self.config["symbols"][symbol].get(
+                        "adjust_price_after_delay", False
+                    )
+                    for symbol in self.config["symbols"]
+                ]
+            )
+            or len(self.trades) == 0
+        ):
+            return
+
+        import random
+
+        delay = random.randrange(
+            self.config["orders"]["price_update_delay"][0],
+            self.config["orders"]["price_update_delay"][1],
+        )
+        for _ in track(
+            range(delay),
+            description=f"Waiting {delay}s before we update prices...",
+        ):
+            self.ib.sleep(1)
+
+        unfilled = [
+            trade
+            for trade in self.trades
+            if trade
+            and trade.contract.symbol in self.config["symbols"]
+            and self.config["symbols"][trade.contract.symbol].get(
+                "adjust_price_after_delay", False
+            )
+            and not trade.isDone()
+        ]
+        for trade in unfilled:
+            try:
+                (
+                    contract,
+                    order,
+                ) = (trade.contract, trade.order)
+
+                [ticker] = self.ib.reqTickers(contract)
+
+                self.wait_for_midpoint_price(
+                    ticker, wait_time=self.api_response_wait_time()
+                )
+
+                updated_price = round(ticker.midpoint(), 2)
+                if order.lmtPrice != updated_price:
+                    console.print(
+                        f"[green]Resubmitting order for {contract.symbol}"
+                        f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
+                    )
+                    order.lmtPrice = updated_price
+                    # For some reason these values get dropped
+                    order.algoStrategy = self.get_algo_strategy()
+                    order.algoParams = self.get_algo_params()
+
+                    self.ib.placeOrder(contract, order)
+            except RuntimeError:
+                console.print_exception()
+
+        self.wait_for_pending_orders()
+
+    def wait_for_pending_orders(self):
+        with console.status(
+            f"[bold blue_violet]Waiting for {len(self.trades)} orders to submit..."
+        ) as _status:
+            # Wait for pending orders
+            wait_n_seconds(
+                lambda: any(
+                    [
+                        trade.orderStatus.status in ["PendingSubmit", "PreSubmitted"]
+                        for trade in self.trades
+                        if trade
+                    ]
+                ),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                self.api_response_wait_time(),
+            )

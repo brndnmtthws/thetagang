@@ -4,6 +4,7 @@ DEFAULT_CONFIG = {
     },
     "orders": {
         "exchange": "SMART",
+        "price_update_delay": [30, 60],
         "algo": {
             "strategy": "Adaptive",
             "params": [["adaptivePriority", "Patient"]],

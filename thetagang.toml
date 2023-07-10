@@ -39,6 +39,10 @@ market_data_type = 1
 # used for fetching tickers/prices.
 exchange = "SMART"
 
+# Range of time to delay, in seconds, before resubmitting an order with updated
+# midpoint price if `symbol.<symbol>.adjust_midpoint_after_delay = true`.
+price_update_delay = [30, 60]
+
 [orders.algo]
 # By default we use adaptive orders with patient priority which gives reasonable
 # results. You can also experiment with TWAP or other options, however the
@@ -195,6 +199,15 @@ weight = 0.4
 # OR: specify in terms of parts. Must use either weight or parts, but cannot mix
 # both.
 # parts = 40
+
+# Sometimes, particularly for stocks/ETFs with limited liquidity, the spreads
+# are too wide to get an order filled at the midpoint on the first attempt. For
+# those, you can try setting this to `true`, and thetagang will wait a random
+# amount of time, then resubmit orders that haven't filled (but only for the
+# symbols with this set to true). The amount of time we'll wait is chosen
+# randomly from the range defined by `orders.price_update_delay`.
+adjust_price_after_delay = false
+
 [symbols.QQQ]
 weight = 0.3
 
