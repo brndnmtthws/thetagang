@@ -81,8 +81,9 @@ def validate_config(config):
                 "market_data_type": And(int, lambda n: 1 <= n <= 4),
             },
             "orders": {
-                "exchange": And(str, len),
-                "algo": algo_settings,
+                Optional("exchange"): And(str, len),
+                Optional("algo"): algo_settings,
+                Optional("price_update_delay"): And([int], lambda p: len(p) == 2),
             },
             "option_chains": {
                 "expirations": And(int, lambda n: 1 <= n),
@@ -148,6 +149,7 @@ def validate_config(config):
                         Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
                         Optional("strike_limit"): And(float, lambda n: n > 0),
                     },
+                    Optional("adjust_price_after_delay"): bool,
                 }
             },
             Optional("ib_insync"): {
