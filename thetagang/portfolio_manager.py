@@ -1912,23 +1912,26 @@ class PortfolioManager:
 
                 [ticker] = self.ib.reqTickers(contract)
 
-                self.wait_for_midpoint_price(
+                if self.wait_for_midpoint_price(
                     ticker, wait_time=self.api_response_wait_time()
-                )
+                ):
+                    updated_price = round(ticker.midpoint(), 2)
+                    if order.lmtPrice != updated_price:
+                        console.print(
+                            f"[green]Resubmitting order for {contract.symbol}"
+                            f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
+                        )
+                        order.lmtPrice = updated_price
+                        # For some reason, these values get dropped
+                        order.algoStrategy = self.get_algo_strategy()
+                        order.algoParams = self.get_algo_params()
 
-                updated_price = round(ticker.midpoint(), 2)
-                if order.lmtPrice != updated_price:
+                        # put the trade back from whence it came
+                        self.trades[idx] = self.ib.placeOrder(contract, order)
+                else:
                     console.print(
-                        f"[green]Resubmitting order for {contract.symbol}"
-                        f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
+                        f"[red]Couldn't get midpoint price for {contract}, skipping"
                     )
-                    order.lmtPrice = updated_price
-                    # For some reason, these values get dropped
-                    order.algoStrategy = self.get_algo_strategy()
-                    order.algoParams = self.get_algo_params()
-
-                    # put the trade back from whence it came
-                    self.trades[idx] = self.ib.placeOrder(contract, order)
             except RuntimeError:
                 console.print_exception()
 
