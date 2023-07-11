@@ -1923,7 +1923,7 @@ class PortfolioManager:
                         f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
                     )
                     order.lmtPrice = updated_price
-                    # For some reason these values get dropped
+                    # For some reason, these values get dropped
                     order.algoStrategy = self.get_algo_strategy()
                     order.algoParams = self.get_algo_params()
 
