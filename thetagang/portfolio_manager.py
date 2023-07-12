@@ -52,8 +52,8 @@ class PortfolioManager:
         self.ib.orderStatusEvent += self.orderStatusEvent
         self.has_excess_calls = set()
         self.has_excess_puts = set()
-        self.orders = []
-        self.trades = []
+        self.orders: list[tuple[Contract, LimitOrder]] = []
+        self.trades: list[Trade] = []
 
     def api_response_wait_time(self):
         return self.config["ib_insync"]["api_response_wait_time"]
@@ -593,10 +593,10 @@ class PortfolioManager:
             portfolio_positions = self.get_portfolio_positions()
 
             (rollable_puts, closeable_puts, group1) = self.check_puts(
-                account_summary, portfolio_positions
+                portfolio_positions
             )
             (rollable_calls, closeable_calls, group2) = self.check_calls(
-                account_summary, portfolio_positions
+                portfolio_positions
             )
             console.print(Panel(Group(group1, group2)))
 
@@ -629,7 +629,7 @@ class PortfolioManager:
             # Shut it down
             self.completion_future.set_result(True)
 
-    def check_puts(self, account_summary, portfolio_positions):
+    def check_puts(self, portfolio_positions):
         # Check for puts which may be rolled to the next expiration or a better price
         puts = self.get_puts(portfolio_positions)
 
@@ -663,7 +663,7 @@ class PortfolioManager:
 
         return (rollable_puts, closeable_puts, group)
 
-    def check_calls(self, account_summary, portfolio_positions):
+    def check_calls(self, portfolio_positions):
         # Check for calls which may be rolled to the next expiration or a better price
         calls = self.get_calls(portfolio_positions)
 
@@ -1138,7 +1138,9 @@ class PortfolioManager:
                     "[yellow]Error occurred when trying to close position. Continuing anyway...",
                 )
 
-    def roll_positions(self, positions, right, account_summary, portfolio_positions={}):
+    def roll_positions(
+        self, positions, right, account_summary, portfolio_positions=None
+    ):
         for position in positions:
             try:
                 symbol = position.contract.symbol
@@ -1148,17 +1150,20 @@ class PortfolioManager:
 
                 strike_limit = get_strike_limit(self.config, symbol, right)
                 if right.startswith("C"):
+                    average_cost = (
+                        (
+                            p.averageCost
+                            for p in portfolio_positions[symbol]
+                            if isinstance(p.contract, Stock)
+                        )
+                        if portfolio_positions and symbol in portfolio_positions
+                        else 0
+                    )
                     strike_limit = round(
-                        max(
-                            [strike_limit or 0]
-                            + [
-                                p.averageCost
-                                for p in portfolio_positions[symbol]
-                                if isinstance(p.contract, Stock)
-                            ]
-                        ),
+                        max([strike_limit or 0] + [average_cost]),
                         2,
                     )
+
                 elif right.startswith("P"):
                     strike_limit = round(
                         min(
@@ -1733,7 +1738,7 @@ class PortfolioManager:
 
             try:
 
-                def make_order():
+                def make_order() -> tuple[Optional[Ticker], Optional[LimitOrder]]:
                     symbol = self.config["cash_management"]["cash_fund"]
                     primary_exchange = self.config["cash_management"].get(
                         "primary_exchange", ""
@@ -1814,7 +1819,8 @@ class PortfolioManager:
                     or cash_balance < target_cash_balance - sell_threshold
                 ):
                     (ticker, order) = make_order()
-                    self.enqueue_order(ticker.contract, order)
+                    if ticker and ticker.contract and order:
+                        self.enqueue_order(ticker.contract, order)
 
             except RuntimeError:
                 console.print_exception()
@@ -1826,7 +1832,7 @@ class PortfolioManager:
 
         console.print(Panel(Group(*to_print), title="Cash management"))
 
-    def enqueue_order(self, contract: Contract, order: Order):
+    def enqueue_order(self, contract: Contract, order: LimitOrder):
         self.orders.append((contract, order))
 
     def submit_orders(self):
@@ -1838,7 +1844,11 @@ class PortfolioManager:
                 console.print_exception()
             return None
 
-        self.trades = [submit(order[0], order[1]) for order in self.orders]
+        self.trades = [
+            trade
+            for trade in [submit(order[0], order[1]) for order in self.orders]
+            if trade
+        ]
 
         if len(self.trades) > 0:
             table = Table(
@@ -1910,6 +1920,7 @@ class PortfolioManager:
                     order,
                 ) = (trade.contract, trade.order)
 
+                self.ib.qualifyContracts(contract)
                 [ticker] = self.ib.reqTickers(contract)
 
                 if self.wait_for_midpoint_price(
@@ -1922,9 +1933,6 @@ class PortfolioManager:
                             f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
                         )
                         order.lmtPrice = updated_price
-                        # For some reason, these values get dropped
-                        order.algoStrategy = self.get_algo_strategy()
-                        order.algoParams = self.get_algo_params()
 
                         # put the trade back from whence it came
                         self.trades[idx] = self.ib.placeOrder(contract, order)
