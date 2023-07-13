@@ -186,7 +186,9 @@ class PortfolioManager:
         )
 
     @lru_cache(maxsize=32)
-    def get_ticker_for_stock(self, symbol, primary_exchange, order_exchange=None):
+    def get_ticker_for_stock(
+        self, symbol, primary_exchange, order_exchange=None
+    ) -> Ticker:
         stock = Stock(
             symbol,
             order_exchange or self.get_order_exchange(),
@@ -197,7 +199,7 @@ class PortfolioManager:
         return self.get_ticker_for(stock)
 
     @lru_cache(maxsize=32)
-    def get_ticker_for(self, contract, midpoint=False):
+    def get_ticker_for(self, contract, midpoint=False) -> Ticker:
         [ticker] = self.ib.reqTickers(contract)
 
         if midpoint:
@@ -210,7 +212,7 @@ class PortfolioManager:
         return ticker
 
     @lru_cache(maxsize=32)
-    def get_ticker_list_for(self, contracts):
+    def get_ticker_list_for(self, contracts) -> list[Ticker]:
         ticker_list = self.ib.reqTickers(*contracts)
 
         try:
@@ -312,8 +314,7 @@ class PortfolioManager:
         if contract.symbol == "VIX":
             vix_contract = Index("VIX", "CBOE", "USD")
             self.ib.qualifyContracts(vix_contract)
-            self.ib.reqMktData(vix_contract)
-            vix_ticker = self.get_ticker_for(vix_contract)
+            vix_ticker = self.ib.reqMktData(vix_contract)
             return contract.strike <= vix_ticker.marketPrice()
 
         ticker = self.get_ticker_for_stock(contract.symbol, contract.primaryExchange)
@@ -1151,16 +1152,16 @@ class PortfolioManager:
                 strike_limit = get_strike_limit(self.config, symbol, right)
                 if right.startswith("C"):
                     average_cost = (
-                        (
+                        [
                             p.averageCost
                             for p in portfolio_positions[symbol]
                             if isinstance(p.contract, Stock)
-                        )
+                        ]
                         if portfolio_positions and symbol in portfolio_positions
-                        else 0
+                        else [0]
                     )
                     strike_limit = round(
-                        max([strike_limit or 0] + [average_cost]),
+                        max([strike_limit or 0] + average_cost),
                         2,
                     )
 
@@ -1546,8 +1547,7 @@ class PortfolioManager:
                 if "close_hedges_when_vix_exceeds" in self.config["vix_call_hedge"]:
                     vix_contract = Index("VIX", "CBOE", "USD")
                     self.ib.qualifyContracts(vix_contract)
-                    self.ib.reqMktData(vix_contract)
-                    vix_ticker = self.get_ticker_for(vix_contract)
+                    vix_ticker = self.ib.reqMktData(vix_contract)
                     close_hedges_when_vix_exceeds = self.config["vix_call_hedge"][
                         "close_hedges_when_vix_exceeds"
                     ]
@@ -1632,8 +1632,7 @@ class PortfolioManager:
                     try:
                         vixmo_contract = Index("VIXMO", "CBOE", "USD")
                         self.ib.qualifyContracts(vixmo_contract)
-                        self.ib.reqMktData(vixmo_contract)
-                        vixmo_ticker = self.get_ticker_for(vixmo_contract)
+                        vixmo_ticker = self.ib.reqMktData(vixmo_contract)
 
                         weight = 0.0
 
@@ -1821,6 +1820,10 @@ class PortfolioManager:
                     (ticker, order) = make_order()
                     if ticker and ticker.contract and order:
                         self.enqueue_order(ticker.contract, order)
+                else:
+                    to_print.append(
+                        "[green]All good, nothing to do here.",
+                    )
 
             except RuntimeError:
                 console.print_exception()
@@ -1920,8 +1923,7 @@ class PortfolioManager:
                     order,
                 ) = (trade.contract, trade.order)
 
-                self.ib.qualifyContracts(contract)
-                [ticker] = self.ib.reqTickers(contract)
+                ticker = self.ib.reqMktData(contract)
 
                 if self.wait_for_midpoint_price(
                     ticker, wait_time=self.api_response_wait_time()
