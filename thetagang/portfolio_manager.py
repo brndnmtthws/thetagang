@@ -4,7 +4,7 @@ import sys
 from functools import lru_cache
 from typing import Optional
 
-from ib_insync import Order, Ticker, Trade, util
+from ib_insync import Ticker, Trade, util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
 from ib_insync.order import LimitOrder
 from more_itertools import partition
@@ -55,7 +55,7 @@ class PortfolioManager:
         self.orders: list[tuple[Contract, LimitOrder]] = []
         self.trades: list[Trade] = []
 
-    def api_response_wait_time(self):
+    def api_response_wait_time(self) -> int:
         return self.config["ib_insync"]["api_response_wait_time"]
 
     def orderStatusEvent(self, trade):
@@ -171,7 +171,8 @@ class PortfolioManager:
             )
         except RuntimeError:
             console.print(
-                f"Timeout waiting on market data for contracts={[ticker.contract for ticker in tickers if open_interest_is_not_ready(ticker)]}, continuing...",
+                f"Timeout waiting on market data for contracts="
+                f"{[ticker.contract for ticker in tickers if open_interest_is_not_ready(ticker)]}, continuing...",
             )
             return False
         finally:
@@ -1918,16 +1919,12 @@ class PortfolioManager:
         ]
         for idx, trade in unfilled:
             try:
-                (
-                    contract,
-                    order,
-                ) = (trade.contract, trade.order)
-
-                ticker = self.ib.reqMktData(contract)
+                ticker = self.ib.reqMktData(trade.contract)
 
                 if self.wait_for_midpoint_price(
                     ticker, wait_time=self.api_response_wait_time()
                 ):
+                    (contract, order) = (trade.contract, trade.order)
                     updated_price = round(ticker.midpoint(), 2)
                     if order.lmtPrice != updated_price:
                         console.print(
@@ -1936,11 +1933,20 @@ class PortfolioManager:
                         )
                         order.lmtPrice = updated_price
 
+                        if contract.secType == "BAG":
+                            # for some reason, these fields need to be cleared
+                            # when modifying an existing BAG (combo) order
+                            # in-place (janky)
+                            order.algoStrategy = ""
+                            order.algoParams = []
+                            order.tif = ""
+                            order.account = ""
+
                         # put the trade back from whence it came
                         self.trades[idx] = self.ib.placeOrder(contract, order)
                 else:
                     console.print(
-                        f"[red]Couldn't get midpoint price for {contract}, skipping"
+                        f"[red]Couldn't get midpoint price for {trade.contract}, skipping"
                     )
             except RuntimeError:
                 console.print_exception()
@@ -1951,15 +1957,19 @@ class PortfolioManager:
         with console.status(
             f"[bold blue_violet]Waiting for {len(self.trades)} orders to submit..."
         ) as _status:
-            # Wait for pending orders
-            wait_n_seconds(
-                lambda: any(
-                    [
-                        trade.orderStatus.status in ["PendingSubmit", "PreSubmitted"]
-                        for trade in self.trades
-                        if trade
-                    ]
-                ),
-                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
-                self.api_response_wait_time(),
-            )
+            try:
+                # Wait for pending orders
+                wait_n_seconds(
+                    lambda: any(
+                        [
+                            trade.orderStatus.status
+                            in ["PendingSubmit", "PreSubmitted"]
+                            for trade in self.trades
+                            if trade
+                        ]
+                    ),
+                    lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                    self.api_response_wait_time(),
+                )
+            except:
+                pass
