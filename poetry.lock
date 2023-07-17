@@ -73,13 +73,13 @@ tomlkit = ">=0.5.11"
 
 [[package]]
 name = "autohooks-plugin-black"
-version = "23.4.0"
+version = "23.7.0"
 description = "An autohooks plugin for python code formatting via black"
 optional = false
-python-versions = ">=3.7.2,<4.0.0"
+python-versions = ">=3.8,<4.0"
 files = [
-    {file = "autohooks_plugin_black-23.4.0-py3-none-any.whl", hash = "sha256:1a65814ab573a40799cf52af7aa026e73ef60d784cf14a8eba33aaf245811899"},
-    {file = "autohooks_plugin_black-23.4.0.tar.gz", hash = "sha256:31b0497f8987def02d5387b9eb03c46837621097c9814d19ff6b9da960867a06"},
+    {file = "autohooks_plugin_black-23.7.0-py3-none-any.whl", hash = "sha256:7ce7c25de7da08adf6293b5afa412f4331fc024ff4d872b9daa3247d280eda03"},
+    {file = "autohooks_plugin_black-23.7.0.tar.gz", hash = "sha256:ae2dbda4f8598f8265ef74bcbcf7f14b07d97575368ec8ae03e0fbda32d783dd"},
 ]
 
 [package.dependencies]
