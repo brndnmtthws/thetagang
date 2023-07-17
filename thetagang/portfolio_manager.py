@@ -1957,19 +1957,15 @@ class PortfolioManager:
         with console.status(
             f"[bold blue_violet]Waiting for {len(self.trades)} orders to submit..."
         ) as _status:
-            try:
-                # Wait for pending orders
-                wait_n_seconds(
-                    lambda: any(
-                        [
-                            trade.orderStatus.status
-                            in ["PendingSubmit", "PreSubmitted"]
-                            for trade in self.trades
-                            if trade
-                        ]
-                    ),
-                    lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
-                    self.api_response_wait_time(),
-                )
-            except:
-                pass
+            # Wait for pending orders
+            wait_n_seconds(
+                lambda: any(
+                    [
+                        trade.orderStatus.status in ["PendingSubmit", "PreSubmitted"]
+                        for trade in self.trades
+                        if trade
+                    ]
+                ),
+                lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
+                self.api_response_wait_time(),
+            )
