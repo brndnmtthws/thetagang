@@ -616,9 +616,14 @@ class PortfolioManager:
 
             self.submit_orders()
 
-            self.wait_for_pending_orders()
+            try:
+                self.wait_for_pending_orders()
+            except RuntimeError:
+                pass
 
             self.adjust_prices()
+
+            self.wait_for_pending_orders()
 
             console.print(
                 "[bright_yellow]ThetaGang is done, shutting down! Cya next time. :sparkles:[/bright_yellow]"
@@ -1953,8 +1958,6 @@ class PortfolioManager:
                     )
             except RuntimeError:
                 console.print_exception()
-
-        self.wait_for_pending_orders()
 
     def wait_for_pending_orders(self):
         with console.status(
