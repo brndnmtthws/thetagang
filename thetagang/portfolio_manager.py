@@ -315,7 +315,8 @@ class PortfolioManager:
         if contract.symbol == "VIX":
             vix_contract = Index("VIX", "CBOE", "USD")
             self.ib.qualifyContracts(vix_contract)
-            vix_ticker = self.ib.reqMktData(vix_contract)
+            self.ib.reqMktData(vix_contract)
+            vix_ticker = self.get_ticker_for(vix_contract)
             return contract.strike <= vix_ticker.marketPrice()
 
         ticker = self.get_ticker_for_stock(contract.symbol, contract.primaryExchange)
@@ -1548,7 +1549,8 @@ class PortfolioManager:
                 if "close_hedges_when_vix_exceeds" in self.config["vix_call_hedge"]:
                     vix_contract = Index("VIX", "CBOE", "USD")
                     self.ib.qualifyContracts(vix_contract)
-                    vix_ticker = self.ib.reqMktData(vix_contract)
+                    self.ib.reqMktData(vix_contract)
+                    vix_ticker = self.get_ticker_for(vix_contract)
                     close_hedges_when_vix_exceeds = self.config["vix_call_hedge"][
                         "close_hedges_when_vix_exceeds"
                     ]
@@ -1633,7 +1635,8 @@ class PortfolioManager:
                     try:
                         vixmo_contract = Index("VIXMO", "CBOE", "USD")
                         self.ib.qualifyContracts(vixmo_contract)
-                        vixmo_ticker = self.ib.reqMktData(vixmo_contract)
+                        self.ib.reqMktData(vixmo_contract)
+                        vixmo_ticker = self.get_ticker_for(vixmo_contract)
 
                         weight = 0.0
 
