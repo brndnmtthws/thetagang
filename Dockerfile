@@ -1,8 +1,8 @@
-FROM eclipse-temurin:17.0.4_8-jdk-jammy
+FROM eclipse-temurin:17-jdk-jammy
 
 RUN apt update \
   && DEBIAN_FRONTEND=noninteractive apt install -qy --no-install-recommends \
-  curl \
+  wget \
   libxi6 \
   libxrender1 \
   libxtst6 \
@@ -13,8 +13,8 @@ RUN apt update \
   xvfb \
   && python3 -m pip install --upgrade pip \
   && if test "$(dpkg --print-architecture)" = "armhf" ; then python3 -m pip config set global.extra-index-url https://www.piwheels.org/simple ; fi \
-  && echo 'a8056f3da6d6b642ddd3d2ed59dac5cf9bd39fd3327cc377655e27972c6ac4a8  ibc.zip' | tee ibc.zip.sha256 \
-  && curl -qL https://github.com/IbcAlpha/IBC/releases/download/3.16.0/IBCLinux-3.16.0.zip -o ibc.zip \
+  && echo 'ff6fe73f60ed41cbd9087847e53df90795719cece44fa89d46f77ba952819ed2  ibc.zip' | tee ibc.zip.sha256 \
+  && wget -q https://github.com/IbcAlpha/IBC/releases/download/3.18.0/IBCLinux-3.18.0.zip -O ibc.zip \
   && sha256sum -c ibc.zip.sha256 \
   && unzip ibc.zip -d /opt/ibc \
   && chmod o+x /opt/ibc/*.sh /opt/ibc/*/*.sh \
