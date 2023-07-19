@@ -72,8 +72,11 @@ def net_option_positions(symbol, portfolio_positions, right, ignore_zero_dte=Fal
                     if isinstance(p.contract, Option)
                     and p.contract.right.upper().startswith(right.upper())
                     and (
-                        not ignore_zero_dte
-                        or option_dte(p.contract.lastTradeDateOrContractMonth) > 0
+                        (
+                            not ignore_zero_dte
+                            or option_dte(p.contract.lastTradeDateOrContractMonth) > 0
+                        )
+                        or option_dte(p.contract.lastTradeDateOrContractMonth) >= 0
                     )
                 ]
             )
