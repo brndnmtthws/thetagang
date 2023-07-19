@@ -1735,7 +1735,7 @@ class PortfolioManager:
         def inner_handler():
             if not self.config["cash_management"]["enabled"]:
                 to_print.append(
-                    "[red]🛑 Cash managementnot enabled, skipping",
+                    "[red]🛑 Cash management not enabled, skipping",
                 )
                 return
 
