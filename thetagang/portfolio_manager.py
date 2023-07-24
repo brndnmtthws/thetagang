@@ -1952,7 +1952,9 @@ class PortfolioManager:
 
                         # put the trade back from whence it came
                         self.trades[idx] = self.ib.placeOrder(contract, order)
-                        console.print(f"[blue]Order updated, trade={self.trades[idx]}")
+                        console.print(
+                            f"[blue]Order updated, order={self.trades[idx].order}"
+                        )
                 else:
                     console.print(
                         f"[red]Couldn't get midpoint price for {trade.contract}, skipping"
