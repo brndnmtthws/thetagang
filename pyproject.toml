@@ -19,7 +19,7 @@ pytimeparse = "^1.1.8"
 schema = "^0.7.5"
 toml = "^0.10.2"
 rich = "^13.3.5"
-more-itertools = "^9.1.0"
+more-itertools = ">=9.1,<11.0"
 
 [tool.poetry.group.dev.dependencies]
 autoflake = "^2.0"
