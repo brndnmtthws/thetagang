@@ -1681,10 +1681,12 @@ class PortfolioManager:
                             float(account_summary["NetLiquidation"].value) * weight
                         )
                         delta = self.config["vix_call_hedge"]["delta"]
+                        target_dte = self.config["vix_call_hedge"]["target_dte"]
                         if weight > 0:
                             to_print.append(
                                 f"[green]Current VIXMO spot price prescribes an allocation of up to "
-                                f"${allocation_amount:.2f} for purchasing VIX calls, at or above delta={delta} with a DTE >= 30",
+                                f"${allocation_amount:.2f} for purchasing VIX calls, "
+                                f"at or above delta={delta} with a DTE >= {target_dte}",
                             )
                         else:
                             to_print.append(
@@ -1701,7 +1703,11 @@ class PortfolioManager:
 
                         status.stop()
                         buy_ticker = self.find_eligible_contracts(
-                            vix_contract, "C", 0, target_delta=delta, target_dte=30
+                            vix_contract,
+                            "C",
+                            0,
+                            target_delta=delta,
+                            target_dte=target_dte,
                         )
                         status.start()
                         price = round(get_lower_price(buy_ticker), 2)

@@ -30,6 +30,7 @@ DEFAULT_CONFIG = {
     "vix_call_hedge": {
         "enabled": False,
         "delta": 0.3,
+        "target_dte": 30,
         "ignore_dte": 0,
         "allocation": [
             {"upper_bound": 15.0, "weight": 0.0},
