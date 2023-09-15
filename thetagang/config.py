@@ -193,6 +193,7 @@ def validate_config(config):
                 "enabled": bool,
                 Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                 Optional("close_hedges_when_vix_exceeds"): float,
+                Optional("ignore_dte"): And(int, lambda n: n >= 0),
                 Optional("allocation"): [
                     {
                         Optional("lower_bound"): float,
