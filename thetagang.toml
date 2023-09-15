@@ -312,6 +312,12 @@ delta = 0.30
 # closed. Comment out to disable.
 close_hedges_when_vix_exceeds = 50.0
 
+# Don't count any VIX positions where the DTE is <= this value. Increase this
+# value to create a call ladder. For example, if you set this to 5, thetagang
+# will ignore current VIX positions starting 5 days before expiry, and
+# potentially adding more. This allows you to create a simple call ladder.
+ignore_dte = 0
+
 # The allocations are specified as an ordered list of allocation weights
 # according to an upper/lower bound on VIXMO (the 30 day VIX). Default values
 # are the same as those described in the VXTH methodology. These are evaluated

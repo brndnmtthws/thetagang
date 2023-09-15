@@ -1564,15 +1564,18 @@ class PortfolioManager:
                     return (False, vix_ticker, close_hedges_when_vix_exceeds)
                 return (False, None, None)
 
+            ignore_dte = self.config["vix_call_hedge"]["ignore_dte"]
+
             with console.status(
                 "[bold blue_violet]Checking on our VIX call hedge..."
             ) as status:
                 net_vix_call_count = net_option_positions(
-                    "VIX", portfolio_positions, "C", ignore_zero_dte=True
+                    "VIX", portfolio_positions, "C", ignore_dte=ignore_dte
                 )
                 if net_vix_call_count > 0:
                     status.update(
-                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count} (0dte contracts ignored), "
+                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count} "
+                        f"(DTE <= {ignore_dte} contracts ignored), "
                         "checking if we need to close positions...",
                     )
                     (
@@ -1625,10 +1628,10 @@ class PortfolioManager:
                         f"[cyan1]net_vix_call_count={net_vix_call_count}, no action is needed at this time",
                     )
                     return
-                else:
-                    status.update(
-                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count}, checking if we should open new positions...",
-                    )
+
+                status.update(
+                    f"[bold blue_violet]net_vix_call_count={net_vix_call_count}, checking if we should open new positions...",
+                )
 
                 (
                     close_vix_calls,

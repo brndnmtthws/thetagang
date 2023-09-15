@@ -62,7 +62,7 @@ def count_long_option_positions(symbol, portfolio_positions, right):
     return 0
 
 
-def net_option_positions(symbol, portfolio_positions, right, ignore_zero_dte=False):
+def net_option_positions(symbol, portfolio_positions, right, ignore_dte=None):
     if symbol in portfolio_positions:
         return math.floor(
             sum(
@@ -73,8 +73,9 @@ def net_option_positions(symbol, portfolio_positions, right, ignore_zero_dte=Fal
                     and p.contract.right.upper().startswith(right.upper())
                     and option_dte(p.contract.lastTradeDateOrContractMonth) >= 0
                     and (
-                        not ignore_zero_dte
-                        or option_dte(p.contract.lastTradeDateOrContractMonth) > 0
+                        not ignore_dte
+                        or option_dte(p.contract.lastTradeDateOrContractMonth)
+                        > ignore_dte
                     )
                 ]
             )
