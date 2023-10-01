@@ -12,7 +12,12 @@ from rich.tree import Tree
 
 from thetagang.config import normalize_config, validate_config
 from thetagang.fmt import dfmt, ffmt, pfmt
-from thetagang.util import get_strike_limit, get_target_delta, get_write_threshold
+from thetagang.util import (
+    get_strike_limit,
+    get_target_delta,
+    get_write_threshold_perc,
+    get_write_threshold_sigma,
+)
 
 from .portfolio_manager import PortfolioManager
 
@@ -53,12 +58,21 @@ def start(config_path, without_ibc=False):
     )
 
     config_table.add_section()
+    config_table.add_row("[spring_green1]Constants")
+    config_table.add_row(
+        "",
+        "Daily stddev window",
+        "=",
+        f"{config['constants']['daily_stddev_window']}",
+    )
+
+    config_table.add_section()
     config_table.add_row("[spring_green1]Order settings")
     config_table.add_row(
         "",
         "Exchange",
         "=",
-        f"= {config['orders']['exchange']}",
+        f"{config['orders']['exchange']}",
     )
     config_table.add_row(
         "",
@@ -210,10 +224,14 @@ def start(config_path, without_ibc=False):
             pfmt(sconfig["weight"]),
             ffmt(get_target_delta(config, symbol, "C")),
             dfmt(get_strike_limit(config, symbol, "C")),
-            pfmt(get_write_threshold(config, symbol, "C")),
+            f"{ffmt(get_write_threshold_sigma(config, symbol, 'C'))}σ"
+            if get_write_threshold_sigma(config, symbol, "C")
+            else pfmt(get_write_threshold_perc(config, symbol, "C")),
             ffmt(get_target_delta(config, symbol, "P")),
             dfmt(get_strike_limit(config, symbol, "P")),
-            pfmt(get_write_threshold(config, symbol, "P")),
+            f"{ffmt(get_write_threshold_sigma(config, symbol, 'P'))}σ"
+            if get_write_threshold_sigma(config, symbol, "P")
+            else pfmt(get_write_threshold_perc(config, symbol, "P")),
         )
     assert (
         round(
