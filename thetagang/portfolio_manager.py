@@ -2014,7 +2014,6 @@ class PortfolioManager:
                 True,
             )
             stddev = np.std([p.close for p in hist_prices], ddof=1)
-            print(f"symbol={ticker.contract.symbol} stddev={stddev}")
 
             return (stddev.astype(float) * threshold_sigma, absolute_daily_change)
         else:
