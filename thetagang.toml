@@ -34,6 +34,12 @@ margin_usage = 0.5
 # https://interactivebrokers.github.io/tws-api/market_data_type.html)
 market_data_type = 1
 
+[constants]
+# Refer to `durationString` at
+# https://interactivebrokers.github.io/tws-api/historical_bars.html for details.
+# Valid values include "30 D", "60 D", "6 M", "1 Y", etc.
+daily_stddev_window = "30 D"
+
 [orders]
 # The exchange to route orders to. Can be overridden if desired. This is also
 # used for fetching tickers/prices.
@@ -228,6 +234,23 @@ strike_limit = 1000.0 # never write a put with a strike above $1000
 # In this example, we'd only write puts on QQQ when the daily change is -1% or
 # greater (provided that we also set `write_when.puts.red=true`).
 write_threshold = 0.01 # 1%, absolute value
+
+# Alternatively, you can express write threshold value in terms of sigma with
+# `write_threshold_sigma`. A value of 2.0 means that we'll write new contracts
+# when the daily change is twice the standard deviation.
+#
+# If write_threshold_sigma is specified, it supersedes (overrides) the value of
+# write_threshold.
+#
+# The daily standard deviation is calculated based on the past 30 days of data
+# by default, but you can adjust this by altering the value of
+# `constants.daily_stddev_window`.
+#
+# Note that we'll need to retrieve this historical data for every execution to
+# calculate this value, so you should be sure there's 1) sufficient history
+# available and 2) the data can be retrieved sufficiently fast.
+#
+# write_threshold_sigma = 1.0 # 1x the standard devation for the daily stddev window
 
 [symbols.QQQ.calls]
 strike_limit = 100.0 # never write a call with a strike below $100

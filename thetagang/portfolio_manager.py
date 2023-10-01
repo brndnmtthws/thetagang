@@ -4,8 +4,9 @@ import sys
 from functools import lru_cache
 from typing import Optional
 
+import numpy as np
 from ib_insync import Ticker, Trade, util
-from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock, TagValue
+from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock
 from ib_insync.order import LimitOrder
 from more_itertools import partition
 from rich import box
@@ -25,7 +26,8 @@ from thetagang.util import (
     get_lower_price,
     get_strike_limit,
     get_target_delta,
-    get_write_threshold,
+    get_write_threshold_perc,
+    get_write_threshold_sigma,
     midpoint_or_market_price,
     net_option_positions,
     portfolio_positions_to_dict,
@@ -785,16 +787,16 @@ class PortfolioManager:
             )
 
             def is_ok_to_write_calls(
-                config, symbol, ticker, write_only_when_green, calls_to_write
+                symbol: str,
+                ticker: Optional[Ticker],
+                write_only_when_green: bool,
+                calls_to_write: int,
             ):
                 if not write_only_when_green:
                     return True
                 if not ticker or calls_to_write <= 0:
                     return False
-                write_threshold = get_write_threshold(config, symbol, "C")
-                absolute_daily_change = math.fabs(
-                    (ticker.marketPrice() - ticker.close) / ticker.close
-                )
+
                 green = ticker.marketPrice() > ticker.close
                 if not green:
                     call_actions_table.add_row(
@@ -804,19 +806,23 @@ class PortfolioManager:
                         "but skipping because underlying is not green",
                     )
                     return False
+
+                (write_threshold, absolute_daily_change) = self.get_write_threshold(
+                    ticker, "C"
+                )
                 if absolute_daily_change < write_threshold:
                     call_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
                         f"[cyan1]Need to write {calls_to_write} calls, "
-                        f"but skipping because daily_change={absolute_daily_change:.3f}"
-                        f" less than write_threshold={write_threshold:.3f}",
+                        f"but skipping because absolute_daily_change={absolute_daily_change:.2f}"
+                        f" less than write_threshold={write_threshold:.2f}",
                     )
                     return False
                 return True
 
             ok_to_write = is_ok_to_write_calls(
-                self.config, symbol, ticker, write_only_when_green, calls_to_write
+                symbol, ticker, write_only_when_green, calls_to_write
             )
 
             if calls_to_write > 0 and ok_to_write:
@@ -1007,16 +1013,16 @@ class PortfolioManager:
             )
 
             def is_ok_to_write_puts(
-                config, symbol, ticker, write_only_when_red, puts_to_write
+                symbol: str,
+                ticker: Ticker,
+                write_only_when_red: bool,
+                puts_to_write: int,
             ):
                 if not write_only_when_red:
                     return True
                 if puts_to_write <= 0:
                     return False
-                write_threshold = get_write_threshold(config, symbol, "P")
-                absolute_daily_change = math.fabs(
-                    (ticker.marketPrice() - ticker.close) / ticker.close
-                )
+
                 red = ticker.marketPrice() < ticker.close
                 if not red:
                     actions.add_row(
@@ -1025,17 +1031,21 @@ class PortfolioManager:
                         f"[cyan1]Need to write {puts_to_write} puts, but skipping because underlying is not red[/cyan1]",
                     )
                     return False
+
+                (write_threshold, absolute_daily_change) = self.get_write_threshold(
+                    ticker, "P"
+                )
                 if absolute_daily_change < write_threshold:
                     actions.add_row(
                         symbol,
                         "[cyan1]None",
-                        f"[cyan1]Need to write {puts_to_write} puts, but skipping because daily_change={absolute_daily_change:.3f} less than write_threshold={write_threshold:.3f}[/cyan1]",
+                        f"[cyan1]Need to write {puts_to_write} puts, but skipping because absolute_daily_change={absolute_daily_change:.2f} less than write_threshold={write_threshold:.2f}[/cyan1]",
                     )
                     return False
                 return True
 
             ok_to_write = is_ok_to_write_puts(
-                self.config, symbol, ticker, write_only_when_red, net_target_puts
+                symbol, ticker, write_only_when_red, net_target_puts
             )
 
             target_additional_quantity[symbol] = {
@@ -1987,3 +1997,28 @@ class PortfolioManager:
                 lambda remaining: self.ib.waitOnUpdate(timeout=remaining),
                 self.api_response_wait_time(),
             )
+
+    def get_write_threshold(self, ticker: Ticker, right: str) -> tuple[float, float]:
+        absolute_daily_change = math.fabs(ticker.marketPrice() - ticker.close)
+
+        threshold_sigma = get_write_threshold_sigma(
+            self.config, ticker.contract.symbol, right
+        )
+        if threshold_sigma:
+            hist_prices = self.ib.reqHistoricalData(
+                ticker.contract,
+                "",
+                self.config["constants"]["daily_stddev_window"],
+                "1 day",
+                "TRADES",
+                True,
+            )
+            stddev = np.std([p.close for p in hist_prices], ddof=1)
+            print(f"symbol={ticker.contract.symbol} stddev={stddev}")
+
+            return (stddev.astype(float) * threshold_sigma, absolute_daily_change)
+        else:
+            threshold_perc = get_write_threshold_perc(
+                self.config, ticker.contract.symbol, right
+            )
+            return (threshold_perc * ticker.close, absolute_daily_change)

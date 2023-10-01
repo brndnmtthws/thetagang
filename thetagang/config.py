@@ -139,14 +139,17 @@ def validate_config(config):
                     Optional("primary_exchange"): And(str, len),
                     Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                     Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
+                    Optional("write_threshold_sigma"): And(float, lambda n: n > 0),
                     Optional("calls"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                         Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("write_threshold_sigma"): And(float, lambda n: n > 0),
                         Optional("strike_limit"): And(float, lambda n: n > 0),
                     },
                     Optional("puts"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                         Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("write_threshold_sigma"): And(float, lambda n: n > 0),
                         Optional("strike_limit"): And(float, lambda n: n > 0),
                     },
                     Optional("adjust_price_after_delay"): bool,
@@ -215,6 +218,9 @@ def validate_config(config):
                     "exchange": And(str, len),
                     "algo": algo_settings,
                 },
+            },
+            Optional("constants"): {
+                Optional("daily_stddev_window"): And(str, len),
             },
         }
     )

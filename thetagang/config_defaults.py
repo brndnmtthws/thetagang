@@ -47,4 +47,5 @@ DEFAULT_CONFIG = {
         "sell_threshold": 10000,
         "orders": {"exchange": "SMART", "algo": {"strategy": "Vwap", "params": []}},
     },
+    "constants": {"daily_stddev_window": "30 D"},
 }

@@ -1,5 +1,6 @@
 import math
 from datetime import datetime
+from typing import Optional
 
 from ib_insync import TagValue, util
 from ib_insync.contract import Option
@@ -165,7 +166,19 @@ def get_call_cap(config):
     return 1.0
 
 
-def get_write_threshold(config, symbol, right):
+def get_write_threshold_sigma(config: dict, symbol: str, right: str) -> Optional[float]:
+    p_or_c = "calls" if right.upper().startswith("C") else "puts"
+    if (
+        p_or_c in config["symbols"][symbol]
+        and "write_threshold_sigma" in config["symbols"][symbol][p_or_c]
+    ):
+        return config["symbols"][symbol][p_or_c]["write_threshold_sigma"]
+    if "write_threshold_sigma" in config["symbols"][symbol]:
+        return config["symbols"][symbol]["write_threshold_sigma"]
+    return None
+
+
+def get_write_threshold_perc(config: dict, symbol: str, right: str) -> float:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
     if (
         p_or_c in config["symbols"][symbol]
