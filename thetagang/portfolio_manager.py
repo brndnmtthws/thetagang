@@ -2013,11 +2013,11 @@ class PortfolioManager:
                 "TRADES",
                 True,
             )
-            closing_prices = np.array([p.close for p in hist_prices])
+            closing_prices = np.log(np.array([p.close for p in hist_prices]))
             stddev = np.std(np.diff(closing_prices) / closing_prices[:-1], ddof=1)
 
             return (
-                ticker.close * stddev.astype(float) * threshold_sigma,
+                ticker.close * (np.exp(stddev) - 1).astype(float) * threshold_sigma,
                 absolute_daily_change,
             )
         else:

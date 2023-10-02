@@ -237,20 +237,20 @@ write_threshold = 0.01 # 1%, absolute value
 
 # Alternatively, you can express write threshold value in terms of sigma with
 # `write_threshold_sigma`. A value of 2.0 means that we'll write new contracts
-# when the daily change is twice the standard deviation.
+# when the daily change is twice the standard deviation of the log returns.
 #
 # If write_threshold_sigma is specified, it supersedes (overrides) the value of
 # write_threshold.
 #
-# The daily standard deviation is calculated based on the past 30 days of data
-# by default, but you can adjust this by altering the value of
+# The daily standard deviation of log returns is calculated based on the past
+# 30 days of data by default, but you can adjust this by altering the value of
 # `constants.daily_stddev_window`.
 #
 # Note that we'll need to retrieve this historical data for every execution to
 # calculate this value, so you should be sure there's 1) sufficient history
 # available and 2) the data can be retrieved sufficiently fast.
 #
-# write_threshold_sigma = 1.0 # 1x the standard devation for the daily stddev window
+# write_threshold_sigma = 1.0 # 1x the standard devation of log returns for the daily stddev window
 
 [symbols.QQQ.calls]
 strike_limit = 100.0 # never write a call with a strike below $100
