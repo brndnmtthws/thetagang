@@ -2013,9 +2013,13 @@ class PortfolioManager:
                 "TRADES",
                 True,
             )
-            stddev = np.std([p.close for p in hist_prices], ddof=1)
+            closing_prices = np.array([p.close for p in hist_prices])
+            stddev = np.std(np.diff(closing_prices) / closing_prices[:-1], ddof=1)
 
-            return (stddev.astype(float) * threshold_sigma, absolute_daily_change)
+            return (
+                ticker.close * stddev.astype(float) * threshold_sigma,
+                absolute_daily_change,
+            )
         else:
             threshold_perc = get_write_threshold_perc(
                 self.config, ticker.contract.symbol, right
