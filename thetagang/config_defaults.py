@@ -19,6 +19,7 @@ DEFAULT_CONFIG = {
         "calls": {
             "green": False,
             "cap_factor": 1.0,
+            "cap_target_floor": 0.0,
         },
     },
     "roll_when": {

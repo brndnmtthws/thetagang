@@ -21,10 +21,10 @@ from thetagang.util import (
     account_summary_to_dict,
     algo_params_from,
     count_short_option_positions,
-    get_call_cap,
     get_higher_price,
     get_lower_price,
     get_strike_limit,
+    get_target_calls,
     get_target_delta,
     get_write_threshold_perc,
     get_write_threshold_sigma,
@@ -56,6 +56,7 @@ class PortfolioManager:
         self.has_excess_puts = set()
         self.orders: list[tuple[Contract, LimitOrder]] = []
         self.trades: list[Trade] = []
+        self.target_quantities: dict[str, int] = {}
 
     def api_response_wait_time(self) -> int:
         return self.config["ib_insync"]["api_response_wait_time"]
@@ -755,8 +756,8 @@ class PortfolioManager:
                 )
             )
 
-            target_calls = max(
-                [0, math.floor(((stock_count * get_call_cap(self.config)) // 100))]
+            target_calls = get_target_calls(
+                self.config, stock_count, self.target_quantities[symbol]
             )
             new_contracts_needed = target_calls - call_count
             excess_calls = call_count - target_calls
@@ -986,7 +987,9 @@ class PortfolioManager:
             targets[symbol] = round(
                 self.config["symbols"][symbol]["weight"] * total_buying_power, 2
             )
-            target_quantity = math.floor(targets[symbol] / ticker.marketPrice())
+            self.target_quantities[symbol] = math.floor(
+                targets[symbol] / ticker.marketPrice()
+            )
 
             # Current number of short puts
             put_count = count_short_option_positions(symbol, portfolio_positions, "P")
@@ -996,7 +999,7 @@ class PortfolioManager:
             write_only_when_red = self.config["write_when"]["puts"]["red"]
 
             qty_to_write = math.floor(
-                target_quantity - current_position - 100 * put_count
+                self.target_quantities[symbol] - current_position - 100 * put_count
             )
             net_target_shares = qty_to_write
             net_target_puts = net_target_shares // 100
@@ -1007,7 +1010,7 @@ class PortfolioManager:
                 ifmt(put_count),
                 ifmt(call_count),
                 dfmt(targets[symbol]),
-                ifmt(target_quantity),
+                ifmt(self.target_quantities[symbol]),
                 ifmt(net_target_shares),
                 ifmt(net_target_puts),
             )
