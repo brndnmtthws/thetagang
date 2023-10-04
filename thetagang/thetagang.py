@@ -153,16 +153,16 @@ def start(config_path, without_ibc=False):
     )
 
     config_table.add_section()
-    config_table.add_row("[spring_green1]For underlying, only write new contracts when")
+    config_table.add_row("[spring_green1]When writing new contracts")
     config_table.add_row(
         "",
-        "Puts, red",
+        "Puts, only write when red",
         "=",
         f"{config['write_when']['puts']['red']}",
     )
     config_table.add_row(
         "",
-        "Calls, green",
+        "Calls, only write when green",
         "=",
         f"{config['write_when']['calls']['green']}",
     )
@@ -170,7 +170,13 @@ def start(config_path, without_ibc=False):
         "",
         "Call cap factor",
         "=",
-        f"{config['write_when']['calls']['cap_factor']}",
+        f"{pfmt(config['write_when']['calls']['cap_factor'])}",
+    )
+    config_table.add_row(
+        "",
+        "Call cap target floor",
+        "=",
+        f"{pfmt(config['write_when']['calls']['cap_target_floor'])}",
     )
 
     config_table.add_section()

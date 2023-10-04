@@ -159,6 +159,18 @@ green = true
 # on 50% of our positions. This value must be between 1 and 0 inclusive.
 cap_factor = 1.0
 
+# We may want to leave some percentage of our underlying stock perpetually
+# uncovered so we don't miss out on big upside movements. For example, if our
+# target number of shares for a given symbol is 1,000, we may want to ensure
+# 500 shares are _always_ uncovered. This is a bit different from `cap_factor`,
+# as it applies to the _target_ number of shares, as opposed to the current
+# positions. A value of 0.5 (50%) means that we always leave 50% (half) of the
+# target shares uncovered. A bigger number (up to 1.0, 100%) is more bullish,
+# and a smaller number (down to 0.0, 0%) is more bearish (i.e., cover all
+# positions with calls). This essentially sets a floor on the number of shares
+# we try to hold on to in order to avoid missing out on potential upside.
+cap_target_floor = 0.0
+
 [write_when.puts]
 # Optionally, only write puts when the underlying is red
 red = true
