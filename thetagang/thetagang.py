@@ -66,6 +66,20 @@ def start(config_path, without_ibc=False):
         f"{config['constants']['daily_stddev_window']}",
     )
 
+    c_write_thresh = (
+        f"{ffmt(get_write_threshold_sigma(config, None, 'C'))}σ"
+        if get_write_threshold_sigma(config, None, "C")
+        else pfmt(get_write_threshold_perc(config, None, "C"))
+    )
+    p_write_thresh = (
+        f"{ffmt(get_write_threshold_sigma(config, None, 'P'))}σ"
+        if get_write_threshold_sigma(config, None, "P")
+        else pfmt(get_write_threshold_perc(config, None, "P"))
+    )
+
+    config_table.add_row("", "Write threshold for puts", "=", p_write_thresh)
+    config_table.add_row("", "Write threshold for calls", "=", c_write_thresh)
+
     config_table.add_section()
     config_table.add_row("[spring_green1]Order settings")
     config_table.add_row(
