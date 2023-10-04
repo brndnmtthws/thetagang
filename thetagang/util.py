@@ -167,7 +167,7 @@ def get_call_cap(config):
 
 
 def get_write_threshold_sigma(
-    config: dict, symbol: str | None, right: str
+    config: dict, symbol: Optional[str], right: str
 ) -> Optional[float]:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
     if symbol:
@@ -197,7 +197,7 @@ def get_write_threshold_sigma(
     return None
 
 
-def get_write_threshold_perc(config: dict, symbol: str | None, right: str) -> float:
+def get_write_threshold_perc(config: dict, symbol: Optional[str], right: str) -> float:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
     if symbol:
         if (
