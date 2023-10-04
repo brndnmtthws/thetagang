@@ -166,27 +166,56 @@ def get_call_cap(config):
     return 1.0
 
 
-def get_write_threshold_sigma(config: dict, symbol: str, right: str) -> Optional[float]:
+def get_write_threshold_sigma(
+    config: dict, symbol: str | None, right: str
+) -> Optional[float]:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
+    if symbol:
+        if (
+            p_or_c in config["symbols"][symbol]
+            and "write_threshold_sigma" in config["symbols"][symbol][p_or_c]
+        ):
+            return config["symbols"][symbol][p_or_c]["write_threshold_sigma"]
+        if "write_threshold_sigma" in config["symbols"][symbol]:
+            return config["symbols"][symbol]["write_threshold_sigma"]
+        # if there's a percentage-based threshold defined, we want to use that, so we return None here
+        if (
+            p_or_c in config["symbols"][symbol]
+            and "write_threshold" in config["symbols"][symbol][p_or_c]
+        ) or "write_threshold" in config["symbols"][symbol]:
+            return None
+
+    # check if there's a default value in constants
     if (
-        p_or_c in config["symbols"][symbol]
-        and "write_threshold_sigma" in config["symbols"][symbol][p_or_c]
+        p_or_c in config["constants"]
+        and "write_threshold_sigma" in config["constants"][p_or_c]
     ):
-        return config["symbols"][symbol][p_or_c]["write_threshold_sigma"]
-    if "write_threshold_sigma" in config["symbols"][symbol]:
-        return config["symbols"][symbol]["write_threshold_sigma"]
+        return config["constants"][p_or_c]["write_threshold_sigma"]
+    if "write_threshold_sigma" in config["constants"]:
+        return config["constants"]["write_threshold_sigma"]
+
     return None
 
 
-def get_write_threshold_perc(config: dict, symbol: str, right: str) -> float:
+def get_write_threshold_perc(config: dict, symbol: str | None, right: str) -> float:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
+    if symbol:
+        if (
+            p_or_c in config["symbols"][symbol]
+            and "write_threshold" in config["symbols"][symbol][p_or_c]
+        ):
+            return config["symbols"][symbol][p_or_c]["write_threshold"]
+        if "write_threshold" in config["symbols"][symbol]:
+            return config["symbols"][symbol]["write_threshold"]
+
+    # check if there's a default value in constants
     if (
-        p_or_c in config["symbols"][symbol]
-        and "write_threshold" in config["symbols"][symbol][p_or_c]
+        p_or_c in config["constants"]
+        and "write_threshold" in config["constants"][p_or_c]
     ):
-        return config["symbols"][symbol][p_or_c]["write_threshold"]
-    if "write_threshold" in config["symbols"][symbol]:
-        return config["symbols"][symbol]["write_threshold"]
+        return config["constants"][p_or_c]["write_threshold"]
+    if "write_threshold" in config["constants"]:
+        return config["constants"]["write_threshold"]
     return 0.0
 
 

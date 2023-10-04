@@ -221,6 +221,16 @@ def validate_config(config):
             },
             Optional("constants"): {
                 Optional("daily_stddev_window"): And(str, len),
+                Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
+                Optional("write_threshold_sigma"): And(float, lambda n: n > 0),
+                Optional("calls"): {
+                    Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
+                    Optional("write_threshold_sigma"): And(float, lambda n: n > 0),
+                },
+                Optional("puts"): {
+                    Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
+                    Optional("write_threshold_sigma"): And(float, lambda n: n > 0),
+                },
             },
         }
     )

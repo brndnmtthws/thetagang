@@ -40,6 +40,20 @@ market_data_type = 1
 # Valid values include "30 D", "60 D", "6 M", "1 Y", etc.
 daily_stddev_window = "30 D"
 
+# Optionally, specify a write threshold either as percent, or sigma, either for
+# all contracts, or separately for puts/calls. Refer to the comments for
+# `write_threshold` and `write_threshold_sigma` under `symbols` for details.
+#
+# # Applies to both puts and calls
+# write_threshold = 0.01 # 1%
+# write_threshold_sigma = 1.0 # 1𝜎
+# [puts] # Applies only to puts
+# write_threshold = 0.01 # 1%
+# write_threshold_sigma = 1.0 # 1𝜎
+# [calls] # Applies only to calls
+# write_threshold = 0.01 # 1%
+# write_threshold_sigma = 1.0 # 1𝜎
+
 [orders]
 # The exchange to route orders to. Can be overridden if desired. This is also
 # used for fetching tickers/prices.
@@ -229,7 +243,9 @@ strike_limit = 1000.0 # never write a put with a strike above $1000
 # red (`write_when.calls.green=true` or `write_when.puts.red=true`), specify a
 # minimum threshold as an absolute value daily percentage change (in this
 # example, use 1% for puts only, but could also be specified as
-# `symbols.QQQ.write_threshold`).
+# `symbols.QQQ.write_threshold`). This can also be specified under
+# `constants.write_threshold` and `constants.puts/calls.write_threshold` to
+# apply to all symbols, either for both puts or calls, or individually.
 #
 # In this example, we'd only write puts on QQQ when the daily change is -1% or
 # greater (provided that we also set `write_when.puts.red=true`).
