@@ -787,12 +787,15 @@ class PortfolioManager:
                 else None
             )
 
+            (write_threshold, absolute_daily_change) = (None, None)
+
             def is_ok_to_write_calls(
                 symbol: str,
                 ticker: Optional[Ticker],
                 write_only_when_green: bool,
                 calls_to_write: int,
             ):
+                nonlocal write_threshold, absolute_daily_change
                 if not write_only_when_green:
                     return True
                 if not ticker or calls_to_write <= 0:
@@ -831,8 +834,9 @@ class PortfolioManager:
                     symbol,
                     "[green]Write",
                     f"[green]Will write {calls_to_write} calls, {new_contracts_needed} needed, "
-                    f"capped at {maximum_new_contracts}, at or above strike ${strike_limit}"
-                    f" (target_calls={target_calls}, call_count={call_count})[/green]",
+                    f"limited to {maximum_new_contracts} new contracts, at or above strike ${strike_limit}"
+                    f" (target_calls={target_calls} call_count={call_count} "
+                    f"absolute_daily_change={absolute_daily_change:.2f} write_threshold={write_threshold:.2f})",
                 )
                 to_write.append(
                     (
