@@ -11,7 +11,6 @@ RUN apt update \
   python3-setuptools \
   unzip \
   xvfb \
-  && python3 -m pip install --upgrade pip \
   && if test "$(dpkg --print-architecture)" = "armhf" ; then python3 -m pip config set global.extra-index-url https://www.piwheels.org/simple ; fi \
   && echo 'ff6fe73f60ed41cbd9087847e53df90795719cece44fa89d46f77ba952819ed2  ibc.zip' | tee ibc.zip.sha256 \
   && wget -q https://github.com/IbcAlpha/IBC/releases/download/3.18.0/IBCLinux-3.18.0.zip -O ibc.zip \
