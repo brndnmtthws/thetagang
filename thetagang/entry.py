@@ -1,2 +1,2 @@
 # Do not reorder imports
-from .main import *  # NOQA: E402
+from .main import *  # NOQA: F403
