@@ -23,15 +23,12 @@ more-itertools = ">=9.1,<11.0"
 numpy = "^1.26.0"
 
 [tool.poetry.group.dev.dependencies]
-autoflake = "^2.0"
 autohooks = "^23.4.0"
 autohooks-plugin-black = ">=22.11,<24.0"
-autohooks-plugin-isort = ">=22.8,<24.0"
-autohooks-plugin-pylint = ">=22.8.1,<24.0.0"
+autohooks-plugin-ruff = "^23.10.0"
 black = "^23.1.0"
-isort = "^5.12.0"
-pylint = ">=2.16.2,<4.0.0"
 pytest = "^7.2.1"
+ruff = "^0.1.1"
 
 [tool.poetry.urls]
 "Bug Tracker" = "https://github.com/brndnmtthws/thetagang/issues"
@@ -46,25 +43,29 @@ disable = "C0330, C0326"
 [tool.pylint.format]
 max-line-length = "120"
 
-[tool.isort]
-ensure_newline_before_comments = true
-force_grid_wrap = 0
-include_trailing_comma = true
-line_length = 88
-multi_line_output = 3
-use_parentheses = true
-
 [tool.autohooks]
 mode = "poetry"
 pre-commit = [
+    "autohooks.plugins.ruff",
     "autohooks.plugins.black",
-    "autohooks.plugins.isort",
-    "autohooks.plugins.pylint",
 ]
 
 [build-system]
 build-backend = "poetry.masonry.api"
 requires = ["poetry>=0.12"]
 
-[tool.autohooks.plugins.pylint]
-arguments = ["-E"]
+[tool.ruff]
+# Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.
+# Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
+# McCabe complexity (`C901`) by default.
+select = ["E4", "E7", "E9", "F", "I", "W"]
+ignore = []
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+
+# Same as Black.
+line-length = 88
+
+target-version = "py39"
