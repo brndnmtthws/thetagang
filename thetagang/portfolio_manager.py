@@ -1959,8 +1959,13 @@ class PortfolioManager:
                     ticker, wait_time=self.api_response_wait_time()
                 ):
                     (contract, order) = (trade.contract, trade.order)
-                    updated_price = round(ticker.midpoint(), 2)
-                    if order.lmtPrice != updated_price:
+                    updated_price = round((order.lmtPrice + ticker.midpoint()) / 2.0, 2)
+                    # Check if the updated price is actually any different
+                    # before proceeding, and make sure the signs match so we
+                    # don't switch a credit to a debit or vice versa.
+                    if order.lmtPrice != updated_price and np.sign(
+                        order.lmtPrice
+                    ) == np.sign(updated_price):
                         console.print(
                             f"[green]Resubmitting order for {contract.symbol}"
                             f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
