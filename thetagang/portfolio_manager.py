@@ -1810,7 +1810,7 @@ class PortfolioManager:
                         qty -= 1
                         to_print.append(
                             f"[green]cash_balance={cash_balance} which is less than "
-                            f"(target_cash_balance - sell_threshold)={(target_cash_balance + sell_threshold)}"
+                            f"(target_cash_balance - sell_threshold)={(target_cash_balance - sell_threshold)}"
                         )
                         if symbol not in portfolio_positions:
                             # we don't have any positions to sell
