@@ -1755,6 +1755,21 @@ class PortfolioManager:
 
         console.print(Panel(Group(*to_print), title="VIX call hedging"))
 
+    def calc_pending_cash_balance(self):
+        return sum(
+            [
+                order.lmtPrice * order.totalQuantity * float(contract.multiplier)
+                for (contract, order) in self.orders
+                if order.action == "SELL"
+            ]
+        ) - sum(
+            [
+                order.lmtPrice * order.totalQuantity * float(contract.multiplier)
+                for (contract, order) in self.orders
+                if order.action == "BUY"
+            ]
+        )
+
     def do_cashman(self, account_summary, portfolio_positions):
         to_print = []
 
@@ -1769,6 +1784,7 @@ class PortfolioManager:
             buy_threshold = self.config["cash_management"]["buy_threshold"]
             sell_threshold = self.config["cash_management"]["sell_threshold"]
             cash_balance = math.floor(float(account_summary["TotalCashValue"].value))
+            pending_balance = self.calc_pending_cash_balance()
 
             try:
 
@@ -1791,14 +1807,16 @@ class PortfolioManager:
                         else self.config["orders"]["algo"]
                     )
 
-                    amount = cash_balance - target_cash_balance
+                    amount = cash_balance - (target_cash_balance + pending_balance)
                     price = ticker.ask if amount > 0 else ticker.bid
                     qty = amount // price
 
                     if qty > 0:
                         to_print.append(
-                            f"[green]cash_balance={cash_balance} which exceeds "
-                            f"(target_cash_balance + buy_threshold)={(target_cash_balance + buy_threshold)}"
+                            f"[green]cash_balance={dfmt(cash_balance)} which exceeds "
+                            f"(target_cash_balance + pending_balance + buy_threshold)="
+                            f"{(dfmt(target_cash_balance + pending_balance + buy_threshold))} "
+                            f"with pending_balance={dfmt(pending_balance)}"
                         )
                         to_print.append(
                             f"[green]Will buy {symbol} with qty={qty} shares at price={price}"
@@ -1809,8 +1827,10 @@ class PortfolioManager:
                         # subtract 1 to keep cash balance above target
                         qty -= 1
                         to_print.append(
-                            f"[green]cash_balance={cash_balance} which is less than "
-                            f"(target_cash_balance - sell_threshold)={(target_cash_balance - sell_threshold)}"
+                            f"[green]cash_balance={dfmt(cash_balance)} which is less than "
+                            f"(target_cash_balance + pending_balance - sell_threshold)="
+                            f"{(dfmt(target_cash_balance + pending_balance - sell_threshold))} "
+                            f"with pending_balance={dfmt(pending_balance)}"
                         )
                         if symbol not in portfolio_positions:
                             # we don't have any positions to sell
