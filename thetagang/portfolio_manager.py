@@ -57,6 +57,7 @@ class PortfolioManager:
         self.orders: list[tuple[Contract, LimitOrder]] = []
         self.trades: list[Trade] = []
         self.target_quantities: dict[str, int] = {}
+        self.qualified_contracts: dict[int, Contract] = {}
 
     def api_response_wait_time(self) -> int:
         return self.config["ib_insync"]["api_response_wait_time"]
@@ -1247,6 +1248,12 @@ class PortfolioManager:
                     sell_ticker
                 )
 
+                # store a copy of the contracts so we can retrieve them later by conId
+                self.qualified_contracts[position.contract.conId] = position.contract
+                self.qualified_contracts[
+                    sell_ticker.contract.conId
+                ] = sell_ticker.contract
+
                 # Create combo legs
                 comboLegs = [
                     ComboLeg(
@@ -1756,15 +1763,24 @@ class PortfolioManager:
         console.print(Panel(Group(*to_print), title="VIX call hedging"))
 
     def calc_pending_cash_balance(self):
+        def get_multiplier(contract: Contract) -> float:
+            if contract.secType == "BAG":
+                # with combos/bag orders we'll use the _first_ multiplier, for
+                # simplicity, because we only create combos with equal legs
+                return float(
+                    self.qualified_contracts[contract.comboLegs[0].conId].multiplier
+                )
+            return float(contract.multiplier)
+
         return sum(
             [
-                order.lmtPrice * order.totalQuantity * float(contract.multiplier)
+                order.lmtPrice * order.totalQuantity * get_multiplier(contract)
                 for (contract, order) in self.orders
                 if order.action == "SELL"
             ]
         ) - sum(
             [
-                order.lmtPrice * order.totalQuantity * float(contract.multiplier)
+                order.lmtPrice * order.totalQuantity * get_multiplier(contract)
                 for (contract, order) in self.orders
                 if order.action == "BUY"
             ]
