@@ -63,10 +63,11 @@ exchange = "SMART"
 # midpoint price if `symbol.<symbol>.adjust_midpoint_after_delay = true`.
 price_update_delay = [30, 60]
 
-# Set a minimum order price, to avoid orders where the credit (or debit) is so
-# low that it doesn't even cover broker commission. We default to $0.05, but you
-# can set this to 0.0 (or comment it out) if you want to permit any order price.
-minimum_price = 0.05
+# Set a minimum credit order price, to avoid orders where the credit (or debit)
+# is so low that it doesn't even cover broker commission. We default to $0.05,
+# but you can set this to 0.0 (or comment it out) if you want to permit any
+# order price. This doesn't apply to debit orders.
+minimum_credit = 0.05
 
 [orders.algo]
 # By default we use adaptive orders with patient priority which gives reasonable

@@ -102,9 +102,9 @@ def start(config_path, without_ibc=False):
     )
     config_table.add_row(
         "",
-        "Minimum price",
+        "Minimum credit",
         "=",
-        f"{dfmt(config['orders']['minimum_price'])}",
+        f"{dfmt(config['orders']['minimum_credit'])}",
     )
 
     config_table.add_section()
