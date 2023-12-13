@@ -94,6 +94,18 @@ def start(config_path, without_ibc=False):
         "=",
         f"{config['orders']['algo']['params']}",
     )
+    config_table.add_row(
+        "",
+        "Price update delay",
+        "=",
+        f"{config['orders']['price_update_delay']}",
+    )
+    config_table.add_row(
+        "",
+        "Minimum price",
+        "=",
+        f"{dfmt(config['orders']['minimum_price'])}",
+    )
 
     config_table.add_section()
     config_table.add_row("[spring_green1]Close option positions")
