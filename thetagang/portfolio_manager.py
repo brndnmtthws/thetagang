@@ -5,7 +5,7 @@ from functools import lru_cache
 from typing import Optional
 
 import numpy as np
-from ib_insync import Ticker, Trade, util
+from ib_insync import PortfolioItem, Ticker, Trade, util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock
 from ib_insync.order import LimitOrder
 from more_itertools import partition
@@ -23,6 +23,7 @@ from thetagang.util import (
     count_short_option_positions,
     get_higher_price,
     get_lower_price,
+    get_minimum_price,
     get_strike_limit,
     get_target_calls,
     get_target_delta,
@@ -83,7 +84,9 @@ class PortfolioManager:
     def get_puts(self, portfolio_positions):
         return self.get_options(portfolio_positions, "P")
 
-    def get_options(self, portfolio_positions, right):
+    def get_options(
+        self, portfolio_positions: dict[str, list[PortfolioItem]], right: str
+    ):
         ret = []
         symbols = set(self.get_symbols())
         for symbol in portfolio_positions:
@@ -409,7 +412,7 @@ class PortfolioManager:
             and item.averageCost != 0
         ]
 
-    def get_portfolio_positions(self):
+    def get_portfolio_positions(self) -> dict[str, list[PortfolioItem]]:
         portfolio_positions = self.ib.portfolio(account=self.account_number)
         return portfolio_positions_to_dict(self.filter_positions(portfolio_positions))
 
@@ -862,6 +865,7 @@ class PortfolioManager:
                     ),
                     "C",
                     strike_limit,
+                    minimum_price=get_minimum_price(self.config),
                 )
             except RuntimeError:
                 console.print_exception()
@@ -904,6 +908,7 @@ class PortfolioManager:
                     ),
                     "P",
                     strike_limit,
+                    minimum_price=get_minimum_price(self.config),
                 )
             except RuntimeError:
                 console.print_exception()
@@ -1209,9 +1214,10 @@ class PortfolioManager:
                 kind = "calls" if right.startswith("C") else "puts"
 
                 minimum_price = (
-                    0.0
+                    get_minimum_price(self.config)
                     if not self.config["roll_when"][kind]["credit_only"]
                     else midpoint_or_market_price(buy_ticker)
+                    + get_minimum_price(self.config)
                 )
                 preferred_minimum_price = midpoint_or_market_price(buy_ticker)
 
@@ -1307,12 +1313,12 @@ class PortfolioManager:
 
     def find_eligible_contracts(
         self,
-        main_contract,
-        right,
-        strike_limit,
+        main_contract: Contract,
+        right: str,
+        strike_limit: Optional[float],
+        minimum_price: float,
         exclude_expirations_before=None,
         exclude_exp_strike=None,
-        minimum_price=0.0,
         preferred_minimum_price=None,
         target_dte=None,
         target_delta=None,
@@ -1732,6 +1738,7 @@ class PortfolioManager:
                             0,
                             target_delta=delta,
                             target_dte=target_dte,
+                            minimum_price=get_minimum_price(self.config),
                         )
                         status.start()
                         price = round(get_lower_price(buy_ticker), 2)
@@ -1906,7 +1913,9 @@ class PortfolioManager:
 
         console.print(Panel(Group(*to_print), title="Cash management"))
 
-    def enqueue_order(self, contract: Contract, order: LimitOrder):
+    def enqueue_order(self, contract: Optional[Contract], order: LimitOrder):
+        if not contract:
+            return
         self.orders.append((contract, order))
 
     def submit_orders(self):
@@ -1995,7 +2004,12 @@ class PortfolioManager:
                     ticker, wait_time=self.api_response_wait_time()
                 ):
                     (contract, order) = (trade.contract, trade.order)
-                    updated_price = round((order.lmtPrice + ticker.midpoint()) / 2.0, 2)
+                    updated_price = min(
+                        [
+                            np.sign(order.lmtPrice) * get_minimum_price(self.config),
+                            round((order.lmtPrice + ticker.midpoint()) / 2.0, 2),
+                        ]
+                    )
                     # Check if the updated price is actually any different
                     # before proceeding, and make sure the signs match so we
                     # don't switch a credit to a debit or vice versa.
