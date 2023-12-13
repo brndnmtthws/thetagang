@@ -2,7 +2,7 @@ import math
 from datetime import datetime
 from typing import Optional
 
-from ib_insync import PortfolioItem, Position, TagValue, util
+from ib_insync import PortfolioItem, TagValue, util
 from ib_insync.contract import Option
 
 from thetagang.options import option_dte
@@ -16,7 +16,7 @@ def account_summary_to_dict(account_summary):
 
 
 def portfolio_positions_to_dict(
-    portfolio_positions: list[Position],
+    portfolio_positions: list[PortfolioItem],
 ) -> dict[str, list[PortfolioItem]]:
     d = dict()
     for p in portfolio_positions:

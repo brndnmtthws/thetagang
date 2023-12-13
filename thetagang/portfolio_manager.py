@@ -5,7 +5,7 @@ from functools import lru_cache
 from typing import Optional
 
 import numpy as np
-from ib_insync import PortfolioItem, Position, Ticker, Trade, util
+from ib_insync import PortfolioItem, Ticker, Trade, util
 from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock
 from ib_insync.order import LimitOrder
 from more_itertools import partition
@@ -84,7 +84,9 @@ class PortfolioManager:
     def get_puts(self, portfolio_positions):
         return self.get_options(portfolio_positions, "P")
 
-    def get_options(self, portfolio_positions: dict[str, list[Position]], right: str):
+    def get_options(
+        self, portfolio_positions: dict[str, list[PortfolioItem]], right: str
+    ):
         ret = []
         symbols = set(self.get_symbols())
         for symbol in portfolio_positions:
