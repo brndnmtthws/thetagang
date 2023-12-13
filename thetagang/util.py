@@ -225,5 +225,5 @@ def algo_params_from(params):
     return [TagValue(p[0], p[1]) for p in params]
 
 
-def get_minimum_price(config: dict) -> float:
-    return config["orders"].get("minimum_price", 0.0)
+def get_minimum_credit(config: dict) -> float:
+    return config["orders"].get("minimum_credit", 0.0)

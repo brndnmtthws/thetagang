@@ -23,7 +23,7 @@ from thetagang.util import (
     count_short_option_positions,
     get_higher_price,
     get_lower_price,
-    get_minimum_price,
+    get_minimum_credit,
     get_strike_limit,
     get_target_calls,
     get_target_delta,
@@ -865,7 +865,7 @@ class PortfolioManager:
                     ),
                     "C",
                     strike_limit,
-                    minimum_price=get_minimum_price(self.config),
+                    minimum_price=get_minimum_credit(self.config),
                 )
             except RuntimeError:
                 console.print_exception()
@@ -908,7 +908,7 @@ class PortfolioManager:
                     ),
                     "P",
                     strike_limit,
-                    minimum_price=get_minimum_price(self.config),
+                    minimum_price=get_minimum_credit(self.config),
                 )
             except RuntimeError:
                 console.print_exception()
@@ -1214,10 +1214,10 @@ class PortfolioManager:
                 kind = "calls" if right.startswith("C") else "puts"
 
                 minimum_price = (
-                    get_minimum_price(self.config)
+                    get_minimum_credit(self.config)
                     if not self.config["roll_when"][kind]["credit_only"]
                     else midpoint_or_market_price(buy_ticker)
-                    + get_minimum_price(self.config)
+                    + get_minimum_credit(self.config)
                 )
                 preferred_minimum_price = midpoint_or_market_price(buy_ticker)
 
@@ -1738,7 +1738,7 @@ class PortfolioManager:
                             0,
                             target_delta=delta,
                             target_dte=target_dte,
-                            minimum_price=get_minimum_price(self.config),
+                            minimum_price=get_minimum_credit(self.config),
                         )
                         status.start()
                         price = round(get_lower_price(buy_ticker), 2)
@@ -2004,10 +2004,14 @@ class PortfolioManager:
                     ticker, wait_time=self.api_response_wait_time()
                 ):
                     (contract, order) = (trade.contract, trade.order)
-                    updated_price = min(
+                    updated_price = np.sign(order.lmtPrice) * max(
                         [
-                            np.sign(order.lmtPrice) * get_minimum_price(self.config),
-                            round((order.lmtPrice + ticker.midpoint()) / 2.0, 2),
+                            get_minimum_credit(self.config)
+                            if order.action == "BUY" and order.lmtPrice <= 0.0
+                            else 0.0,
+                            math.fabs(
+                                round((order.lmtPrice + ticker.midpoint()) / 2.0, 2)
+                            ),
                         ]
                     )
                     # Check if the updated price is actually any different

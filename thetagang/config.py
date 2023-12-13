@@ -84,7 +84,7 @@ def validate_config(config):
                 Optional("exchange"): And(str, len),
                 Optional("algo"): algo_settings,
                 Optional("price_update_delay"): And([int], lambda p: len(p) == 2),
-                Optional("minimum_price"): And(float, lambda n: 0 <= n),
+                Optional("minimum_credit"): And(float, lambda n: 0 <= n),
             },
             "option_chains": {
                 "expirations": And(int, lambda n: 1 <= n),
