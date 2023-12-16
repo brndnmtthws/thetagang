@@ -243,6 +243,81 @@ def start(config_path, without_ibc=False):
         f"{config['target']['minimum_open_interest']}",
     )
 
+    config_table.add_section()
+    config_table.add_row("[spring_green1]Cash management")
+    config_table.add_row("", "Enabled", "=", f"{config['cash_management']['enabled']}")
+    config_table.add_row(
+        "", "Cash fund", "=", f"{config['cash_management']['cash_fund']}"
+    )
+    config_table.add_row(
+        "",
+        "Target cash",
+        "=",
+        f"{dfmt(config['cash_management']['target_cash_balance'])}",
+    )
+    config_table.add_row(
+        "",
+        "Buy threshold",
+        "=",
+        f"{dfmt(config['cash_management']['buy_threshold'])}",
+    )
+    config_table.add_row(
+        "",
+        "Sell threshold",
+        "=",
+        f"{dfmt(config['cash_management']['sell_threshold'])}",
+    )
+
+    config_table.add_section()
+    config_table.add_row("[spring_green1]Hedging with VIX calls")
+    config_table.add_row("", "Enabled", "=", f"{config['vix_call_hedge']['enabled']}")
+    config_table.add_row(
+        "",
+        "Target delta",
+        "<=",
+        f"{config['vix_call_hedge']['delta']}",
+    )
+    config_table.add_row(
+        "",
+        "Target DTE",
+        ">=",
+        f"{config['vix_call_hedge']['target_dte']}",
+    )
+    config_table.add_row(
+        "",
+        "Ignore DTE",
+        "<=",
+        f"{config['vix_call_hedge']['ignore_dte']}",
+    )
+    config_table.add_row(
+        "",
+        "Ignore DTE",
+        "<=",
+        f"{config['vix_call_hedge']['ignore_dte']}",
+    )
+    config_table.add_row(
+        "",
+        "Close hedges when VIX",
+        ">=",
+        f"{config['vix_call_hedge']['close_hedges_when_vix_exceeds']}",
+    )
+    for alloc in config["vix_call_hedge"]["allocation"]:
+        config_table.add_row()
+        if "lower_bound" in alloc:
+            config_table.add_row(
+                "",
+                f"Allocate {pfmt(alloc['weight'])} when VIXMO",
+                ">=",
+                f"{alloc['lower_bound']}",
+            )
+        if "upper_bound" in alloc:
+            config_table.add_row(
+                "",
+                f"Allocate {pfmt(alloc['weight'])} when VIXMO",
+                "<=",
+                f"{alloc['upper_bound']}",
+            )
+
     symbols_table = Table(
         title="Configured symbols and target weights",
         box=box.SIMPLE_HEAVY,
