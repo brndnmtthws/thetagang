@@ -140,6 +140,25 @@ credit_only = false
 # rolling calls regardless of the total quantity.
 has_excess = true
 
+# We can optionally maintain the high water mark for covered calls by never
+# rolling CCs down, only out. We do this because it's not uncommon for a sharp
+# bounce up after a stock/index falls enough to make the contract eligible for
+# rolling. If we roll the CC down and out, we might be capping our gains when it
+# eventually does bounce back. The trade off here is that you end up with
+# slightly less downside protection.
+#
+# This only applies to rolling calls, and is essentially equivalent to setting
+# the minimum strike of the next contract to the previous strike and only
+# allowing the value to ratchet upwards.
+#
+# While this is off by default, it would be sensible to turn it on if you're
+# trying to capture upside, rather than protect downside.
+#
+# This value can also be set per-symbol, with
+# `symbols.<symbol>.calls.maintain_high_water_mark` (see `symbols.QQQ` example
+# below).
+maintain_high_water_mark = false
+
 [roll_when.puts]
 # Roll puts if they're in the money. Defaults to false if not specified.
 itm = false
@@ -288,6 +307,8 @@ write_threshold = 0.01 # 1%, absolute value
 
 [symbols.QQQ.calls]
 strike_limit = 100.0 # never write a call with a strike below $100
+
+maintain_high_water_mark = true # maintain the high water mark when rolling calls
 
 [symbols.TLT]
 weight = 0.2

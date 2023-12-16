@@ -29,6 +29,7 @@ from thetagang.util import (
     get_target_delta,
     get_write_threshold_perc,
     get_write_threshold_sigma,
+    maintain_high_water_mark,
     midpoint_or_market_price,
     net_option_positions,
     portfolio_positions_to_dict,
@@ -1194,6 +1195,8 @@ class PortfolioManager:
                         max([strike_limit or 0] + average_cost),
                         2,
                     )
+                    if maintain_high_water_mark(self.config, symbol):
+                        strike_limit = max([strike_limit, position.contract.strike])
 
                 elif right.startswith("P"):
                     strike_limit = round(

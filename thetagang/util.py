@@ -227,3 +227,12 @@ def algo_params_from(params):
 
 def get_minimum_credit(config: dict) -> float:
     return config["orders"].get("minimum_credit", 0.0)
+
+
+def maintain_high_water_mark(config: dict, symbol: str) -> bool:
+    if (
+        "calls" in config["symbols"][symbol]
+        and "maintain_high_water_mark" in config["symbols"][symbol]["calls"]
+    ):
+        return config["symbols"][symbol]["calls"]["maintain_high_water_mark"]
+    return config["roll_when"]["calls"]["maintain_high_water_mark"]
