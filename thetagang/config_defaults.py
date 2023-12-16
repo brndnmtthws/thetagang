@@ -26,7 +26,12 @@ DEFAULT_CONFIG = {
     "roll_when": {
         "min_pnl": 0.0,
         "close_at_pnl": 1.0,
-        "calls": {"itm": True, "credit_only": False, "has_excess": True},
+        "calls": {
+            "itm": True,
+            "credit_only": False,
+            "has_excess": True,
+            "maintain_high_water_mark": False,
+        },
         "puts": {"itm": False, "credit_only": False, "has_excess": True},
     },
     "vix_call_hedge": {

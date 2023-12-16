@@ -17,6 +17,7 @@ from thetagang.util import (
     get_target_delta,
     get_write_threshold_perc,
     get_write_threshold_sigma,
+    maintain_high_water_mark,
 )
 
 from .portfolio_manager import PortfolioManager
@@ -163,7 +164,12 @@ def start(config_path, without_ibc=False):
         "=",
         f"{config['roll_when']['calls']['has_excess']}",
     )
-
+    config_table.add_row(
+        "",
+        "Calls: maintain high water mark",
+        "=",
+        f"{config['roll_when']['calls']['maintain_high_water_mark']}",
+    )
     config_table.add_section()
     config_table.add_row("[spring_green1]When writing new contracts")
     config_table.add_row(
@@ -247,6 +253,7 @@ def start(config_path, without_ibc=False):
     symbols_table.add_column("Call delta", justify="right")
     symbols_table.add_column("Call strike limit", justify="right")
     symbols_table.add_column("Call threshold", justify="right")
+    symbols_table.add_column("HWM", justify="right")
     symbols_table.add_column("Put delta", justify="right")
     symbols_table.add_column("Put strike limit", justify="right")
     symbols_table.add_column("Put threshold", justify="right")
@@ -259,6 +266,7 @@ def start(config_path, without_ibc=False):
             f"{ffmt(get_write_threshold_sigma(config, symbol, 'C'))}σ"
             if get_write_threshold_sigma(config, symbol, "C")
             else pfmt(get_write_threshold_perc(config, symbol, "C")),
+            str(maintain_high_water_mark(config, symbol)),
             ffmt(get_target_delta(config, symbol, "P")),
             dfmt(get_strike_limit(config, symbol, "P")),
             f"{ffmt(get_write_threshold_sigma(config, symbol, 'P'))}σ"

@@ -110,6 +110,7 @@ def validate_config(config):
                     Optional("itm"): bool,
                     Optional("credit_only"): bool,
                     Optional("has_excess"): bool,
+                    Optional("maintain_high_water_mark"): bool,
                 },
                 Optional("puts"): {
                     Optional("itm"): bool,
@@ -147,6 +148,7 @@ def validate_config(config):
                         Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
                         Optional("write_threshold_sigma"): And(float, lambda n: n > 0),
                         Optional("strike_limit"): And(float, lambda n: n > 0),
+                        Optional("maintain_high_water_mark"): bool,
                     },
                     Optional("puts"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),
