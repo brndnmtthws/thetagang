@@ -79,13 +79,13 @@ class PortfolioManager:
                 f" status={trade.orderStatus.status}",
             )
 
-    def get_calls(self, portfolio_positions):
-        return self.get_options(portfolio_positions, "C")
+    def get_short_calls(self, portfolio_positions):
+        return self.get_short_contracts(portfolio_positions, "C")
 
-    def get_puts(self, portfolio_positions):
-        return self.get_options(portfolio_positions, "P")
+    def get_short_puts(self, portfolio_positions):
+        return self.get_short_contracts(portfolio_positions, "P")
 
-    def get_options(
+    def get_short_contracts(
         self, portfolio_positions: dict[str, list[PortfolioItem]], right: str
     ):
         ret = []
@@ -97,6 +97,7 @@ class PortfolioManager:
                         isinstance(p.contract, Option)
                         and p.contract.right.startswith(right)
                         and p.contract.symbol in symbols
+                        and p.position < 0  # short positions only
                     ),
                     portfolio_positions[symbol],
                 )
@@ -647,7 +648,7 @@ class PortfolioManager:
 
     def check_puts(self, portfolio_positions):
         # Check for puts which may be rolled to the next expiration or a better price
-        puts = self.get_puts(portfolio_positions)
+        puts = self.get_short_puts(portfolio_positions)
 
         # find puts eligible to be rolled or closed
         rollable_puts = []
@@ -681,7 +682,7 @@ class PortfolioManager:
 
     def check_calls(self, portfolio_positions):
         # Check for calls which may be rolled to the next expiration or a better price
-        calls = self.get_calls(portfolio_positions)
+        calls = self.get_short_calls(portfolio_positions)
 
         # find calls eligible to be rolled
         rollable_calls = []
@@ -1152,7 +1153,7 @@ class PortfolioManager:
                     # if the price is near zero, use the minimum price
                     price = ticker.minTick
 
-                qty = -position.position
+                qty = abs(position.position)
                 order = LimitOrder(
                     "BUY" if is_short else "SELL",
                     qty,
