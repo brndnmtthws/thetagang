@@ -117,12 +117,15 @@ min_pnl = 0.0
 # Optional: Don't roll contracts when the current DTE is greater than this
 # number of days. This helps avoid cases where you end up rolling out to LEAPs.
 # max_dte = 180
+
 # Optional: Create a closing order when the P&L reaches this threshold. This
 # overrides the other parameters, i.e., it ignores DTE and everything else.
 # If not specified, it has no effect. This can handle the case where you have
 # long-dated options that have slowly become worthless and you just want to get
-# them out of your portfolio.
+# them out of your portfolio. This only applies to short contract positions,
+# long positions are ignored.
 # close_at_pnl = 0.99
+
 [roll_when.calls]
 # Roll calls to the next expiration even if they're in the money. Defaults to
 # true if not specified.
