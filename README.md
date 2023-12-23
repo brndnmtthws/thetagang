@@ -15,9 +15,6 @@ Reddit](https://www.reddit.com/r/options/comments/a36k4j/the_wheel_aka_triple_in
 but has been used by many in the past. This bot implements a slightly
 modified version of The Wheel, with my own personal tweaks.
 
-I've been streaming most of the work on this project [on Twitch, so follow me
-over there](https://www.twitch.tv/letsmakestuff).
-
 ## How it works
 
 Start by reading [the Reddit
