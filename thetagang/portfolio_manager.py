@@ -1896,8 +1896,9 @@ class PortfolioManager:
                     return (ticker, order)
 
                 if (
-                    cash_balance > target_cash_balance + buy_threshold
-                    or cash_balance < target_cash_balance - sell_threshold
+                    cash_balance + pending_balance > target_cash_balance + buy_threshold
+                    or cash_balance + pending_balance
+                    < target_cash_balance - sell_threshold
                 ):
                     (ticker, order) = make_order()
                     if ticker and ticker.contract and order:
