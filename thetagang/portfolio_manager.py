@@ -1905,7 +1905,8 @@ class PortfolioManager:
                         self.enqueue_order(ticker.contract, order)
                 else:
                     to_print.append(
-                        "[green]All good, nothing to do here.",
+                        "[green]All good, nothing to do here. "
+                        f"cash_balance={dfmt(cash_balance)} pending_balance={dfmt(pending_balance)}"
                     )
 
             except RuntimeError:
