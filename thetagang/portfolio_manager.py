@@ -20,6 +20,7 @@ from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.util import (
     account_summary_to_dict,
     algo_params_from,
+    count_long_option_positions,
     count_short_option_positions,
     get_higher_price,
     get_lower_price,
@@ -739,7 +740,7 @@ class PortfolioManager:
             if symbol not in symbols:
                 # skip positions we don't care about
                 continue
-            call_count = max(
+            short_call_count = max(
                 [0, count_short_option_positions(symbol, portfolio_positions, "C")]
             )
             stock_count = math.floor(
@@ -762,11 +763,11 @@ class PortfolioManager:
                 )
             )
 
-            target_calls = get_target_calls(
+            target_short_calls = get_target_calls(
                 self.config, stock_count, self.target_quantities[symbol]
             )
-            new_contracts_needed = target_calls - call_count
-            excess_calls = call_count - target_calls
+            new_contracts_needed = target_short_calls - short_call_count
+            excess_calls = short_call_count - target_short_calls
 
             if excess_calls > 0:
                 self.has_excess_calls.add(symbol)
@@ -774,7 +775,7 @@ class PortfolioManager:
                     symbol,
                     "[yellow]None",
                     f"[yellow]Warning: excess_calls={excess_calls} stock_count={stock_count},"
-                    f" call_count={call_count}, target_calls={target_calls}",
+                    f" short_call_count={short_call_count}, target_short_calls={target_short_calls}",
                 )
 
             maximum_new_contracts = self.get_maximum_new_contracts_for(
@@ -841,7 +842,7 @@ class PortfolioManager:
                     "[green]Write",
                     f"[green]Will write {calls_to_write} calls, {new_contracts_needed} needed, "
                     f"limited to {maximum_new_contracts} new contracts, at or above strike ${strike_limit}"
-                    f" (target_calls={target_calls} call_count={call_count} "
+                    f" (target_short_calls={target_short_calls} short_call_count={short_call_count} "
                     f"absolute_daily_change={absolute_daily_change:.2f} write_threshold={write_threshold:.2f})",
                 )
                 to_write.append(
@@ -973,7 +974,9 @@ class PortfolioManager:
         positions_summary_table.add_column("Symbol")
         positions_summary_table.add_column("Shares", justify="right")
         positions_summary_table.add_column("Short puts", justify="right")
+        positions_summary_table.add_column("Long puts", justify="right")
         positions_summary_table.add_column("Short calls", justify="right")
+        positions_summary_table.add_column("Long calls", justify="right")
         positions_summary_table.add_column("Target value", justify="right")
         positions_summary_table.add_column("Target share qty", justify="right")
         positions_summary_table.add_column("Net shares", justify="right")
@@ -1003,15 +1006,27 @@ class PortfolioManager:
                 targets[symbol] / ticker.marketPrice()
             )
 
-            # Current number of short puts
-            put_count = count_short_option_positions(symbol, portfolio_positions, "P")
-            # Current number of short calls
-            call_count = count_short_option_positions(symbol, portfolio_positions, "C")
+            # Current number of puts
+            short_put_count = count_short_option_positions(
+                symbol, portfolio_positions, "P"
+            )
+            long_put_count = count_long_option_positions(
+                symbol, portfolio_positions, "P"
+            )
+            # Current number of calls
+            short_call_count = count_short_option_positions(
+                symbol, portfolio_positions, "C"
+            )
+            long_call_count = count_long_option_positions(
+                symbol, portfolio_positions, "C"
+            )
 
             write_only_when_red = self.config["write_when"]["puts"]["red"]
 
             qty_to_write = math.floor(
-                self.target_quantities[symbol] - current_position - 100 * put_count
+                self.target_quantities[symbol]
+                - current_position
+                - 100 * short_put_count
             )
             net_target_shares = qty_to_write
             net_target_puts = net_target_shares // 100
@@ -1019,8 +1034,10 @@ class PortfolioManager:
             positions_summary_table.add_row(
                 symbol,
                 ifmt(current_position),
-                ifmt(put_count),
-                ifmt(call_count),
+                ifmt(short_put_count),
+                ifmt(long_put_count),
+                ifmt(short_call_count),
+                ifmt(long_call_count),
                 dfmt(targets[symbol]),
                 ifmt(self.target_quantities[symbol]),
                 ifmt(net_target_shares),
@@ -2071,6 +2088,7 @@ class PortfolioManager:
             )
 
     def get_write_threshold(self, ticker: Ticker, right: str) -> tuple[float, float]:
+        assert ticker.contract is not None
         absolute_daily_change = math.fabs(ticker.marketPrice() - ticker.close)
 
         threshold_sigma = get_write_threshold_sigma(
