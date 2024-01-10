@@ -1851,7 +1851,7 @@ class PortfolioManager:
                         else self.config["orders"]["algo"]
                     )
 
-                    amount = cash_balance - (target_cash_balance + pending_balance)
+                    amount = cash_balance + pending_balance - target_cash_balance
                     price = ticker.ask if amount > 0 else ticker.bid
                     qty = amount // price
 
