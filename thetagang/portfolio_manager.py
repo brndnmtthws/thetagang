@@ -1871,9 +1871,9 @@ class PortfolioManager:
                         # subtract 1 to keep cash balance above target
                         qty -= 1
                         to_print.append(
-                            f"[green]cash_balance={dfmt(cash_balance)} which is less than "
+                            f"[green](cash_balance + pending_balance)={dfmt(cash_balance + pending_balance)} which is less than "
                             f"(target_cash_balance + pending_balance - sell_threshold)="
-                            f"{(dfmt(target_cash_balance + pending_balance - sell_threshold))} "
+                            f"{(dfmt(target_cash_balance - sell_threshold))} "
                             f"with pending_balance={dfmt(pending_balance)}"
                         )
                         if symbol not in portfolio_positions:
