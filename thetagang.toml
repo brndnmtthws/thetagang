@@ -185,6 +185,9 @@ green = true
 # With covered calls, we can cap the number of calls to write by this factor. At
 # 1.0, we write covered calls on 100% of our positions. At 0.5, we'd only write
 # on 50% of our positions. This value must be between 1 and 0 inclusive.
+#
+# This can also be set per-symbol with
+# `symbols.<symbol>.calls.cap_factor`.
 cap_factor = 1.0
 
 # We may want to leave some percentage of our underlying stock perpetually
@@ -197,6 +200,9 @@ cap_factor = 1.0
 # and a smaller number (down to 0.0, 0%) is more bearish (i.e., cover all
 # positions with calls). This essentially sets a floor on the number of shares
 # we try to hold on to in order to avoid missing out on potential upside.
+#
+# This can also be set per-symbol with
+# `symbols.<symbol>.calls.cap_target_floor`.
 cap_target_floor = 0.0
 
 [write_when.puts]
@@ -312,6 +318,11 @@ write_threshold = 0.01 # 1%, absolute value
 strike_limit = 100.0 # never write a call with a strike below $100
 
 maintain_high_water_mark = true # maintain the high water mark when rolling calls
+
+# These values can (optionally) be set on a per-symbol basis, in addition to
+# `write_when.calls.cap_factor` and `write_when.calls.cap_target_floor.
+cap_factor = 1.0
+cap_target_floor = 0.0
 
 [symbols.TLT]
 weight = 0.2
