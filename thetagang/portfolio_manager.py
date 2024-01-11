@@ -764,7 +764,7 @@ class PortfolioManager:
             )
 
             target_short_calls = get_target_calls(
-                self.config, stock_count, self.target_quantities[symbol]
+                self.config, symbol, stock_count, self.target_quantities[symbol]
             )
             new_contracts_needed = target_short_calls - short_call_count
             excess_calls = short_call_count - target_short_calls

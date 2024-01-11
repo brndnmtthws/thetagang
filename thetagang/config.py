@@ -149,6 +149,8 @@ def validate_config(config):
                         Optional("write_threshold_sigma"): And(float, lambda n: n > 0),
                         Optional("strike_limit"): And(float, lambda n: n > 0),
                         Optional("maintain_high_water_mark"): bool,
+                        Optional("cap_factor"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("cap_target_floor"): And(float, lambda n: 0 <= n <= 1),
                     },
                     Optional("puts"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),

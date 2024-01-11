@@ -2,7 +2,7 @@ import math
 from datetime import datetime
 from typing import Optional
 
-from ib_insync import PortfolioItem, TagValue, util
+from ib_insync import PortfolioItem, TagValue, Ticker, util
 from ib_insync.contract import Option
 
 from thetagang.options import option_dte
@@ -101,31 +101,35 @@ def wait_n_seconds(pred, body, seconds_to_wait, started_at=None):
         wait_n_seconds(pred, body, seconds_to_wait, started_at)
 
 
-def get_higher_price(ticker) -> float:
+def get_higher_price(ticker: Ticker) -> float:
     # Returns the highest of either the option model price, the midpoint, or the
     # market price. The midpoint is usually a bit higher than the IB model's
     # pricing, but we want to avoid leaving money on the table in cases where
     # the spread might be messed up. This may in some cases make it harder for
     # orders to fill in a given day, but I think that's a reasonable tradeoff to
     # avoid leaving money on the table.
-    if ticker.modelGreeks:
+    if ticker.modelGreeks and ticker.modelGreeks.optPrice:
         return max([midpoint_or_market_price(ticker), ticker.modelGreeks.optPrice])
     return midpoint_or_market_price(ticker)
 
 
-def get_lower_price(ticker) -> float:
+def get_lower_price(ticker: Ticker) -> float:
     # Same as get_highest_price(), except get the lower price instead.
-    if ticker.modelGreeks:
+    if ticker.modelGreeks and ticker.modelGreeks.optPrice:
         return min([midpoint_or_market_price(ticker), ticker.modelGreeks.optPrice])
     return midpoint_or_market_price(ticker)
 
 
-def midpoint_or_market_price(ticker) -> float:
+def midpoint_or_market_price(ticker: Ticker) -> float:
     # As per the ib_insync docs, marketPrice returns the last price first, but
     # we often prefer the midpoint over the last price. This function pulls the
     # midpoint first, then falls back to marketPrice() if midpoint is nan.
     if util.isNan(ticker.midpoint()):
-        if util.isNan(ticker.marketPrice()) and ticker.modelGreeks:
+        if (
+            util.isNan(ticker.marketPrice())
+            and ticker.modelGreeks
+            and ticker.modelGreeks.optPrice
+        ):
             # Fallback to the model price if the greeks are available
             return ticker.modelGreeks.optPrice
         else:
@@ -134,7 +138,7 @@ def midpoint_or_market_price(ticker) -> float:
     return ticker.midpoint()
 
 
-def get_target_delta(config, symbol, right):
+def get_target_delta(config: dict, symbol: str, right: str):
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
     if (
         p_or_c in config["symbols"][symbol]
@@ -148,6 +152,24 @@ def get_target_delta(config, symbol, right):
     return config["target"]["delta"]
 
 
+def get_cap_factor(config: dict, symbol: str):
+    if (
+        "calls" in config["symbols"][symbol]
+        and "cap_factor" in config["symbols"][symbol]["calls"]
+    ):
+        return config["symbols"][symbol]["calls"]["cap_factor"]
+    return config["write_when"]["calls"]["cap_factor"]
+
+
+def get_cap_target_floor(config: dict, symbol: str):
+    if (
+        "calls" in config["symbols"][symbol]
+        and "cap_target_floor" in config["symbols"][symbol]["calls"]
+    ):
+        return config["symbols"][symbol]["calls"]["cap_target_floor"]
+    return config["write_when"]["calls"]["cap_target_floor"]
+
+
 def get_strike_limit(config: dict, symbol: str, right: str) -> Optional[float]:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
     if (
@@ -158,9 +180,11 @@ def get_strike_limit(config: dict, symbol: str, right: str) -> Optional[float]:
     return None
 
 
-def get_target_calls(config: dict, current_shares: int, target_shares: int) -> int:
-    cap_factor = config["write_when"]["calls"]["cap_factor"]
-    cap_target_floor = config["write_when"]["calls"]["cap_target_floor"]
+def get_target_calls(
+    config: dict, symbol: str, current_shares: int, target_shares: int
+) -> int:
+    cap_factor = get_cap_factor(config, symbol)
+    cap_target_floor = get_cap_target_floor(config, symbol)
     min_uncovered = (target_shares * cap_target_floor) // 100
     max_covered = (current_shares * cap_factor) // 100
     total_coverable = current_shares // 100
