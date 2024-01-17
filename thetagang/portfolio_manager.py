@@ -311,11 +311,18 @@ class PortfolioManager:
             )
 
         if pnl >= roll_when_pnl:
-            table.add_row(
-                f"{put.contract.localSymbol}",
-                "[blue]Roll",
-                f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
-            )
+            if "max_dte" in self.config["roll_when"]:
+                table.add_row(
+                    f"{put.contract.localSymbol}",
+                    "[blue]Roll",
+                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['max_dte']} and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_pnl , 1)}",
+                )
+            else:
+                table.add_row(
+                    f"{put.contract.localSymbol}",
+                    "[blue]Roll",
+                    f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
+                )
             return True
 
         return False
@@ -388,11 +395,19 @@ class PortfolioManager:
             )
 
         if pnl >= roll_when_pnl:
-            table.add_row(
-                f"{call.contract.localSymbol}",
-                "[blue]Roll",
-                f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
-            )
+            if "max_dte" in self.config["roll_when"]:
+                table.add_row(
+                    f"{call.contract.localSymbol}",
+                    "[blue]Roll",
+                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config['roll_when']['max_dte']}"
+                    f" and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_pnl , 1)}",
+                )
+            else:
+                table.add_row(
+                    f"{call.contract.localSymbol}",
+                    "[blue]Roll",
+                    f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
+                )
             return True
 
         return False
