@@ -20,6 +20,7 @@ from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.util import (
     account_summary_to_dict,
     algo_params_from,
+    calculate_net_short_positions,
     count_long_option_positions,
     count_short_option_positions,
     get_higher_price,
@@ -749,14 +750,17 @@ class PortfolioManager:
         call_actions_table.add_column("Symbol")
         call_actions_table.add_column("Action")
         call_actions_table.add_column("Detail")
+        calculate_net_contracts = self.config["write_when"]["calculate_net_contracts"]
         to_write = []
         symbols = set(self.get_symbols())
         for symbol in portfolio_positions:
             if symbol not in symbols:
                 # skip positions we don't care about
                 continue
-            short_call_count = max(
-                [0, count_short_option_positions(symbol, portfolio_positions, "C")]
+            short_call_count = (
+                calculate_net_short_positions(symbol, portfolio_positions, "C")
+                if calculate_net_contracts
+                else count_short_option_positions(symbol, portfolio_positions, "C")
             )
             stock_count = math.floor(
                 sum(
@@ -985,17 +989,23 @@ class PortfolioManager:
         targets = dict()
         target_additional_quantity = dict()
 
+        calculate_net_contracts = self.config["write_when"]["calculate_net_contracts"]
+
         positions_summary_table = Table(title="Positions summary")
         positions_summary_table.add_column("Symbol")
         positions_summary_table.add_column("Shares", justify="right")
-        positions_summary_table.add_column("Short puts", justify="right")
-        positions_summary_table.add_column("Long puts", justify="right")
-        positions_summary_table.add_column("Short calls", justify="right")
-        positions_summary_table.add_column("Long calls", justify="right")
+        positions_summary_table.add_column("Puts: short", justify="right")
+        positions_summary_table.add_column("Puts: long", justify="right")
+        if calculate_net_contracts:
+            positions_summary_table.add_column("Puts: net short", justify="right")
+        positions_summary_table.add_column("Calls: short", justify="right")
+        positions_summary_table.add_column("Calls: long", justify="right")
+        if calculate_net_contracts:
+            positions_summary_table.add_column("Calls: net short", justify="right")
         positions_summary_table.add_column("Target value", justify="right")
         positions_summary_table.add_column("Target share qty", justify="right")
-        positions_summary_table.add_column("Net shares", justify="right")
-        positions_summary_table.add_column("Net contracts", justify="right")
+        positions_summary_table.add_column("Net target shares", justify="right")
+        positions_summary_table.add_column("Net target contracts", justify="right")
 
         actions = Table(title="Put writing summary")
         actions.add_column("Symbol")
@@ -1022,42 +1032,66 @@ class PortfolioManager:
             )
 
             # Current number of puts
-            short_put_count = count_short_option_positions(
+            net_short_put_count = short_put_count = count_short_option_positions(
                 symbol, portfolio_positions, "P"
             )
             long_put_count = count_long_option_positions(
                 symbol, portfolio_positions, "P"
             )
             # Current number of calls
-            short_call_count = count_short_option_positions(
+            net_short_call_count = short_call_count = count_short_option_positions(
                 symbol, portfolio_positions, "C"
             )
             long_call_count = count_long_option_positions(
                 symbol, portfolio_positions, "C"
             )
 
+            if calculate_net_contracts:
+                net_short_put_count = calculate_net_short_positions(
+                    symbol, portfolio_positions, "P"
+                )
+                net_short_call_count = calculate_net_short_positions(
+                    symbol, portfolio_positions, "C"
+                )
+
             write_only_when_red = self.config["write_when"]["puts"]["red"]
 
             qty_to_write = math.floor(
                 self.target_quantities[symbol]
                 - current_position
-                - 100 * short_put_count
+                - 100 * net_short_put_count
             )
             net_target_shares = qty_to_write
             net_target_puts = net_target_shares // 100
 
-            positions_summary_table.add_row(
-                symbol,
-                ifmt(current_position),
-                ifmt(short_put_count),
-                ifmt(long_put_count),
-                ifmt(short_call_count),
-                ifmt(long_call_count),
-                dfmt(targets[symbol]),
-                ifmt(self.target_quantities[symbol]),
-                ifmt(net_target_shares),
-                ifmt(net_target_puts),
-            )
+            if calculate_net_contracts:
+                positions_summary_table.add_row(
+                    symbol,
+                    ifmt(current_position),
+                    ifmt(short_put_count),
+                    ifmt(long_put_count),
+                    ifmt(net_short_put_count),
+                    ifmt(short_call_count),
+                    ifmt(long_call_count),
+                    ifmt(net_short_call_count),
+                    dfmt(targets[symbol]),
+                    ifmt(self.target_quantities[symbol]),
+                    ifmt(net_target_shares),
+                    ifmt(net_target_puts),
+                )
+            else:
+                positions_summary_table.add_row(
+                    symbol,
+                    ifmt(current_position),
+                    ifmt(short_put_count),
+                    ifmt(long_put_count),
+                    ifmt(short_call_count),
+                    ifmt(long_call_count),
+                    dfmt(targets[symbol]),
+                    ifmt(self.target_quantities[symbol]),
+                    ifmt(net_target_shares),
+                    ifmt(net_target_puts),
+                )
 
             def is_ok_to_write_puts(
                 symbol: str,

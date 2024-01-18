@@ -1,5 +1,6 @@
 import math
 from datetime import datetime
+from operator import itemgetter
 from typing import Optional
 
 from ib_insync import PortfolioItem, TagValue, Ticker, util
@@ -31,41 +32,107 @@ def position_pnl(position):
     return position.unrealizedPNL / abs(position.averageCost * position.position)
 
 
-def count_short_option_positions(symbol, portfolio_positions, right):
-    if symbol in portfolio_positions:
-        return math.floor(
-            -sum(
-                [
-                    p.position
-                    for p in portfolio_positions[symbol]
-                    if isinstance(p.contract, Option)
-                    and p.contract.right.upper().startswith(right.upper())
-                    and p.position < 0
-                ]
-            )
+def count_short_option_positions(
+    symbol: str, portfolio_positions: dict[str, list[PortfolioItem]], right: str
+):
+    if symbol not in portfolio_positions:
+        return 0
+
+    return math.floor(
+        -sum(
+            [
+                p.position
+                for p in portfolio_positions[symbol]
+                if isinstance(p.contract, Option)
+                and p.contract.right.upper().startswith(right.upper())
+                and p.position < 0
+            ]
         )
+    )
 
-    return 0
 
+def count_long_option_positions(
+    symbol: str, portfolio_positions: dict[str, list[PortfolioItem]], right: str
+):
+    if symbol not in portfolio_positions:
+        return 0
 
-def count_long_option_positions(symbol, portfolio_positions, right):
-    if symbol in portfolio_positions:
-        return math.floor(
-            sum(
-                [
-                    p.position
-                    for p in portfolio_positions[symbol]
-                    if isinstance(p.contract, Option)
-                    and p.contract.right.upper().startswith(right.upper())
-                    and p.position > 0
-                ]
-            )
+    return math.floor(
+        sum(
+            [
+                p.position
+                for p in portfolio_positions[symbol]
+                if isinstance(p.contract, Option)
+                and p.contract.right.upper().startswith(right.upper())
+                and p.position > 0
+            ]
         )
+    )
 
-    return 0
+
+def calculate_net_short_positions(
+    symbol: str, portfolio_positions: dict[str, list[PortfolioItem]], right: str
+) -> int:
+    if symbol not in portfolio_positions:
+        return 0
+
+    shorts = [
+        (
+            option_dte(p.contract.lastTradeDateOrContractMonth),
+            p.contract.strike,
+            p.position,
+        )
+        for p in portfolio_positions[symbol]
+        if isinstance(p.contract, Option)
+        and p.contract.right.upper().startswith(right.upper())
+        and p.position < 0
+    ]
+    longs = [
+        (
+            option_dte(p.contract.lastTradeDateOrContractMonth),
+            p.contract.strike,
+            p.position,
+        )
+        for p in portfolio_positions[symbol]
+        if isinstance(p.contract, Option)
+        and p.contract.right.upper().startswith(right.upper())
+        and p.position > 0
+    ]
+    shorts = sorted(shorts, key=itemgetter(0, 1), reverse=right.upper().startswith("P"))
+    longs = sorted(longs, key=itemgetter(0, 1), reverse=right.upper().startswith("P"))
+
+    def calc_net(short_dte: int, short_strike: float, short_position: float):
+        net = short_position
+        for i in range(len(longs)):
+            (long_dte, long_strike, long_position) = longs[i]
+            if long_dte >= short_dte:
+                if (right.upper().startswith("P") and long_strike >= short_strike) or (
+                    right.upper().startswith("C") and long_strike <= short_strike
+                ):
+                    net = short_position + long_position
+                if net > 0:
+                    short_position = 0
+                    long_position = net
+                elif net < 0:
+                    long_position = 0
+                    short_position = net
+                else:
+                    long_position = 0
+                    short_position = 0
+            longs[i] = (long_dte, long_strike, long_position)
+        return min([0.0, net])
+
+    nets = [calc_net(*short) for short in shorts]
+
+    return math.floor(-sum(nets))
 
 
-def net_option_positions(symbol, portfolio_positions, right, ignore_dte=None):
+def net_option_positions(
+    symbol: str,
+    portfolio_positions: dict[str, list[PortfolioItem]],
+    right: str,
+    ignore_dte=None,
+):
     if symbol in portfolio_positions:
         return math.floor(
             sum(
