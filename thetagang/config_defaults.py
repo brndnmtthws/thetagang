@@ -16,6 +16,7 @@ DEFAULT_CONFIG = {
         "delta": 0.3,
     },
     "write_when": {
+        "calculate_net_contracts": False,
         "puts": {"red": False},
         "calls": {
             "green": False,

@@ -91,6 +91,7 @@ def validate_config(config):
                 "strikes": And(int, lambda n: 1 <= n),
             },
             Optional("write_when"): {
+                Optional("calculate_net_contracts"): bool,
                 Optional("calls"): {
                     Optional("green"): bool,
                     Optional("cap_factor"): And(float, lambda n: 0 <= n <= 1),

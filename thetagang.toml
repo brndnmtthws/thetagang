@@ -178,6 +178,31 @@ credit_only = false
 # rolling puts regardless of the total quantity.
 has_excess = true
 
+[write_when]
+# By default, we ignore long option positions when calculating whether we can
+# write new contracts. This, however, limits the ability to utilize spreads. For
+# example, we might want to buy some long-dated puts when they're cheap, and
+# then we can sell additional short-dated puts (i.e., a calendar spread).
+# ThetaGang won't open a calendar spread for you by purchasing longer-dated
+# contracts, but if you were to buy some LEAPs yourself, ThetaGang could take
+# advantage of those positions when calculating whether to write additional
+# contracts.
+#
+# If you set this value to true, ThetaGang will calculate the net positions by
+# including the long contracts in its calculations. It does this by greedily
+# matching short positions with long positions such that they cancel each other
+# out. ThetaGang will only match on those positions where the long leg has a
+# greater DTE, and the strike is closer to the money (i.e., the strike for puts
+# must be >=, and the strike for calls must be <=).
+#
+# IMPORTANT NOTE: ThetaGang doesn't manage long contracts at all, so you
+# introduce the risk of having excess short positions when the long contracts
+# eventually expire. For the time being, you need to manage the long legs
+# yourself (by either closing the short side when the long positions expire, or
+# rolling the long positions as they approach expiration). You can avoid rolling
+# excess positions with `roll_when.calls/puts.has_excess = false`.
+calculate_net_contracts = false
+
 [write_when.calls]
 # Optionally, only write calls when the underlying is green
 green = true

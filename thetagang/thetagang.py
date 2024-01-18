@@ -174,6 +174,12 @@ def start(config_path, without_ibc=False):
     config_table.add_row("[spring_green1]When writing new contracts")
     config_table.add_row(
         "",
+        "Calculate net contract positions",
+        "=",
+        f"{config['write_when']['calculate_net_contracts']}",
+    )
+    config_table.add_row(
+        "",
         "Puts, only write when red",
         "=",
         f"{config['write_when']['puts']['red']}",
