@@ -1453,6 +1453,10 @@ class PortfolioManager:
                 return strikes[:chain_strikes]
 
             strikes = nearest_strikes(strikes)
+            if len(strikes) < 1:
+                raise RuntimeError(
+                    f"No valid contract strikes found for {main_contract.symbol}. Continuing anyway..."
+                )
             console.print(
                 f"Scanning between strikes {strikes[0]} and {strikes[-1]},"
                 f" from expirations {expirations[0]} to {expirations[-1]}"
@@ -1595,7 +1599,7 @@ class PortfolioManager:
                     # because of this, we'll allow rolling to a less-than-optimal
                     # strike, provided it's still a credit
                     tickers = filter_remaining_tickers(delta_reject_tickers, False)
-                if len(tickers) == 0:
+                if len(tickers) < 1:
                     # if there are _still_ no tickers remaining, there's nothing
                     # more we can do
                     raise RuntimeError(
