@@ -1,4 +1,6 @@
-DEFAULT_CONFIG = {
+from typing import Any, Dict
+
+DEFAULT_CONFIG: Dict[str, Dict[str, Any]] = {
     "ib_insync": {
         "api_response_wait_time": 60,
     },

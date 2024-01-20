@@ -2,9 +2,10 @@ import logging
 
 import click
 import click_log
+import monkeytype
 
 logger = logging.getLogger(__name__)
-click_log.basic_config(logger)
+click_log.basic_config(logger)  # type: ignore
 
 
 CONTEXT_SETTINGS = dict(
@@ -13,7 +14,7 @@ CONTEXT_SETTINGS = dict(
 
 
 @click.command(context_settings=CONTEXT_SETTINGS)
-@click_log.simple_verbosity_option(logger)
+@click_log.simple_verbosity_option(logger)  # type: ignore
 @click.option(
     "-c",
     "--config",
@@ -28,7 +29,7 @@ CONTEXT_SETTINGS = dict(
     help="Run without IBC. Enable this if you want to run the TWS "
     "gateway yourself, without having ThetaGang manage it for you.",
 )
-def cli(config, without_ibc):
+def cli(config: str, without_ibc: bool) -> None:
     """ThetaGang is an IBKR bot for collecting money.
 
     You can configure this tool by supplying a toml configuration file.
@@ -38,4 +39,5 @@ def cli(config, without_ibc):
 
     from .thetagang import start
 
-    start(config, without_ibc)
+    with monkeytype.trace():
+        start(config, without_ibc)

@@ -1,4 +1,5 @@
 import math
+from typing import Any, Dict
 
 from rich.console import Console
 from schema import And, Optional, Or, Schema
@@ -10,7 +11,7 @@ error_console = Console(stderr=True, style="bold red")
 console = Console()
 
 
-def normalize_config(config):
+def normalize_config(config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     # Do any pre-processing necessary to the config here, such as handling
     # defaults, deprecated values, config changes, etc.
 
@@ -57,11 +58,13 @@ def normalize_config(config):
     return apply_default_values(config)
 
 
-def apply_default_values(config):
+def apply_default_values(
+    config: Dict[str, Dict[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
     return dict_merge(config_defaults.DEFAULT_CONFIG, config)
 
 
-def validate_config(config):
+def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
     if "minimum_cushion" in config["account"]:
         raise RuntimeError(
             "Config error: minimum_cushion is deprecated and replaced with margin_usage. See sample config for details."
@@ -69,7 +72,7 @@ def validate_config(config):
 
     algo_settings = {
         "strategy": And(str, len),
-        "params": [And([str], lambda p: len(p) == 2)],
+        "params": [And([str], lambda p: len(p) == 2)],  # type: ignore
     }
 
     schema = Schema(
@@ -83,7 +86,7 @@ def validate_config(config):
             "orders": {
                 Optional("exchange"): And(str, len),
                 Optional("algo"): algo_settings,
-                Optional("price_update_delay"): And([int], lambda p: len(p) == 2),
+                Optional("price_update_delay"): And([int], lambda p: len(p) == 2),  # type: ignore
                 Optional("minimum_credit"): And(float, lambda n: 0 <= n),
             },
             "option_chains": {
@@ -241,7 +244,7 @@ def validate_config(config):
             },
         }
     )
-    schema.validate(config)
+    schema.validate(config)  # type: ignore
 
     assert len(config["symbols"]) > 0
 

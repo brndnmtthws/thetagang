@@ -16,9 +16,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 from collections.abc import Mapping
+from typing import Any, Dict
 
 
-def dict_merge(dct, merge_dct):
+def dict_merge(dct: Dict[str, Any], merge_dct: Dict[str, Any]) -> Dict[str, Any]:
     """Recursive dict merge. Inspired by :meth:``dict.update()``, instead of
     updating only top-level keys, dict_merge recurses down into dicts nested
     to an arbitrary depth, updating keys. The ``merge_dct`` is merged into
