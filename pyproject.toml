@@ -58,9 +58,10 @@ requires = ["poetry>=0.12"]
 [tool.ruff]
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.
 # Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
-# McCabe complexity (`C901`) by default.
-select = ["E4", "E7", "E9", "F", "I", "W"]
-ignore = []
+# McCabe complexity (`C901`) by default. "A" enables type annotation checks.
+select = ["E4", "E7", "E9", "F", "I", "W", "ANN"]
+# ignore self method type annotations
+ignore = ["ANN1"]
 
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
@@ -70,3 +71,8 @@ unfixable = []
 line-length = 88
 
 target-version = "py39"
+
+[tool.pyright]
+defineConstant = { DEBUG = true }
+stubPath = "stubs"
+reportUnknownLambdaType = false

@@ -1,6 +1,4 @@
-#!/usr/bin/env python
-
-import asyncio
+from asyncio import Future
 
 from ib_insync import IB, IBC, Watchdog, util
 from ib_insync.contract import Contract
@@ -27,7 +25,7 @@ util.patchAsyncio()
 console = Console()
 
 
-def start(config_path, without_ibc=False):
+def start(config_path: str, without_ibc: bool = False) -> None:
     import toml
 
     with open(config_path, "r", encoding="utf8") as file:
@@ -367,15 +365,15 @@ def start(config_path, without_ibc=False):
     console.print(Panel(tree, title="Config"))
 
     if config.get("ib_insync", {}).get("logfile"):
-        util.logToFile(config["ib_insync"]["logfile"])
+        util.logToFile(config["ib_insync"]["logfile"])  # type: ignore
 
-    def onConnected():
+    def onConnected() -> None:
         portfolio_manager.manage()
 
     ib = IB()
     ib.connectedEvent += onConnected
 
-    completion_future = asyncio.Future()
+    completion_future: Future[bool] = Future()
     portfolio_manager = PortfolioManager(config, ib, completion_future)
 
     probeContractConfig = config["watchdog"]["probeContract"]
@@ -402,7 +400,7 @@ def start(config_path, without_ibc=False):
         watchdog = Watchdog(ibc, ib, probeContract=probeContract, **watchdogConfig)
         watchdog.start()
 
-        ib.run(completion_future)
+        ib.run(completion_future)  # type: ignore
         watchdog.stop()
         ibc.terminate()
     else:
@@ -413,5 +411,5 @@ def start(config_path, without_ibc=False):
             timeout=watchdogConfig["probeTimeout"],
             account=config["account"]["number"],
         )
-        ib.run(completion_future)
+        ib.run(completion_future)  # type: ignore
         ib.disconnect()

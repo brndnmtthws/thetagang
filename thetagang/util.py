@@ -1,25 +1,29 @@
 import math
 from datetime import datetime
 from operator import itemgetter
-from typing import Optional
+from typing import Any, Callable, Dict, List, Optional
 
-from ib_insync import PortfolioItem, TagValue, Ticker, util
+import ib_insync.objects
+import ib_insync.ticker
+from ib_insync import AccountValue, PortfolioItem, TagValue, Ticker, util
 from ib_insync.contract import Option
 
 from thetagang.options import option_dte
 
 
-def account_summary_to_dict(account_summary):
-    d = dict()
+def account_summary_to_dict(
+    account_summary: List[AccountValue],
+) -> Dict[str, AccountValue]:
+    d: Dict[str, AccountValue] = dict()
     for s in account_summary:
         d[s.tag] = s
     return d
 
 
 def portfolio_positions_to_dict(
-    portfolio_positions: list[PortfolioItem],
-) -> dict[str, list[PortfolioItem]]:
-    d = dict()
+    portfolio_positions: List[PortfolioItem],
+) -> Dict[str, List[PortfolioItem]]:
+    d: Dict[str, List[PortfolioItem]] = dict()
     for p in portfolio_positions:
         symbol = p.contract.symbol
         if symbol not in d:
@@ -28,13 +32,13 @@ def portfolio_positions_to_dict(
     return d
 
 
-def position_pnl(position):
+def position_pnl(position: ib_insync.objects.PortfolioItem) -> float:
     return position.unrealizedPNL / abs(position.averageCost * position.position)
 
 
 def count_short_option_positions(
-    symbol: str, portfolio_positions: dict[str, list[PortfolioItem]], right: str
-):
+    symbol: str, portfolio_positions: Dict[str, List[PortfolioItem]], right: str
+) -> int:
     if symbol not in portfolio_positions:
         return 0
 
@@ -52,8 +56,8 @@ def count_short_option_positions(
 
 
 def count_long_option_positions(
-    symbol: str, portfolio_positions: dict[str, list[PortfolioItem]], right: str
-):
+    symbol: str, portfolio_positions: Dict[str, List[PortfolioItem]], right: str
+) -> int:
     if symbol not in portfolio_positions:
         return 0
 
@@ -71,7 +75,7 @@ def count_long_option_positions(
 
 
 def calculate_net_short_positions(
-    symbol: str, portfolio_positions: dict[str, list[PortfolioItem]], right: str
+    symbol: str, portfolio_positions: Dict[str, List[PortfolioItem]], right: str
 ) -> int:
     if symbol not in portfolio_positions:
         return 0
@@ -101,7 +105,7 @@ def calculate_net_short_positions(
     shorts = sorted(shorts, key=itemgetter(0, 1), reverse=right.upper().startswith("P"))
     longs = sorted(longs, key=itemgetter(0, 1), reverse=right.upper().startswith("P"))
 
-    def calc_net(short_dte: int, short_strike: float, short_position: float):
+    def calc_net(short_dte: int, short_strike: float, short_position: float) -> float:
         net = short_position
         for i in range(len(longs)):
             (long_dte, long_strike, long_position) = longs[i]
@@ -129,10 +133,10 @@ def calculate_net_short_positions(
 
 def net_option_positions(
     symbol: str,
-    portfolio_positions: dict[str, list[PortfolioItem]],
+    portfolio_positions: Dict[str, List[PortfolioItem]],
     right: str,
-    ignore_dte=None,
-):
+    ignore_dte: Optional[int] = None,
+) -> int:
     if symbol in portfolio_positions:
         return math.floor(
             sum(
@@ -154,7 +158,12 @@ def net_option_positions(
     return 0
 
 
-def wait_n_seconds(pred, body, seconds_to_wait, started_at=None):
+def wait_n_seconds(
+    pred: Callable[[], bool],
+    body: Callable[[float], Any],
+    seconds_to_wait: int,
+    started_at: Optional[datetime] = None,
+) -> None:
     if not started_at:
         started_at = datetime.now()
     diff = datetime.now() - started_at
@@ -205,7 +214,7 @@ def midpoint_or_market_price(ticker: Ticker) -> float:
     return ticker.midpoint()
 
 
-def get_target_delta(config: dict, symbol: str, right: str):
+def get_target_delta(config: Dict[str, Any], symbol: str, right: str) -> float:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
     if (
         p_or_c in config["symbols"][symbol]
@@ -219,7 +228,7 @@ def get_target_delta(config: dict, symbol: str, right: str):
     return config["target"]["delta"]
 
 
-def get_cap_factor(config: dict, symbol: str):
+def get_cap_factor(config: Dict[str, Any], symbol: str) -> float:
     if (
         "calls" in config["symbols"][symbol]
         and "cap_factor" in config["symbols"][symbol]["calls"]
@@ -228,7 +237,7 @@ def get_cap_factor(config: dict, symbol: str):
     return config["write_when"]["calls"]["cap_factor"]
 
 
-def get_cap_target_floor(config: dict, symbol: str):
+def get_cap_target_floor(config: Dict[str, Any], symbol: str) -> float:
     if (
         "calls" in config["symbols"][symbol]
         and "cap_target_floor" in config["symbols"][symbol]["calls"]
@@ -237,7 +246,9 @@ def get_cap_target_floor(config: dict, symbol: str):
     return config["write_when"]["calls"]["cap_target_floor"]
 
 
-def get_strike_limit(config: dict, symbol: str, right: str) -> Optional[float]:
+def get_strike_limit(
+    config: Dict[str, Any], symbol: str, right: str
+) -> Optional[float]:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
     if (
         p_or_c in config["symbols"][symbol]
@@ -248,7 +259,7 @@ def get_strike_limit(config: dict, symbol: str, right: str) -> Optional[float]:
 
 
 def get_target_calls(
-    config: dict, symbol: str, current_shares: int, target_shares: int
+    config: Dict[str, Any], symbol: str, current_shares: int, target_shares: int
 ) -> int:
     cap_factor = get_cap_factor(config, symbol)
     cap_target_floor = get_cap_target_floor(config, symbol)
@@ -260,7 +271,7 @@ def get_target_calls(
 
 
 def get_write_threshold_sigma(
-    config: dict, symbol: Optional[str], right: str
+    config: Dict[str, Any], symbol: Optional[str], right: str
 ) -> Optional[float]:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
     if symbol:
@@ -290,7 +301,9 @@ def get_write_threshold_sigma(
     return None
 
 
-def get_write_threshold_perc(config: dict, symbol: Optional[str], right: str) -> float:
+def get_write_threshold_perc(
+    config: Dict[str, Any], symbol: Optional[str], right: str
+) -> float:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
     if symbol:
         if (
@@ -312,15 +325,15 @@ def get_write_threshold_perc(config: dict, symbol: Optional[str], right: str) ->
     return 0.0
 
 
-def algo_params_from(params):
+def algo_params_from(params: List[str]) -> List[TagValue]:
     return [TagValue(p[0], p[1]) for p in params]
 
 
-def get_minimum_credit(config: dict) -> float:
+def get_minimum_credit(config: Dict[str, Any]) -> float:
     return config["orders"].get("minimum_credit", 0.0)
 
 
-def maintain_high_water_mark(config: dict, symbol: str) -> bool:
+def maintain_high_water_mark(config: Dict[str, Any], symbol: str) -> bool:
     if (
         "calls" in config["symbols"][symbol]
         and "maintain_high_water_mark" in config["symbols"][symbol]["calls"]
