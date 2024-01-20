@@ -63,6 +63,8 @@ select = ["E4", "E7", "E9", "F", "I", "W", "ANN"]
 # ignore self method type annotations
 ignore = ["ANN1"]
 
+exclude = ["stubs"]
+
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
 unfixable = []
