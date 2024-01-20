@@ -36,60 +36,72 @@ def position_pnl(position: ib_insync.objects.PortfolioItem) -> float:
     return position.unrealizedPNL / abs(position.averageCost * position.position)
 
 
-def count_short_option_positions(
-    symbol: str, portfolio_positions: Dict[str, List[PortfolioItem]], right: str
-) -> int:
-    if symbol not in portfolio_positions:
-        return 0
-
-    return math.floor(
-        -sum(
-            [
-                p.position
-                for p in portfolio_positions[symbol]
-                if isinstance(p.contract, Option)
-                and p.contract.right.upper().startswith(right.upper())
-                and p.position < 0
-            ]
-        )
-    )
+def get_short_positions(
+    positions: List[PortfolioItem], right: str
+) -> List[PortfolioItem]:
+    return [
+        p
+        for p in positions
+        if isinstance(p.contract, Option)
+        and p.contract.right.upper().startswith(right.upper())
+        and p.position < 0
+    ]
 
 
-def count_long_option_positions(
-    symbol: str, portfolio_positions: Dict[str, List[PortfolioItem]], right: str
-) -> int:
-    if symbol not in portfolio_positions:
-        return 0
-
-    return math.floor(
-        sum(
-            [
-                p.position
-                for p in portfolio_positions[symbol]
-                if isinstance(p.contract, Option)
-                and p.contract.right.upper().startswith(right.upper())
-                and p.position > 0
-            ]
-        )
-    )
+def get_long_positions(
+    positions: List[PortfolioItem], right: str
+) -> List[PortfolioItem]:
+    return [
+        p
+        for p in positions
+        if isinstance(p.contract, Option)
+        and p.contract.right.upper().startswith(right.upper())
+        and p.position > 0
+    ]
 
 
-def calculate_net_short_positions(
-    symbol: str, portfolio_positions: Dict[str, List[PortfolioItem]], right: str
-) -> int:
-    if symbol not in portfolio_positions:
-        return 0
+def count_short_option_positions(positions: List[PortfolioItem], right: str) -> int:
+    return math.floor(-sum([p.position for p in get_short_positions(positions, right)]))
 
+
+def weighted_avg_short_strike(
+    positions: List[PortfolioItem], right: str
+) -> Optional[float]:
+    shorts = [
+        (abs(p.position), p.contract.strike)
+        for p in get_short_positions(positions, right)
+    ]
+    num = sum([p[0] * p[1] for p in shorts])
+    den = sum([p[0] for p in shorts])
+    if den > 0:
+        return num / den
+
+
+def weighted_avg_long_strike(
+    positions: List[PortfolioItem], right: str
+) -> Optional[float]:
+    shorts = [
+        (abs(p.position), p.contract.strike)
+        for p in get_long_positions(positions, right)
+    ]
+    num = sum([p[0] * p[1] for p in shorts])
+    den = sum([p[0] for p in shorts])
+    if den > 0:
+        return num / den
+
+
+def count_long_option_positions(positions: List[PortfolioItem], right: str) -> int:
+    return math.floor(sum([p.position for p in get_long_positions(positions, right)]))
+
+
+def calculate_net_short_positions(positions: List[PortfolioItem], right: str) -> int:
     shorts = [
         (
             option_dte(p.contract.lastTradeDateOrContractMonth),
             p.contract.strike,
             p.position,
         )
-        for p in portfolio_positions[symbol]
-        if isinstance(p.contract, Option)
-        and p.contract.right.upper().startswith(right.upper())
-        and p.position < 0
+        for p in get_short_positions(positions, right)
     ]
     longs = [
         (
@@ -97,10 +109,7 @@ def calculate_net_short_positions(
             p.contract.strike,
             p.position,
         )
-        for p in portfolio_positions[symbol]
-        if isinstance(p.contract, Option)
-        and p.contract.right.upper().startswith(right.upper())
-        and p.position > 0
+        for p in get_long_positions(positions, right)
     ]
     shorts = sorted(shorts, key=itemgetter(0, 1), reverse=right.upper().startswith("P"))
     longs = sorted(longs, key=itemgetter(0, 1), reverse=right.upper().startswith("P"))
