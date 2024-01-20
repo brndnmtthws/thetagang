@@ -37,6 +37,7 @@ from thetagang.util import (
     get_higher_price,
     get_lower_price,
     get_minimum_credit,
+    get_short_positions,
     get_strike_limit,
     get_target_calls,
     get_target_delta,
@@ -48,6 +49,8 @@ from thetagang.util import (
     portfolio_positions_to_dict,
     position_pnl,
     wait_n_seconds,
+    weighted_avg_long_strike,
+    weighted_avg_short_strike,
 )
 
 from .options import option_dte
@@ -108,19 +111,8 @@ class PortfolioManager:
         self, portfolio_positions: Dict[str, List[PortfolioItem]], right: str
     ) -> List[PortfolioItem]:
         ret: List[PortfolioItem] = []
-        symbols = set(self.get_symbols())
         for symbol in portfolio_positions:
-            ret = ret + list(
-                filter(
-                    lambda p: (
-                        isinstance(p.contract, Option)
-                        and p.contract.right.startswith(right)
-                        and p.contract.symbol in symbols
-                        and p.position < 0  # short positions only
-                    ),
-                    portfolio_positions[symbol],
-                )
-            )
+            ret = ret + get_short_positions(portfolio_positions[symbol], right)
 
         return ret
 
@@ -804,9 +796,9 @@ class PortfolioManager:
                 # skip positions we don't care about
                 continue
             short_call_count = (
-                calculate_net_short_positions(symbol, portfolio_positions, "C")
+                calculate_net_short_positions(portfolio_positions[symbol], "C")
                 if calculate_net_contracts
-                else count_short_option_positions(symbol, portfolio_positions, "C")
+                else count_short_option_positions(portfolio_positions[symbol], "C")
             )
             stock_count = math.floor(
                 sum(
@@ -1044,14 +1036,18 @@ class PortfolioManager:
         positions_summary_table = Table(title="Positions summary")
         positions_summary_table.add_column("Symbol")
         positions_summary_table.add_column("Shares", justify="right")
-        positions_summary_table.add_column("Puts: short", justify="right")
-        positions_summary_table.add_column("Puts: long", justify="right")
+        positions_summary_table.add_column("P: short count", justify="right")
+        positions_summary_table.add_column("P: short avg strike", justify="right")
+        positions_summary_table.add_column("P: long count", justify="right")
+        positions_summary_table.add_column("P: long avg strike", justify="right")
         if calculate_net_contracts:
-            positions_summary_table.add_column("Puts: net short", justify="right")
-        positions_summary_table.add_column("Calls: short", justify="right")
-        positions_summary_table.add_column("Calls: long", justify="right")
+            positions_summary_table.add_column("P: net short", justify="right")
+        positions_summary_table.add_column("C: short count", justify="right")
+        positions_summary_table.add_column("C: short avg strike", justify="right")
+        positions_summary_table.add_column("C: long count", justify="right")
+        positions_summary_table.add_column("C: long avg strike", justify="right")
         if calculate_net_contracts:
-            positions_summary_table.add_column("Calls: net short", justify="right")
+            positions_summary_table.add_column("C: net short", justify="right")
         positions_summary_table.add_column("Target value", justify="right")
         positions_summary_table.add_column("Target share qty", justify="right")
         positions_summary_table.add_column("Net target shares", justify="right")
@@ -1083,25 +1079,37 @@ class PortfolioManager:
 
             # Current number of puts
             net_short_put_count = short_put_count = count_short_option_positions(
-                symbol, portfolio_positions, "P"
+                portfolio_positions[symbol], "P"
+            )
+            short_put_avg_strike = weighted_avg_short_strike(
+                portfolio_positions[symbol], "P"
             )
             long_put_count = count_long_option_positions(
-                symbol, portfolio_positions, "P"
+                portfolio_positions[symbol], "P"
+            )
+            long_put_avg_strike = weighted_avg_long_strike(
+                portfolio_positions[symbol], "P"
             )
             # Current number of calls
             net_short_call_count = short_call_count = count_short_option_positions(
-                symbol, portfolio_positions, "C"
+                portfolio_positions[symbol], "C"
+            )
+            short_call_avg_strike = weighted_avg_short_strike(
+                portfolio_positions[symbol], "C"
             )
             long_call_count = count_long_option_positions(
-                symbol, portfolio_positions, "C"
+                portfolio_positions[symbol], "C"
+            )
+            long_call_avg_strike = weighted_avg_long_strike(
+                portfolio_positions[symbol], "C"
             )
 
             if calculate_net_contracts:
                 net_short_put_count = calculate_net_short_positions(
-                    symbol, portfolio_positions, "P"
+                    portfolio_positions[symbol], "P"
                 )
                 net_short_call_count = calculate_net_short_positions(
-                    symbol, portfolio_positions, "C"
+                    portfolio_positions[symbol], "C"
                 )
 
             write_only_when_red = self.config["write_when"]["puts"]["red"]
@@ -1119,10 +1127,14 @@ class PortfolioManager:
                     symbol,
                     ifmt(current_position),
                     ifmt(short_put_count),
+                    dfmt(short_put_avg_strike),
                     ifmt(long_put_count),
+                    dfmt(long_put_avg_strike),
                     ifmt(net_short_put_count),
                     ifmt(short_call_count),
+                    dfmt(short_call_avg_strike),
                     ifmt(long_call_count),
+                    dfmt(long_call_avg_strike),
                     ifmt(net_short_call_count),
                     dfmt(targets[symbol]),
                     ifmt(self.target_quantities[symbol]),
@@ -1134,9 +1146,13 @@ class PortfolioManager:
                     symbol,
                     ifmt(current_position),
                     ifmt(short_put_count),
+                    dfmt(short_put_avg_strike),
                     ifmt(long_put_count),
+                    dfmt(long_put_avg_strike),
                     ifmt(short_call_count),
+                    dfmt(short_call_avg_strike),
                     ifmt(long_call_count),
+                    dfmt(long_call_avg_strike),
                     dfmt(targets[symbol]),
                     ifmt(self.target_quantities[symbol]),
                     ifmt(net_target_shares),
