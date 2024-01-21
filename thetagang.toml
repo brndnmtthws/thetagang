@@ -69,22 +69,22 @@ price_update_delay = [30, 60]
 # order price. This doesn't apply to debit orders.
 minimum_credit = 0.05
 
-[orders.algo]
-# By default we use adaptive orders with patient priority which gives reasonable
-# results. You can also experiment with TWAP or other options, however the
-# available order algos vary depending on what you trade.
-#
-# Note that the algo orders don't seem to work with combo orders, which are used
-# when rolling positions, so AFAIK this has no effect for those orders. It only
-# seems to take effect with regular open/close orders.
-# Optional IBKR algo strategy. See
-# https://interactivebrokers.github.io/tws-api/ibalgos.html for option details.
-strategy = "Adaptive"
+  [orders.algo]
+  # By default we use adaptive orders with patient priority which gives reasonable
+  # results. You can also experiment with TWAP or other options, however the
+  # available order algos vary depending on what you trade.
+  #
+  # Note that the algo orders don't seem to work with combo orders, which are used
+  # when rolling positions, so AFAIK this has no effect for those orders. It only
+  # seems to take effect with regular open/close orders.
+  # Optional IBKR algo strategy. See
+  # https://interactivebrokers.github.io/tws-api/ibalgos.html for option details.
+  strategy = "Adaptive"
 
-# For `algoParams`, the TagValue parameter has 2 values, so any values with
-# anything other than 2 parameters are invalid. Pass an empty list to use the
-# defaults (i.e., params = []).
-params = [["adaptivePriority", "Patient"]]
+  # For `algoParams`, the TagValue parameter has 2 values, so any values with
+  # anything other than 2 parameters are invalid. Pass an empty list to use the
+  # defaults (i.e., params = []).
+  params = [["Patient", "adaptivePriority"]]
 
 [option_chains]
 # The option chains are lazy loaded, and before you can determine the greeks
@@ -111,7 +111,7 @@ pnl = 0.9
 # covered calls, it's possible that the P&L would be significantly negative,
 # i.e., -100%. If you want to roll anyway in these situations, set min_pnl to a
 # negative value such as -1 (for -100%).
-dte = 15
+dte     = 15
 min_pnl = 0.0
 
 # Optional: Don't roll contracts when the current DTE is greater than this
@@ -126,57 +126,57 @@ min_pnl = 0.0
 # long positions are ignored.
 # close_at_pnl = 0.99
 
-[roll_when.calls]
-# Roll calls to the next expiration even if they're in the money. Defaults to
-# true if not specified.
-itm = true
+  [roll_when.calls]
+  # Roll calls to the next expiration even if they're in the money. Defaults to
+  # true if not specified.
+  itm = true
 
-# Only roll when there's a suitable contract available that will result in a
-# credit. Enabling this may result in the target delta value being ignored in
-# circumstances where we can't find a contract that will result in both a
-# credit _and_ satisfying the target delta (i.e., having a credit takes
-# precedence).
-credit_only = false
+  # Only roll when there's a suitable contract available that will result in a
+  # credit. Enabling this may result in the target delta value being ignored in
+  # circumstances where we can't find a contract that will result in both a
+  # credit _and_ satisfying the target delta (i.e., having a credit takes
+  # precedence).
+  credit_only = false
 
-# If set to false, calls will not be rolled if there are any number of calls in
-# excess of the target call quantity. A truthy value means thetagang will keep
-# rolling calls regardless of the total quantity.
-has_excess = true
+  # If set to false, calls will not be rolled if there are any number of calls in
+  # excess of the target call quantity. A truthy value means thetagang will keep
+  # rolling calls regardless of the total quantity.
+  has_excess = true
 
-# We can optionally maintain the high water mark for covered calls by never
-# rolling CCs down, only out. We do this because it's not uncommon for a sharp
-# bounce up after a stock/index falls enough to make the contract eligible for
-# rolling. If we roll the CC down and out, we might be capping our gains when it
-# eventually does bounce back. The trade off here is that you end up with
-# slightly less downside protection.
-#
-# This only applies to rolling calls, and is essentially equivalent to setting
-# the minimum strike of the next contract to the previous strike and only
-# allowing the value to ratchet upwards.
-#
-# While this is off by default, it would be sensible to turn it on if you're
-# trying to capture upside, rather than protect downside.
-#
-# This value can also be set per-symbol, with
-# `symbols.<symbol>.calls.maintain_high_water_mark` (see `symbols.QQQ` example
-# below).
-maintain_high_water_mark = false
+  # We can optionally maintain the high water mark for covered calls by never
+  # rolling CCs down, only out. We do this because it's not uncommon for a sharp
+  # bounce up after a stock/index falls enough to make the contract eligible for
+  # rolling. If we roll the CC down and out, we might be capping our gains when it
+  # eventually does bounce back. The trade off here is that you end up with
+  # slightly less downside protection.
+  #
+  # This only applies to rolling calls, and is essentially equivalent to setting
+  # the minimum strike of the next contract to the previous strike and only
+  # allowing the value to ratchet upwards.
+  #
+  # While this is off by default, it would be sensible to turn it on if you're
+  # trying to capture upside, rather than protect downside.
+  #
+  # This value can also be set per-symbol, with
+  # `symbols.<symbol>.calls.maintain_high_water_mark` (see `symbols.QQQ` example
+  # below).
+  maintain_high_water_mark = false
 
-[roll_when.puts]
-# Roll puts if they're in the money. Defaults to false if not specified.
-itm = false
+  [roll_when.puts]
+  # Roll puts if they're in the money. Defaults to false if not specified.
+  itm = false
 
-# Only roll when there's a suitable contract available that will result in a
-# credit. Enabling this may result in the target delta value being ignored in
-# circumstances where we can't find a contract that will result in both a
-# credit _and_ satisfying the target delta (i.e., having a credit takes
-# precedence).
-credit_only = false
+  # Only roll when there's a suitable contract available that will result in a
+  # credit. Enabling this may result in the target delta value being ignored in
+  # circumstances where we can't find a contract that will result in both a
+  # credit _and_ satisfying the target delta (i.e., having a credit takes
+  # precedence).
+  credit_only = false
 
-# If set to false, puts will not be rolled if there are any number of puts in
-# excess of the target put quantity. A truthy value means thetagang will keep
-# rolling puts regardless of the total quantity.
-has_excess = true
+  # If set to false, puts will not be rolled if there are any number of puts in
+  # excess of the target put quantity. A truthy value means thetagang will keep
+  # rolling puts regardless of the total quantity.
+  has_excess = true
 
 [write_when]
 # By default, we ignore long option positions when calculating whether we can
@@ -203,36 +203,36 @@ has_excess = true
 # excess positions with `roll_when.calls/puts.has_excess = false`.
 calculate_net_contracts = false
 
-[write_when.calls]
-# Optionally, only write calls when the underlying is green
-green = true
+  [write_when.calls]
+  # Optionally, only write calls when the underlying is green
+  green = true
 
-# With covered calls, we can cap the number of calls to write by this factor. At
-# 1.0, we write covered calls on 100% of our positions. At 0.5, we'd only write
-# on 50% of our positions. This value must be between 1 and 0 inclusive.
-#
-# This can also be set per-symbol with
-# `symbols.<symbol>.calls.cap_factor`.
-cap_factor = 1.0
+  # With covered calls, we can cap the number of calls to write by this factor. At
+  # 1.0, we write covered calls on 100% of our positions. At 0.5, we'd only write
+  # on 50% of our positions. This value must be between 1 and 0 inclusive.
+  #
+  # This can also be set per-symbol with
+  # `symbols.<symbol>.calls.cap_factor`.
+  cap_factor = 1.0
 
-# We may want to leave some percentage of our underlying stock perpetually
-# uncovered so we don't miss out on big upside movements. For example, if our
-# target number of shares for a given symbol is 1,000, we may want to ensure
-# 500 shares are _always_ uncovered. This is a bit different from `cap_factor`,
-# as it applies to the _target_ number of shares, as opposed to the current
-# positions. A value of 0.5 (50%) means that we always leave 50% (half) of the
-# target shares uncovered. A bigger number (up to 1.0, 100%) is more bullish,
-# and a smaller number (down to 0.0, 0%) is more bearish (i.e., cover all
-# positions with calls). This essentially sets a floor on the number of shares
-# we try to hold on to in order to avoid missing out on potential upside.
-#
-# This can also be set per-symbol with
-# `symbols.<symbol>.calls.cap_target_floor`.
-cap_target_floor = 0.0
+  # We may want to leave some percentage of our underlying stock perpetually
+  # uncovered so we don't miss out on big upside movements. For example, if our
+  # target number of shares for a given symbol is 1,000, we may want to ensure
+  # 500 shares are _always_ uncovered. This is a bit different from `cap_factor`,
+  # as it applies to the _target_ number of shares, as opposed to the current
+  # positions. A value of 0.5 (50%) means that we always leave 50% (half) of the
+  # target shares uncovered. A bigger number (up to 1.0, 100%) is more bullish,
+  # and a smaller number (down to 0.0, 0%) is more bearish (i.e., cover all
+  # positions with calls). This essentially sets a floor on the number of shares
+  # we try to hold on to in order to avoid missing out on potential upside.
+  #
+  # This can also be set per-symbol with
+  # `symbols.<symbol>.calls.cap_target_floor`.
+  cap_target_floor = 0.0
 
-[write_when.puts]
-# Optionally, only write puts when the underlying is red
-red = true
+  [write_when.puts]
+  # Optionally, only write puts when the underlying is red
+  red = true
 
 [target]
 # Target 45 or more days to expiry
@@ -265,89 +265,89 @@ minimum_open_interest = 10
 #  [target.calls]
 #  delta = 0.3
 [symbols]
-# NOTE: Please change these symbols and weights according to your preferences.
-# These are provided only as an example for the purpose of configuration. These
-# values were chosen as sane values should someone decide to run this code
-# without changes, however it is in no way a recommendation or endorsement.
-#
-# You can specify the weight either as a percentage of your buying power (which
-# is calculated as your NLV * account.margin_usage), or in terms of parts. Parts
-# are summed from all symbols, then the weight is calculated by dividing the
-# parts by the total parts.
-#
-# You should try to choose ETFs or stocks that:
-#
-#  1) Have sufficient trading volume for the underlying
-#  2) Have standard options contracts (100 shares per contract)
-#  3) Have options with sufficient open interest and trading volume
-#
-# The target delta may also be specified per-symbol, and takes precedence over
-# `target.delta` or `target.puts/calls.delta`. You can specify a value for the
-# symbol, or override individually for puts/calls.
-[symbols.SPY]
-weight = 0.4
+  # NOTE: Please change these symbols and weights according to your preferences.
+  # These are provided only as an example for the purpose of configuration. These
+  # values were chosen as sane values should someone decide to run this code
+  # without changes, however it is in no way a recommendation or endorsement.
+  #
+  # You can specify the weight either as a percentage of your buying power (which
+  # is calculated as your NLV * account.margin_usage), or in terms of parts. Parts
+  # are summed from all symbols, then the weight is calculated by dividing the
+  # parts by the total parts.
+  #
+  # You should try to choose ETFs or stocks that:
+  #
+  #  1) Have sufficient trading volume for the underlying
+  #  2) Have standard options contracts (100 shares per contract)
+  #  3) Have options with sufficient open interest and trading volume
+  #
+  # The target delta may also be specified per-symbol, and takes precedence over
+  # `target.delta` or `target.puts/calls.delta`. You can specify a value for the
+  # symbol, or override individually for puts/calls.
+  [symbols.SPY]
+  weight = 0.4
 
-# OR: specify in terms of parts. Must use either weight or parts, but cannot mix
-# both.
-# parts = 40
+  # OR: specify in terms of parts. Must use either weight or parts, but cannot mix
+  # both.
+  # parts = 40
 
-# Sometimes, particularly for stocks/ETFs with limited liquidity, the spreads
-# are too wide to get an order filled at the midpoint on the first attempt. For
-# those, you can try setting this to `true`, and thetagang will wait a random
-# amount of time, then resubmit orders that haven't filled (but only for the
-# symbols with this set to true). The amount of time we'll wait is chosen
-# randomly from the range defined by `orders.price_update_delay`.
-adjust_price_after_delay = false
+  # Sometimes, particularly for stocks/ETFs with limited liquidity, the spreads
+  # are too wide to get an order filled at the midpoint on the first attempt. For
+  # those, you can try setting this to `true`, and thetagang will wait a random
+  # amount of time, then resubmit orders that haven't filled (but only for the
+  # symbols with this set to true). The amount of time we'll wait is chosen
+  # randomly from the range defined by `orders.price_update_delay`.
+  adjust_price_after_delay = false
 
-[symbols.QQQ]
-weight = 0.3
+  [symbols.QQQ]
+  weight = 0.3
 
-# parts = 30
-[symbols.QQQ.puts]
-# Override delta just for QQQ puts
-delta = 0.5
-# Also, optionally specify a strike limit, for either puts or calls.
-# Interpreted as an upper bound for puts, and a lower bound for calls.
-strike_limit = 1000.0 # never write a put with a strike above $1000
+    # parts = 30
+    [symbols.QQQ.puts]
+    # Override delta just for QQQ puts
+    delta = 0.5
+    # Also, optionally specify a strike limit, for either puts or calls.
+    # Interpreted as an upper bound for puts, and a lower bound for calls.
+    strike_limit = 1000.0 # never write a put with a strike above $1000
 
-# Optionally, if we only write new contracts when the underlying is green or
-# red (`write_when.calls.green=true` or `write_when.puts.red=true`), specify a
-# minimum threshold as an absolute value daily percentage change (in this
-# example, use 1% for puts only, but could also be specified as
-# `symbols.QQQ.write_threshold`). This can also be specified under
-# `constants.write_threshold` and `constants.puts/calls.write_threshold` to
-# apply to all symbols, either for both puts or calls, or individually.
-#
-# In this example, we'd only write puts on QQQ when the daily change is -1% or
-# greater (provided that we also set `write_when.puts.red=true`).
-write_threshold = 0.01 # 1%, absolute value
+    # Optionally, if we only write new contracts when the underlying is green or
+    # red (`write_when.calls.green=true` or `write_when.puts.red=true`), specify a
+    # minimum threshold as an absolute value daily percentage change (in this
+    # example, use 1% for puts only, but could also be specified as
+    # `symbols.QQQ.write_threshold`). This can also be specified under
+    # `constants.write_threshold` and `constants.puts/calls.write_threshold` to
+    # apply to all symbols, either for both puts or calls, or individually.
+    #
+    # In this example, we'd only write puts on QQQ when the daily change is -1% or
+    # greater (provided that we also set `write_when.puts.red=true`).
+    write_threshold = 0.01 # 1%, absolute value
 
-# Alternatively, you can express write threshold value in terms of sigma with
-# `write_threshold_sigma`. A value of 2.0 means that we'll write new contracts
-# when the daily change is twice the standard deviation of the log returns.
-#
-# If write_threshold_sigma is specified, it supersedes (overrides) the value of
-# write_threshold.
-#
-# The daily standard deviation of log returns is calculated based on the past
-# 30 days of data by default, but you can adjust this by altering the value of
-# `constants.daily_stddev_window`.
-#
-# Note that we'll need to retrieve this historical data for every execution to
-# calculate this value, so you should be sure there's 1) sufficient history
-# available and 2) the data can be retrieved sufficiently fast.
-#
-# write_threshold_sigma = 1.0 # 1x the standard devation of log returns for the daily stddev window
+    # Alternatively, you can express write threshold value in terms of sigma with
+    # `write_threshold_sigma`. A value of 2.0 means that we'll write new contracts
+    # when the daily change is twice the standard deviation of the log returns.
+    #
+    # If write_threshold_sigma is specified, it supersedes (overrides) the value of
+    # write_threshold.
+    #
+    # The daily standard deviation of log returns is calculated based on the past
+    # 30 days of data by default, but you can adjust this by altering the value of
+    # `constants.daily_stddev_window`.
+    #
+    # Note that we'll need to retrieve this historical data for every execution to
+    # calculate this value, so you should be sure there's 1) sufficient history
+    # available and 2) the data can be retrieved sufficiently fast.
+    #
+    # write_threshold_sigma = 1.0 # 1x the standard devation of log returns for the daily stddev window
 
-[symbols.QQQ.calls]
-strike_limit = 100.0 # never write a call with a strike below $100
+    [symbols.QQQ.calls]
+    strike_limit = 100.0 # never write a call with a strike below $100
 
-maintain_high_water_mark = true # maintain the high water mark when rolling calls
+    maintain_high_water_mark = true # maintain the high water mark when rolling calls
 
-# These values can (optionally) be set on a per-symbol basis, in addition to
-# `write_when.calls.cap_factor` and `write_when.calls.cap_target_floor.
-cap_factor = 1.0
-cap_target_floor = 0.0
+    # These values can (optionally) be set on a per-symbol basis, in addition to
+    # `write_when.calls.cap_factor` and `write_when.calls.cap_target_floor.
+    cap_factor       = 1.0
+    cap_target_floor = 0.0
 
 [symbols.TLT]
 weight = 0.2
@@ -359,7 +359,7 @@ delta = 0.4
 # For symbols that require an exchange, which is typically any company stock,
 # you must specify the primary exchange.
 primary_exchange = "NASDAQ"
-weight = 0.05
+weight           = 0.05
 
 # parts = 5
 # Sometimes you may need to wrap the symbol in quotes.
@@ -367,7 +367,7 @@ weight = 0.05
 # For symbols that require an exchange, which is typically any company stock,
 # you must specify the primary exchange.
 primary_exchange = "NYSE"
-weight = 0.05
+weight           = 0.05
 
 # parts = 5
 [ib_insync]
@@ -381,15 +381,15 @@ api_response_wait_time = 60
 [ibc]
 # IBC configuration parameters. See
 # https://ib-insync.readthedocs.io/api.html#ibc for details.
-gateway = true
-ibcPath = '/opt/ibc'
+gateway     = true
+ibcPath     = '/opt/ibc'
 tradingMode = 'paper'
 # Set this to true if you want to raise an exception on request errors. Under
 # normal operation this should be false because we often try to make "invalid"
 # requests when scanning option chains for example.
 RaiseRequestErrors = false
-password = 'demo'
-userid = 'demo'
+password           = 'demo'
+userid             = 'demo'
 # Change this to point to your config.ini for IBC
 ibcIni = '/etc/thetagang/config.ini'
 # Change or unset this to use something other than the Docker bundled OpenJDK.
@@ -403,20 +403,20 @@ javaPath = '/opt/java/openjdk/bin'
 # Watchdog configuration params. See
 # https://ib-insync.readthedocs.io/api.html#watchdog for details.
 appStartupTime = 30
-appTimeout = 20
-clientId = 1
+appTimeout     = 20
+clientId       = 1
 connectTimeout = 2
-host = '127.0.0.1'
-port = 7497
-probeTimeout = 4
-readonly = false
-retryDelay = 2
+host           = '127.0.0.1'
+port           = 7497
+probeTimeout   = 4
+readonly       = false
+retryDelay     = 2
 
-[watchdog.probeContract]
-currency = 'USD'
-exchange = 'SMART'
-secType = 'STK'
-symbol = 'SPY'
+  [watchdog.probeContract]
+  currency = 'USD'
+  exchange = 'SMART'
+  secType  = 'STK'
+  symbol   = 'SPY'
 
 # Optional VIX call hedging, based on the methodology described by the Cboe VIX
 # Tail Hedge Index, described here:
@@ -437,33 +437,33 @@ close_hedges_when_vix_exceeds = 50.0
 # potentially adding more. This allows you to create a simple call ladder.
 ignore_dte = 0
 
-# The allocations are specified as an ordered list of allocation weights
-# according to an upper/lower bound on VIXMO (the 30 day VIX). Default values
-# are the same as those described in the VXTH methodology. These are evaluated
-# in order, and the weight from the first allocation that matches will be
-# applied. The lower bound is inclusive, and the upper bound is exclusive
-# (.i.e., the code checks that lower <= VIXMO < upper). The upper/lower bounds
-# are only checked if they're present.
-#
-# The allocation weights are multiplied by the account's net liquidation value,
-# and that amount is allocated to purchasing VIX calls.
-[[vix_call_hedge.allocation]]
-upper_bound = 15.0
-weight = 0.00
+  # The allocations are specified as an ordered list of allocation weights
+  # according to an upper/lower bound on VIXMO (the 30 day VIX). Default values
+  # are the same as those described in the VXTH methodology. These are evaluated
+  # in order, and the weight from the first allocation that matches will be
+  # applied. The lower bound is inclusive, and the upper bound is exclusive
+  # (.i.e., the code checks that lower <= VIXMO < upper). The upper/lower bounds
+  # are only checked if they're present.
+  #
+  # The allocation weights are multiplied by the account's net liquidation value,
+  # and that amount is allocated to purchasing VIX calls.
+  [[vix_call_hedge.allocation]]
+  upper_bound = 15.0
+  weight      = 0.00
 
-[[vix_call_hedge.allocation]]
-lower_bound = 15.0
-upper_bound = 30.0
-weight = 0.01
+  [[vix_call_hedge.allocation]]
+  lower_bound = 15.0
+  upper_bound = 30.0
+  weight      = 0.01
 
-[[vix_call_hedge.allocation]]
-lower_bound = 30.0
-upper_bound = 50.0
-weight = 0.005
+  [[vix_call_hedge.allocation]]
+  lower_bound = 30.0
+  upper_bound = 50.0
+  weight      = 0.005
 
-[[vix_call_hedge.allocation]]
-lower_bound = 50.0
-weight = 0.00
+  [[vix_call_hedge.allocation]]
+  lower_bound = 50.0
+  weight      = 0.00
 
 [cash_management]
 # Cash management gives us a way to earn a little extra yield from excess cash
@@ -496,20 +496,20 @@ buy_threshold = 10000
 # a sell order to shore up cash.
 sell_threshold = 10000
 
-[cash_management.orders]
-# The exchange to route orders to. Can be overridden if desired. This is also
-# used for fetching tickers/prices.
-exchange = "SMART"
+  [cash_management.orders]
+  # The exchange to route orders to. Can be overridden if desired. This is also
+  # used for fetching tickers/prices.
+  exchange = "SMART"
 
-[cash_management.orders.algo]
-# By default, use a VWAP order for cash trades. You can comment out the whole
-# `cash_management.orders` section to use the same value as `orders` and
-# `orders.algo`.
-strategy = "Vwap"
-params = [
-    # Optionally, uncomment the following line to be opportunistic by avoiding
-    # taking liquidity. This gives us somewhat better pricing and lower
-    # commissions, at the expense of possibly not getting the order filled in
-    # the day.
-    # ["noTakeLiq", "1"],
-]
+    [cash_management.orders.algo]
+    # By default, use a VWAP order for cash trades. You can comment out the whole
+    # `cash_management.orders` section to use the same value as `orders` and
+    # `orders.algo`.
+    params = [
+      # Optionally, uncomment the following line to be opportunistic by avoiding
+      # taking liquidity. This gives us somewhat better pricing and lower
+      # commissions, at the expense of possibly not getting the order filled in
+      # the day.
+      # ["noTakeLiq", "1"],
+    ]
+    strategy = "Vwap"
