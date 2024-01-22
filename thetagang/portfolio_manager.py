@@ -519,9 +519,9 @@ class PortfolioManager:
                 if pos.contract.right.startswith("C") and self.call_is_itm(
                     pos.contract
                 ):
-                    return ":white_check_mark:"
+                    return "✔️"
                 if pos.contract.right.startswith("P") and self.put_is_itm(pos.contract):
-                    return ":white_check_mark:"
+                    return "✔️"
             return ""
 
         for symbol, position in track(
@@ -554,6 +554,7 @@ class PortfolioManager:
 
         table = Table(
             title="Portfolio positions",
+            collapse_padding=True,
         )
         table.add_column("Symbol")
         table.add_column("R")
@@ -636,9 +637,12 @@ class PortfolioManager:
                 account_summary, portfolio_positions
             )
 
+            console.print(positions_table)
             console.print(
-                Panel(Group(positions_table, put_actions_table, call_actions_table))
+                "Legend for positions summary table =>\n  [bold]PS[/bold]: puts short\n  [bold]PL[/bold]: puts long\n  [bold]CS[/bold]: calls short\n  [bold]CL[/bold]: calls long\n"
             )
+            console.print(put_actions_table)
+            console.print(call_actions_table)
 
             self.write_puts(puts_to_write)
             self.write_calls(calls_to_write)
@@ -1033,21 +1037,23 @@ class PortfolioManager:
 
         calculate_net_contracts = self.config["write_when"]["calculate_net_contracts"]
 
-        positions_summary_table = Table(title="Positions summary")
+        positions_summary_table = Table(
+            title="Positions summary", collapse_padding=True
+        )
         positions_summary_table.add_column("Symbol")
         positions_summary_table.add_column("Shares", justify="right")
-        positions_summary_table.add_column("P: short count", justify="right")
-        positions_summary_table.add_column("P: short avg strike", justify="right")
-        positions_summary_table.add_column("P: long count", justify="right")
-        positions_summary_table.add_column("P: long avg strike", justify="right")
+        positions_summary_table.add_column("PS: count", justify="right")
+        positions_summary_table.add_column("PS: avg strike", justify="right")
+        positions_summary_table.add_column("PL: count", justify="right")
+        positions_summary_table.add_column("PL: avg strike", justify="right")
         if calculate_net_contracts:
-            positions_summary_table.add_column("P: net short", justify="right")
-        positions_summary_table.add_column("C: short count", justify="right")
-        positions_summary_table.add_column("C: short avg strike", justify="right")
-        positions_summary_table.add_column("C: long count", justify="right")
-        positions_summary_table.add_column("C: long avg strike", justify="right")
+            positions_summary_table.add_column("Net PS", justify="right")
+        positions_summary_table.add_column("CS: short count", justify="right")
+        positions_summary_table.add_column("CS: short avg strike", justify="right")
+        positions_summary_table.add_column("CL: long count", justify="right")
+        positions_summary_table.add_column("CL: long avg strike", justify="right")
         if calculate_net_contracts:
-            positions_summary_table.add_column("C: net short", justify="right")
+            positions_summary_table.add_column("Net CS", justify="right")
         positions_summary_table.add_column("Target value", justify="right")
         positions_summary_table.add_column("Target share qty", justify="right")
         positions_summary_table.add_column("Net target shares", justify="right")
