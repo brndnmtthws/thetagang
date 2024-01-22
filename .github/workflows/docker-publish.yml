@@ -41,12 +41,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Cache ~/.cache/pip
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: python-${{ steps.setup-python.outputs.python-version }}
       - name: Cache ~/.cache/pypoetry
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pypoetry
           key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
@@ -71,7 +71,7 @@ jobs:
 
       - name: Cache TWS
         id: cache-tws
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         env:
           cache-name: cache-tws
         with:
@@ -89,12 +89,12 @@ jobs:
           python-version: "3.11"
 
       - name: Cache ~/.cache/pip
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: python-${{ steps.setup-python.outputs.python-version }}
       - name: Cache ~/.cache/pypoetry
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pypoetry
           key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
