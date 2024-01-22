@@ -2,7 +2,6 @@ import logging
 
 import click
 import click_log
-import monkeytype
 
 logger = logging.getLogger(__name__)
 click_log.basic_config(logger)  # type: ignore
@@ -39,5 +38,4 @@ def cli(config: str, without_ibc: bool) -> None:
 
     from .thetagang import start
 
-    with monkeytype.trace():
-        start(config, without_ibc)
+    start(config, without_ibc)
