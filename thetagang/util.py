@@ -175,15 +175,14 @@ def wait_n_seconds(
 ) -> None:
     if not started_at:
         started_at = datetime.now()
-    diff = datetime.now() - started_at
-    remaining = seconds_to_wait - diff.seconds
-    if not remaining or remaining <= 0 or math.isclose(remaining, 0.0):
-        raise RuntimeError(
-            "Exhausted retries waiting on predicate. This shouldn't happen."
-        )
-    if pred():
+    while pred():
+        diff = datetime.now() - started_at
+        remaining = seconds_to_wait - diff.seconds
+        if not remaining or remaining <= 0 or math.isclose(remaining, 0.0):
+            raise RuntimeError(
+                "Exhausted retries waiting on predicate. This shouldn't happen."
+            )
         body(remaining)
-        wait_n_seconds(pred, body, seconds_to_wait, started_at)
 
 
 def get_higher_price(ticker: Ticker) -> float:

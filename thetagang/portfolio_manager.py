@@ -1374,7 +1374,7 @@ class PortfolioManager:
                     else midpoint_or_market_price(buy_ticker)
                     + get_minimum_credit(self.config)
                 )
-                preferred_minimum_price = midpoint_or_market_price(buy_ticker)
+                fallback_minimum_price = midpoint_or_market_price(buy_ticker)
 
                 sell_ticker = self.find_eligible_contracts(
                     Stock(
@@ -1391,7 +1391,7 @@ class PortfolioManager:
                         position.contract.lastTradeDateOrContractMonth,
                     ),
                     minimum_price=minimum_price,
-                    preferred_minimum_price=preferred_minimum_price,
+                    fallback_minimum_price=fallback_minimum_price,
                 )
                 if not sell_ticker.contract:
                     raise RuntimeError(f"Invalid ticker (no contract): {sell_ticker}")
@@ -1476,7 +1476,7 @@ class PortfolioManager:
         minimum_price: float,
         exclude_expirations_before: Optional[str] = None,
         exclude_exp_strike: Optional[Tuple[float, str]] = None,
-        preferred_minimum_price: Optional[float] = None,
+        fallback_minimum_price: Optional[float] = None,
         target_dte: Optional[int] = None,
         target_delta: Optional[float] = None,
     ) -> Ticker:
@@ -1492,7 +1492,7 @@ class PortfolioManager:
         console.print(
             f"[green]Searching option chain for symbol={main_contract.symbol} "
             f"right={right}, strike_limit={strike_limit}, minimum_price={dfmt(minimum_price,3)} "
-            f"preferred_minimum_price={dfmt(preferred_minimum_price,3)}"
+            f"fallback_minimum_price={dfmt(fallback_minimum_price,3)}"
             " this can take a while...[/green]",
         )
         with console.status(
@@ -1709,11 +1709,11 @@ class PortfolioManager:
                     raise RuntimeError(
                         f"No valid contracts found for {main_contract.symbol}. Continuing anyway..."
                     )
-            elif preferred_minimum_price is not None:
+            elif fallback_minimum_price is not None:
                 # if there's a preferred minimum price specified, try to find
                 # contracts that are at least that price first
                 for ticker in tickers:
-                    if midpoint_or_market_price(ticker) > preferred_minimum_price:
+                    if midpoint_or_market_price(ticker) > fallback_minimum_price:
                         the_chosen_ticker = ticker
                         break
                 if the_chosen_ticker is None:
