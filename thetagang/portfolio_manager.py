@@ -1710,7 +1710,7 @@ class PortfolioManager:
                         f"No valid contracts found for {main_contract.symbol}. Continuing anyway..."
                     )
             elif fallback_minimum_price is not None:
-                # if there's a preferred minimum price specified, try to find
+                # if there's a fallback minimum price specified, try to find
                 # contracts that are at least that price first
                 for ticker in tickers:
                     if midpoint_or_market_price(ticker) > fallback_minimum_price:
@@ -1737,7 +1737,7 @@ class PortfolioManager:
                 f"[sea_green2]Found suitable contract for {main_contract.symbol} at "
                 f"strike={the_chosen_ticker.contract.strike} "
                 f"dte={option_dte(the_chosen_ticker.contract.lastTradeDateOrContractMonth)}"
-                f" price={dfmt(the_chosen_ticker.marketPrice(),3)}"
+                f" price={dfmt(midpoint_or_market_price(the_chosen_ticker),3)}"
             )
 
             return the_chosen_ticker
