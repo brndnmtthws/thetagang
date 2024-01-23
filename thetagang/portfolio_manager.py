@@ -639,7 +639,7 @@ class PortfolioManager:
 
             console.print(positions_table)
             console.print(
-                "Legend for positions summary table =>\n  [bold]PS[/bold]: puts short\n  [bold]PL[/bold]: puts long\n  [bold]CS[/bold]: calls short\n  [bold]CL[/bold]: calls long\n"
+                "NOTE: The value below each put/call count above represents the weighted average strike price for each.\n"
             )
             console.print(put_actions_table)
             console.print(call_actions_table)
@@ -1038,22 +1038,19 @@ class PortfolioManager:
         calculate_net_contracts = self.config["write_when"]["calculate_net_contracts"]
 
         positions_summary_table = Table(
-            title="Positions summary", collapse_padding=True
+            title="Positions summary",
+            show_edge=False,
         )
         positions_summary_table.add_column("Symbol")
         positions_summary_table.add_column("Shares", justify="right")
-        positions_summary_table.add_column("PS: count", justify="right")
-        positions_summary_table.add_column("PS: avg strike", justify="right")
-        positions_summary_table.add_column("PL: count", justify="right")
-        positions_summary_table.add_column("PL: avg strike", justify="right")
+        positions_summary_table.add_column("Short puts", justify="right")
+        positions_summary_table.add_column("Long puts", justify="right")
         if calculate_net_contracts:
-            positions_summary_table.add_column("Net PS", justify="right")
-        positions_summary_table.add_column("CS: short count", justify="right")
-        positions_summary_table.add_column("CS: short avg strike", justify="right")
-        positions_summary_table.add_column("CL: long count", justify="right")
-        positions_summary_table.add_column("CL: long avg strike", justify="right")
+            positions_summary_table.add_column("Net short puts", justify="right")
+        positions_summary_table.add_column("Short calls", justify="right")
+        positions_summary_table.add_column("Long calls", justify="right")
         if calculate_net_contracts:
-            positions_summary_table.add_column("Net CS", justify="right")
+            positions_summary_table.add_column("Net short calls", justify="right")
         positions_summary_table.add_column("Target value", justify="right")
         positions_summary_table.add_column("Target share qty", justify="right")
         positions_summary_table.add_column("Net target shares", justify="right")
@@ -1133,37 +1130,47 @@ class PortfolioManager:
                     symbol,
                     ifmt(current_position),
                     ifmt(short_put_count),
-                    dfmt(short_put_avg_strike),
                     ifmt(long_put_count),
-                    dfmt(long_put_avg_strike),
                     ifmt(net_short_put_count),
                     ifmt(short_call_count),
-                    dfmt(short_call_avg_strike),
                     ifmt(long_call_count),
-                    dfmt(long_call_avg_strike),
                     ifmt(net_short_call_count),
                     dfmt(targets[symbol]),
                     ifmt(self.target_quantities[symbol]),
                     ifmt(net_target_shares),
                     ifmt(net_target_puts),
                 )
+                positions_summary_table.add_row(
+                    "",
+                    "",
+                    dfmt(short_put_avg_strike),
+                    dfmt(long_put_avg_strike),
+                    "",
+                    dfmt(short_call_avg_strike),
+                    dfmt(long_call_avg_strike),
+                )
             else:
                 positions_summary_table.add_row(
                     symbol,
                     ifmt(current_position),
                     ifmt(short_put_count),
-                    dfmt(short_put_avg_strike),
                     ifmt(long_put_count),
-                    dfmt(long_put_avg_strike),
                     ifmt(short_call_count),
-                    dfmt(short_call_avg_strike),
                     ifmt(long_call_count),
-                    dfmt(long_call_avg_strike),
                     dfmt(targets[symbol]),
                     ifmt(self.target_quantities[symbol]),
                     ifmt(net_target_shares),
                     ifmt(net_target_puts),
                 )
+                positions_summary_table.add_row(
+                    "",
+                    "",
+                    dfmt(short_put_avg_strike),
+                    dfmt(long_put_avg_strike),
+                    dfmt(short_call_avg_strike),
+                    dfmt(long_call_avg_strike),
+                )
+            positions_summary_table.add_section()
 
             def is_ok_to_write_puts(
                 symbol: str,
