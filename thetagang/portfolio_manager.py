@@ -1080,40 +1080,46 @@ class PortfolioManager:
                 targets[symbol] / ticker.marketPrice()
             )
 
-            # Current number of puts
-            net_short_put_count = short_put_count = count_short_option_positions(
-                portfolio_positions[symbol], "P"
-            )
-            short_put_avg_strike = weighted_avg_short_strike(
-                portfolio_positions[symbol], "P"
-            )
-            long_put_count = count_long_option_positions(
-                portfolio_positions[symbol], "P"
-            )
-            long_put_avg_strike = weighted_avg_long_strike(
-                portfolio_positions[symbol], "P"
-            )
-            # Current number of calls
-            net_short_call_count = short_call_count = count_short_option_positions(
-                portfolio_positions[symbol], "C"
-            )
-            short_call_avg_strike = weighted_avg_short_strike(
-                portfolio_positions[symbol], "C"
-            )
-            long_call_count = count_long_option_positions(
-                portfolio_positions[symbol], "C"
-            )
-            long_call_avg_strike = weighted_avg_long_strike(
-                portfolio_positions[symbol], "C"
-            )
-
-            if calculate_net_contracts:
-                net_short_put_count = calculate_net_short_positions(
+            if symbol in portfolio_positions:
+                # Current number of puts
+                net_short_put_count = short_put_count = count_short_option_positions(
                     portfolio_positions[symbol], "P"
                 )
-                net_short_call_count = calculate_net_short_positions(
+                short_put_avg_strike = weighted_avg_short_strike(
+                    portfolio_positions[symbol], "P"
+                )
+                long_put_count = count_long_option_positions(
+                    portfolio_positions[symbol], "P"
+                )
+                long_put_avg_strike = weighted_avg_long_strike(
+                    portfolio_positions[symbol], "P"
+                )
+                # Current number of calls
+                net_short_call_count = short_call_count = count_short_option_positions(
                     portfolio_positions[symbol], "C"
                 )
+                short_call_avg_strike = weighted_avg_short_strike(
+                    portfolio_positions[symbol], "C"
+                )
+                long_call_count = count_long_option_positions(
+                    portfolio_positions[symbol], "C"
+                )
+                long_call_avg_strike = weighted_avg_long_strike(
+                    portfolio_positions[symbol], "C"
+                )
+
+                if calculate_net_contracts:
+                    net_short_put_count = calculate_net_short_positions(
+                        portfolio_positions[symbol], "P"
+                    )
+                    net_short_call_count = calculate_net_short_positions(
+                        portfolio_positions[symbol], "C"
+                    )
+            else:
+                net_short_put_count = short_put_count = long_put_count = 0
+                short_put_avg_strike = long_put_avg_strike = None
+                net_short_call_count = short_call_count = long_call_count = 0
+                short_call_avg_strike = long_call_avg_strike = None
 
             write_only_when_red = self.config["write_when"]["puts"]["red"]
 
