@@ -76,5 +76,8 @@ target-version = "py39"
 
 [tool.pyright]
 defineConstant          = { DEBUG = true }
+pythonVersion           = "3.10"
 reportUnknownLambdaType = false
 stubPath                = "stubs"
+venv                    = ".venv"
+venvPath                = "."
