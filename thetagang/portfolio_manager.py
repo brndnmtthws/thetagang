@@ -740,6 +740,7 @@ class PortfolioManager:
 
         table = Table(title="Rollable & closeable calls")
         table.add_column("Contract")
+        table.add_column("Action")
         table.add_column("Detail")
 
         for c in calls:
