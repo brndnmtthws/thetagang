@@ -1601,19 +1601,15 @@ class PortfolioManager:
                 f"[bold blue_violet]Filtering contracts for {main_contract.symbol} from {len(tickers)} tickers... 🧐"
             )
 
-            def open_interest_is_valid(ticker: Ticker) -> bool:
+            def open_interest_is_valid(
+                ticker: Ticker, minimum_open_interest: int
+            ) -> bool:
                 # The open interest value is never present when using historical
                 # data, so just ignore it when the value is None
                 if right.startswith("P"):
-                    return (
-                        ticker.putOpenInterest
-                        >= self.config["target"]["minimum_open_interest"]
-                    )
+                    return ticker.putOpenInterest >= minimum_open_interest
                 if right.startswith("C"):
-                    return (
-                        ticker.callOpenInterest
-                        >= self.config["target"]["minimum_open_interest"]
-                    )
+                    return ticker.callOpenInterest >= minimum_open_interest
                 return False
 
             def delta_is_valid(ticker: Ticker) -> bool:
@@ -1674,17 +1670,20 @@ class PortfolioManager:
                 self.wait_for_open_interest_for(
                     tickers, wait_time=self.api_response_wait_time()
                 )
-                status.stop()
-                tickers = [
-                    ticker
-                    for ticker in track(
-                        tickers,
-                        description=f"[royal_blue1]Filtering by open interest for "
-                        f"{main_contract.symbol} from {len(tickers)} tickers...",
-                    )
-                    if open_interest_is_valid(ticker)
-                ]
-                status.start()
+
+                minimum_open_interest = self.config["target"]["minimum_open_interest"]
+                if minimum_open_interest > 0:
+                    status.stop()
+                    tickers = [
+                        ticker
+                        for ticker in track(
+                            tickers,
+                            description=f"[royal_blue1]Filtering by open interest for "
+                            f"{main_contract.symbol} from {len(tickers)} tickers...",
+                        )
+                        if open_interest_is_valid(ticker, minimum_open_interest)
+                    ]
+                    status.start()
                 # Sort by delta first, then expiry date
                 tickers = sorted(
                     sorted(
