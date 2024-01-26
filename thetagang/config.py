@@ -125,6 +125,7 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
             "target": {
                 "dte": And(int, lambda n: 0 <= n),
                 "delta": And(float, lambda n: 0 <= n <= 1),
+                Optional("max_dte"): And(int, lambda n: 1 <= n),
                 Optional("maximum_new_contracts"): And(int, lambda n: 1 <= n),
                 Optional("maximum_new_contracts_percent"): And(
                     float, lambda n: 0 <= n <= 1

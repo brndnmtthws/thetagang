@@ -237,8 +237,14 @@ calculate_net_contracts = false
 [target]
 # Target 45 or more days to expiry
 dte = 45
+
+# Optionally, we can prevent contracts from being rolled insanely far out with
+# `target.max_dte`. Comment this setting out if you don't care about it.
+max_dte = 180
+
 # Target delta of 0.3 or less. Defaults to 0.3 if not specified.
 delta = 0.3
+
 # When writing new contracts (either covered calls or naked puts), or rolling
 # before `roll_when.dte` is reached, never write more than this amount of
 # contracts at once. This can be useful to avoid bunching by spreading contract
@@ -254,6 +260,7 @@ delta = 0.3
 # Defaults to 5% of buying power. Set this to 1.0 to effectively disable the
 # limit.
 maximum_new_contracts_percent = 0.05
+
 # Minimum amount of open interest for a contract to qualify
 minimum_open_interest = 10
 
