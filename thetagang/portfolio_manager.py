@@ -1507,6 +1507,7 @@ class PortfolioManager:
             if target_delta
             else get_target_delta(self.config, main_contract.symbol, right)
         )
+        contract_max_dte: Optional[int] = self.config["target"]["max_dte"]
 
         console.print(
             f"[green]Searching option chain for symbol={main_contract.symbol} "
@@ -1552,7 +1553,9 @@ class PortfolioManager:
             expirations = sorted(
                 exp
                 for exp in chain.expirations
-                if option_dte(exp) >= contract_target_dte and option_dte(exp) >= min_dte
+                if option_dte(exp) >= contract_target_dte
+                and option_dte(exp) >= min_dte
+                and (not contract_max_dte or option_dte(exp) <= contract_max_dte)
             )[:chain_expirations]
             rights = [right]
 

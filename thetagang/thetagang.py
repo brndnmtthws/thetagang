@@ -219,6 +219,10 @@ def start(config_path: str, without_ibc: bool = False) -> None:
     config_table.add_section()
     config_table.add_row("[spring_green1]Write options with targets of")
     config_table.add_row("", "Days to expiry", ">=", f"{config['target']['dte']}")
+    if "max_dte" in config["target"]:
+        config_table.add_row(
+            "", "Days to expiry", "<=", f"{config['target']['max_dte']}"
+        )
     config_table.add_row("", "Default delta", "<=", f"{config['target']['delta']}")
     if "puts" in config["target"]:
         config_table.add_row(
