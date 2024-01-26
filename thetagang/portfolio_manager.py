@@ -1369,12 +1369,17 @@ class PortfolioManager:
                         min(
                             [strike_limit or sys.float_info.max]
                             + [
-                                position.contract.strike
-                                + (
-                                    position.averageCost
-                                    / float(position.contract.multiplier)
+                                max(
+                                    [
+                                        position.contract.strike,
+                                        position.contract.strike
+                                        + (
+                                            position.averageCost
+                                            / float(position.contract.multiplier)
+                                        )
+                                        - midpoint_or_market_price(buy_ticker),
+                                    ]
                                 )
-                                - midpoint_or_market_price(buy_ticker)
                             ]
                         ),
                         2,
