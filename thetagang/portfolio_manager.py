@@ -479,7 +479,10 @@ class PortfolioManager:
 
     def summarize_account(
         self,
-    ) -> Tuple[Dict[str, AccountValue], Dict[str, List[PortfolioItem]],]:
+    ) -> Tuple[
+        Dict[str, AccountValue],
+        Dict[str, List[PortfolioItem]],
+    ]:
         account_summary = self.ib.accountSummary(self.account_number)
         account_summary = account_summary_to_dict(account_summary)
 
@@ -577,9 +580,11 @@ class PortfolioManager:
             table.add_row(symbol)
             sorted_positions = sorted(
                 position,
-                key=lambda p: option_dte(p.contract.lastTradeDateOrContractMonth)
-                if isinstance(p.contract, Option)
-                else -1,  # Keep stonks on top
+                key=lambda p: (
+                    option_dte(p.contract.lastTradeDateOrContractMonth)
+                    if isinstance(p.contract, Option)
+                    else -1
+                ),  # Keep stonks on top
             )
 
             def getval(col: str, conId: int) -> str:
@@ -1432,9 +1437,9 @@ class PortfolioManager:
 
                 # store a copy of the contracts so we can retrieve them later by conId
                 self.qualified_contracts[position.contract.conId] = position.contract
-                self.qualified_contracts[
-                    sell_ticker.contract.conId
-                ] = sell_ticker.contract
+                self.qualified_contracts[sell_ticker.contract.conId] = (
+                    sell_ticker.contract
+                )
 
                 # Create combo legs
                 comboLegs = [
@@ -1697,14 +1702,18 @@ class PortfolioManager:
                 tickers = sorted(
                     sorted(
                         tickers,
-                        key=lambda t: abs(t.modelGreeks.delta)
-                        if t.modelGreeks and t.modelGreeks.delta
-                        else 0,
+                        key=lambda t: (
+                            abs(t.modelGreeks.delta)
+                            if t.modelGreeks and t.modelGreeks.delta
+                            else 0
+                        ),
                         reverse=delta_ord_desc,
                     ),
-                    key=lambda t: option_dte(t.contract.lastTradeDateOrContractMonth)
-                    if t.contract
-                    else 0,
+                    key=lambda t: (
+                        option_dte(t.contract.lastTradeDateOrContractMonth)
+                        if t.contract
+                        else 0
+                    ),
                 )
 
                 return tickers
@@ -2224,9 +2233,11 @@ class PortfolioManager:
                     (contract, order) = (trade.contract, trade.order)
                     updated_price = np.sign(order.lmtPrice) * max(
                         [
-                            get_minimum_credit(self.config)
-                            if order.action == "BUY" and order.lmtPrice <= 0.0
-                            else 0.0,
+                            (
+                                get_minimum_credit(self.config)
+                                if order.action == "BUY" and order.lmtPrice <= 0.0
+                                else 0.0
+                            ),
                             math.fabs(
                                 round((order.lmtPrice + ticker.midpoint()) / 2.0, 2)
                             ),

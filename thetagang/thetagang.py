@@ -346,15 +346,19 @@ def start(config_path: str, without_ibc: bool = False) -> None:
             pfmt(sconfig["weight"]),
             ffmt(get_target_delta(config, symbol, "C")),
             dfmt(get_strike_limit(config, symbol, "C")),
-            f"{ffmt(get_write_threshold_sigma(config, symbol, 'C'))}σ"
-            if get_write_threshold_sigma(config, symbol, "C")
-            else pfmt(get_write_threshold_perc(config, symbol, "C")),
+            (
+                f"{ffmt(get_write_threshold_sigma(config, symbol, 'C'))}σ"
+                if get_write_threshold_sigma(config, symbol, "C")
+                else pfmt(get_write_threshold_perc(config, symbol, "C"))
+            ),
             str(maintain_high_water_mark(config, symbol)),
             ffmt(get_target_delta(config, symbol, "P")),
             dfmt(get_strike_limit(config, symbol, "P")),
-            f"{ffmt(get_write_threshold_sigma(config, symbol, 'P'))}σ"
-            if get_write_threshold_sigma(config, symbol, "P")
-            else pfmt(get_write_threshold_perc(config, symbol, "P")),
+            (
+                f"{ffmt(get_write_threshold_sigma(config, symbol, 'P'))}σ"
+                if get_write_threshold_sigma(config, symbol, "P")
+                else pfmt(get_write_threshold_perc(config, symbol, "P"))
+            ),
         )
     assert (
         round(
