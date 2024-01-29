@@ -24,13 +24,13 @@ trio = ["trio (>=0.23)"]
 
 [[package]]
 name = "autohooks"
-version = "23.10.0"
+version = "24.1.0"
 description = "Library for managing git hooks"
 optional = false
 python-versions = ">=3.9,<4.0"
 files = [
-    {file = "autohooks-23.10.0-py3-none-any.whl", hash = "sha256:a4fdf33097daae47068c1ce6ec075a1d5fc692a0a182b0c69e8abda75b45c39e"},
-    {file = "autohooks-23.10.0.tar.gz", hash = "sha256:4de41476ed72e0a3670c40b1fc9b7d67c66eb788ab01b6a7b516fcebb2283166"},
+    {file = "autohooks-24.1.0-py3-none-any.whl", hash = "sha256:a3f253b764a2bfb5a0f257c973e5d8b603aac8cdbbeddc78a4b9a8e0e9098193"},
+    {file = "autohooks-24.1.0.tar.gz", hash = "sha256:0d6e2c8f564f752c916e93e31c4e528a715245cf1043f02f6b5b02e1a333be37"},
 ]
 
 [package.dependencies]
@@ -55,13 +55,13 @@ black = ">=20.8"
 
 [[package]]
 name = "autohooks-plugin-ruff"
-version = "23.11.0"
+version = "24.1.0"
 description = "An autohooks plugin for python code formatting via ruff"
 optional = false
 python-versions = ">=3.9,<4.0"
 files = [
-    {file = "autohooks_plugin_ruff-23.11.0-py3-none-any.whl", hash = "sha256:26f7be03e232a505e65246b666ea48a323a900d05bdef68e337a5c93dfdb23b1"},
-    {file = "autohooks_plugin_ruff-23.11.0.tar.gz", hash = "sha256:1f6c3bc92449fc57c71dd4ac0a410d7f5229f3aff96921fa80c70a28d7db9366"},
+    {file = "autohooks_plugin_ruff-24.1.0-py3-none-any.whl", hash = "sha256:2a072805b60abb63311abab84a6600cde9112840ab68f39af53f517648341651"},
+    {file = "autohooks_plugin_ruff-24.1.0.tar.gz", hash = "sha256:1a8dd732a2e7215c1c66faa79ac499195859c499af7ce52284ee6003ece4f25c"},
 ]
 
 [package.dependencies]
@@ -892,4 +892,4 @@ watchmedo = ["PyYAML (>=3.10)"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.13"
-content-hash = "5b3b4ed6eb6986f25726046e07f46778204fe86f426d0ee20d9de193247c137e"
+content-hash = "838b261a58bd94f81a0e5fec1c3aff8d0a05e4af49fe9d4655080d5cf9419794"
