@@ -115,25 +115,25 @@ def calculate_net_short_positions(positions: List[PortfolioItem], right: str) ->
     longs = sorted(longs, key=itemgetter(0, 1), reverse=right.upper().startswith("P"))
 
     def calc_net(short_dte: int, short_strike: float, short_position: float) -> float:
-        net = short_position
         for i in range(len(longs)):
+            if short_position > -1:
+                break
             (long_dte, long_strike, long_position) = longs[i]
+            if long_position < 1:
+                # ignore empty long positions
+                continue
             if long_dte >= short_dte:
                 if (right.upper().startswith("P") and long_strike >= short_strike) or (
                     right.upper().startswith("C") and long_strike <= short_strike
                 ):
-                    net = short_position + long_position
-                if net > 0:
-                    short_position = 0
-                    long_position = net
-                elif net < 0:
-                    long_position = 0
-                    short_position = net
-                else:
-                    long_position = 0
-                    short_position = 0
+                    if short_position + long_position > 0:
+                        short_position = 0
+                        long_position = short_position + long_position
+                    else:
+                        short_position += long_position
+                        long_position = 0
             longs[i] = (long_dte, long_strike, long_position)
-        return min([0.0, net])
+        return min([0.0, short_position])
 
     nets = [calc_net(*short) for short in shorts]
 
