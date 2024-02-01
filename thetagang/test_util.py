@@ -329,6 +329,36 @@ def test_calculate_net_short_positions() -> None:
         "C",
     )
 
+    assert 5 == calculate_net_short_positions(
+        [
+            con(exp3dte, 60, "P", -10),
+            con(exp30dte, 69, "P", -1),
+            con(exp90dte, 69, "P", 1),
+            con(exp90dte, 68, "P", 5),
+        ],
+        "P",
+    )
+
+    assert 10 == calculate_net_short_positions(
+        [
+            con(exp3dte, 70, "P", -10),
+            con(exp30dte, 69, "P", -1),
+            con(exp90dte, 69, "P", 1),
+            con(exp90dte, 68, "P", 5),
+        ],
+        "P",
+    )
+
+    assert 0 == calculate_net_short_positions(
+        [
+            con(exp3dte, 60, "P", -10),
+            con(exp30dte, 69, "P", -1),
+            con(exp90dte, 69, "P", 1),
+            con(exp90dte, 68, "P", 50),
+        ],
+        "P",
+    )
+
 
 def test_weighted_avg_strike() -> None:
     today = date.today()
