@@ -217,7 +217,7 @@ def midpoint_or_market_price(ticker: Ticker) -> float:
             # Fallback to the model price if the greeks are available
             return ticker.modelGreeks.optPrice
         else:
-            return ticker.marketPrice()
+            return ticker.marketPrice() if not util.isNan(ticker.marketPrice()) else 0.0
 
     return ticker.midpoint()
 
