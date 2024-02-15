@@ -3,7 +3,7 @@ import math
 import sys
 from asyncio import Future
 from functools import lru_cache
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 import numpy as np
 from ib_insync import (
@@ -935,7 +935,7 @@ class PortfolioManager:
                     ),
                     "C",
                     strike_limit,
-                    minimum_price=get_minimum_credit(self.config),
+                    minimum_price=lambda: get_minimum_credit(self.config),
                 )
             except RuntimeError:
                 console.print_exception()
@@ -978,7 +978,7 @@ class PortfolioManager:
                     ),
                     "P",
                     strike_limit,
-                    minimum_price=get_minimum_credit(self.config),
+                    minimum_price=lambda: get_minimum_credit(self.config),
                 )
             except RuntimeError:
                 console.print_exception()
@@ -1393,12 +1393,16 @@ class PortfolioManager:
                 kind = "calls" if right.startswith("C") else "puts"
 
                 minimum_price = (
-                    get_minimum_credit(self.config)
+                    (lambda: get_minimum_credit(self.config))
                     if not self.config["roll_when"][kind]["credit_only"]
-                    else midpoint_or_market_price(buy_ticker)
-                    + get_minimum_credit(self.config)
+                    else (
+                        lambda: midpoint_or_market_price(buy_ticker)
+                        + get_minimum_credit(self.config)
+                    )
                 )
-                fallback_minimum_price = midpoint_or_market_price(buy_ticker)
+
+                def fallback_minimum_price() -> float:
+                    return midpoint_or_market_price(buy_ticker)
 
                 sell_ticker = self.find_eligible_contracts(
                     Stock(
@@ -1497,10 +1501,10 @@ class PortfolioManager:
         main_contract: Contract,
         right: str,
         strike_limit: Optional[float],
-        minimum_price: float,
+        minimum_price: Callable[[], float],
         exclude_expirations_before: Optional[str] = None,
         exclude_exp_strike: Optional[Tuple[float, str]] = None,
-        fallback_minimum_price: Optional[float] = None,
+        fallback_minimum_price: Optional[Callable[[], float],] = None,
         target_dte: Optional[int] = None,
         target_delta: Optional[float] = None,
     ) -> Ticker:
@@ -1516,8 +1520,8 @@ class PortfolioManager:
 
         console.print(
             f"[green]Searching option chain for symbol={main_contract.symbol} "
-            f"right={right}, strike_limit={strike_limit}, minimum_price={dfmt(minimum_price,3)} "
-            f"fallback_minimum_price={dfmt(fallback_minimum_price,3)}"
+            f"right={right}, strike_limit={strike_limit}, minimum_price={dfmt(minimum_price(),3)} "
+            f"fallback_minimum_price={dfmt(fallback_minimum_price() if fallback_minimum_price else 0,3)}"
             " this can take a while...[/green]",
         )
         with console.status(
@@ -1650,7 +1654,7 @@ class PortfolioManager:
 
                 return midpoint_or_market_price(
                     ticker
-                ) > minimum_price and cost_doesnt_exceed_market_price(ticker)
+                ) > minimum_price() and cost_doesnt_exceed_market_price(ticker)
 
             # Filter out tickers with invalid or unavailable prices
             self.wait_for_market_price_for(
@@ -1722,7 +1726,7 @@ class PortfolioManager:
 
             the_chosen_ticker = None
             if len(tickers) == 0:
-                if not math.isclose(minimum_price, 0.0):
+                if not math.isclose(minimum_price(), 0.0):
                     # if we arrive here, it means that 1) we expect to roll for a
                     # credit only, but 2) we didn't find any suitable contracts,
                     # most likely because we can't roll out and up/down to the
@@ -1743,7 +1747,7 @@ class PortfolioManager:
                 # if there's a fallback minimum price specified, try to find
                 # contracts that are at least that price first
                 for ticker in tickers:
-                    if midpoint_or_market_price(ticker) > fallback_minimum_price:
+                    if midpoint_or_market_price(ticker) > fallback_minimum_price():
                         the_chosen_ticker = ticker
                         break
                 if the_chosen_ticker is None:
@@ -1955,7 +1959,7 @@ class PortfolioManager:
                             0,
                             target_delta=delta,
                             target_dte=target_dte,
-                            minimum_price=get_minimum_credit(self.config),
+                            minimum_price=lambda: get_minimum_credit(self.config),
                         )
                         if not isinstance(buy_ticker.contract, Option):
                             raise RuntimeError(
