@@ -1504,7 +1504,7 @@ class PortfolioManager:
         minimum_price: Callable[[], float],
         exclude_expirations_before: Optional[str] = None,
         exclude_exp_strike: Optional[Tuple[float, str]] = None,
-        fallback_minimum_price: Optional[Callable[[], float],] = None,
+        fallback_minimum_price: Optional[Callable[[], float]] = None,
         target_dte: Optional[int] = None,
         target_delta: Optional[float] = None,
     ) -> Ticker:
