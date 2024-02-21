@@ -1082,9 +1082,17 @@ class PortfolioManager:
             targets[symbol] = round(
                 self.config["symbols"][symbol]["weight"] * total_buying_power, 2
             )
-            self.target_quantities[symbol] = math.floor(
-                targets[symbol] / ticker.marketPrice()
-            )
+            market_price = ticker.marketPrice()
+            if (
+                not market_price
+                or math.isnan(market_price)
+                or math.isclose(market_price, 0)
+            ):
+                console.print(
+                    f"[red]Invalid market price for {symbol} (market_price={market_price}), skipping for now"
+                )
+                continue
+            self.target_quantities[symbol] = math.floor(targets[symbol] / market_price)
 
             if symbol in portfolio_positions:
                 # Current number of puts
