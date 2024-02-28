@@ -1538,26 +1538,20 @@ class PortfolioManager:
             self.ib.qualifyContracts(main_contract)
 
             main_contract_ticker = self.get_ticker_for(main_contract, midpoint=True)
-            main_contract_price = midpoint_or_market_price(main_contract_ticker)
+            underlying_price = midpoint_or_market_price(main_contract_ticker)
 
             chains = self.get_chains_for_contract(main_contract)
             chain = next(c for c in chains if c.exchange == main_contract.exchange)
 
             def valid_strike(strike: float) -> bool:
                 if right.startswith("P") and strike_limit:
-                    return (
-                        strike <= main_contract_price + 0.02 * main_contract_price
-                        and strike <= strike_limit
-                    )
+                    return strike <= strike_limit
                 elif right.startswith("P"):
-                    return strike <= main_contract_price + 0.02 * main_contract_price
+                    return strike <= underlying_price + 0.02 * underlying_price
                 elif right.startswith("C") and strike_limit:
-                    return (
-                        strike >= main_contract_price - 0.02 * main_contract_price
-                        and strike >= strike_limit
-                    )
+                    return strike >= strike_limit
                 elif right.startswith("C"):
-                    return strike >= main_contract_price - 0.02 * main_contract_price
+                    return strike >= underlying_price - 0.02 * underlying_price
                 return False
 
             chain_expirations = self.config["option_chains"]["expirations"]
@@ -1657,7 +1651,7 @@ class PortfolioManager:
                         right.startswith("C")
                         or isinstance(ticker.contract, Option)
                         and ticker.contract.strike
-                        <= midpoint_or_market_price(ticker) + main_contract_price
+                        <= midpoint_or_market_price(ticker) + underlying_price
                     )
 
                 return midpoint_or_market_price(
