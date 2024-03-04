@@ -1568,6 +1568,10 @@ class PortfolioManager:
                 and option_dte(exp) >= min_dte
                 and (not contract_max_dte or option_dte(exp) <= contract_max_dte)
             )[:chain_expirations]
+            if len(expirations) < 1:
+                raise RuntimeError(
+                    f"No valid contract expirations found for {main_contract.symbol}. Continuing anyway..."
+                )
             rights = [right]
 
             def nearest_strikes(strikes: List[float]) -> List[float]:
