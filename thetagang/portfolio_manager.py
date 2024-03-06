@@ -821,7 +821,9 @@ class PortfolioManager:
             )
             strike_limit = math.ceil(
                 max(
-                    [get_strike_limit(self.config, symbol, "C") or 0]
+                    [
+                        get_strike_limit(self.config, symbol, "C") or 0,
+                    ]
                     + [
                         p.averageCost or 0
                         for p in portfolio_positions[symbol]
@@ -855,10 +857,8 @@ class PortfolioManager:
             )
 
             write_only_when_green = self.config["write_when"]["calls"]["green"]
-            ticker = (
-                self.get_ticker_for_stock(symbol, self.get_primary_exchange(symbol))
-                if write_only_when_green
-                else None
+            ticker = self.get_ticker_for_stock(
+                symbol, self.get_primary_exchange(symbol)
             )
 
             (write_threshold, absolute_daily_change) = (None, None)
@@ -902,13 +902,14 @@ class PortfolioManager:
             ok_to_write = is_ok_to_write_calls(
                 symbol, ticker, write_only_when_green, calls_to_write
             )
+            strike_limit = math.ceil(max([strike_limit, ticker.marketPrice()]))
 
             if calls_to_write > 0 and ok_to_write:
                 call_actions_table.add_row(
                     symbol,
                     "[green]Write",
                     f"[green]Will write {calls_to_write} calls, {new_contracts_needed} needed, "
-                    f"limited to {maximum_new_contracts} new contracts, at or above strike ${strike_limit}"
+                    f"limited to {maximum_new_contracts} new contracts, at or above strike {dfmt(strike_limit)}"
                     f" (target_short_calls={target_short_calls} short_call_count={short_call_count} "
                     f"absolute_daily_change={absolute_daily_change:.2f} write_threshold={write_threshold:.2f})",
                 )
