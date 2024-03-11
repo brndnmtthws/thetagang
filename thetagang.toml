@@ -239,7 +239,9 @@ calculate_net_contracts = false
 dte = 45
 
 # Optionally, we can prevent contracts from being rolled insanely far out with
-# `target.max_dte`. Comment this setting out if you don't care about it.
+# `target.max_dte`. Comment this setting out if you don't care about it. You can
+# also specify this per-symbol, with `symbols.<symbol>.max_dte`, or for VIX if
+# you use the VIX call hedging.
 max_dte = 180
 
 # Target delta of 0.3 or less. Defaults to 0.3 if not specified.
@@ -308,6 +310,11 @@ minimum_open_interest = 10
 
   [symbols.QQQ]
   weight = 0.3
+
+  # Optional: specify the maximum contract DTE for this symbol (i.e., don't open
+  # or roll positions past this DTE). This will override the `target.max_dte`
+  # value.
+  # max_dte = 45
 
     # parts = 30
     [symbols.QQQ.puts]
@@ -430,10 +437,17 @@ retryDelay     = 2
 # https://www.cboe.com/us/indices/dashboard/vxth/
 [vix_call_hedge]
 enabled = false
+
 # Target delta for calls that are purchased
 delta = 0.30
+
 # Target DTE for new positions
 target_dte = 30
+
+# Optionally specify a maximum DTE for VIX positions, which takes precedence
+# over `target.max_dte`.
+# max_dte = 180
+
 # If the current spot VIX exceeds this value, long VIX call positions will be
 # closed. Comment out to disable.
 close_hedges_when_vix_exceeds = 50.0

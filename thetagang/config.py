@@ -148,6 +148,7 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
                     Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                     Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
                     Optional("write_threshold_sigma"): And(float, lambda n: n > 0),
+                    Optional("max_dte"): And(int, lambda n: 1 <= n),
                     Optional("calls"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                         Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
@@ -209,6 +210,7 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
                 Optional("target_dte"): And(int, lambda n: n > 0),
                 Optional("close_hedges_when_vix_exceeds"): float,
                 Optional("ignore_dte"): And(int, lambda n: n >= 0),
+                Optional("max_dte"): And(int, lambda n: 1 <= n),
                 Optional("allocation"): [
                     {
                         Optional("lower_bound"): float,
