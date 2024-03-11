@@ -36,6 +36,7 @@ from thetagang.util import (
     count_short_option_positions,
     get_higher_price,
     get_lower_price,
+    get_max_dte_for,
     get_minimum_credit,
     get_short_positions,
     get_strike_limit,
@@ -1525,13 +1526,15 @@ class PortfolioManager:
             if target_delta
             else get_target_delta(self.config, main_contract.symbol, right)
         )
-        contract_max_dte: Optional[int] = self.config["target"]["max_dte"]
+        contract_max_dte = get_max_dte_for(main_contract.symbol, self.config)
 
         console.print(
             f"[green]Searching option chain for symbol={main_contract.symbol} "
-            f"right={right}, strike_limit={strike_limit}, minimum_price={dfmt(minimum_price(),3)} "
-            f"fallback_minimum_price={dfmt(fallback_minimum_price() if fallback_minimum_price else 0,3)}"
-            " this can take a while...[/green]",
+            f"right={right} strike_limit={strike_limit} minimum_price={dfmt(minimum_price(),3)} "
+            f"fallback_minimum_price={dfmt(fallback_minimum_price() if fallback_minimum_price else 0,3)} "
+            f"contract_target_dte={contract_target_dte} contract_max_dte={contract_max_dte} "
+            f"contract_target_delta={contract_target_delta}, "
+            "this can take a while...",
         )
         with console.status(
             "[bold blue_violet]Hunting for juicy contracts... 😎"
