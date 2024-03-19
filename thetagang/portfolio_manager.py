@@ -446,7 +446,6 @@ class PortfolioManager:
             and (
                 item.contract.symbol in symbols
                 or item.contract.symbol == "VIX"
-                or item.contract.symbol == "VIXW"
                 or item.contract.symbol == self.config["cash_management"]["cash_fund"]
             )
             and item.position != 0
@@ -468,10 +467,7 @@ class PortfolioManager:
                     trade.contract.symbol in self.get_symbols()
                     or (
                         self.config["vix_call_hedge"]["enabled"]
-                        and (
-                            trade.contract.symbol == "VIX"
-                            or trade.contract.symbol == "VIXW"
-                        )
+                        and trade.contract.symbol == "VIX"
                     )
                     or (
                         self.config["cash_management"]["enabled"]
@@ -707,6 +703,8 @@ class PortfolioManager:
     ) -> Tuple[List[Any], List[Any], Group]:
         # Check for puts which may be rolled to the next expiration or a better price
         puts = self.get_short_puts(portfolio_positions)
+        # Filter out an VIX positions
+        puts = [put for put in puts if put.contract.symbol != "VIX"]
 
         # find puts eligible to be rolled or closed
         rollable_puts: List[PortfolioItem] = []
@@ -743,6 +741,8 @@ class PortfolioManager:
     ) -> Tuple[List[Any], List[Any], Group]:
         # Check for calls which may be rolled to the next expiration or a better price
         calls = self.get_short_calls(portfolio_positions)
+        # Filter out an VIX positions
+        calls = [call for call in calls if call.contract.symbol != "VIX"]
 
         # find calls eligible to be rolled
         rollable_calls: List[PortfolioItem] = []
