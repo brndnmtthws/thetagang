@@ -446,6 +446,7 @@ class PortfolioManager:
             and (
                 item.contract.symbol in symbols
                 or item.contract.symbol == "VIX"
+                or item.contract.symbol == "VIXW"
                 or item.contract.symbol == self.config["cash_management"]["cash_fund"]
             )
             and item.position != 0
@@ -467,7 +468,10 @@ class PortfolioManager:
                     trade.contract.symbol in self.get_symbols()
                     or (
                         self.config["vix_call_hedge"]["enabled"]
-                        and trade.contract.symbol == "VIX"
+                        and (
+                            trade.contract.symbol == "VIX"
+                            or trade.contract.symbol == "VIXW"
+                        )
                     )
                     or (
                         self.config["cash_management"]["enabled"]
