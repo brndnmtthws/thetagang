@@ -533,7 +533,11 @@ class PortfolioManager:
         ):
             for pos in position:
                 position_values[pos.contract.conId] = {
-                    "qty": ifmt(int(pos.position)),
+                    "qty": (
+                        ifmt(int(pos.position))
+                        if pos.position.is_integer()
+                        else ffmt(pos.position)
+                    ),
                     "mktprice": dfmt(pos.marketPrice),
                     "avgprice": dfmt(pos.averageCost),
                     "value": dfmt(pos.marketValue, 0),
