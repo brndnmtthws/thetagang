@@ -536,7 +536,7 @@ class PortfolioManager:
                     "qty": (
                         ifmt(int(pos.position))
                         if pos.position.is_integer()
-                        else ffmt(pos.position)
+                        else ffmt(pos.position, 4)
                     ),
                     "mktprice": dfmt(pos.marketPrice),
                     "avgprice": dfmt(pos.averageCost),
