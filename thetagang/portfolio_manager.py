@@ -2233,6 +2233,11 @@ class PortfolioManager:
             range(delay),
             description=f"Waiting {delay}s before we update prices...",
         ):
+            if all([trade.isDone() for trade in self.trades]):
+                console.print(
+                    "[green]All trades are done, no need to adjust prices. Have a nice day 😊"
+                )
+                break
             self.ib.sleep(1)
 
         unfilled = [
