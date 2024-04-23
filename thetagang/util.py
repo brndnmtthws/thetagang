@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import ib_insync.objects
 import ib_insync.ticker
-from ib_insync import AccountValue, PortfolioItem, TagValue, Ticker, util
+from ib_insync import AccountValue, Order, PortfolioItem, TagValue, Ticker, util
 from ib_insync.contract import Option
 
 from thetagang.options import option_dte
@@ -357,3 +357,12 @@ def get_max_dte_for(symbol: str, config: Dict[str, Any]) -> Optional[int]:
         return config["symbols"][symbol]["max_dte"]
 
     return config["target"]["max_dte"]
+
+
+def would_increase_spread(order: Order, updated_price: float) -> bool:
+    return (
+        order.action == "BUY"
+        and updated_price < order.lmtPrice
+        or order.action == "SELL"
+        and updated_price > order.lmtPrice
+    )

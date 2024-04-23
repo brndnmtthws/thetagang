@@ -52,6 +52,7 @@ from thetagang.util import (
     wait_n_seconds,
     weighted_avg_long_strike,
     weighted_avg_short_strike,
+    would_increase_spread,
 )
 
 from .options import option_dte
@@ -2274,8 +2275,8 @@ class PortfolioManager:
                     # We only want to tighten spreads, not widen them. If the
                     # resulting price change would increase the spread, we'll
                     # skip it.
-                    if (order.lmtPrice < 0 and updated_price < order.lmtPrice) or (
-                        order.lmtPrice > 0 and updated_price > order.lmtPrice
+                    if contract.secType == "BAG" and would_increase_spread(
+                        order, updated_price
                     ):
                         console.print(
                             f"[yellow]Skipping order for {contract.symbol}"
