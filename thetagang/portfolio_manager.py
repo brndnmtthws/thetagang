@@ -2275,9 +2275,7 @@ class PortfolioManager:
                     # We only want to tighten spreads, not widen them. If the
                     # resulting price change would increase the spread, we'll
                     # skip it.
-                    if contract.secType == "BAG" and would_increase_spread(
-                        order, updated_price
-                    ):
+                    if would_increase_spread(order, updated_price):
                         console.print(
                             f"[yellow]Skipping order for {contract.symbol}"
                             f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}, because updated price would increase spread"
