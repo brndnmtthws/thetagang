@@ -1,7 +1,7 @@
 import math
 from datetime import date, timedelta
 
-from ib_insync import Option, PortfolioItem
+from ib_insync import Option, Order, PortfolioItem
 from ib_insync.contract import Stock
 
 from thetagang.util import (
@@ -10,6 +10,7 @@ from thetagang.util import (
     position_pnl,
     weighted_avg_long_strike,
     weighted_avg_short_strike,
+    would_increase_spread,
 )
 
 
@@ -450,3 +451,45 @@ def test_weighted_avg_strike() -> None:
         )
         or -1,
     )
+
+
+def test_would_increase_spread() -> None:
+    # Test BUY order with lmtPrice < 0 and updated_price > lmtPrice
+    order1 = Order(action="BUY", lmtPrice=-10)
+    updated_price1 = -5.0
+    assert would_increase_spread(order1, updated_price1) is False
+
+    # Test BUY order with lmtPrice < 0 and updated_price < lmtPrice
+    order2 = Order(action="BUY", lmtPrice=-10)
+    updated_price2 = -15.0
+    assert would_increase_spread(order2, updated_price2) is True
+
+    # Test BUY order with lmtPrice > 0 and updated_price < lmtPrice
+    order3 = Order(action="BUY", lmtPrice=10)
+    updated_price3 = 5.0
+    assert would_increase_spread(order3, updated_price3) is True
+
+    # Test BUY order with lmtPrice > 0 and updated_price > lmtPrice
+    order4 = Order(action="BUY", lmtPrice=10)
+    updated_price4 = 15.0
+    assert would_increase_spread(order4, updated_price4) is False
+
+    # Test SELL order with lmtPrice < 0 and updated_price < lmtPrice
+    order5 = Order(action="SELL", lmtPrice=-10)
+    updated_price5 = -15.0
+    assert would_increase_spread(order5, updated_price5) is False
+
+    # Test SELL order with lmtPrice < 0 and updated_price > lmtPrice
+    order6 = Order(action="SELL", lmtPrice=-10)
+    updated_price6 = -5.0
+    assert would_increase_spread(order6, updated_price6) is True
+
+    # Test SELL order with lmtPrice > 0 and updated_price > lmtPrice
+    order7 = Order(action="SELL", lmtPrice=10)
+    updated_price7 = 15.0
+    assert would_increase_spread(order7, updated_price7) is True
+
+    # Test SELL order with lmtPrice > 0 and updated_price < lmtPrice
+    order8 = Order(action="SELL", lmtPrice=10)
+    updated_price8 = 5.0
+    assert would_increase_spread(order8, updated_price8) is False
