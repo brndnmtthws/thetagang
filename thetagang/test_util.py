@@ -360,6 +360,70 @@ def test_calculate_net_short_positions() -> None:
         "P",
     )
 
+    # A couple real-world examples
+    exp9dte = (today + timedelta(days=9)).strftime("%Y%m%d")
+    exp16dte = (today + timedelta(days=16)).strftime("%Y%m%d")
+    exp23dte = (today + timedelta(days=23)).strftime("%Y%m%d")
+    exp30dte = (today + timedelta(days=30)).strftime("%Y%m%d")
+    exp37dte = (today + timedelta(days=37)).strftime("%Y%m%d")
+    exp268dte = (today + timedelta(days=268)).strftime("%Y%m%d")
+
+    assert 2 == calculate_net_short_positions(
+        [
+            con(exp9dte, 77.0, "P", -2),
+            con(exp16dte, 76.0, "P", -1),
+            con(exp16dte, 77.0, "P", -1),
+            con(exp23dte, 77.0, "P", -6),
+            con(exp30dte, 77.0, "P", -2),
+            con(exp37dte, 77.0, "P", -5),
+            con(exp268dte, 77.0, "P", 15),
+        ],
+        "P",
+    )
+
+    assert 0 == calculate_net_short_positions(
+        [
+            con(exp9dte, 77.0, "P", -2),
+            con(exp16dte, 76.0, "P", -1),
+            con(exp16dte, 77.0, "P", -1),
+            con(exp23dte, 77.0, "P", -6),
+            con(exp30dte, 77.0, "P", -2),
+            con(exp37dte, 77.0, "P", -5),
+            con(exp268dte, 77.0, "P", 15),
+        ],
+        "C",
+    )
+
+    assert 20 == calculate_net_short_positions(
+        [
+            con(exp23dte, 72.0, "C", -8),
+            con(exp30dte, 66.0, "C", -8),
+            con(exp30dte, 68.0, "C", -9),
+            con(exp30dte, 69.0, "C", -7),
+            con(exp30dte, 72.0, "C", -1),
+            con(exp37dte, 59.5, "C", -8),
+            con(exp37dte, 68.0, "C", -7),
+            con(exp268dte, 55.0, "C", 5),
+            con(exp268dte, 60.0, "C", 23),
+        ],
+        "C",
+    )
+
+    assert 0 == calculate_net_short_positions(
+        [
+            con(exp23dte, 72.0, "C", -8),
+            con(exp30dte, 66.0, "C", -8),
+            con(exp30dte, 68.0, "C", -9),
+            con(exp30dte, 69.0, "C", -7),
+            con(exp30dte, 72.0, "C", -1),
+            con(exp37dte, 59.5, "C", -8),
+            con(exp37dte, 68.0, "C", -7),
+            con(exp268dte, 55.0, "C", 5),
+            con(exp268dte, 60.0, "C", 23),
+        ],
+        "P",
+    )
+
 
 def test_weighted_avg_strike() -> None:
     today = date.today()
