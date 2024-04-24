@@ -123,12 +123,14 @@ def calculate_net_short_positions(positions: List[PortfolioItem], right: str) ->
                 # ignore empty long positions
                 continue
             if long_dte >= short_dte:
-                if (right.upper().startswith("P") and long_strike >= short_strike) or (
-                    right.upper().startswith("C") and long_strike <= short_strike
+                if (
+                    math.isclose(short_strike, long_strike)
+                    or (right.upper().startswith("P") and long_strike >= short_strike)
+                    or (right.upper().startswith("C") and long_strike <= short_strike)
                 ):
                     if short_position + long_position > 0:
-                        short_position = 0
                         long_position = short_position + long_position
+                        short_position = 0
                     else:
                         short_position += long_position
                         long_position = 0
