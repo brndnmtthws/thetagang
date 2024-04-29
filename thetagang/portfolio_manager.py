@@ -1443,7 +1443,7 @@ class PortfolioManager:
                 if not sell_ticker.contract:
                     raise RuntimeError(f"Invalid ticker (no contract): {sell_ticker}")
 
-                qty_to_roll = abs(position.position)
+                qty_to_roll = math.floor(abs(position.position))
                 maximum_new_contracts = self.get_maximum_new_contracts_for(
                     symbol,
                     self.get_primary_exchange(symbol),
