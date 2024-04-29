@@ -1457,6 +1457,12 @@ class PortfolioManager:
                 price = midpoint_or_market_price(buy_ticker) - midpoint_or_market_price(
                     sell_ticker
                 )
+                # a buy order should be at most the minimum price, when we expect a credit
+                price = (
+                    min([price, -get_minimum_credit(self.config)])
+                    if self.config["roll_when"][kind]["credit_only"]
+                    else price
+                )
 
                 # store a copy of the contracts so we can retrieve them later by conId
                 self.qualified_contracts[position.contract.conId] = position.contract
