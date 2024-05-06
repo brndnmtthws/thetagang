@@ -1,7 +1,7 @@
 import math
 from datetime import datetime
 from operator import itemgetter
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import ib_insync.objects
 import ib_insync.ticker
@@ -368,3 +368,24 @@ def would_increase_spread(order: Order, updated_price: float) -> bool:
         or order.action == "SELL"
         and updated_price > order.lmtPrice
     )
+
+
+def can_write_when(
+    config: Dict[str, Any], symbol: str, right: str
+) -> Tuple[bool, bool]:
+    p_or_c = "calls" if right.upper().startswith("C") else "puts"
+    can_write_when_green = (
+        config["symbols"][symbol][p_or_c]["write_when"]["green"]
+        if p_or_c in config["symbols"][symbol]
+        and "write_when" in config["symbols"][symbol][p_or_c]
+        and "green" in config["symbols"][symbol][p_or_c]["write_when"]
+        else config["write_when"][p_or_c]["green"]
+    )
+    can_write_when_red = (
+        config["symbols"][symbol][p_or_c]["write_when"]["red"]
+        if p_or_c in config["symbols"][symbol]
+        and "write_when" in config["symbols"][symbol][p_or_c]
+        and "red" in config["symbols"][symbol][p_or_c]["write_when"]
+        else config["write_when"][p_or_c]["red"]
+    )
+    return (can_write_when_green, can_write_when_red)

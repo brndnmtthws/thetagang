@@ -97,10 +97,12 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
                 Optional("calculate_net_contracts"): bool,
                 Optional("calls"): {
                     Optional("green"): bool,
+                    Optional("red"): bool,
                     Optional("cap_factor"): And(float, lambda n: 0 <= n <= 1),
                     Optional("cap_target_floor"): And(float, lambda n: 0 <= n <= 1),
                 },
                 Optional("puts"): {
+                    Optional("green"): bool,
                     Optional("red"): bool,
                 },
             },
