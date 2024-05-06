@@ -19,9 +19,10 @@ DEFAULT_CONFIG: Dict[str, Dict[str, Any]] = {
     },
     "write_when": {
         "calculate_net_contracts": False,
-        "puts": {"red": False},
+        "puts": {"red": True, "green": False},
         "calls": {
-            "green": False,
+            "green": True,
+            "red": False,
             "cap_factor": 1.0,
             "cap_target_floor": 0.0,
         },

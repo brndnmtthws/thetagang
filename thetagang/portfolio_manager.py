@@ -32,6 +32,7 @@ from thetagang.util import (
     account_summary_to_dict,
     algo_params_from,
     calculate_net_short_positions,
+    can_write_when,
     count_long_option_positions,
     count_short_option_positions,
     get_higher_price,
@@ -866,7 +867,6 @@ class PortfolioManager:
                 [0, min([new_contracts_needed, maximum_new_contracts])]
             )
 
-            write_only_when_green = self.config["write_when"]["calls"]["green"]
             ticker = self.get_ticker_for_stock(
                 symbol, self.get_primary_exchange(symbol)
             )
@@ -876,22 +876,28 @@ class PortfolioManager:
             def is_ok_to_write_calls(
                 symbol: str,
                 ticker: Optional[Ticker],
-                write_only_when_green: bool,
                 calls_to_write: int,
             ) -> bool:
                 nonlocal write_threshold, absolute_daily_change
-                if not write_only_when_green:
-                    return True
                 if not ticker or calls_to_write <= 0:
                     return False
 
-                green = ticker.marketPrice() > ticker.close
-                if not green:
+                (can_write_when_green, can_write_when_red) = can_write_when(
+                    self.config, symbol, "C"
+                )
+
+                if not can_write_when_green and ticker.marketPrice() > ticker.close:
                     call_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
-                        f"[cyan1]Need to write {calls_to_write} calls, "
-                        "but skipping because underlying is not green",
+                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice()} > close={ticker.close}",
+                    )
+                    return False
+                if not can_write_when_red and ticker.marketPrice() < ticker.close:
+                    call_actions_table.add_row(
+                        symbol,
+                        "[cyan1]None",
+                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice()} < close={ticker.close}",
                     )
                     return False
 
@@ -909,9 +915,7 @@ class PortfolioManager:
                     return False
                 return True
 
-            ok_to_write = is_ok_to_write_calls(
-                symbol, ticker, write_only_when_green, calls_to_write
-            )
+            ok_to_write = is_ok_to_write_calls(symbol, ticker, calls_to_write)
             strike_limit = math.ceil(max([strike_limit, ticker.marketPrice()]))
 
             if calls_to_write > 0 and ok_to_write:
@@ -1073,10 +1077,10 @@ class PortfolioManager:
         positions_summary_table.add_column("Net target shares", justify="right")
         positions_summary_table.add_column("Net target contracts", justify="right")
 
-        actions = Table(title="Put writing summary")
-        actions.add_column("Symbol")
-        actions.add_column("Action")
-        actions.add_column("Detail")
+        put_actions_table = Table(title="Put writing summary")
+        put_actions_table.add_column("Symbol")
+        put_actions_table.add_column("Action")
+        put_actions_table.add_column("Detail")
 
         # Determine target quantity of each stock
         for symbol in track(
@@ -1146,8 +1150,6 @@ class PortfolioManager:
                 net_short_call_count = short_call_count = long_call_count = 0
                 short_call_avg_strike = long_call_avg_strike = None
 
-            write_only_when_red = self.config["write_when"]["puts"]["red"]
-
             qty_to_write = math.floor(
                 self.target_quantities[symbol]
                 - current_position
@@ -1206,20 +1208,27 @@ class PortfolioManager:
             def is_ok_to_write_puts(
                 symbol: str,
                 ticker: Ticker,
-                write_only_when_red: bool,
                 puts_to_write: int,
             ) -> bool:
-                if not write_only_when_red:
-                    return True
                 if puts_to_write <= 0:
                     return False
 
-                red = ticker.marketPrice() < ticker.close
-                if not red:
-                    actions.add_row(
+                (can_write_when_green, can_write_when_red) = can_write_when(
+                    self.config, symbol, "C"
+                )
+
+                if not can_write_when_green and ticker.marketPrice() > ticker.close:
+                    put_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
-                        f"[cyan1]Need to write {puts_to_write} puts, but skipping because underlying is not red[/cyan1]",
+                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice()} > close={ticker.close}",
+                    )
+                    return False
+                if not can_write_when_red and ticker.marketPrice() < ticker.close:
+                    put_actions_table.add_row(
+                        symbol,
+                        "[cyan1]None",
+                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice()} < close={ticker.close}",
                     )
                     return False
 
@@ -1227,7 +1236,7 @@ class PortfolioManager:
                     ticker, "P"
                 )
                 if absolute_daily_change < write_threshold:
-                    actions.add_row(
+                    put_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
                         f"[cyan1]Need to write {puts_to_write} puts, but skipping because absolute_daily_change={absolute_daily_change:.2f} less than write_threshold={write_threshold:.2f}[/cyan1]",
@@ -1235,9 +1244,7 @@ class PortfolioManager:
                     return False
                 return True
 
-            ok_to_write = is_ok_to_write_puts(
-                symbol, ticker, write_only_when_red, net_target_puts
-            )
+            ok_to_write = is_ok_to_write_puts(symbol, ticker, net_target_puts)
 
             target_additional_quantity[symbol] = {
                 "qty": net_target_puts,
@@ -1263,14 +1270,14 @@ class PortfolioManager:
                 if puts_to_write > 0:
                     strike_limit = get_strike_limit(self.config, symbol, "P")
                     if strike_limit:
-                        actions.add_row(
+                        put_actions_table.add_row(
                             symbol,
                             "[green]Write",
                             f"[green]Will write {puts_to_write} puts, {additional_quantity}"
                             f" needed, capped at {maximum_new_contracts}, at or below strike ${strike_limit}",
                         )
                     else:
-                        actions.add_row(
+                        put_actions_table.add_row(
                             symbol,
                             "[green]Write",
                             f"[green]Will write {puts_to_write} puts, {additional_quantity}"
@@ -1286,14 +1293,14 @@ class PortfolioManager:
                         )
             elif additional_quantity < 0:
                 self.has_excess_puts.add(symbol)
-                actions.add_row(
+                put_actions_table.add_row(
                     symbol,
                     "[yellow]None",
                     "[yellow]Warning: excess positions based "
                     "on net liquidation and target margin usage",
                 )
 
-        return (positions_summary_table, actions, to_write)
+        return (positions_summary_table, put_actions_table, to_write)
 
     def close_puts(self, puts: List[Any]) -> None:
         return self.close_positions(puts)

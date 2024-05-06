@@ -178,15 +178,27 @@ def start(config_path: str, without_ibc: bool = False) -> None:
     )
     config_table.add_row(
         "",
-        "Puts, only write when red",
+        "Puts, write when red",
         "=",
         f"{config['write_when']['puts']['red']}",
     )
     config_table.add_row(
         "",
-        "Calls, only write when green",
+        "Puts, write when green",
+        "=",
+        f"{config['write_when']['puts']['green']}",
+    )
+    config_table.add_row(
+        "",
+        "Calls, write when green",
         "=",
         f"{config['write_when']['calls']['green']}",
+    )
+    config_table.add_row(
+        "",
+        "Calls, write when red",
+        "=",
+        f"{config['write_when']['calls']['red']}",
     )
     config_table.add_row(
         "",

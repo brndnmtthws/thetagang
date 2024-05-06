@@ -206,6 +206,7 @@ calculate_net_contracts = false
   [write_when.calls]
   # Optionally, only write calls when the underlying is green
   green = true
+  red   = false
 
   # With covered calls, we can cap the number of calls to write by this factor. At
   # 1.0, we write covered calls on 100% of our positions. At 0.5, we'd only write
@@ -232,7 +233,8 @@ calculate_net_contracts = false
 
   [write_when.puts]
   # Optionally, only write puts when the underlying is red
-  red = true
+  green = false
+  red   = true
 
 [target]
 # Target 45 or more days to expiry
@@ -325,9 +327,9 @@ minimum_open_interest = 10
     strike_limit = 1000.0 # never write a put with a strike above $1000
 
     # Optionally, if we only write new contracts when the underlying is green or
-    # red (`write_when.calls.green=true` or `write_when.puts.red=true`), specify a
-    # minimum threshold as an absolute value daily percentage change (in this
-    # example, use 1% for puts only, but could also be specified as
+    # red (`write_when.*.green=true` && `write_when.*.red=false` or vice versa),
+    # specify a minimum threshold as an absolute value daily percentage change
+    # (in this example, use 1% for puts only, but could also be specified as
     # `symbols.QQQ.write_threshold`). This can also be specified under
     # `constants.write_threshold` and `constants.puts/calls.write_threshold` to
     # apply to all symbols, either for both puts or calls, or individually.
@@ -353,15 +355,20 @@ minimum_open_interest = 10
     #
     # write_threshold_sigma = 1.0 # 1x the standard devation of log returns for the daily stddev window
 
-    [symbols.QQQ.calls]
-    strike_limit = 100.0 # never write a call with a strike below $100
+      # the values for `write_when.*.green` and `write_when.*.red` can also be set per-symbol
+      [symbols.QQQ.puts.write_when]
+      green = false
+      red   = true
 
-    maintain_high_water_mark = true # maintain the high water mark when rolling calls
+[symbols.QQQ.calls]
+strike_limit = 100.0 # never write a call with a strike below $100
 
-    # These values can (optionally) be set on a per-symbol basis, in addition to
-    # `write_when.calls.cap_factor` and `write_when.calls.cap_target_floor.
-    cap_factor       = 1.0
-    cap_target_floor = 0.0
+maintain_high_water_mark = true # maintain the high water mark when rolling calls
+
+# These values can (optionally) be set on a per-symbol basis, in addition to
+# `write_when.calls.cap_factor` and `write_when.calls.cap_target_floor.
+cap_factor       = 1.0
+cap_target_floor = 0.0
 
 [symbols.TLT]
 weight = 0.2
