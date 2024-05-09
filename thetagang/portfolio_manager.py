@@ -1573,11 +1573,11 @@ class PortfolioManager:
                 if right.startswith("P") and strike_limit:
                     return strike <= strike_limit
                 elif right.startswith("P"):
-                    return strike <= underlying_price + 0.02 * underlying_price
+                    return strike <= underlying_price + 0.05 * underlying_price
                 elif right.startswith("C") and strike_limit:
                     return strike >= strike_limit
                 elif right.startswith("C"):
-                    return strike >= underlying_price - 0.02 * underlying_price
+                    return strike >= underlying_price - 0.05 * underlying_price
                 return False
 
             chain_expirations = self.config["option_chains"]["expirations"]
