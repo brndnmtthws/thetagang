@@ -2,5 +2,5 @@
 align_entries       = true
 array_auto_collapse = false
 indent_tables       = true
-reorder_arrays      = true
+reorder_arrays      = false
 reorder_keys        = true
