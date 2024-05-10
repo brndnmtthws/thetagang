@@ -84,7 +84,12 @@ minimum_credit = 0.05
   # For `algoParams`, the TagValue parameter has 2 values, so any values with
   # anything other than 2 parameters are invalid. Pass an empty list to use the
   # defaults (i.e., params = []).
-  params = [["Patient", "adaptivePriority"]]
+  params = [
+    [
+      "adaptivePriority",
+      "Patient",
+    ],
+  ]
 
 [option_chains]
 # The option chains are lazy loaded, and before you can determine the greeks
