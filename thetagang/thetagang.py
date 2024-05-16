@@ -223,9 +223,21 @@ def start(config_path: str, without_ibc: bool = False) -> None:
     )
     config_table.add_row(
         "",
+        "Roll puts always",
+        "=",
+        f"{config['roll_when']['puts']['always_when_itm']}",
+    )
+    config_table.add_row(
+        "",
         "Roll calls",
         "=",
         f"{config['roll_when']['calls']['itm']}",
+    )
+    config_table.add_row(
+        "",
+        "Roll calls always",
+        "=",
+        f"{config['roll_when']['calls']['always_when_itm']}",
     )
 
     config_table.add_section()
