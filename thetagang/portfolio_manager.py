@@ -283,6 +283,19 @@ class PortfolioManager:
         if put.position > 0:
             return False
 
+        if (
+            isinstance(put.contract, Option)
+            and self.put_is_itm(put.contract)
+            and self.config["roll_when"]["puts"]["always_when_itm"]
+        ):
+            table.add_row(
+                f"{put.contract.localSymbol}",
+                "[blue]Roll",
+                f"[blue]Will be rolled because put is ITM "
+                f"and always_when_itm={self.config['roll_when']['puts']['always_when_itm']}",
+            )
+            return True
+
         # Check if this put is ITM, and if it's o.k. to roll
         if (
             not self.config["roll_when"]["puts"]["itm"]
@@ -367,6 +380,19 @@ class PortfolioManager:
         # Ignore long positions, we only roll shorts
         if call.position > 0:
             return False
+
+        if (
+            isinstance(call.contract, Option)
+            and self.call_is_itm(call.contract)
+            and self.config["roll_when"]["calls"]["always_when_itm"]
+        ):
+            table.add_row(
+                f"{call.contract.localSymbol}",
+                "[blue]Roll",
+                f"[blue]Will be rolled because call is ITM "
+                f"and always_when_itm={self.config['roll_when']['calls']['always_when_itm']}",
+            )
+            return True
 
         # Check if this call is ITM, and it's o.k. to roll
         if (

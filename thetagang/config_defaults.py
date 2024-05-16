@@ -32,11 +32,17 @@ DEFAULT_CONFIG: Dict[str, Dict[str, Any]] = {
         "close_at_pnl": 1.0,
         "calls": {
             "itm": True,
+            "always_when_itm": False,
             "credit_only": False,
             "has_excess": True,
             "maintain_high_water_mark": False,
         },
-        "puts": {"itm": False, "credit_only": False, "has_excess": True},
+        "puts": {
+            "itm": False,
+            "always_when_itm": False,
+            "credit_only": False,
+            "has_excess": True,
+        },
     },
     "vix_call_hedge": {
         "enabled": False,

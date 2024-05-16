@@ -114,12 +114,14 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
                 Optional("max_dte"): And(int, lambda n: 1 <= n),
                 Optional("calls"): {
                     Optional("itm"): bool,
+                    Optional("always_when_itm"): bool,
                     Optional("credit_only"): bool,
                     Optional("has_excess"): bool,
                     Optional("maintain_high_water_mark"): bool,
                 },
                 Optional("puts"): {
                     Optional("itm"): bool,
+                    Optional("always_when_itm"): bool,
                     Optional("credit_only"): bool,
                     Optional("has_excess"): bool,
                 },
