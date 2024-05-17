@@ -211,8 +211,8 @@ here](https://hub.docker.com/repository/docker/brndnmtthws/thetagang).
 
 To run ThetaGang within Docker, you'll need to pass `config.ini` for [IBC
 configuration](https://github.com/IbcAlpha/IBC/blob/master/userguide.md) and
-[`thetagang.toml`](/thetagang.toml) for ThetaGang. There's a sample
-[`ibc-config.ini`](/ibc-config.ini) included in this repo for your convenience.
+[`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml) for ThetaGang. There's a sample
+[`ibc-config.ini`](https://github.com/brndnmtthws/thetagang/blob/main/ibc-config.ini) included in this repo for your convenience.
 
 The easiest way to get the config files into the container is by mounting a
 volume.
