@@ -223,6 +223,19 @@ def midpoint_or_market_price(ticker: Ticker) -> float:
 
     return ticker.midpoint()
 
+def get_target_dte(config: Dict[str, Any], symbol: str, right: str) -> int:
+    p_or_c = "calls" if right.upper().startswith("C") else "puts"
+    if (
+        p_or_c in config["symbols"][symbol]
+        and "dte" in config["symbols"][symbol][p_or_c]
+    ):
+        return config["symbols"][symbol][p_or_c]["dte"]
+    if "dte" in config["symbols"][symbol]:
+        return config["symbols"][symbol]["dte"]
+    if p_or_c in config["target"]:
+        return config["target"][p_or_c]["dte"]
+    return config["target"]["dte"]
+
 
 def get_target_delta(config: Dict[str, Any], symbol: str, right: str) -> float:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"

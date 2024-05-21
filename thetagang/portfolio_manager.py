@@ -43,6 +43,7 @@ from thetagang.util import (
     get_strike_limit,
     get_target_calls,
     get_target_delta,
+    get_target_dte,
     get_write_threshold_perc,
     get_write_threshold_sigma,
     maintain_high_water_mark,
@@ -1567,7 +1568,9 @@ class PortfolioManager:
         target_delta: Optional[float] = None,
     ) -> Ticker:
         contract_target_dte: int = (
-            target_dte if target_dte else self.config["target"]["dte"]
+            target_dte
+            if target_dte
+            else get_target_dte(self.config, main_contract.symbol, right)
         )
         contract_target_delta: float = (
             target_delta
