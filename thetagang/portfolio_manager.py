@@ -1570,7 +1570,7 @@ class PortfolioManager:
         contract_target_dte: int = (
             target_dte
             if target_dte
-            else get_target_dte(self.config, main_contract.symbol, right)
+            else get_target_dte(self.config, main_contract.symbol)
         )
         contract_target_delta: float = (
             target_delta

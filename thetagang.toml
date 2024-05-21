@@ -260,8 +260,8 @@ calculate_net_contracts = false
 
 [target]
 # Target 45 or more days to expiry
-# This value can also be set per-symbol, with `symbols.<symbol>.dte` or with with
-# `symbols.<symbol>.calls/puts.dte` (see `symbols.QQQ` example below).
+# This value can also be set per-symbol, with `symbols.<symbol>.dte` 
+# (see `symbols.QQQ` example below).
 dte = 45
 
 # Optionally, we can prevent contracts from being rolled insanely far out with
@@ -337,8 +337,7 @@ minimum_open_interest = 10
   [symbols.QQQ]
   weight = 0.3
   # The target DTE may also be specified per-symbol, and takes precedence over
-  # `target.dte` or `target.puts/calls.dte`. You can specify a value for the
-  # symbol, or override individually for puts/calls.
+  # `target.dte`
   dte = 60
   # Optional: specify the maximum contract DTE for this symbol (i.e., don't open
   # or roll positions past this DTE). This will override the `target.max_dte`
