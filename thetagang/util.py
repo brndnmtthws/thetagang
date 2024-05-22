@@ -223,12 +223,12 @@ def midpoint_or_market_price(ticker: Ticker) -> float:
 
     return ticker.midpoint()
 
+
 def get_target_dte(config: Dict[str, Any], symbol: str) -> int:
     if symbol in config["symbols"] and "dte" in config["symbols"][symbol]:
         return config["symbols"][symbol]["dte"]
 
     return config["target"]["dte"]
-
 
 
 def get_target_delta(config: Dict[str, Any], symbol: str, right: str) -> float:
