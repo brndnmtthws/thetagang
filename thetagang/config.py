@@ -162,12 +162,20 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
                         Optional("maintain_high_water_mark"): bool,
                         Optional("cap_factor"): And(float, lambda n: 0 <= n <= 1),
                         Optional("cap_target_floor"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("write_when"): {
+                            Optional("green"): bool,
+                            Optional("red"): bool,
+                        },
                     },
                     Optional("puts"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                         Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),
                         Optional("write_threshold_sigma"): And(float, lambda n: n > 0),
                         Optional("strike_limit"): And(float, lambda n: n > 0),
+                        Optional("write_when"): {
+                            Optional("green"): bool,
+                            Optional("red"): bool,
+                        },
                     },
                     Optional("adjust_price_after_delay"): bool,
                 }

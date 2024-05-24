@@ -1241,7 +1241,7 @@ class PortfolioManager:
                     return False
 
                 (can_write_when_green, can_write_when_red) = can_write_when(
-                    self.config, symbol, "C"
+                    self.config, symbol, "P"
                 )
 
                 if not can_write_when_green and ticker.marketPrice() > ticker.close:
