@@ -114,6 +114,12 @@ def start(config_path: str, without_ibc: bool = False) -> None:
         ">=",
         f"{pfmt(config['roll_when']['close_at_pnl'],0)}",
     )
+    config_table.add_row(
+        "",
+        "Close if unable to roll",
+        "=",
+        f"{config['roll_when']['close_if_unable_to_roll']}",
+    )
 
     config_table.add_section()
     config_table.add_row("[spring_green1]Roll options when either condition is true")

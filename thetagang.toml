@@ -131,6 +131,15 @@ min_pnl = 0.0
 # long positions are ignored.
 # close_at_pnl = 0.99
 
+# Optionally, if we try to roll the position and it fails, just close it. This
+# can happen if the underlying moves too much and there are no suitable
+# contracts. See https://github.com/brndnmtthws/thetagang/issues/347 and
+# https://github.com/brndnmtthws/thetagang/issues/439 for a discussion on this.
+#
+# This can also be set per-symbol, with
+# `symbols.<symbol>.close_if_unable_to_roll`.
+close_if_unable_to_roll = false
+
   [roll_when.calls]
   # Roll calls to the next expiration even if they're in the money. Defaults to
   # true if not specified.
@@ -344,6 +353,9 @@ minimum_open_interest = 10
   # value.
   # max_dte = 45
 
+  # Optional: If we try to roll the position and it fails, just close it.
+  close_if_unable_to_roll = true
+
     # parts = 30
     [symbols.QQQ.puts]
     # Override delta just for QQQ puts
@@ -386,35 +398,35 @@ minimum_open_interest = 10
       green = false
       red   = true
 
-[symbols.QQQ.calls]
-strike_limit = 100.0 # never write a call with a strike below $100
+    [symbols.QQQ.calls]
+    strike_limit = 100.0 # never write a call with a strike below $100
 
-maintain_high_water_mark = true # maintain the high water mark when rolling calls
+    maintain_high_water_mark = true # maintain the high water mark when rolling calls
 
-# These values can (optionally) be set on a per-symbol basis, in addition to
-# `write_when.calls.cap_factor` and `write_when.calls.cap_target_floor.
-cap_factor       = 1.0
-cap_target_floor = 0.0
+    # These values can (optionally) be set on a per-symbol basis, in addition to
+    # `write_when.calls.cap_factor` and `write_when.calls.cap_target_floor.
+    cap_factor       = 1.0
+    cap_target_floor = 0.0
 
-[symbols.TLT]
-weight = 0.2
-# parts = 20
-# Override delta for this particular symbol, for both puts and calls.
-delta = 0.4
+  [symbols.TLT]
+  weight = 0.2
+  # parts = 20
+  # Override delta for this particular symbol, for both puts and calls.
+  delta = 0.4
 
-[symbols.ABNB]
-# For symbols that require an exchange, which is typically any company stock,
-# you must specify the primary exchange.
-primary_exchange = "NASDAQ"
-weight           = 0.05
+  [symbols.ABNB]
+  # For symbols that require an exchange, which is typically any company stock,
+  # you must specify the primary exchange.
+  primary_exchange = "NASDAQ"
+  weight           = 0.05
 
-# parts = 5
-# Sometimes you may need to wrap the symbol in quotes.
-[symbols."BRK B"]
-# For symbols that require an exchange, which is typically any company stock,
-# you must specify the primary exchange.
-primary_exchange = "NYSE"
-weight           = 0.05
+  # parts = 5
+  # Sometimes you may need to wrap the symbol in quotes.
+  [symbols."BRK B"]
+  # For symbols that require an exchange, which is typically any company stock,
+  # you must specify the primary exchange.
+  primary_exchange = "NYSE"
+  weight           = 0.05
 
 # parts = 5
 [ib_insync]

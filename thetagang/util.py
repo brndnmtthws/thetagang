@@ -396,3 +396,12 @@ def can_write_when(
         else config["write_when"][p_or_c]["red"]
     )
     return (can_write_when_green, can_write_when_red)
+
+
+def close_if_unable_to_roll(config: Dict[str, Any], symbol: str) -> bool:
+    close_if_unable_to_roll = (
+        config["symbols"][symbol]["close_if_unable_to_roll"]
+        if "close_if_unable_to_roll" in config["symbols"][symbol]
+        else config["roll_when"]["close_if_unable_to_roll"]
+    )
+    return close_if_unable_to_roll

@@ -33,6 +33,7 @@ from thetagang.util import (
     algo_params_from,
     calculate_net_short_positions,
     can_write_when,
+    close_if_unable_to_roll,
     count_long_option_positions,
     count_short_option_positions,
     get_higher_price,
@@ -65,6 +66,12 @@ console = Console()
 # Turn off some of the more annoying logging output from ib_insync
 logging.getLogger("ib_insync.ib").setLevel(logging.ERROR)
 logging.getLogger("ib_insync.wrapper").setLevel(logging.CRITICAL)
+
+
+class NoValidContractsError(Exception):
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(self.message)
 
 
 class PortfolioManager:
@@ -697,9 +704,11 @@ class PortfolioManager:
             )
             console.print(Panel(Group(group1, group2)))
 
-            self.roll_puts(rollable_puts, account_summary)
+            closeable_puts += self.roll_puts(rollable_puts, account_summary)
             self.close_puts(closeable_puts)
-            self.roll_calls(rollable_calls, account_summary, portfolio_positions)
+            closeable_calls += self.roll_calls(
+                rollable_calls, account_summary, portfolio_positions
+            )
             self.close_calls(closeable_calls)
 
             # check if we should do VIX call hedging
@@ -917,14 +926,14 @@ class PortfolioManager:
                     call_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice()} > close={ticker.close}",
+                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice():.2f} > close={ticker.close}",
                     )
                     return False
                 if not can_write_when_red and ticker.marketPrice() < ticker.close:
                     call_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice()} < close={ticker.close}",
+                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice():.2f} < close={ticker.close}",
                     )
                     return False
 
@@ -1248,14 +1257,14 @@ class PortfolioManager:
                     put_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice()} > close={ticker.close}",
+                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice():.2f} > close={ticker.close}",
                     )
                     return False
                 if not can_write_when_red and ticker.marketPrice() < ticker.close:
                     put_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice()} < close={ticker.close}",
+                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice():.2f} < close={ticker.close}",
                     )
                     return False
 
@@ -1329,25 +1338,25 @@ class PortfolioManager:
 
         return (positions_summary_table, put_actions_table, to_write)
 
-    def close_puts(self, puts: List[Any]) -> None:
+    def close_puts(self, puts: List[PortfolioItem]) -> None:
         return self.close_positions(puts)
 
     def roll_puts(
         self,
-        puts: List[Any],
+        puts: List[PortfolioItem],
         account_summary: Dict[str, AccountValue],
-    ) -> None:
+    ) -> List[PortfolioItem]:
         return self.roll_positions(puts, "P", account_summary)
 
-    def close_calls(self, calls: List[Any]) -> None:
+    def close_calls(self, calls: List[PortfolioItem]) -> None:
         return self.close_positions(calls)
 
     def roll_calls(
         self,
-        calls: List[Any],
+        calls: List[PortfolioItem],
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> None:
+    ) -> List[PortfolioItem]:
         return self.roll_positions(calls, "C", account_summary, portfolio_positions)
 
     def close_positions(self, positions: List[Any]) -> None:
@@ -1396,7 +1405,8 @@ class PortfolioManager:
         right: str,
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Optional[Dict[str, List[PortfolioItem]]] = None,
-    ) -> None:
+    ) -> List[PortfolioItem]:
+        closeable_positions: List[PortfolioItem] = []
         for position in positions:
             try:
                 symbol = position.contract.symbol
@@ -1549,11 +1559,23 @@ class PortfolioManager:
 
                 # Enqueue order
                 self.enqueue_order(combo, order)
+            except NoValidContractsError:
+                if close_if_unable_to_roll(self.config, position.contract.symbol):
+                    console.print(
+                        f"[yellow]Unable to find a suitable contract to roll to for {position.contract.localSymbol}. Closing position instead...",
+                    )
+                    closeable_positions += [position]
+                else:
+                    console.print_exception()
+                    console.print(
+                        "[yellow]Error occurred when trying to roll position. Continuing anyway...",
+                    )
             except RuntimeError:
                 console.print_exception()
                 console.print(
                     "[yellow]Error occurred when trying to roll position. Continuing anyway...",
                 )
+        return closeable_positions
 
     def find_eligible_contracts(
         self,
@@ -1624,8 +1646,8 @@ class PortfolioManager:
                 and (not contract_max_dte or option_dte(exp) <= contract_max_dte)
             )[:chain_expirations]
             if len(expirations) < 1:
-                raise RuntimeError(
-                    f"No valid contract expirations found for {main_contract.symbol}. Continuing anyway..."
+                raise NoValidContractsError(
+                    f"No valid contract expirations found for {main_contract.symbol}. Continuing anyway...",
                 )
             rights = [right]
 
@@ -1637,8 +1659,8 @@ class PortfolioManager:
 
             strikes = nearest_strikes(strikes)
             if len(strikes) < 1:
-                raise RuntimeError(
-                    f"No valid contract strikes found for {main_contract.symbol}. Continuing anyway..."
+                raise NoValidContractsError(
+                    f"No valid contract strikes found for {main_contract.symbol}. Continuing anyway...",
                 )
             console.print(
                 f"Scanning between strikes {strikes[0]} and {strikes[-1]},"
@@ -1801,8 +1823,8 @@ class PortfolioManager:
                 if len(tickers) < 1:
                     # if there are _still_ no tickers remaining, there's nothing
                     # more we can do
-                    raise RuntimeError(
-                        f"No valid contracts found for {main_contract.symbol}. Continuing anyway..."
+                    raise NoValidContractsError(
+                        f"No valid contracts found for {main_contract.symbol}. Continuing anyway...",
                     )
             elif fallback_minimum_price is not None:
                 # if there's a fallback minimum price specified, try to find
@@ -1897,11 +1919,11 @@ class PortfolioManager:
                     ) = vix_calls_should_be_closed()
                     if close_vix_calls and vix_ticker and close_hedges_when_vix_exceeds:
                         to_print.append(
-                            f"[deep_sky_blue1]VIX={vix_ticker.marketPrice()}, which exceeds "
+                            f"[deep_sky_blue1]VIX={vix_ticker.marketPrice():.2f}, which exceeds "
                             f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}"
                         )
                         status.update(
-                            f"[bold blue_violet]VIX={vix_ticker.marketPrice()}, which exceeds "
+                            f"[bold blue_violet]VIX={vix_ticker.marketPrice():.2f}, which exceeds "
                             f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}, "
                             "checking if we need to close positions...",
                         )
@@ -1986,7 +2008,7 @@ class PortfolioManager:
                                 break
 
                         to_print.append(
-                            f"VIXMO={vixmo_ticker.marketPrice()}, target call hedge weight={weight}",
+                            f"VIXMO={vixmo_ticker.marketPrice():.2f}, target call hedge weight={weight}",
                         )
 
                         allocation_amount = (
