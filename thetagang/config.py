@@ -111,6 +111,7 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
                 "dte": And(int, lambda n: 0 <= n),
                 "min_pnl": float,
                 Optional("close_at_pnl"): float,
+                Optional("close_if_unable_to_roll"): bool,
                 Optional("max_dte"): And(int, lambda n: 1 <= n),
                 Optional("calls"): {
                     Optional("itm"): bool,
@@ -154,6 +155,7 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
                     Optional("write_threshold_sigma"): And(float, lambda n: n > 0),
                     Optional("max_dte"): And(int, lambda n: 1 <= n),
                     Optional("dte"): And(int, lambda n: 0 <= n),
+                    Optional("close_if_unable_to_roll"): bool,
                     Optional("calls"): {
                         Optional("delta"): And(float, lambda n: 0 <= n <= 1),
                         Optional("write_threshold"): And(float, lambda n: 0 <= n <= 1),

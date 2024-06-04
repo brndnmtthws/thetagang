@@ -30,6 +30,7 @@ DEFAULT_CONFIG: Dict[str, Dict[str, Any]] = {
     "roll_when": {
         "min_pnl": 0.0,
         "close_at_pnl": 1.0,
+        "close_if_unable_to_roll": False,
         "calls": {
             "itm": True,
             "always_when_itm": False,
