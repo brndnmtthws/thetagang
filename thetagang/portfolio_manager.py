@@ -1561,10 +1561,10 @@ class PortfolioManager:
                 self.enqueue_order(combo, order)
             except NoValidContractsError:
                 dte = option_dte(position.contract.lastTradeDateOrContractMonth)
-                roll_when_dte = self.config["roll_when"]["dte"]
                 if (
                     close_if_unable_to_roll(self.config, position.contract.symbol)
-                    and dte <= roll_when_dte
+                    and "max_dte" in self.config["roll_when"]
+                    and dte <= self.config["roll_when"]["max_dte"]
                 ):
                     console.print(
                         f"[yellow]Unable to find a suitable contract to roll to for {position.contract.localSymbol}. Closing position instead...",
