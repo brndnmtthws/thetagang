@@ -121,6 +121,7 @@ min_pnl = 0.0
 
 # Optional: Don't roll contracts when the current DTE is greater than this
 # number of days. This helps avoid cases where you end up rolling out to LEAPs.
+#
 # max_dte = 180
 
 # Optional: Create a closing order when the P&L reaches this threshold. This
@@ -129,12 +130,16 @@ min_pnl = 0.0
 # long-dated options that have slowly become worthless and you just want to get
 # them out of your portfolio. This only applies to short contract positions,
 # long positions are ignored.
+#
 # close_at_pnl = 0.99
 
-# Optionally, if we try to roll the position and it fails, just close it. This
+# Optional: if we try to roll the position and it fails, just close it. This
 # can happen if the underlying moves too much and there are no suitable
 # contracts. See https://github.com/brndnmtthws/thetagang/issues/347 and
 # https://github.com/brndnmtthws/thetagang/issues/439 for a discussion on this.
+#
+# If `roll_when.max_dte` is set, this will only close the position if the DTE is
+# <= `roll_when.max_dte`.
 #
 # This can also be set per-symbol, with
 # `symbols.<symbol>.close_if_unable_to_roll`.
