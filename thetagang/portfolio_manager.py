@@ -2185,7 +2185,7 @@ class PortfolioManager:
                             if isinstance(p.contract, Stock)
                         ]
                         position = positions[0] if len(positions) > 0 else 0
-                        qty = min([max([-position, qty]), 0])
+                        qty = min([max([-math.floor(position), qty]), 0])
                         # if for some reason the qty is zero, do nothing
                         if qty == 0:
                             to_print.append(
