@@ -134,7 +134,7 @@ def start(config_path: str, without_ibc: bool = False) -> None:
             "",
             "P&L",
             ">=",
-            f"{config['roll_when']['pnl']} ({pfmt(config['roll_when']['pnl'],0)}) and DTE < {config['roll_when']['max_dte']}",
+            f"{config['roll_when']['pnl']} ({pfmt(config['roll_when']['pnl'],0)}) and DTE <= {config['roll_when']['max_dte']}",
         )
     else:
         config_table.add_row(
