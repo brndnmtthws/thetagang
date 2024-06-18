@@ -2361,7 +2361,7 @@ class PortfolioManager:
                             f"[green]Resubmitting order for {contract.symbol}"
                             f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
                         )
-                        order.lmtPrice = updated_price
+                        order.lmtPrice = float(updated_price)
 
                         if contract.secType == "BAG":
                             # for some reason, these fields need to be cleared
