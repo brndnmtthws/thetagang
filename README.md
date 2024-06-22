@@ -28,16 +28,23 @@ example, you might want to use a 60/40 portfolio with SPY (S&P500 fund) and
 TLT (20 year treasury fund). This strategy reduces risk, but may also limit
 gains from big market swings. By reducing risk, one can increase leverage.
 
-The main difference between ThetaGang and simply buying and holding index
-funds is that this script will attempt to harvest volatility by selling
-options, rather than buying shares directly. This works because implied
-volatility is typically higher than realized volatility on average. Instead
-of buying shares, you write puts. This has pros and cons, which are outside
-the scope of this README.
+ThetaGang is quite configurable, and you can adjust the parameters to suit your
+preferences and needs, but the default configuration is designed to be a good
+starting point. ThetaGang makes some assumptions about how to run this strategy,
+but you can tweak it to your liking by modifying the
+[`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml)
+file.
 
-You could use this tool on individual stocks, but I personally don't
+The main difference between ThetaGang and simply buying and holding index funds
+is that this script will attempt to harvest volatility by selling options,
+rather than buying shares directly. This works because implied volatility is
+typically higher than realized volatility on average. Instead of buying shares,
+you write puts. This has pros and cons, which are outside the scope of this
+README.
+
+You could use this tool on individual stocks, but I don't
 recommend it because I am not smart enough to understand which stocks to buy.
-That's why I just buy index funds.
+That's why I buy index funds.
 
 ThetaGang will try to acquire your desired allocation of each stock or ETF
 according to the weights you specify in the config. To acquire the positions,
@@ -60,8 +67,8 @@ is, on average, always higher than realized volatility. In cases where this
 is not true, this strategy will cause you to lose money.
 
 In the case of deep ITM calls, the bot will prefer to roll the calls to next
-strike or expiration rather than allowing the underlying to get called away. If you
-don't have adequate buying power available in your account, it's possible
+strike or expiration rather than allowing the underlying to get called away. If
+you don't have adequate buying power available in your account, it's possible
 that the options may get exercised instead of rolling forward and the process
 starts back at the beginning. Please keep in mind this may have tax
 implications, but that is outside the scope of this README.
@@ -74,10 +81,11 @@ daily is not recommended, but the choice is yours.
 
 ### VIX call hedging
 
-ThetaGang can optionally hedge your account by purchasing VIX calls for the
-next month based on specified parameters. The strategy is based on the [Cboe
-VIX Tail Hedge Index](https://www.cboe.com/us/indices/dashboard/vxth/), which
-you can read about on the internet. You can enable this feature in `thetagang.toml` with:
+ThetaGang can optionally hedge your account by purchasing VIX calls for the next
+month based on specified parameters. The strategy is based on the [Cboe VIX Tail
+Hedge Index](https://www.cboe.com/us/indices/dashboard/vxth/), which you can
+read about on the internet. You can enable this feature in `thetagang.toml`
+with:
 
 ```toml
 [vix_call_hedge]
