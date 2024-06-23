@@ -42,6 +42,14 @@ typically higher than realized volatility on average. Instead of buying shares,
 you write puts. This has pros and cons, which are outside the scope of this
 README.
 
+ThetaGang can also be used in combination with other strategies such as PMCCs,
+Zebra, stock replacement, and so forth. For these strategies, however, ThetaGang
+will not manage long positions for you. You will need to manage these positions
+yourself. ThetaGang will, however, continue to execute the short legs of these
+strategies as long as you have the buying power available and set the
+appropriate configuration (in particular, by setting
+`write_when.calculate_net_contracts = true`).
+
 You could use this tool on individual stocks, but I don't
 recommend it because I am not smart enough to understand which stocks to buy.
 That's why I buy index funds.
@@ -58,9 +66,12 @@ you will own the underlying). When rolling puts, the strike of the new contracts
 are capped at the old strike plus the premium received (to prevent your account
 from blowing due to over-ratcheting up the buying power usage).
 
-If puts are exercised due to being ITM at expiration, you will own the
-stock, and ThetaGang switches from writing puts to writing calls at a strike
-at least as high as the average cost of the stock held.
+If puts are exercised due to being ITM at expiration, you will own the stock,
+and ThetaGang switches from writing puts to writing calls at a strike at least
+as high as the average cost of the stock held. To avoid missing out on upward
+moves, you can limit the number of calls that are written with
+`write_when.calls.cap_factor`, such as setting this to 0.5 to limit the number
+of calls to 50% of the shares held.
 
 Please note: this strategy is based on the assumption that implied volatility
 is, on average, always higher than realized volatility. In cases where this
