@@ -60,7 +60,7 @@ daily_stddev_window = "30 D"
 exchange = "SMART"
 
 # Range of time to delay, in seconds, before resubmitting an order with updated
-# midpoint price if `symbol.<symbol>.adjust_midpoint_after_delay = true`.
+# midpoint price if `symbol.<symbol>.adjust_price_after_delay = true`.
 price_update_delay = [30, 60]
 
 # Set a minimum credit order price, to avoid orders where the credit (or debit)
