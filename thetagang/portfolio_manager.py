@@ -988,7 +988,7 @@ class PortfolioManager:
                     strike_limit,
                     minimum_price=lambda: get_minimum_credit(self.config),
                 )
-            except RuntimeError:
+            except (RuntimeError, NoValidContractsError):
                 console.print_exception()
                 console.print(
                     f"[yellow]Finding eligible contracts for {symbol} failed. Continuing anyway...",
