@@ -1370,15 +1370,12 @@ class PortfolioManager:
                     if is_short
                     else round(get_higher_price(ticker), 2)
                 )
-                if util.isNan(price):
+                if util.isNan(price) or math.isnan(price) or not price:
+                    # if the price is near zero or NaN, use the minimum price
                     console.print(
-                        f"[yellow]Unable to close {position.contract.localSymbol} "
-                        "because market price data unavailable, skipping[/yellow]",
+                        f"[yellow]Market price data unavailable for {position.contract.localSymbol}, "
+                        "using ticker.minTick={ticker.minTick}[/yellow]",
                     )
-                    continue
-
-                if not price:
-                    # if the price is near zero, use the minimum price
                     price = ticker.minTick
 
                 qty = abs(position.position)
