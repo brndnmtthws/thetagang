@@ -52,6 +52,7 @@ from thetagang.util import (
     net_option_positions,
     portfolio_positions_to_dict,
     position_pnl,
+    trading_is_allowed,
     wait_n_seconds,
     weighted_avg_long_strike,
     weighted_avg_short_strike,
@@ -269,6 +270,9 @@ class PortfolioManager:
         return contract.strike >= ticker.marketPrice()
 
     def position_can_be_closed(self, position: PortfolioItem, table: Table) -> bool:
+        if not trading_is_allowed(self.config, position.contract.symbol):
+            return False
+
         close_at_pnl = self.config["roll_when"]["close_at_pnl"]
         if close_at_pnl:
             pnl = position_pnl(position)
@@ -289,6 +293,9 @@ class PortfolioManager:
     def put_can_be_rolled(self, put: PortfolioItem, table: Table) -> bool:
         # Ignore long positions, we only roll shorts
         if put.position > 0:
+            return False
+
+        if not trading_is_allowed(self.config, put.contract.symbol):
             return False
 
         if (
@@ -387,6 +394,9 @@ class PortfolioManager:
     def call_can_be_rolled(self, call: PortfolioItem, table: Table) -> bool:
         # Ignore long positions, we only roll shorts
         if call.position > 0:
+            return False
+
+        if not trading_is_allowed(self.config, call.contract.symbol):
             return False
 
         if (
@@ -915,7 +925,11 @@ class PortfolioManager:
                 calls_to_write: int,
             ) -> bool:
                 nonlocal write_threshold, absolute_daily_change
-                if not ticker or calls_to_write <= 0:
+                if (
+                    not ticker
+                    or calls_to_write <= 0
+                    or not trading_is_allowed(self.config, symbol)
+                ):
                     return False
 
                 (can_write_when_green, can_write_when_red) = can_write_when(
@@ -1246,7 +1260,7 @@ class PortfolioManager:
                 ticker: Ticker,
                 puts_to_write: int,
             ) -> bool:
-                if puts_to_write <= 0:
+                if puts_to_write <= 0 or not trading_is_allowed(self.config, symbol):
                     return False
 
                 (can_write_when_green, can_write_when_red) = can_write_when(

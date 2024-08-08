@@ -405,3 +405,10 @@ def close_if_unable_to_roll(config: Dict[str, Any], symbol: str) -> bool:
         else config["roll_when"]["close_if_unable_to_roll"]
     )
     return close_if_unable_to_roll
+
+
+def trading_is_allowed(config: Dict[str, Any], symbol: str) -> bool:
+    return (
+        "no_trading" not in config["symbols"][symbol]
+        or not config["symbols"][symbol]["no_trading"]
+    )

@@ -348,6 +348,13 @@ minimum_open_interest = 10
   # randomly from the range defined by `orders.price_update_delay`.
   adjust_price_after_delay = false
 
+  # You can include a symbol, but instruct ThetaGang not to place any trades for
+  # that symbol by setting `no_trading = true`. This allows you to include
+  # placeholders (such as for tracking purposes, or because you want to trade
+  # manually) without actually trading them.
+  #
+  # no_trading = true
+
   [symbols.QQQ]
   weight = 0.3
   # The target DTE may also be specified per-symbol, and takes precedence over

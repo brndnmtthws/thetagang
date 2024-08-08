@@ -180,6 +180,7 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
                         },
                     },
                     Optional("adjust_price_after_delay"): bool,
+                    Optional("no_trading"): bool,
                 }
             },
             Optional("ib_insync"): {
