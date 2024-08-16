@@ -1,8 +1,8 @@
 import math
 from datetime import date, timedelta
 
-from ib_insync import Option, Order, PortfolioItem
-from ib_insync.contract import Stock
+from ib_async import Option, Order, PortfolioItem
+from ib_async.contract import Stock
 
 from thetagang.util import (
     calculate_net_short_positions,

@@ -15,6 +15,16 @@ def normalize_config(config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, A
     # Do any pre-processing necessary to the config here, such as handling
     # defaults, deprecated values, config changes, etc.
 
+    if "ib_insync" in config:
+        error_console.print(
+            "WARNING: config param `ib_insync` is deprecated, please rename it to the equivalent `ib_async`.",
+        )
+
+        if "ib_async" not in config:
+            # swap the old ib_insync key to the new ib_async key
+            config["ib_async"] = config["ib_insync"]
+        del config["ib_insync"]
+
     if "twsVersion" in config["ibc"]:
         error_console.print(
             "WARNING: config param ibc.twsVersion is deprecated, please remove it from your config.",
@@ -183,7 +193,7 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
                     Optional("no_trading"): bool,
                 }
             },
-            Optional("ib_insync"): {
+            Optional("ib_async"): {
                 Optional("logfile"): And(str, len),
                 Optional("api_response_wait_time"): int,
             },

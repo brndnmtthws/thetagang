@@ -6,7 +6,7 @@ from functools import lru_cache
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 import numpy as np
-from ib_insync import (
+from ib_async import (
     AccountValue,
     OptionChain,
     Order,
@@ -16,9 +16,9 @@ from ib_insync import (
     Trade,
     util,
 )
-from ib_insync.contract import ComboLeg, Contract, Index, Option, Stock
-from ib_insync.ib import IB
-from ib_insync.order import LimitOrder
+from ib_async.contract import ComboLeg, Contract, Index, Option, Stock
+from ib_async.ib import IB
+from ib_async.order import LimitOrder
 from more_itertools import partition
 from rich import box
 from rich.console import Console, Group
@@ -64,9 +64,9 @@ from .options import option_dte
 console = Console()
 
 
-# Turn off some of the more annoying logging output from ib_insync
-logging.getLogger("ib_insync.ib").setLevel(logging.ERROR)
-logging.getLogger("ib_insync.wrapper").setLevel(logging.CRITICAL)
+# Turn off some of the more annoying logging output from ib_async
+logging.getLogger("ib_async.ib").setLevel(logging.ERROR)
+logging.getLogger("ib_async.wrapper").setLevel(logging.CRITICAL)
 
 
 class NoValidContractsError(Exception):
@@ -92,7 +92,7 @@ class PortfolioManager:
         self.qualified_contracts: Dict[int, Contract] = {}
 
     def api_response_wait_time(self) -> int:
-        return self.config["ib_insync"]["api_response_wait_time"]
+        return self.config["ib_async"]["api_response_wait_time"]
 
     def orderStatusEvent(self, trade: Trade) -> None:
         if "Filled" in trade.orderStatus.status:

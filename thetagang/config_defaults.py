@@ -1,7 +1,7 @@
 from typing import Any, Dict
 
 DEFAULT_CONFIG: Dict[str, Dict[str, Any]] = {
-    "ib_insync": {
+    "ib_async": {
         "api_response_wait_time": 60,
     },
     "orders": {

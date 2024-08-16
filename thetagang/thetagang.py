@@ -1,7 +1,7 @@
 from asyncio import Future
 
-from ib_insync import IB, IBC, Watchdog, util
-from ib_insync.contract import Contract
+from ib_async import IB, IBC, Watchdog, util
+from ib_async.contract import Contract
 from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -402,8 +402,8 @@ def start(config_path: str, without_ibc: bool = False) -> None:
     tree.add(Group(":yin_yang: Symbology", symbols_table))
     console.print(Panel(tree, title="Config"))
 
-    if config.get("ib_insync", {}).get("logfile"):
-        util.logToFile(config["ib_insync"]["logfile"])  # type: ignore
+    if config.get("ib_async", {}).get("logfile"):
+        util.logToFile(config["ib_async"]["logfile"])  # type: ignore
 
     def onConnected() -> None:
         portfolio_manager.manage()
