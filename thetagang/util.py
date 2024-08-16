@@ -3,10 +3,10 @@ from datetime import datetime
 from operator import itemgetter
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import ib_insync.objects
-import ib_insync.ticker
-from ib_insync import AccountValue, Order, PortfolioItem, TagValue, Ticker, util
-from ib_insync.contract import Option
+import ib_async.objects
+import ib_async.ticker
+from ib_async import AccountValue, Order, PortfolioItem, TagValue, Ticker, util
+from ib_async.contract import Option
 
 from thetagang.options import option_dte
 
@@ -32,7 +32,7 @@ def portfolio_positions_to_dict(
     return d
 
 
-def position_pnl(position: ib_insync.objects.PortfolioItem) -> float:
+def position_pnl(position: ib_async.objects.PortfolioItem) -> float:
     return position.unrealizedPNL / abs(position.averageCost * position.position)
 
 
@@ -207,7 +207,7 @@ def get_lower_price(ticker: Ticker) -> float:
 
 
 def midpoint_or_market_price(ticker: Ticker) -> float:
-    # As per the ib_insync docs, marketPrice returns the last price first, but
+    # As per the ib_async docs, marketPrice returns the last price first, but
     # we often prefer the midpoint over the last price. This function pulls the
     # midpoint first, then falls back to marketPrice() if midpoint is nan.
     if util.isNan(ticker.midpoint()):

@@ -441,8 +441,8 @@ minimum_open_interest = 10
   weight           = 0.05
 
 # parts = 5
-[ib_insync]
-logfile = '/etc/thetagang/ib_insync.log'
+[ib_async]
+logfile = '/etc/thetagang/ib_async.log'
 
 # Typically the amount of time needed when waiting on data from the IBKR API.
 # Sometimes it can take a while to retrieve data, and it's lazy-loaded by the
