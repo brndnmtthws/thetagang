@@ -25,6 +25,7 @@ DEFAULT_CONFIG: Dict[str, Dict[str, Any]] = {
             "red": False,
             "cap_factor": 1.0,
             "cap_target_floor": 0.0,
+            "excess_only": False,
         },
     },
     "roll_when": {

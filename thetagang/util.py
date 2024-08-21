@@ -278,13 +278,16 @@ def get_strike_limit(
 def get_target_calls(
     config: Dict[str, Any], symbol: str, current_shares: int, target_shares: int
 ) -> int:
-    cap_factor = get_cap_factor(config, symbol)
-    cap_target_floor = get_cap_target_floor(config, symbol)
-    min_uncovered = (target_shares * cap_target_floor) // 100
-    max_covered = (current_shares * cap_factor) // 100
-    total_coverable = current_shares // 100
+    if write_excess_calls_only(config, symbol):
+        return max([0, (current_shares - target_shares) // 100])
+    else:
+        cap_factor = get_cap_factor(config, symbol)
+        cap_target_floor = get_cap_target_floor(config, symbol)
+        min_uncovered = (target_shares * cap_target_floor) // 100
+        max_covered = (current_shares * cap_factor) // 100
+        total_coverable = current_shares // 100
 
-    return max([0, math.floor(min([max_covered, total_coverable - min_uncovered]))])
+        return max([0, math.floor(min([max_covered, total_coverable - min_uncovered]))])
 
 
 def get_write_threshold_sigma(
@@ -412,3 +415,12 @@ def trading_is_allowed(config: Dict[str, Any], symbol: str) -> bool:
         "no_trading" not in config["symbols"][symbol]
         or not config["symbols"][symbol]["no_trading"]
     )
+
+
+def write_excess_calls_only(config: Dict[str, Any], symbol: str) -> bool:
+    if (
+        "calls" in config["symbols"][symbol]
+        and "excess_only" in config["symbols"][symbol]["calls"]
+    ):
+        return config["symbols"][symbol]["calls"]["excess_only"]
+    return config["write_when"]["calls"]["excess_only"]

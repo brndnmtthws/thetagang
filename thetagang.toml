@@ -267,6 +267,19 @@ calculate_net_contracts = false
   # `symbols.<symbol>.calls.cap_target_floor`.
   cap_target_floor = 0.0
 
+  # If set to true, calls are only written on the underlying when the underlying
+  # has an excess of shares. This is useful for covered calls, where you only
+  # want to write calls when you have more shares than you want to hold
+  # long-term. It also provides a way to rebalance your portfolio by writing
+  # calls and taking profits.
+  #
+  # This may also be set per-symbol with `symbols.<symbol>.calls.excess_only`,
+  # which takes precedence.
+  #
+  # When this is set to true, the `cap_factor` and `cap_target_floor` values are
+  # ignored.
+  excess_only = false
+
   [write_when.puts]
   # Optionally, only write puts when the underlying is red
   green = false
@@ -419,6 +432,11 @@ minimum_open_interest = 10
     # `write_when.calls.cap_factor` and `write_when.calls.cap_target_floor.
     cap_factor       = 1.0
     cap_target_floor = 0.0
+
+    # Optionally, only write calls when the underlying has an excess of shares
+    # when set to `true`. This overrides the `write_when.calls.excess_only`
+    # value.
+    excess_only = false
 
   [symbols.TLT]
   weight = 0.2

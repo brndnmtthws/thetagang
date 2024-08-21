@@ -110,6 +110,7 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
                     Optional("red"): bool,
                     Optional("cap_factor"): And(float, lambda n: 0 <= n <= 1),
                     Optional("cap_target_floor"): And(float, lambda n: 0 <= n <= 1),
+                    Optional("excess_only"): bool,
                 },
                 Optional("puts"): {
                     Optional("green"): bool,
@@ -174,6 +175,7 @@ def validate_config(config: Dict[str, Dict[str, Any]]) -> None:
                         Optional("maintain_high_water_mark"): bool,
                         Optional("cap_factor"): And(float, lambda n: 0 <= n <= 1),
                         Optional("cap_target_floor"): And(float, lambda n: 0 <= n <= 1),
+                        Optional("excess_only"): bool,
                         Optional("write_when"): {
                             Optional("green"): bool,
                             Optional("red"): bool,

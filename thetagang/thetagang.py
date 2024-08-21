@@ -218,7 +218,12 @@ def start(config_path: str, without_ibc: bool = False) -> None:
         "=",
         f"{pfmt(config['write_when']['calls']['cap_target_floor'])}",
     )
-
+    config_table.add_row(
+        "",
+        "Excess only",
+        "=",
+        f"{config['write_when']['calls']['excess_only']}",
+    )
     config_table.add_section()
     config_table.add_row("[spring_green1]When contracts are ITM")
     config_table.add_row(
