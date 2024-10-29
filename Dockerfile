@@ -2,14 +2,44 @@ FROM eclipse-temurin:17.0.8_7-jdk-jammy
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -qy --no-install-recommends \
-  wget \
+  ca-certificates \
+  fonts-liberation \
+  libasound2 \
+  libatk-bridge2.0-0 \
+  libatk1.0-0 \
+  libatspi2.0-0 \
+  libc6 \
+  libcairo2 \
+  libcups2 \
+  libcurl4 \
+  libdbus-1-3 \
+  libdrm2 \
+  libexpat1 \
+  libgbm1 \
+  libglib2.0-0 \
+  libgtk-3-0 \
+  libnspr4 \
+  libnss3 \
+  libpango-1.0-0 \
+  libu2f-udev \
+  libvulkan1 \
+  libx11-6 \
+  libxcb1 \
+  libxcomposite1 \
+  libxdamage1 \
+  libxext6 \
+  libxfixes3 \
   libxi6 \
+  libxkbcommon0 \
+  libxrandr2 \
   libxrender1 \
   libxtst6 \
   openjfx \
   python3-pip \
   python3-setuptools \
   unzip \
+  wget \
+  xdg-utils \
   xvfb \
   && if test "$(dpkg --print-architecture)" = "armhf" ; then python3 -m pip config set global.extra-index-url https://www.piwheels.org/simple ; fi \
   && echo '8c6c9dab4f9aae91482d857a4578b56e3cf222cb6930ee599ed4b1c166aba037  ibc.zip' | tee ibc.zip.sha256 \
