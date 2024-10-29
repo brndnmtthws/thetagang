@@ -56,6 +56,7 @@ WORKDIR /src
 ADD ./tws/Jts /root/Jts
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
+ADD ./data/jxbrowser-linux64-arm-7.29.jar /root/Jts/1030/jars/
 
 RUN python3 -m pip install dist/thetagang-*.whl \
   && rm -rf /root/.cache \
