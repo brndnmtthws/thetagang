@@ -436,7 +436,7 @@ def start(config_path: str, without_ibc: bool = False) -> None:
         ibc_keywords = {
             k: ibc_config[k] for k in ibc_config if k not in ["RaiseRequestErrors"]
         }
-        ibc = IBC(1030, **ibc_keywords)
+        ibc = IBC(1030, gateway=True, **ibc_keywords)
 
         ib.RaiseRequestErrors = ibc_config.get("RaiseRequestErrors", False)
 
