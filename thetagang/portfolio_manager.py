@@ -2374,15 +2374,6 @@ class PortfolioManager:
                         )
                         order.lmtPrice = float(updated_price)
 
-                        if contract.secType == "BAG":
-                            # for some reason, these fields need to be cleared
-                            # when modifying an existing BAG (combo) order
-                            # in-place (janky)
-                            order.algoStrategy = ""
-                            order.algoParams = []
-                            order.tif = ""
-                            order.account = ""
-
                         # put the trade back from whence it came
                         self.trades[idx] = self.ib.placeOrder(contract, order)
                         console.print(
