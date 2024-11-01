@@ -2292,7 +2292,7 @@ class PortfolioManager:
 
     def adjust_prices(self) -> None:
         if (
-            any(
+            all(
                 [
                     not self.config["symbols"][symbol].get(
                         "adjust_price_after_delay", False
