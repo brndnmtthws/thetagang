@@ -2369,19 +2369,22 @@ class PortfolioManager:
                         order.lmtPrice
                     ) == np.sign(updated_price):
                         console.print(
-                            f"[green]Resubmitting order for {contract.symbol}"
+                            f"[green]Resubmitting {order.action} {contract.secType} order for {contract.symbol}"
                             f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
                         )
                         order.lmtPrice = float(updated_price)
 
-                        if contract.secType == "BAG":
-                            # for some reason, these fields need to be cleared
-                            # when modifying an existing BAG (combo) order
-                            # in-place (janky)
-                            order.algoStrategy = ""
-                            order.algoParams = []
-                            order.tif = ""
-                            order.account = ""
+                        # For some reason, we need to create a new order object
+                        # and populate the fields rather than modifying the
+                        # existing order in-place (janky).
+                        order = LimitOrder(
+                            order.action,
+                            order.totalQuantity,
+                            updated_price,
+                            orderId=order.orderId,
+                            algoStrategy=order.algoStrategy,
+                            algoParams=order.algoParams,
+                        )
 
                         # put the trade back from whence it came
                         self.trades[idx] = self.ib.placeOrder(contract, order)
