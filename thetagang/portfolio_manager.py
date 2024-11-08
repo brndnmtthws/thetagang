@@ -1576,6 +1576,7 @@ class PortfolioManager:
                     close_if_unable_to_roll(self.config, position.contract.symbol)
                     and "max_dte" in self.config["roll_when"]
                     and dte <= self.config["roll_when"]["max_dte"]
+                    and position_pnl(position) > 0
                 ):
                     console.print(
                         f"[yellow]Unable to find a suitable contract to roll to for {position.contract.localSymbol}. Closing position instead...",

@@ -133,9 +133,10 @@ min_pnl = 0.0
 #
 # close_at_pnl = 0.99
 
-# Optional: if we try to roll the position and it fails, just close it. This
-# can happen if the underlying moves too much and there are no suitable
-# contracts. See https://github.com/brndnmtthws/thetagang/issues/347 and
+# Optional: if we try to roll the position and it fails, just close it (but only
+# if the position currently has positive P&L). This can happen if the underlying
+# moves too much and there are no suitable contracts. See
+# https://github.com/brndnmtthws/thetagang/issues/347 and
 # https://github.com/brndnmtthws/thetagang/issues/439 for a discussion on this.
 #
 # If `roll_when.max_dte` is set, this will only close the position if the DTE is
@@ -378,7 +379,8 @@ minimum_open_interest = 10
   # value.
   # max_dte = 45
 
-  # Optional: If we try to roll the position and it fails, just close it.
+  # Optional: If we try to roll the position and it fails, just close it (but
+  # only if it's profitable).
   close_if_unable_to_roll = true
 
     # parts = 30
