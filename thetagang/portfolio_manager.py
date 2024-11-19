@@ -1463,6 +1463,11 @@ class PortfolioManager:
                         ),
                         2,
                     )
+                    # special case: if we're rolling a put that's ITM, we want to roll to an equal or lower strike, not higher
+                    if isinstance(position.contract, Option) and self.put_is_itm(
+                        position.contract
+                    ):
+                        strike_limit = min([strike_limit, position.contract.strike])
 
                 kind = "calls" if right.startswith("C") else "puts"
 
