@@ -146,3 +146,6 @@ cython_debug/
 
 # Ignore dotenv/direnv files
 .env*
+
+# Covers JetBrains IDEs
+.idea/
