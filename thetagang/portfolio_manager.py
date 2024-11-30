@@ -1333,14 +1333,14 @@ class PortfolioManager:
                             f"[green]Will write {puts_to_write} puts, {additional_quantity}"
                             f" needed, capped at {maximum_new_contracts}",
                         )
-                        to_write.append(
-                            (
-                                symbol,
-                                self.get_primary_exchange(symbol),
-                                puts_to_write,
-                                strike_limit,
-                            )
+                    to_write.append(
+                        (
+                            symbol,
+                            self.get_primary_exchange(symbol),
+                            puts_to_write,
+                            strike_limit,
                         )
+                    )
             elif additional_quantity < 0:
                 self.has_excess_puts.add(symbol)
                 put_actions_table.add_row(
