@@ -1,7 +1,6 @@
 import math
-from datetime import datetime
 from operator import itemgetter
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import ib_async.objects
 import ib_async.ticker
@@ -167,24 +166,6 @@ def net_option_positions(
         )
 
     return 0
-
-
-def wait_n_seconds(
-    pred: Callable[[], bool],
-    body: Callable[[float], Any],
-    seconds_to_wait: int,
-    started_at: Optional[datetime] = None,
-) -> None:
-    if not started_at:
-        started_at = datetime.now()
-    while pred():
-        diff = datetime.now() - started_at
-        remaining = seconds_to_wait - diff.seconds
-        if not remaining or remaining <= 0 or math.isclose(remaining, 0.0):
-            raise RuntimeError(
-                "Exhausted retries waiting on predicate. This shouldn't happen."
-            )
-        body(remaining)
 
 
 def get_higher_price(ticker: Ticker) -> float:
