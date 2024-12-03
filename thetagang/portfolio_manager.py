@@ -241,7 +241,7 @@ class PortfolioManager:
     def call_can_be_closed(self, call: PortfolioItem, table: Table) -> bool:
         return self.position_can_be_closed(call, table)
 
-    def call_can_be_rolled(self, call: PortfolioItem, table: Table) -> bool:
+    async def call_can_be_rolled(self, call: PortfolioItem, table: Table) -> bool:
         # Ignore long positions, we only roll shorts
         if call.position > 0:
             return False
@@ -251,7 +251,7 @@ class PortfolioManager:
 
         if (
             isinstance(call.contract, Option)
-            and self.call_is_itm(call.contract)
+            and await self.call_is_itm(call.contract)
             and self.config["roll_when"]["calls"]["always_when_itm"]
         ):
             table.add_row(
@@ -266,7 +266,7 @@ class PortfolioManager:
         if (
             not self.config["roll_when"]["calls"]["itm"]
             and isinstance(call.contract, Option)
-            and self.call_is_itm(call.contract)
+            and await self.call_is_itm(call.contract)
         ):
             return False
 
@@ -564,7 +564,7 @@ class PortfolioManager:
             (rollable_puts, closeable_puts, group1) = await self.check_puts(
                 portfolio_positions
             )
-            (rollable_calls, closeable_calls, group2) = self.check_calls(
+            (rollable_calls, closeable_calls, group2) = await self.check_calls(
                 portfolio_positions
             )
             log.print(Panel(Group(group1, group2)))
@@ -649,7 +649,7 @@ class PortfolioManager:
 
         return (rollable_puts, closeable_puts, group)
 
-    def check_calls(
+    async def check_calls(
         self, portfolio_positions: Dict[str, List[PortfolioItem]]
     ) -> Tuple[List[Any], List[Any], Group]:
         # Check for calls which may be rolled to the next expiration or a better price
