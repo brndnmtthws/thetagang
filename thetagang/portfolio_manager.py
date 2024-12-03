@@ -1468,7 +1468,7 @@ class PortfolioManager:
                     console.print(
                         "[yellow]Error occurred when trying to roll position. Continuing anyway...",
                     )
-            except RuntimeError:
+            except (RuntimeError, RequiredFieldValidationError):
                 console.print_exception()
                 console.print(
                     "[yellow]Error occurred when trying to roll position. Continuing anyway...",
