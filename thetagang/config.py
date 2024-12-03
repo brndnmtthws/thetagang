@@ -8,7 +8,6 @@ import thetagang.config_defaults as config_defaults
 from thetagang.dict_merge import dict_merge
 
 error_console = Console(stderr=True, style="bold red")
-console = Console()
 
 
 def normalize_config(config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:

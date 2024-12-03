@@ -19,13 +19,12 @@ from ib_async.contract import ComboLeg, Contract, Index, Option, Stock
 from ib_async.ib import IB
 from ib_async.order import LimitOrder
 from rich import box
-from rich.console import Console, Group
+from rich.console import Group
 from rich.panel import Panel
 from rich.pretty import Pretty
 from rich.table import Table
-from tqdm import tqdm
-from tqdm.asyncio import tqdm_asyncio
 
+from thetagang import log
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import IBKR, RequiredFieldValidationError, TickerField
 from thetagang.util import (
@@ -59,9 +58,6 @@ from thetagang.util import (
 )
 
 from .options import option_dte
-
-console = Console()
-
 
 # Turn off some of the more annoying logging output from ib_async
 logging.getLogger("ib_async.ib").setLevel(logging.ERROR)
@@ -149,9 +145,8 @@ class PortfolioManager:
         try:
             itm = await self.put_is_itm(put.contract)
         except RequiredFieldValidationError:
-            console.print_exception()
-            console.print(
-                f"[yellow]Checking rollable puts failed for #{put.contract.symbol}. Continuing anyway...",
+            log.error(
+                f"Checking rollable puts failed for #{put.contract.symbol}. Continuing anyway..."
             )
             return False
 
@@ -376,7 +371,7 @@ class PortfolioManager:
                         == self.config["cash_management"]["cash_fund"]
                     )
                 ):
-                    console.print(f"[red]Canceling order {trade.order}[/red]")
+                    log.warning(f"Canceling order {trade.order}")
                     self.ibkr.cancel_order(trade.order)
 
     async def summarize_account(
@@ -413,7 +408,7 @@ class PortfolioManager:
         table.add_row(
             "Target buying power usage", dfmt(self.get_buying_power(account_summary), 0)
         )
-        console.print(Panel(table))
+        log.print(Panel(table))
 
         portfolio_positions = self.get_portfolio_positions()
 
@@ -465,7 +460,7 @@ class PortfolioManager:
             for _, positions in portfolio_positions.items()
             for position in positions
         ]
-        await tqdm_asyncio.gather(*tasks, desc="Loading portfolio positions...")
+        await log.track_async(tasks, "Loading portfolio positions...")
 
         table = Table(
             title="Portfolio positions",
@@ -533,7 +528,7 @@ class PortfolioManager:
                         getval("itm?", conId),
                     )
 
-        console.print(table)
+        log.print(table)
 
         return (account_summary, portfolio_positions)
 
@@ -548,7 +543,7 @@ class PortfolioManager:
                 put_actions_table,
                 puts_to_write,
             ) = await self.check_if_can_write_puts(account_summary, portfolio_positions)
-            console.print(positions_table)
+            log.print(positions_table)
 
             # Look for lots of stock that don't have covered calls
             (call_actions_table, calls_to_write) = (
@@ -557,10 +552,10 @@ class PortfolioManager:
                 )
             )
 
-            console.print(put_actions_table)
+            log.print(put_actions_table)
             await self.write_puts(puts_to_write)
 
-            console.print(call_actions_table)
+            log.print(call_actions_table)
             await self.write_calls(calls_to_write)
 
             # Refresh positions, in case anything changed from the orders above
@@ -572,7 +567,7 @@ class PortfolioManager:
             (rollable_calls, closeable_calls, group2) = await self.check_calls(
                 portfolio_positions
             )
-            console.print(Panel(Group(group1, group2)))
+            log.print(Panel(Group(group1, group2)))
 
             await self.close_puts(
                 closeable_puts + await self.roll_puts(rollable_puts, account_summary)
@@ -595,19 +590,16 @@ class PortfolioManager:
             try:
                 await self.ibkr.wait_for_submitting_orders(self.trades)
             except RuntimeError:
-                console.print_exception()
-                console.print("[yellow]Submitting orders failed. Continuing anyway..")
+                log.error("Submitting orders failed. Continuing anyway..")
                 pass
 
             await self.adjust_prices()
 
             await self.ibkr.wait_for_submitting_orders(self.trades)
 
-            console.print(
-                "[bright_yellow]ThetaGang is done, shutting down! Cya next time. :sparkles:[/bright_yellow]"
-            )
+            log.info("ThetaGang is done, shutting down! Cya next time. :sparkles:")
         except:
-            console.print_exception()
+            log.error("ThetaGang terminated with error...")
             raise
 
         finally:
@@ -640,7 +632,7 @@ class PortfolioManager:
                 closeable_puts.append(put)
 
         tasks = [check_put_can_be_rolled_task(put, table) for put in puts]
-        await tqdm_asyncio.gather(*tasks, desc="Checking rollable/closeable puts...")
+        await log.track_async(tasks, "Checking rollable/closeable puts...")
 
         total_rollable_puts = math.floor(sum([abs(p.position) for p in rollable_puts]))
         total_closeable_puts = math.floor(
@@ -674,7 +666,9 @@ class PortfolioManager:
         table.add_column("Action")
         table.add_column("Detail")
 
-        for c in tqdm(calls, desc="Checking rollable/closeable calls..."):
+        for c in log.track(
+            calls, description="Checking rollable/closeable calls...", total=len(calls)
+        ):
             if await self.call_can_be_rolled(c, table):
                 rollable_calls.append(c)
             elif self.call_can_be_closed(c, table):
@@ -858,7 +852,7 @@ class PortfolioManager:
                 )
 
         tasks = [update_to_write_task(symbol) for symbol in portfolio_positions]
-        await tqdm_asyncio.gather(*tasks, desc="Checking for uncovered positions...")
+        await log.track_async(tasks, description="Checking for uncovered positions...")
 
         return (call_actions_table, to_write)
 
@@ -877,9 +871,8 @@ class PortfolioManager:
                     minimum_price=lambda: get_minimum_credit(self.config),
                 )
             except (RuntimeError, NoValidContractsError):
-                console.print_exception()
-                console.print(
-                    f"[yellow]Finding eligible contracts for {symbol} failed. Continuing anyway...",
+                log.error(
+                    f"Finding eligible contracts for {symbol} failed. Continuing anyway..."
                 )
                 continue
 
@@ -914,9 +907,8 @@ class PortfolioManager:
                     minimum_price=lambda: get_minimum_credit(self.config),
                 )
             except (RuntimeError, NoValidContractsError):
-                console.print_exception()
-                console.print(
-                    f"[yellow]Finding eligible contracts for {symbol} failed. Continuing anyway...",
+                log.error(
+                    f"Finding eligible contracts for {symbol} failed. Continuing anyway..."
                 )
                 continue
 
@@ -1010,8 +1002,8 @@ class PortfolioManager:
                 or math.isnan(market_price)
                 or math.isclose(market_price, 0)
             ):
-                console.print(
-                    f"[red]Invalid market price for {symbol} (market_price={market_price}), skipping for now"
+                log.error(
+                    f"Invalid market price for {symbol} (market_price={market_price}), skipping for now"
                 )
                 return
             self.target_quantities[symbol] = math.floor(targets[symbol] / market_price)
@@ -1162,7 +1154,7 @@ class PortfolioManager:
             calculate_target_position_task(symbol)
             for symbol in self.config["symbols"].keys()
         ]
-        await tqdm_asyncio.gather(*tasks, desc="Calculating target positions...")
+        await log.track_async(tasks, description="Calculating target positions...")
 
         to_write: List[Tuple[str, str, int, Optional[float]]] = []
 
@@ -1218,7 +1210,7 @@ class PortfolioManager:
             update_to_write_task(symbol, target)
             for symbol, target in target_additional_quantity.items()
         ]
-        await tqdm_asyncio.gather(*tasks, desc="Generating positions summary...")
+        await log.track_async(tasks, description="Generating positions summary...")
 
         return (positions_summary_table, put_actions_table, to_write)
 
@@ -1246,7 +1238,8 @@ class PortfolioManager:
         )
 
     async def close_positions(self, right: str, positions: List[PortfolioItem]) -> None:
-        async def close_position_task(position: PortfolioItem) -> None:
+        log.notice(f"Close {right} positions...")
+        for position in positions:
             try:
                 position.contract.exchange = self.get_order_exchange()
                 ticker = await self.ibkr.get_ticker_for_contract(position.contract)
@@ -1258,9 +1251,8 @@ class PortfolioManager:
                 )
                 if util.isNan(price) or math.isnan(price) or not price:
                     # if the price is near zero or NaN, use the minimum price
-                    console.print(
-                        f"[yellow]Market price data unavailable for {position.contract.localSymbol}, "
-                        "using ticker.minTick={ticker.minTick}[/yellow]",
+                    log.warning(
+                        f"Market price data unavailable for {position.contract.localSymbol}, using ticker.minTick={ticker.minTick}"
                     )
                     price = ticker.minTick
 
@@ -1277,13 +1269,10 @@ class PortfolioManager:
 
                 self.enqueue_order(ticker.contract, order)
             except RuntimeError:
-                console.print_exception()
-                console.print(
-                    "[yellow]Error occurred when trying to close position. Continuing anyway...",
+                log.error(
+                    "Error occurred when trying to close position. Continuing anyway..."
                 )
-
-        tasks = [close_position_task(position) for position in positions]
-        await tqdm_asyncio.gather(*tasks, desc=f"Close {right} positions...")
+                continue
 
     async def roll_positions(
         self,
@@ -1294,7 +1283,9 @@ class PortfolioManager:
     ) -> List[PortfolioItem]:
         closeable_positions: List[PortfolioItem] = []
 
-        async def row_position_task(position: PortfolioItem) -> None:
+        log.notice(f"Rolling {right} positions...")
+
+        for position in positions:
             try:
                 symbol = position.contract.symbol
 
@@ -1449,7 +1440,7 @@ class PortfolioManager:
                 to_dte = option_dte(sell_ticker.contract.lastTradeDateOrContractMonth)
                 from_strike = position.contract.strike
                 to_strike = sell_ticker.contract.strike
-                console.print(
+                log.info(
                     f"Rolling symbol={symbol} from_strike={from_strike} to_strike={to_strike} from_dte={from_dte} to_dte={to_dte} price={dfmt(price,3)} qty_to_roll={qty_to_roll}"
                 )
 
@@ -1463,23 +1454,20 @@ class PortfolioManager:
                     and dte <= self.config["roll_when"]["max_dte"]
                     and position_pnl(position) > 0
                 ):
-                    console.print(
-                        f"[yellow]Unable to find a suitable contract to roll to for {position.contract.localSymbol}. Closing position instead...",
+                    log.warning(
+                        f"Unable to find a suitable contract to roll to for {position.contract.localSymbol}. Closing position instead..."
                     )
                     closeable_positions.append(position)
+                    continue
                 else:
-                    console.print_exception()
-                    console.print(
-                        "[yellow]Error occurred when trying to roll position. Continuing anyway...",
+                    log.error(
+                        "Error occurred when trying to roll position. Continuing anyway..."
                     )
             except RuntimeError:
-                console.print_exception()
-                console.print(
-                    "[yellow]Error occurred when trying to roll position. Continuing anyway...",
+                log.error(
+                    "Error occurred when trying to roll position. Continuing anyway..."
                 )
-
-        tasks = [row_position_task(position) for position in positions]
-        await tqdm_asyncio.gather(*tasks, desc=f"Rolling {right} positions...")
+                continue
 
         return closeable_positions
 
@@ -1505,16 +1493,14 @@ class PortfolioManager:
         )
         contract_max_dte = get_max_dte_for(underlying.symbol, self.config)
 
-        console.print(
-            f"[green]Searching option chain for symbol={underlying.symbol} "
+        log.notice(
+            f"Searching option chain for symbol={underlying.symbol} "
             f"right={right} strike_limit={strike_limit} minimum_price={dfmt(minimum_price(),3)} "
             f"fallback_minimum_price={dfmt(fallback_minimum_price() if fallback_minimum_price else 0,3)} "
             f"contract_target_dte={contract_target_dte} contract_max_dte={contract_max_dte} "
             f"contract_target_delta={contract_target_delta}, "
             "this can take a while...",
         )
-
-        console.print("[bold blue_violet]Hunting for juicy contracts... 😎")
 
         underlying_ticker = await self.ibkr.get_ticker_for_contract(underlying)
 
@@ -1564,7 +1550,7 @@ class PortfolioManager:
             raise NoValidContractsError(
                 f"No valid contract strikes found for {underlying.symbol}. Continuing anyway...",
             )
-        console.print(
+        log.info(
             f"Scanning between strikes {strikes[0]} and {strikes[-1]},"
             f" from expirations {expirations[0]} to {expirations[-1]}"
         )
@@ -1646,9 +1632,10 @@ class PortfolioManager:
         # Filter out invalid price
         tickers = [
             ticker
-            for ticker in tqdm(
+            for ticker in log.track(
                 tickers,
-                desc="Filtering invalid prices...",
+                description="Filtering invalid prices...",
+                total=len(tickers),
             )
             if price_is_valid(ticker)
         ]
@@ -1656,7 +1643,9 @@ class PortfolioManager:
         # Filter out invalid greeks
         new_tickers = []
         delta_reject_tickers = []
-        for ticker in tqdm(tickers, desc="Filtering invalid deltas..."):
+        for ticker in log.track(
+            tickers, description="Filtering invalid deltas...", total=len(tickers)
+        ):
             if delta_is_valid(ticker):
                 new_tickers.append(ticker)
             else:
@@ -1671,9 +1660,10 @@ class PortfolioManager:
             if minimum_open_interest > 0:
                 tickers = [
                     ticker
-                    for ticker in tqdm(
+                    for ticker in log.track(
                         tickers,
-                        desc=f"Filtering by open interests with delta_ord_desc: {delta_ord_desc}...",
+                        description=f"Filtering by open interests with delta_ord_desc: {delta_ord_desc}...",
+                        total=len(tickers),
                     )
                     if open_interest_is_valid(ticker, minimum_open_interest)
                 ]
@@ -1740,11 +1730,11 @@ class PortfolioManager:
                 f"Something went wrong, the_chosen_ticker={the_chosen_ticker}"
             )
 
-        console.print(
-            f"[sea_green2]Found suitable contract for {underlying.symbol} at "
+        log.notice(
+            f"Found suitable contract for {underlying.symbol} at "
             f"strike={the_chosen_ticker.contract.strike} "
-            f"dte={option_dte(the_chosen_ticker.contract.lastTradeDateOrContractMonth)}"
-            f" price={dfmt(midpoint_or_market_price(the_chosen_ticker),3)}"
+            f"dte={option_dte(the_chosen_ticker.contract.lastTradeDateOrContractMonth)} "
+            f"price={dfmt(midpoint_or_market_price(the_chosen_ticker),3)}"
         )
 
         return the_chosen_ticker
@@ -1763,13 +1753,11 @@ class PortfolioManager:
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> None:
-        to_print: List[str] = []
+        log.notice("Checking on our VIX call hedge...")
 
         async def inner_handler() -> None:
             if not self.config["vix_call_hedge"]["enabled"]:
-                to_print.append(
-                    "[red]🛑 VIX call hedging not enabled, skipping",
-                )
+                log.warning("🛑 VIX call hedging not enabled, skipping...")
                 return None
 
             async def vix_calls_should_be_closed() -> (
@@ -1788,161 +1776,44 @@ class PortfolioManager:
 
             ignore_dte = self.config["vix_call_hedge"]["ignore_dte"]
 
-            with console.status(
-                "[bold blue_violet]Checking on our VIX call hedge..."
-            ) as status:
-                net_vix_call_count = net_option_positions(
-                    "VIX", portfolio_positions, "C", ignore_dte=ignore_dte
+            net_vix_call_count = net_option_positions(
+                "VIX", portfolio_positions, "C", ignore_dte=ignore_dte
+            )
+            if net_vix_call_count > 0:
+                log.info(
+                    f"[bold blue_violet]net_vix_call_count={net_vix_call_count} "
+                    f"(DTE <= {ignore_dte} contracts ignored), "
+                    "checking if we need to close positions...",
                 )
-                if net_vix_call_count > 0:
-                    status.update(
-                        f"[bold blue_violet]net_vix_call_count={net_vix_call_count} "
-                        f"(DTE <= {ignore_dte} contracts ignored), "
-                        "checking if we need to close positions...",
-                    )
-                    (
-                        close_vix_calls,
-                        vix_ticker,
-                        close_hedges_when_vix_exceeds,
-                    ) = await vix_calls_should_be_closed()
-                    if close_vix_calls and vix_ticker and close_hedges_when_vix_exceeds:
-                        to_print.append(
-                            f"[deep_sky_blue1]VIX={vix_ticker.marketPrice():.2f}, which exceeds "
-                            f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}"
-                        )
-                        status.update(
-                            f"[bold blue_violet]VIX={vix_ticker.marketPrice():.2f}, which exceeds "
-                            f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}, "
-                            "checking if we need to close positions...",
-                        )
-                        for position in portfolio_positions["VIX"]:
-                            if (
-                                position.contract.right.startswith("C")
-                                and position.position < 0
-                            ):
-                                # only applies to long calls
-                                continue
-                            to_print.append(
-                                f"[blue]Closing position {position.contract.localSymbol}"
-                            )
-                            status.update(
-                                f"[bold blue_violet]Creating closing order for {position.contract.localSymbol}..."
-                            )
-                            position.contract.exchange = self.get_order_exchange()
-                            sell_ticker = await self.ibkr.get_ticker_for_contract(
-                                position.contract
-                            )
-                            price = round(get_lower_price(sell_ticker), 2)
-                            qty = abs(position.position)
-                            order = LimitOrder(
-                                "SELL",
-                                qty,
-                                price,
-                                algoStrategy=self.get_algo_strategy(),
-                                algoParams=self.get_algo_params(),
-                                tif="DAY",
-                                account=self.account_number,
-                            )
-
-                            self.enqueue_order(sell_ticker.contract, order)
-
-                    to_print.append(
-                        f"[cyan1]net_vix_call_count={net_vix_call_count}, no action is needed at this time",
-                    )
-                    return
-
-                status.update(
-                    f"[bold blue_violet]net_vix_call_count={net_vix_call_count}, checking if we should open new positions...",
-                )
-
                 (
                     close_vix_calls,
                     vix_ticker,
                     close_hedges_when_vix_exceeds,
                 ) = await vix_calls_should_be_closed()
-                # we never want to write calls if we're simultaneously ready to close calls
-                if not close_vix_calls:
-                    try:
-                        vixmo_contract = Index("VIXMO", "CBOE", "USD")
-                        vixmo_ticker = await self.ibkr.get_ticker_for_contract(
-                            vixmo_contract
+                if close_vix_calls and vix_ticker and close_hedges_when_vix_exceeds:
+                    log.info(
+                        f"VIX={vix_ticker.marketPrice():.2f}, which exceeds "
+                        f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}, "
+                        "checking if we need to close positions...",
+                    )
+                    for position in portfolio_positions["VIX"]:
+                        if (
+                            position.contract.right.startswith("C")
+                            and position.position < 0
+                        ):
+                            # only applies to long calls
+                            continue
+                        log.notice(
+                            f"Creating closing order for {position.contract.localSymbol}..."
                         )
-
-                        weight = 0.0
-
-                        for allocation in self.config["vix_call_hedge"]["allocation"]:
-                            if (
-                                "lower_bound" in allocation
-                                and "upper_bound" in allocation
-                                and allocation["lower_bound"]
-                                <= vixmo_ticker.marketPrice()
-                                < allocation["upper_bound"]
-                            ):
-                                weight = allocation["weight"]
-                                break
-                            elif (
-                                "lower_bound" in allocation
-                                and allocation["lower_bound"]
-                                <= vixmo_ticker.marketPrice()
-                            ):
-                                weight = allocation["weight"]
-                                break
-                            elif (
-                                "upper_bound" in allocation
-                                and vixmo_ticker.marketPrice()
-                                < allocation["upper_bound"]
-                            ):
-                                weight = allocation["weight"]
-                                break
-
-                        to_print.append(
-                            f"VIXMO={vixmo_ticker.marketPrice():.2f}, target call hedge weight={weight}",
+                        position.contract.exchange = self.get_order_exchange()
+                        sell_ticker = await self.ibkr.get_ticker_for_contract(
+                            position.contract
                         )
-
-                        allocation_amount = (
-                            float(account_summary["NetLiquidation"].value) * weight
-                        )
-                        delta = self.config["vix_call_hedge"]["delta"]
-                        target_dte = self.config["vix_call_hedge"]["target_dte"]
-                        if weight > 0:
-                            to_print.append(
-                                f"[green]Current VIXMO spot price prescribes an allocation of up to "
-                                f"${allocation_amount:.2f} for purchasing VIX calls, "
-                                f"at or above delta={delta} with a DTE >= {target_dte}",
-                            )
-                        else:
-                            to_print.append(
-                                "[cyan1]Based on current VIXMO value and rules, no action is needed",
-                            )
-                            return
-
-                        status.update(
-                            "[bold blue_violet]Scanning VIX option chain for eligible contracts...",
-                        )
-                        vix_contract = Index("VIX", "CBOE", "USD")
-                        status.stop()
-                        buy_ticker = await self.find_eligible_contracts(
-                            vix_contract,
-                            "C",
-                            0,
-                            target_delta=delta,
-                            target_dte=target_dte,
-                            minimum_price=lambda: get_minimum_credit(self.config),
-                        )
-                        if not isinstance(buy_ticker.contract, Option):
-                            raise RuntimeError(
-                                f"Something went wrong, buy_ticker={buy_ticker}"
-                            )
-                        status.start()
-                        price = round(get_lower_price(buy_ticker), 2)
-                        qty = math.floor(
-                            allocation_amount
-                            / price
-                            / float(buy_ticker.contract.multiplier)
-                        )
-
+                        price = round(get_lower_price(sell_ticker), 2)
+                        qty = abs(position.position)
                         order = LimitOrder(
-                            "BUY",
+                            "SELL",
                             qty,
                             price,
                             algoStrategy=self.get_algo_strategy(),
@@ -1951,16 +1822,116 @@ class PortfolioManager:
                             account=self.account_number,
                         )
 
-                        self.enqueue_order(buy_ticker.contract, order)
-                    except (RuntimeError, NoValidContractsError):
-                        console.print_exception()
-                        console.print(
-                            "[yellow]Error occurred when VIX call hedging. Continuing anyway...",
+                        self.enqueue_order(sell_ticker.contract, order)
+
+                log.info(
+                    f"net_vix_call_count={net_vix_call_count}, no action is needed at this time",
+                )
+                return
+
+            log.info(
+                f"net_vix_call_count={net_vix_call_count}, checking if we should open new positions...",
+            )
+
+            (
+                close_vix_calls,
+                vix_ticker,
+                close_hedges_when_vix_exceeds,
+            ) = await vix_calls_should_be_closed()
+            # we never want to write calls if we're simultaneously ready to close calls
+            if not close_vix_calls:
+                try:
+                    vixmo_contract = Index("VIXMO", "CBOE", "USD")
+                    vixmo_ticker = await self.ibkr.get_ticker_for_contract(
+                        vixmo_contract
+                    )
+
+                    weight = 0.0
+
+                    for allocation in self.config["vix_call_hedge"]["allocation"]:
+                        if (
+                            "lower_bound" in allocation
+                            and "upper_bound" in allocation
+                            and allocation["lower_bound"]
+                            <= vixmo_ticker.marketPrice()
+                            < allocation["upper_bound"]
+                        ):
+                            weight = allocation["weight"]
+                            break
+                        elif (
+                            "lower_bound" in allocation
+                            and allocation["lower_bound"] <= vixmo_ticker.marketPrice()
+                        ):
+                            weight = allocation["weight"]
+                            break
+                        elif (
+                            "upper_bound" in allocation
+                            and vixmo_ticker.marketPrice() < allocation["upper_bound"]
+                        ):
+                            weight = allocation["weight"]
+                            break
+
+                    log.info(
+                        f"VIXMO={vixmo_ticker.marketPrice():.2f}, target call hedge weight={weight}",
+                    )
+
+                    allocation_amount = (
+                        float(account_summary["NetLiquidation"].value) * weight
+                    )
+                    delta = self.config["vix_call_hedge"]["delta"]
+                    target_dte = self.config["vix_call_hedge"]["target_dte"]
+                    if weight > 0:
+                        log.notice(
+                            f"Current VIXMO spot price prescribes an allocation of up to "
+                            f"${allocation_amount:.2f} for purchasing VIX calls, "
+                            f"at or above delta={delta} with a DTE >= {target_dte}",
                         )
+                    else:
+                        log.info(
+                            "Based on current VIXMO value and rules, no action is needed",
+                        )
+                        return
+
+                    log.info(
+                        "Scanning VIX option chain for eligible contracts...",
+                    )
+                    vix_contract = Index("VIX", "CBOE", "USD")
+                    buy_ticker = await self.find_eligible_contracts(
+                        vix_contract,
+                        "C",
+                        0,
+                        target_delta=delta,
+                        target_dte=target_dte,
+                        minimum_price=lambda: get_minimum_credit(self.config),
+                    )
+                    if not isinstance(buy_ticker.contract, Option):
+                        raise RuntimeError(
+                            f"Something went wrong, buy_ticker={buy_ticker}"
+                        )
+                    price = round(get_lower_price(buy_ticker), 2)
+                    qty = math.floor(
+                        allocation_amount
+                        / price
+                        / float(buy_ticker.contract.multiplier)
+                    )
+
+                    order = LimitOrder(
+                        "BUY",
+                        qty,
+                        price,
+                        algoStrategy=self.get_algo_strategy(),
+                        algoParams=self.get_algo_params(),
+                        tif="DAY",
+                        account=self.account_number,
+                    )
+
+                    self.enqueue_order(buy_ticker.contract, order)
+                except (RuntimeError, NoValidContractsError):
+                    log.error(
+                        "Error occurred when VIX call hedging. Continuing anyway..."
+                    )
 
         await inner_handler()
-
-        console.print(Panel(Group(*to_print), title="VIX call hedging"))
 
     def calc_pending_cash_balance(self) -> float:
         def get_multiplier(contract: Contract) -> float:
@@ -1991,12 +1962,12 @@ class PortfolioManager:
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> None:
-        to_print: List[str] = []
+        log.notice("Cash management...")
 
         async def inner_handler() -> None:
             if not self.config["cash_management"]["enabled"]:
-                to_print.append(
-                    "[red]🛑 Cash management not enabled, skipping",
+                log.warning(
+                    "🛑 Cash management not enabled, skipping",
                 )
                 return None
 
@@ -2035,30 +2006,30 @@ class PortfolioManager:
                         raise RuntimeError("ERROR: qty is NaN")
 
                     if qty > 0:
-                        to_print.append(
-                            f"[green]cash_balance={dfmt(cash_balance)} which exceeds "
+                        log.notice(
+                            f"cash_balance={dfmt(cash_balance)} which exceeds "
                             f"(target_cash_balance + pending_balance + buy_threshold)="
                             f"{(dfmt(target_cash_balance + pending_balance + buy_threshold))} "
                             f"with pending_balance={dfmt(pending_balance)}"
                         )
-                        to_print.append(
-                            f"[green]Will buy {symbol} with qty={qty} shares at price={price}"
+                        log.notice(
+                            f"Will buy {symbol} with qty={qty} shares at price={price}"
                         )
 
                     # make sure qty does not exceed balance if it's a negative value
                     if qty < 0:
                         # subtract 1 to keep cash balance above target
                         qty -= 1
-                        to_print.append(
-                            f"[green](cash_balance + pending_balance)={dfmt(cash_balance + pending_balance)} which is less than "
+                        log.notice(
+                            f"(cash_balance + pending_balance)={dfmt(cash_balance + pending_balance)} which is less than "
                             f"(target_cash_balance + pending_balance - sell_threshold)="
                             f"{(dfmt(target_cash_balance - sell_threshold))} "
                             f"with pending_balance={dfmt(pending_balance)}"
                         )
                         if symbol not in portfolio_positions:
                             # we don't have any positions to sell
-                            to_print.append(
-                                f"[red]Will sell {symbol} with qty={-qty} at"
+                            log.warning(
+                                f"Will sell {symbol} with qty={-qty} at"
                                 f" price={price}, but we have no position to sell"
                             )
                             return (None, None)
@@ -2071,12 +2042,12 @@ class PortfolioManager:
                         qty = min([max([-math.floor(position), qty]), 0])
                         # if for some reason the qty is zero, do nothing
                         if qty == 0:
-                            to_print.append(
-                                f"[red]Will sell {symbol} with qty={-qty} at price={price}, but we don't have any shares to sell"
+                            log.warning(
+                                f"Will sell {symbol} with qty={-qty} at price={price}, but we don't have any shares to sell"
                             )
                             return (None, None)
-                        to_print.append(
-                            f"[green]Will sell {symbol} with qty={-qty} at price={price}"
+                        log.notice(
+                            f"Will sell {symbol} with qty={-qty} at price={price}"
                         )
 
                     order = LimitOrder(
@@ -2101,20 +2072,15 @@ class PortfolioManager:
                     if ticker and ticker.contract and order:
                         self.enqueue_order(ticker.contract, order)
                 else:
-                    to_print.append(
-                        "[green]All good, nothing to do here. "
+                    log.notice(
+                        "All good, nothing to do here. "
                         f"cash_balance={dfmt(cash_balance)} pending_balance={dfmt(pending_balance)}"
                     )
 
             except RuntimeError:
-                console.print_exception()
-                console.print(
-                    "[yellow]Error occurred when cash hedging. Continuing anyway...",
-                )
+                log.error("Error occurred when cash hedging. Continuing anyway...")
 
         await inner_handler()
-
-        console.print(Panel(Group(*to_print), title="Cash management"))
 
     def enqueue_order(self, contract: Optional[Contract], order: LimitOrder) -> None:
         if not contract:
@@ -2127,7 +2093,7 @@ class PortfolioManager:
                 trade = self.ibkr.place_order(contract, order)
                 return trade
             except RuntimeError:
-                console.print_exception()
+                log.error(f"Failed to submit contract: {contract}, order: {order}")
             return None
 
         self.trades = [
@@ -2161,7 +2127,7 @@ class PortfolioManager:
                         trade.orderStatus.status,
                         ffmt(trade.orderStatus.filled, 0),
                     )
-            console.print(table)
+            log.print(table)
 
     async def adjust_prices(self) -> None:
         if (
@@ -2175,7 +2141,7 @@ class PortfolioManager:
             )
             or len(self.trades) == 0
         ):
-            console.print("[yellow]Skipping order price adjustments...[/yellow]")
+            log.warning("Skipping order price adjustments...")
             return
 
         delay = random.randrange(
@@ -2196,7 +2162,7 @@ class PortfolioManager:
             and not trade.isDone()
         ]
 
-        async def generate_order_midprice_task(idx: int, trade: Trade) -> None:
+        for idx, trade in unfilled:
             try:
                 ticker = await self.ibkr.get_ticker_for_contract(
                     trade.contract,
@@ -2220,8 +2186,8 @@ class PortfolioManager:
                 # resulting price change would increase the spread, we'll
                 # skip it.
                 if would_increase_spread(order, updated_price):
-                    console.print(
-                        f"[yellow]Skipping order for {contract.symbol}"
+                    log.warning(
+                        f"Skipping order for {contract.symbol}"
                         f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}, because updated price would increase spread"
                     )
                     return
@@ -2232,9 +2198,8 @@ class PortfolioManager:
                 if order.lmtPrice != updated_price and np.sign(
                     order.lmtPrice
                 ) == np.sign(updated_price):
-                    console.print(
-                        f"[green]Resubmitting {order.action} {contract.secType} order for {contract.symbol}"
-                        f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
+                    log.info(
+                        f"Resubmitting {order.action} {contract.secType} order for {contract.symbol} with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
                     )
                     order.lmtPrice = float(updated_price)
 
@@ -2252,17 +2217,13 @@ class PortfolioManager:
 
                     # put the trade back from whence it came
                     self.trades[idx] = self.ibkr.place_order(contract, order)
-                    console.print(
-                        f"[blue]Order updated, order={self.trades[idx].order}"
-                    )
-            except (RuntimeError, RequiredFieldValidationError):
-                console.print_exception()
-                console.print(
-                    f"[red]Couldn't generate midpoint price for {trade.contract}, skipping"
-                )
 
-        tasks = [generate_order_midprice_task(idx, trade) for idx, trade in unfilled]
-        await tqdm_asyncio.gather(*tasks, desc="Adjusting prices...")
+                    log.info(f"Order updated, order={self.trades[idx].order}")
+            except (RuntimeError, RequiredFieldValidationError):
+                log.error(
+                    "Couldn't generate midpoint price for {trade.contract}, skipping"
+                )
+                continue
 
     async def get_write_threshold(
         self, ticker: Ticker, right: str

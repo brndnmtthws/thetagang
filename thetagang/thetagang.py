@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
+from thetagang import log
 from thetagang.config import normalize_config, validate_config
 from thetagang.fmt import dfmt, ffmt, pfmt
 from thetagang.util import (
@@ -405,7 +406,7 @@ def start(config_path: str, without_ibc: bool = False) -> None:
     tree = Tree(":control_knobs:")
     tree.add(Group(f":file_cabinet: Loaded from {config_path}", config_table))
     tree.add(Group(":yin_yang: Symbology", symbols_table))
-    console.print(Panel(tree, title="Config"))
+    log.print(Panel(tree, title="Config"))
 
     if config.get("ib_async", {}).get("logfile"):
         util.logToFile(config["ib_async"]["logfile"])  # type: ignore
