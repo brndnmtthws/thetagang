@@ -1459,8 +1459,7 @@ class PortfolioManager:
                     log.error(
                         "Error occurred when trying to roll position. Continuing anyway..."
                     )
-                    continue
-            except RuntimeError:
+            except (RuntimeError, RequiredFieldValidationError):
                 log.error(
                     "Error occurred when trying to roll position. Continuing anyway..."
                 )
