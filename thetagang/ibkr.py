@@ -16,7 +16,8 @@ from ib_async import (
     util,
 )
 from rich.console import Console
-from tqdm.asyncio import tqdm_asyncio
+
+import thetagang.log as log
 
 console = Console()
 
@@ -118,8 +119,9 @@ class IBKR:
             )
 
         tasks = [get_ticker_task(contract) for contract in contracts]
-        tickers = await tqdm_asyncio.gather(
-            *tasks, desc="Gathering tickers, waiting for required & optional fields..."
+        tickers = await log.track_async(
+            tasks,
+            description="Gathering tickers, waiting for required & optional fields...",
         )
         return tickers
 
@@ -194,17 +196,12 @@ class IBKR:
 
     def orderStatusEvent(self, trade: Trade) -> None:
         if "Filled" in trade.orderStatus.status:
-            console.print(
-                f"[green]Order filled, symbol={trade.contract.symbol}",
-            )
+            log.info(f"Order filled, symbol={trade.contract.symbol}")
         if "Cancelled" in trade.orderStatus.status:
-            console.print(
-                f"[red]Order cancelled, symbol={trade.contract.symbol} log={trade.log}",
-            )
+            log.warning(f"Order cancelled, symbol={trade.contract.symbol}")
         else:
-            console.print(
-                f"[bright_green]Order updated, symbol={trade.contract.symbol}"
-                f" status={trade.orderStatus.status}",
+            log.info(
+                f"Order updated, symbol={trade.contract.symbol} status={trade.orderStatus.status}"
             )
 
     async def __market_data_streaming_handler__(
@@ -266,7 +263,7 @@ class IBKR:
             )
             for trade in trades
         ]
-        await tqdm_asyncio.gather(*tasks, desc="Waiting for orders to be submitted...")
+        await log.track_async(tasks, "Waiting for orders to be submitted...")
 
     async def wait_for_orders_complete(
         self, trades: List[Trade], timetout: int = 60
@@ -279,7 +276,7 @@ class IBKR:
             )
             for trade in trades
         ]
-        await tqdm_asyncio.gather(*tasks, desc="Waiting for orders to complete...")
+        await log.track_async(tasks, description="Waiting for orders to complete...")
 
     async def __trade_wait_for_condition__(
         self, trade: Trade, condition: Callable[[Trade], bool], timeout: float
