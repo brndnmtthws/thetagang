@@ -1290,7 +1290,15 @@ class PortfolioManager:
                 symbol = position.contract.symbol
 
                 position.contract.exchange = self.get_order_exchange()
-                buy_ticker = await self.ibkr.get_ticker_for_contract(position.contract)
+                try:
+                    buy_ticker = await self.ibkr.get_ticker_for_contract(
+                        position.contract
+                    )
+                except RequiredFieldValidationError:
+                    # Likely no market price available for this contract,
+                    # possibly because there are no bids or asks. In this case,
+                    # treat it as a $0.00 contract.
+                    pass
 
                 strike_limit = get_strike_limit(self.config, symbol, right)
                 if right.startswith("C"):
