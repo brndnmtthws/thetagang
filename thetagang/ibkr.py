@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum
-from typing import Any, Awaitable, Callable, List
+from typing import Any, Awaitable, Callable, List, Optional
 
 from ib_async import (
     IB,
@@ -29,9 +29,13 @@ class TickerField(Enum):
 
 
 class RequiredFieldValidationError(Exception):
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, ticker: Optional[Ticker]) -> None:
         self.message = message
+        self.ticker = ticker
         super().__init__(self.message)
+
+    def get_ticker(self) -> Optional[Ticker]:
+        return self.ticker
 
 
 class IBKR:

@@ -1303,10 +1303,11 @@ class PortfolioManager:
                     buy_ticker = await self.ibkr.get_ticker_for_contract(
                         position.contract
                     )
-                except RequiredFieldValidationError:
+                except RequiredFieldValidationError as e:
                     # Likely no market price available for this contract,
                     # possibly because there are no bids or asks. In this case,
                     # treat it as a $0.00 contract.
+                    buy_ticker = e.get_ticker()
                     pass
 
                 strike_limit = get_strike_limit(self.config, symbol, right)
