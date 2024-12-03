@@ -467,6 +467,11 @@ logfile = '/etc/thetagang/ib_async.log'
 # Typically the amount of time needed when waiting on data from the IBKR API.
 # Sometimes it can take a while to retrieve data, and it's lazy-loaded by the
 # API, so getting this number right is largely a matter of guesswork.
+# Increasing the number would reduce the throughput since we have to wait maximum X seconds
+# to make sure all the required data fields are ready.
+# You can speed up the thetagang by reducing this number, but you may miss the best opportunities.
+# The rule of thumb to choose the best value is assuming the maximum run time of thetagang
+# will be around 6 (call,puts,roll calls, roll puts, ...) * api_response_wait_time * number_of_symbols you have in the configuration.
 api_response_wait_time = 60
 
 [ibc]

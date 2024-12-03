@@ -410,8 +410,8 @@ def start(config_path: str, without_ibc: bool = False) -> None:
     if config.get("ib_async", {}).get("logfile"):
         util.logToFile(config["ib_async"]["logfile"])  # type: ignore
 
-    def onConnected() -> None:
-        portfolio_manager.manage()
+    async def onConnected() -> None:
+        await portfolio_manager.manage()
 
     ib = IB()
     ib.connectedEvent += onConnected
