@@ -1301,6 +1301,7 @@ class PortfolioManager:
                 position.contract.exchange = self.get_order_exchange()
                 buy_ticker = await self.ibkr.get_ticker_for_contract(
                     position.contract,
+                    required_fields=[],
                     optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
                 )
 
