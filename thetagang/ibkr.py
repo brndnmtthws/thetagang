@@ -108,6 +108,7 @@ class IBKR:
 
     async def get_tickers_for_contracts(
         self,
+        underlying_symbol: str,
         contracts: List[Contract],
         generic_tick_list: str = "",
         required_fields: List[TickerField] = [TickerField.MARKET_PRICE],
@@ -121,7 +122,7 @@ class IBKR:
         tasks = [get_ticker_task(contract) for contract in contracts]
         tickers = await log.track_async(
             tasks,
-            description="Gathering tickers, waiting for required & optional fields...",
+            description=f"{underlying_symbol}: Gathering tickers, waiting for required & optional fields...",
         )
         return tickers
 
@@ -196,12 +197,16 @@ class IBKR:
 
     def orderStatusEvent(self, trade: Trade) -> None:
         if "Filled" in trade.orderStatus.status:
-            log.info(f"Order filled, symbol={trade.contract.symbol}")
+            log.info(f"{trade.contract.symbol}: Order filled")
+        if "Fill" in trade.orderStatus.status:
+            log.info(
+                f"{trade.contract.symbol}: {trade.orderStatus.filled} filled, {trade.orderStatus.remaining} remaining"
+            )
         if "Cancelled" in trade.orderStatus.status:
-            log.warning(f"Order cancelled, symbol={trade.contract.symbol}")
+            log.warning(f"{trade.contract.symbol}: Order cancelled")
         else:
             log.info(
-                f"Order updated, symbol={trade.contract.symbol} status={trade.orderStatus.status}"
+                f"{trade.contract.symbol}: Order updated with status={trade.orderStatus.status}"
             )
 
     async def __market_data_streaming_handler__(
