@@ -669,7 +669,7 @@ class PortfolioManager:
         for c in log.track(
             calls, description="Checking rollable/closeable calls...", total=len(calls)
         ):
-            if self.call_can_be_rolled(c, table):
+            if await self.call_can_be_rolled(c, table):
                 rollable_calls.append(c)
             elif self.call_can_be_closed(c, table):
                 closeable_calls.append(c)
