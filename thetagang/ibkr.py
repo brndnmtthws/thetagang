@@ -17,7 +17,7 @@ from ib_async import (
 )
 from rich.console import Console
 
-import thetagang.log as log
+from thetagang import log
 
 console = Console()
 
