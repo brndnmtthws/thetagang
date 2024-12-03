@@ -1442,7 +1442,7 @@ class PortfolioManager:
 
                 # Enqueue order
                 self.enqueue_order(combo, order)
-            except NoValidContractsError:
+            except (NoValidContractsError, RequiredFieldValidationError):
                 dte = option_dte(position.contract.lastTradeDateOrContractMonth)
                 if (
                     close_if_unable_to_roll(self.config, position.contract.symbol)
@@ -1459,7 +1459,7 @@ class PortfolioManager:
                     log.error(
                         "Error occurred when trying to roll position. Continuing anyway..."
                     )
-            except (RuntimeError, RequiredFieldValidationError):
+            except RuntimeError:
                 log.error(
                     "Error occurred when trying to roll position. Continuing anyway..."
                 )
