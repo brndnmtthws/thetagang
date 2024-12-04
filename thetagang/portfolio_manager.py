@@ -2194,9 +2194,7 @@ class PortfolioManager:
                     # original position in the queue
                     self.trades.submit_order(contract, order, idx)
 
-                    log.info(
-                        f"{contract.symbol}: Order updated, order={self.trades[idx].order}"
-                    )
+                    log.info(f"{contract.symbol}: Order updated, order={order}")
             except (RuntimeError, RequiredFieldValidationError):
                 log.error(
                     f"Couldn't generate midpoint price for {trade.contract}, skipping"
