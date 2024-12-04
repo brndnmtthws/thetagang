@@ -31,7 +31,7 @@ CONTEXT_SETTINGS = dict(
 @click.option(
     "--dry-run",
     is_flag=True,
-    help="Perform a dry run. This will simulate the execution without making any actual changes or sending any live trades.",
+    help="Perform a dry run. This will display the the orders without sending any live trades.",
 )
 def cli(config: str, without_ibc: bool, dry_run: bool) -> None:
     """ThetaGang is an IBKR bot for collecting money.
