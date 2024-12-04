@@ -2185,7 +2185,8 @@ class PortfolioManager:
                         algoParams=order.algoParams,
                     )
 
-                    # put the trade back from whence it came
+                    # resubmit the order and it will be placed back to the
+                    # original position in the queue
                     self.trades.submit_order(contract, order, idx)
 
                     log.info(f"Order updated, order={order}")
