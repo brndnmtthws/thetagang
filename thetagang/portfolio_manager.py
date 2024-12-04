@@ -72,7 +72,11 @@ class NoValidContractsError(Exception):
 
 class PortfolioManager:
     def __init__(
-        self, config: Dict[str, Dict[str, Any]], ib: IB, completion_future: Future[bool]
+        self,
+        config: Dict[str, Dict[str, Any]],
+        ib: IB,
+        completion_future: Future[bool],
+        dry_run: bool,
     ) -> None:
         self.account_number = config["account"]["number"]
         self.config = config
@@ -88,6 +92,7 @@ class PortfolioManager:
         self.trades: List[Trade] = []
         self.target_quantities: Dict[str, int] = {}
         self.qualified_contracts: Dict[int, Contract] = {}
+        self.dry_run = dry_run
 
     def get_short_calls(
         self, portfolio_positions: Dict[str, List[PortfolioItem]]
@@ -585,17 +590,20 @@ class PortfolioManager:
             # manage dat cash
             await self.do_cashman(account_summary, portfolio_positions)
 
-            self.submit_orders()
+            if self.dry_run:
+                log.warning("Dry run enabled, no trades will be executed.")
+            else:
+                self.submit_orders()
 
-            try:
+                try:
+                    await self.ibkr.wait_for_submitting_orders(self.trades)
+                except RuntimeError:
+                    log.error("Submitting orders failed. Continuing anyway..")
+                    pass
+
+                await self.adjust_prices()
+
                 await self.ibkr.wait_for_submitting_orders(self.trades)
-            except RuntimeError:
-                log.error("Submitting orders failed. Continuing anyway..")
-                pass
-
-            await self.adjust_prices()
-
-            await self.ibkr.wait_for_submitting_orders(self.trades)
 
             log.info("ThetaGang is done, shutting down! Cya next time. :sparkles:")
         except:
