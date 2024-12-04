@@ -2114,7 +2114,7 @@ class PortfolioManager:
                     for symbol in self.config["symbols"]
                 ]
             )
-            or self.trades.is_empty() == 0
+            or self.trades.is_empty()
         ):
             log.warning("Skipping order price adjustments...")
             return
