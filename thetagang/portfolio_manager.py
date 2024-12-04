@@ -374,7 +374,9 @@ class PortfolioManager:
                         == self.config["cash_management"]["cash_fund"]
                     )
                 ):
-                    log.warning(f"Canceling order {trade.order}")
+                    log.warning(
+                        f"{trade.contract.symbol}: Canceling order {trade.order}"
+                    )
                     self.ibkr.cancel_order(trade.order)
 
     async def summarize_account(
@@ -879,7 +881,7 @@ class PortfolioManager:
                 )
             except (RuntimeError, NoValidContractsError):
                 log.error(
-                    f"Finding eligible contracts for {symbol} failed. Continuing anyway..."
+                    f"{symbol}: Finding eligible contracts failed. Continuing anyway..."
                 )
                 continue
 
@@ -915,7 +917,7 @@ class PortfolioManager:
                 )
             except (RuntimeError, NoValidContractsError):
                 log.error(
-                    f"Finding eligible contracts for {symbol} failed. Continuing anyway..."
+                    f"{symbol}: Finding eligible contracts failed. Continuing anyway..."
                 )
                 continue
 
@@ -1448,7 +1450,7 @@ class PortfolioManager:
                 from_strike = position.contract.strike
                 to_strike = sell_ticker.contract.strike
                 log.info(
-                    f"Rolling symbol={symbol} from_strike={from_strike} to_strike={to_strike} from_dte={from_dte} to_dte={to_dte} price={dfmt(price,3)} qty_to_roll={qty_to_roll}"
+                    f"{symbol}: Rolling from_strike={from_strike} to_strike={to_strike} from_dte={from_dte} to_dte={to_dte} price={dfmt(price,3)} qty_to_roll={qty_to_roll}"
                 )
 
                 # Enqueue order
@@ -1462,17 +1464,17 @@ class PortfolioManager:
                     and position_pnl(position) > 0
                 ):
                     log.warning(
-                        f"Unable to find a suitable contract to roll to for {position.contract.localSymbol}. Closing position instead..."
+                        f"{position.contract.symbol}: Unable to find a suitable contract to roll to for {position.contract.localSymbol}. Closing position instead..."
                     )
                     closeable_positions.append(position)
                     continue
                 else:
                     log.error(
-                        "Error occurred when trying to roll position. Continuing anyway..."
+                        f"{position.contract.symbol}: Error occurred when trying to roll position. Continuing anyway..."
                     )
             except RuntimeError:
                 log.error(
-                    "Error occurred when trying to roll position. Continuing anyway..."
+                    f"{position.contract.symbol}: Error occurred when trying to roll position. Continuing anyway..."
                 )
                 continue
 
@@ -1501,7 +1503,7 @@ class PortfolioManager:
         contract_max_dte = get_max_dte_for(underlying.symbol, self.config)
 
         log.notice(
-            f"Searching option chain for symbol={underlying.symbol} "
+            f"{underlying.symbol}: Searching option chain for "
             f"right={right} strike_limit={strike_limit} minimum_price={dfmt(minimum_price(),3)} "
             f"fallback_minimum_price={dfmt(fallback_minimum_price() if fallback_minimum_price else 0,3)} "
             f"contract_target_dte={contract_target_dte} contract_max_dte={contract_max_dte} "
@@ -1558,7 +1560,7 @@ class PortfolioManager:
                 f"No valid contract strikes found for {underlying.symbol}. Continuing anyway...",
             )
         log.info(
-            f"Scanning between strikes {strikes[0]} and {strikes[-1]},"
+            f"{underlying.symbol}: Scanning between strikes {strikes[0]} and {strikes[-1]},"
             f" from expirations {expirations[0]} to {expirations[-1]}"
         )
 
@@ -1590,6 +1592,7 @@ class PortfolioManager:
             ]
 
         tickers = await self.ibkr.get_tickers_for_contracts(
+            underlying.symbol,
             contracts,
             generic_tick_list="101",
             required_fields=[],
@@ -1641,7 +1644,7 @@ class PortfolioManager:
             ticker
             for ticker in log.track(
                 tickers,
-                description="Filtering invalid prices...",
+                description=f"{underlying.symbol}: Filtering invalid prices...",
                 total=len(tickers),
             )
             if price_is_valid(ticker)
@@ -1651,7 +1654,9 @@ class PortfolioManager:
         new_tickers = []
         delta_reject_tickers = []
         for ticker in log.track(
-            tickers, description="Filtering invalid deltas...", total=len(tickers)
+            tickers,
+            description=f"{underlying.symbol}: Filtering invalid deltas...",
+            total=len(tickers),
         ):
             if delta_is_valid(ticker):
                 new_tickers.append(ticker)
@@ -1669,7 +1674,7 @@ class PortfolioManager:
                     ticker
                     for ticker in log.track(
                         tickers,
-                        description=f"Filtering by open interests with delta_ord_desc: {delta_ord_desc}...",
+                        description=f"{underlying.symbol}: Filtering by open interest with delta_ord_desc: {delta_ord_desc}...",
                         total=len(tickers),
                     )
                     if open_interest_is_valid(ticker, minimum_open_interest)
@@ -1734,11 +1739,11 @@ class PortfolioManager:
 
         if not the_chosen_ticker or not the_chosen_ticker.contract:
             raise RuntimeError(
-                f"Something went wrong, the_chosen_ticker={the_chosen_ticker}"
+                f"{underlying.symbol}: Something went wrong, the_chosen_ticker={the_chosen_ticker}"
             )
 
         log.notice(
-            f"Found suitable contract for {underlying.symbol} at "
+            f"{underlying.symbol}: Found suitable contract at "
             f"strike={the_chosen_ticker.contract.strike} "
             f"dte={option_dte(the_chosen_ticker.contract.lastTradeDateOrContractMonth)} "
             f"price={dfmt(midpoint_or_market_price(the_chosen_ticker),3)}"
@@ -1760,7 +1765,7 @@ class PortfolioManager:
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> None:
-        log.notice("Checking on our VIX call hedge...")
+        log.notice("VIX: Checking on our VIX call hedge...")
 
         async def inner_handler() -> None:
             if not self.config["vix_call_hedge"]["enabled"]:
@@ -1788,7 +1793,7 @@ class PortfolioManager:
             )
             if net_vix_call_count > 0:
                 log.info(
-                    f"[bold blue_violet]net_vix_call_count={net_vix_call_count} "
+                    f"[bold blue_violet]VIX: net_vix_call_count={net_vix_call_count} "
                     f"(DTE <= {ignore_dte} contracts ignored), "
                     "checking if we need to close positions...",
                 )
@@ -1799,7 +1804,7 @@ class PortfolioManager:
                 ) = await vix_calls_should_be_closed()
                 if close_vix_calls and vix_ticker and close_hedges_when_vix_exceeds:
                     log.info(
-                        f"VIX={vix_ticker.marketPrice():.2f}, which exceeds "
+                        f"VIX: VIX={vix_ticker.marketPrice():.2f}, which exceeds "
                         f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}, "
                         "checking if we need to close positions...",
                     )
@@ -1832,12 +1837,12 @@ class PortfolioManager:
                         self.enqueue_order(sell_ticker.contract, order)
 
                 log.info(
-                    f"net_vix_call_count={net_vix_call_count}, no action is needed at this time",
+                    f"VIX: net_vix_call_count={net_vix_call_count}, no action is needed at this time",
                 )
                 return
 
             log.info(
-                f"net_vix_call_count={net_vix_call_count}, checking if we should open new positions...",
+                f"VIX: net_vix_call_count={net_vix_call_count}, checking if we should open new positions...",
             )
 
             (
@@ -1879,7 +1884,7 @@ class PortfolioManager:
                             break
 
                     log.info(
-                        f"VIXMO={vixmo_ticker.marketPrice():.2f}, target call hedge weight={weight}",
+                        f"VIX: VIXMO={vixmo_ticker.marketPrice():.2f}, target call hedge weight={weight}",
                     )
 
                     allocation_amount = (
@@ -1889,18 +1894,18 @@ class PortfolioManager:
                     target_dte = self.config["vix_call_hedge"]["target_dte"]
                     if weight > 0:
                         log.notice(
-                            f"Current VIXMO spot price prescribes an allocation of up to "
+                            f"VIX: Current VIXMO spot price prescribes an allocation of up to "
                             f"${allocation_amount:.2f} for purchasing VIX calls, "
                             f"at or above delta={delta} with a DTE >= {target_dte}",
                         )
                     else:
                         log.info(
-                            "Based on current VIXMO value and rules, no action is needed",
+                            "VIX: Based on current VIXMO value and rules, no action is needed",
                         )
                         return
 
                     log.info(
-                        "Scanning VIX option chain for eligible contracts...",
+                        "VIX: Scanning option chain for eligible contracts...",
                     )
                     vix_contract = Index("VIX", "CBOE", "USD")
                     buy_ticker = await self.find_eligible_contracts(
@@ -1935,7 +1940,7 @@ class PortfolioManager:
                     self.enqueue_order(buy_ticker.contract, order)
                 except (RuntimeError, NoValidContractsError):
                     log.error(
-                        "Error occurred when VIX call hedging. Continuing anyway..."
+                        "VIX: Error occurred when VIX call hedging. Continuing anyway..."
                     )
 
         await inner_handler()
@@ -2169,7 +2174,7 @@ class PortfolioManager:
                     order.lmtPrice
                 ) == np.sign(updated_price):
                     log.info(
-                        f"Resubmitting {order.action} {contract.secType} order for {contract.symbol} with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
+                        f"{contract.symbol}: Resubmitting {order.action} {contract.secType} order with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
                     )
                     order.lmtPrice = float(updated_price)
 
@@ -2189,10 +2194,12 @@ class PortfolioManager:
                     # original position in the queue
                     self.trades.submit_order(contract, order, idx)
 
-                    log.info(f"Order updated, order={order}")
+                    log.info(
+                        f"{contract.symbol}: Order updated, order={self.trades[idx].order}"
+                    )
             except (RuntimeError, RequiredFieldValidationError):
                 log.error(
-                    "Couldn't generate midpoint price for {trade.contract}, skipping"
+                    f"Couldn't generate midpoint price for {trade.contract}, skipping"
                 )
                 continue
 
