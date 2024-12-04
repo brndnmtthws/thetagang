@@ -592,6 +592,7 @@ class PortfolioManager:
 
             if self.dry_run:
                 log.warning("Dry run enabled, no trades will be executed.")
+
                 self.orders.print_summary()
             else:
                 self.submit_orders()
