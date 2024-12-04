@@ -1667,7 +1667,7 @@ class PortfolioManager:
                     ticker
                     for ticker in log.track(
                         tickers,
-                        description=f"Filtering by open interests with delta_ord_desc: {delta_ord_desc}...",
+                        description=f"{underlying.symbol}: Filtering by open interest with delta_ord_desc: {delta_ord_desc}...",
                         total=len(tickers),
                     )
                     if open_interest_is_valid(ticker, minimum_open_interest)
@@ -1758,7 +1758,7 @@ class PortfolioManager:
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> None:
-        log.notice("Checking on our VIX call hedge...")
+        log.notice("VIX: Checking on our VIX call hedge...")
 
         async def inner_handler() -> None:
             if not self.config["vix_call_hedge"]["enabled"]:
@@ -2204,7 +2204,7 @@ class PortfolioManager:
                     order.lmtPrice
                 ) == np.sign(updated_price):
                     log.info(
-                        f"Resubmitting {order.action} {contract.secType} order for {contract.symbol} with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
+                        f"{contract.symbol}: Resubmitting {order.action} {contract.secType} order with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
                     )
                     order.lmtPrice = float(updated_price)
 
@@ -2223,7 +2223,9 @@ class PortfolioManager:
                     # put the trade back from whence it came
                     self.trades[idx] = self.ibkr.place_order(contract, order)
 
-                    log.info(f"Order updated, order={self.trades[idx].order}")
+                    log.info(
+                        f"{contract.symbol}: Order updated, order={self.trades[idx].order}"
+                    )
             except (RuntimeError, RequiredFieldValidationError):
                 log.error(
                     f"Couldn't generate midpoint price for {trade.contract}, skipping"
