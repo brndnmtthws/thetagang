@@ -1667,7 +1667,7 @@ class PortfolioManager:
                     ticker
                     for ticker in log.track(
                         tickers,
-                        description=f"{underlying.symbol}: Filtering by open interest with delta_ord_desc: {delta_ord_desc}...",
+                        description=f"{underlying.symbol}: Filtering by open interest with delta_ord_desc={delta_ord_desc}...",
                         total=len(tickers),
                     )
                     if open_interest_is_valid(ticker, minimum_open_interest)
