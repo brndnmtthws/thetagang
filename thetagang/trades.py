@@ -1,7 +1,7 @@
 from typing import List, Optional
 
 from ib_async import Contract, LimitOrder, Trade
-from rich.box import box
+from rich import box
 from rich.pretty import Pretty
 from rich.table import Table
 
