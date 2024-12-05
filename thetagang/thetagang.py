@@ -16,7 +16,7 @@ def start(config_path: str, without_ibc: bool = False) -> None:
     with open(config_path, "r", encoding="utf8") as file:
         config = toml.load(file)
 
-    config = Config(**normalize_config(config))
+    config = Config(**normalize_config(config))  # type: ignore
 
     config.display(config_path)
 
