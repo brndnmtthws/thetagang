@@ -21,6 +21,7 @@ version       = "1.14.0"
   schema          = "^0.7.5"
   toml            = "^0.10.2"
   ib-async = "^1.0.3"
+  pydantic = "^2.10.2"
   annotated-types = "^0.7.0"
 
   [tool.poetry.group.dev.dependencies]
