@@ -28,7 +28,12 @@ CONTEXT_SETTINGS = dict(
     help="Run without IBC. Enable this if you want to run the TWS "
     "gateway yourself, without having ThetaGang manage it for you.",
 )
-def cli(config: str, without_ibc: bool) -> None:
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Perform a dry run. This will display the the orders without sending any live trades.",
+)
+def cli(config: str, without_ibc: bool, dry_run: bool) -> None:
     """ThetaGang is an IBKR bot for collecting money.
 
     You can configure this tool by supplying a toml configuration file.
@@ -38,4 +43,4 @@ def cli(config: str, without_ibc: bool) -> None:
 
     from .thetagang import start
 
-    start(config, without_ibc)
+    start(config, without_ibc, dry_run)
