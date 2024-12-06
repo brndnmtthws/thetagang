@@ -25,7 +25,7 @@ class Trades:
             else:
                 self.__add_trade(trade)
         except RuntimeError:
-            log.error(f"Failed to submit contract: {contract}, order: {order}")
+            log.error(f"{contract.symbol}: Failed to submit contract, order={order}")
 
     def records(self) -> List[Trade]:
         return self.__records
