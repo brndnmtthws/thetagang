@@ -50,7 +50,6 @@ from thetagang.util import (
     net_option_positions,
     portfolio_positions_to_dict,
     position_pnl,
-    trading_is_allowed,
     weighted_avg_long_strike,
     weighted_avg_short_strike,
     would_increase_spread,
@@ -118,7 +117,7 @@ class PortfolioManager:
         return contract.strike >= ticker.marketPrice()
 
     def position_can_be_closed(self, position: PortfolioItem, table: Table) -> bool:
-        if not trading_is_allowed(self.config, position.contract.symbol):
+        if not self.config.trading_is_allowed(position.contract.symbol):
             return False
 
         close_at_pnl = self.config.roll_when.close_at_pnl
@@ -143,7 +142,7 @@ class PortfolioManager:
         if put.position > 0:
             return False
 
-        if not trading_is_allowed(self.config, put.contract.symbol):
+        if not self.config.trading_is_allowed(put.contract.symbol):
             return False
 
         try:
@@ -247,7 +246,7 @@ class PortfolioManager:
         if call.position > 0:
             return False
 
-        if not trading_is_allowed(self.config, call.contract.symbol):
+        if not self.config.trading_is_allowed(call.contract.symbol):
             return False
 
         if (
@@ -798,12 +797,12 @@ class PortfolioManager:
                 if (
                     not ticker
                     or calls_to_write <= 0
-                    or not trading_is_allowed(self.config, symbol)
+                    or not self.config.trading_is_allowed(symbol)
                 ):
                     return False
 
                 (can_write_when_green, can_write_when_red) = can_write_when(
-                    self.config, symbol, "C"
+                    self.config.write_when, self.config.symbols.get(symbol), "C"
                 )
 
                 if not can_write_when_green and ticker.marketPrice() > ticker.close:
@@ -873,7 +872,7 @@ class PortfolioManager:
                     ),
                     "C",
                     strike_limit,
-                    minimum_price=lambda: get_minimum_credit(self.config),
+                    minimum_price=lambda: get_minimum_credit(self.config.orders),
                 )
             except (RuntimeError, NoValidContractsError):
                 log.error(
@@ -909,7 +908,7 @@ class PortfolioManager:
                     ),
                     "P",
                     strike_limit,
-                    minimum_price=lambda: get_minimum_credit(self.config),
+                    minimum_price=lambda: get_minimum_credit(self.config.orders),
                 )
             except (RuntimeError, NoValidContractsError):
                 log.error(
@@ -1114,11 +1113,11 @@ class PortfolioManager:
                 ticker: Ticker,
                 puts_to_write: int,
             ) -> bool:
-                if puts_to_write <= 0 or not trading_is_allowed(self.config, symbol):
+                if puts_to_write <= 0 or not self.config.trading_is_allowed(symbol):
                     return False
 
                 (can_write_when_green, can_write_when_red) = can_write_when(
-                    self.config, symbol, "P"
+                    self.config.write_when, self.config.symbols.get(symbol), "P"
                 )
 
                 if not can_write_when_green and ticker.marketPrice() > ticker.close:
@@ -1316,7 +1315,9 @@ class PortfolioManager:
                         max([strike_limit or 0] + average_cost),
                         2,
                     )
-                    if maintain_high_water_mark(self.config, symbol):
+                    if maintain_high_water_mark(
+                        self.config.roll_when, self.config.symbols.get(symbol)
+                    ):
                         strike_limit = max([strike_limit, position.contract.strike])
 
                 elif right.startswith("P"):
@@ -1348,11 +1349,11 @@ class PortfolioManager:
                 kind = "calls" if right.startswith("C") else "puts"
 
                 minimum_price = (
-                    (lambda: get_minimum_credit(self.config))
+                    (lambda: get_minimum_credit(self.config.orders))
                     if not getattr(self.config.roll_when, kind).credit_only
                     else (
                         lambda: midpoint_or_market_price(buy_ticker)
-                        + get_minimum_credit(self.config)
+                        + get_minimum_credit(self.config.orders)
                     )
                 )
 
@@ -1395,7 +1396,7 @@ class PortfolioManager:
                 )
                 # a buy order should be at most the minimum price, when we expect a credit
                 price = (
-                    min([price, -get_minimum_credit(self.config)])
+                    min([price, -get_minimum_credit(self.config.orders)])
                     if getattr(self.config.roll_when, kind).credit_only
                     else price
                 )
@@ -1454,7 +1455,10 @@ class PortfolioManager:
             except NoValidContractsError:
                 dte = option_dte(position.contract.lastTradeDateOrContractMonth)
                 if (
-                    close_if_unable_to_roll(self.config, position.contract.symbol)
+                    close_if_unable_to_roll(
+                        self.config.roll_when,
+                        self.config.symbols.get(position.contract.symbol),
+                    )
                     and self.config.roll_when.max_dte
                     and dte <= self.config.roll_when.max_dte
                     and position_pnl(position) > 0
@@ -1489,14 +1493,25 @@ class PortfolioManager:
         target_delta: Optional[float] = None,
     ) -> Ticker:
         contract_target_dte: int = (
-            target_dte if target_dte else get_target_dte(self.config, underlying.symbol)
+            target_dte
+            if target_dte
+            else get_target_dte(
+                self.config.target, self.config.symbols.get(underlying.symbol)
+            )
         )
         contract_target_delta: float = (
             target_delta
             if target_delta
-            else get_target_delta(self.config, underlying.symbol, right)
+            else get_target_delta(
+                self.config.target, self.config.symbols.get(underlying.symbol), right
+            )
         )
-        contract_max_dte = get_max_dte_for(underlying.symbol, self.config)
+        contract_max_dte = get_max_dte_for(
+            underlying.symbol,
+            self.config.target,
+            self.config.vix_call_hedge,
+            self.config.symbols.get(underlying.symbol),
+        )
 
         log.notice(
             f"{underlying.symbol}: Searching option chain for "
@@ -1910,7 +1925,7 @@ class PortfolioManager:
                         0,
                         target_delta=delta,
                         target_dte=target_dte,
-                        minimum_price=lambda: get_minimum_credit(self.config),
+                        minimum_price=lambda: get_minimum_credit(self.config.orders),
                     )
                     if not isinstance(buy_ticker.contract, Option):
                         raise RuntimeError(
@@ -2137,7 +2152,7 @@ class PortfolioManager:
                 updated_price = np.sign(order.lmtPrice) * max(
                     [
                         (
-                            get_minimum_credit(self.config)
+                            get_minimum_credit(self.config.orders)
                             if order.action == "BUY" and order.lmtPrice <= 0.0
                             else 0.0
                         ),
@@ -2196,7 +2211,9 @@ class PortfolioManager:
         absolute_daily_change = math.fabs(ticker.marketPrice() - ticker.close)
 
         threshold_sigma = get_write_threshold_sigma(
-            self.config, ticker.contract.symbol, right
+            self.config.constants,
+            self.config.symbols.get(ticker.contract.symbol),
+            right,
         )
         if threshold_sigma:
             hist_prices = await self.ibkr.request_historical_data(
@@ -2211,6 +2228,8 @@ class PortfolioManager:
             )
         else:
             threshold_perc = get_write_threshold_perc(
-                self.config, ticker.contract.symbol, right
+                self.config.constants,
+                self.config.symbols.get(ticker.contract.symbol),
+                right,
             )
             return (threshold_perc * ticker.close, absolute_daily_change)

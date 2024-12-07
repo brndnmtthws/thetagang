@@ -425,10 +425,6 @@ def close_if_unable_to_roll(
     )
 
 
-def trading_is_allowed(symbol_config: SymbolConfig) -> bool:
-    return not symbol_config or not symbol_config.no_trading
-
-
 def write_excess_calls_only(
     write_when_config: WriteWhenConfig, symbol_config: Optional[SymbolConfig]
 ) -> bool:
