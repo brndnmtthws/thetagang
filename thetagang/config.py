@@ -370,7 +370,7 @@ class TargetConfig(BaseModel, DisplayMixin):
 
     dte: int = Field(..., ge=0)
     minimum_open_interest: int = Field(..., ge=0)
-    maximum_new_contracts_percent: float = Field(..., ge=0.0, le=1.0)
+    maximum_new_contracts_percent: float = Field(0.05, ge=0.0, le=1.0)
     delta: float = Field(default=0.3, ge=0.0, le=1.0)
     max_dte: Optional[int] = Field(default=None, ge=1)
     maximum_new_contracts: Optional[int] = Field(default=None, ge=1)
