@@ -43,15 +43,15 @@ class Account(DisplayMixin):
 @dataclass
 class Constants(DisplayMixin):
     @dataclass
-    class ConstantsWriteThreshold:
+    class WriteThreshold:
         write_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
         write_threshold_sigma: Optional[float] = Field(default=None, ge=0.0)
 
     write_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     write_threshold_sigma: Optional[float] = Field(default=None, ge=0.0)
     daily_stddev_window: str = Field(default="30 D")
-    calls: Optional[ConstantsWriteThreshold] = None
-    puts: Optional[ConstantsWriteThreshold] = None
+    calls: Optional["Constants.WriteThreshold"] = None
+    puts: Optional["Constants.WriteThreshold"] = None
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
