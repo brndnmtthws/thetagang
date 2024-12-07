@@ -12,7 +12,7 @@ util.patchAsyncio()
 console = Console()
 
 
-def start(config_path: str, without_ibc: bool = False) -> None:
+def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) -> None:
     with open(config_path, "r", encoding="utf8") as file:
         config = toml.load(file)
 
@@ -30,7 +30,7 @@ def start(config_path: str, without_ibc: bool = False) -> None:
     ib.connectedEvent += onConnected
 
     completion_future: Future[bool] = Future()
-    portfolio_manager = PortfolioManager(config, ib, completion_future)
+    portfolio_manager = PortfolioManager(config, ib, completion_future, dry_run)
 
     probe_contract_config = config.watchdog.probeContract
     watchdog_config = config.watchdog

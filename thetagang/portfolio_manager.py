@@ -8,26 +8,24 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 from ib_async import (
     AccountValue,
-    Order,
     PortfolioItem,
     TagValue,
     Ticker,
-    Trade,
     util,
 )
 from ib_async.contract import ComboLeg, Contract, Index, Option, Stock
 from ib_async.ib import IB
 from ib_async.order import LimitOrder
-from rich import box
 from rich.console import Group
 from rich.panel import Panel
-from rich.pretty import Pretty
 from rich.table import Table
 
 from thetagang import log
 from thetagang.config import Config
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import IBKR, RequiredFieldValidationError, TickerField
+from thetagang.orders import Orders
+from thetagang.trades import Trades
 from thetagang.util import (
     account_summary_to_dict,
     algo_params_from,
@@ -72,7 +70,13 @@ class NoValidContractsError(Exception):
 
 
 class PortfolioManager:
-    def __init__(self, config: Config, ib: IB, completion_future: Future[bool]) -> None:
+    def __init__(
+        self,
+        config: Config,
+        ib: IB,
+        completion_future: Future[bool],
+        dry_run: bool,
+    ) -> None:
         self.account_number = config.account.number
         self.config = config
         self.ibkr = IBKR(
@@ -83,10 +87,11 @@ class PortfolioManager:
         self.completion_future = completion_future
         self.has_excess_calls: set[str] = set()
         self.has_excess_puts: set[str] = set()
-        self.orders: List[tuple[Contract, LimitOrder]] = []
-        self.trades: List[Trade] = []
+        self.orders: Orders = Orders()
+        self.trades: Trades = Trades(self.ibkr)
         self.target_quantities: Dict[str, int] = {}
         self.qualified_contracts: Dict[int, Contract] = {}
+        self.dry_run = dry_run
 
     def get_short_calls(
         self, portfolio_positions: Dict[str, List[PortfolioItem]]
@@ -580,17 +585,22 @@ class PortfolioManager:
             # manage dat cash
             await self.do_cashman(account_summary, portfolio_positions)
 
-            self.submit_orders()
+            if self.dry_run:
+                log.warning("Dry run enabled, no trades will be executed.")
 
-            try:
-                await self.ibkr.wait_for_submitting_orders(self.trades)
-            except RuntimeError:
-                log.error("Submitting orders failed. Continuing anyway..")
-                pass
+                self.orders.print_summary()
+            else:
+                self.submit_orders()
 
-            await self.adjust_prices()
+                try:
+                    await self.ibkr.wait_for_submitting_orders(self.trades.records())
+                except RuntimeError:
+                    log.error("Submitting orders failed. Continuing anyway..")
+                    pass
 
-            await self.ibkr.wait_for_submitting_orders(self.trades)
+                await self.adjust_prices()
+
+                await self.ibkr.wait_for_submitting_orders(self.trades.records())
 
             log.info("ThetaGang is done, shutting down! Cya next time. :sparkles:")
         except:
@@ -1944,13 +1954,13 @@ class PortfolioManager:
         return sum(
             [
                 order.lmtPrice * order.totalQuantity * get_multiplier(contract)
-                for (contract, order) in self.orders
+                for (contract, order) in self.orders.records()
                 if order.action == "SELL"
             ]
         ) - sum(
             [
                 order.lmtPrice * order.totalQuantity * get_multiplier(contract)
-                for (contract, order) in self.orders
+                for (contract, order) in self.orders.records()
                 if order.action == "BUY"
             ]
         )
@@ -2079,49 +2089,12 @@ class PortfolioManager:
     def enqueue_order(self, contract: Optional[Contract], order: LimitOrder) -> None:
         if not contract:
             return
-        self.orders.append((contract, order))
+        self.orders.add_order(contract, order)
 
     def submit_orders(self) -> None:
-        def submit(contract: Contract, order: Order) -> Optional[Trade]:
-            try:
-                trade = self.ibkr.place_order(contract, order)
-                return trade
-            except RuntimeError:
-                log.error(f"Failed to submit contract: {contract}, order: {order}")
-            return None
-
-        self.trades = [
-            trade
-            for trade in [submit(order[0], order[1]) for order in self.orders]
-            if trade
-        ]
-
-        if len(self.trades) > 0:
-            table = Table(
-                title="Orders submitted", show_lines=True, box=box.MINIMAL_HEAVY_HEAD
-            )
-            table.add_column("Symbol")
-            table.add_column("Exchange")
-            table.add_column("Contract")
-            table.add_column("Action")
-            table.add_column("Price")
-            table.add_column("Qty")
-            table.add_column("Status")
-            table.add_column("Filled")
-
-            for trade in self.trades:
-                if trade:
-                    table.add_row(
-                        trade.contract.symbol,
-                        trade.contract.exchange,
-                        Pretty(trade.contract, indent_size=2),
-                        trade.order.action,
-                        dfmt(trade.order.lmtPrice),
-                        ifmt(int(trade.order.totalQuantity)),
-                        trade.orderStatus.status,
-                        ffmt(trade.orderStatus.filled, 0),
-                    )
-            log.print(table)
+        for contract, order in self.orders.records():
+            self.trades.submit_order(contract, order)
+        self.trades.print_summary()
 
     async def adjust_prices(self) -> None:
         if (
@@ -2131,7 +2104,7 @@ class PortfolioManager:
                     for symbol in self.config.symbols
                 ]
             )
-            or len(self.trades) == 0
+            or self.trades.is_empty()
         ):
             log.warning("Skipping order price adjustments...")
             return
@@ -2141,11 +2114,11 @@ class PortfolioManager:
             self.config.orders.price_update_delay[1],
         )
 
-        await self.ibkr.wait_for_orders_complete(self.trades, delay)
+        await self.ibkr.wait_for_orders_complete(self.trades.records(), delay)
 
         unfilled = [
             (idx, trade)
-            for idx, trade in enumerate(self.trades)
+            for idx, trade in enumerate(self.trades.records())
             if trade
             and trade.contract.symbol in self.config.symbols
             and self.config.symbols[trade.contract.symbol].adjust_price_after_delay
@@ -2205,12 +2178,11 @@ class PortfolioManager:
                         algoParams=order.algoParams,
                     )
 
-                    # put the trade back from whence it came
-                    self.trades[idx] = self.ibkr.place_order(contract, order)
+                    # resubmit the order and it will be placed back to the
+                    # original position in the queue
+                    self.trades.submit_order(contract, order, idx)
 
-                    log.info(
-                        f"{contract.symbol}: Order updated, order={self.trades[idx].order}"
-                    )
+                    log.info(f"{contract.symbol}: Order updated, order={order}")
             except (RuntimeError, RequiredFieldValidationError):
                 log.error(
                     f"Couldn't generate midpoint price for {trade.contract}, skipping"
