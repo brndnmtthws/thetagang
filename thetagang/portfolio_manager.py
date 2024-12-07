@@ -802,7 +802,7 @@ class PortfolioManager:
                     return False
 
                 (can_write_when_green, can_write_when_red) = can_write_when(
-                    self.config.write_when, self.config.symbols.get(symbol), "C"
+                    self.config.write_when, self.config.symbol_config(symbol), "C"
                 )
 
                 if not can_write_when_green and ticker.marketPrice() > ticker.close:
@@ -1117,7 +1117,7 @@ class PortfolioManager:
                     return False
 
                 (can_write_when_green, can_write_when_red) = can_write_when(
-                    self.config.write_when, self.config.symbols.get(symbol), "P"
+                    self.config.write_when, self.config.symbol_config(symbol), "P"
                 )
 
                 if not can_write_when_green and ticker.marketPrice() > ticker.close:
@@ -1316,7 +1316,7 @@ class PortfolioManager:
                         2,
                     )
                     if maintain_high_water_mark(
-                        self.config.roll_when, self.config.symbols.get(symbol)
+                        self.config.roll_when, self.config.symbol_config(symbol)
                     ):
                         strike_limit = max([strike_limit, position.contract.strike])
 
@@ -1457,7 +1457,7 @@ class PortfolioManager:
                 if (
                     close_if_unable_to_roll(
                         self.config.roll_when,
-                        self.config.symbols.get(position.contract.symbol),
+                        self.config.symbol_config(position.contract.symbol),
                     )
                     and self.config.roll_when.max_dte
                     and dte <= self.config.roll_when.max_dte
@@ -1496,21 +1496,21 @@ class PortfolioManager:
             target_dte
             if target_dte
             else get_target_dte(
-                self.config.target, self.config.symbols.get(underlying.symbol)
+                self.config.target, self.config.symbol_config(underlying.symbol)
             )
         )
         contract_target_delta: float = (
             target_delta
             if target_delta
             else get_target_delta(
-                self.config.target, self.config.symbols.get(underlying.symbol), right
+                self.config.target, self.config.symbol_config(underlying.symbol), right
             )
         )
         contract_max_dte = get_max_dte_for(
             underlying.symbol,
             self.config.target,
             self.config.vix_call_hedge,
-            self.config.symbols.get(underlying.symbol),
+            self.config.symbol_config(underlying.symbol),
         )
 
         log.notice(
@@ -2212,7 +2212,7 @@ class PortfolioManager:
 
         threshold_sigma = get_write_threshold_sigma(
             self.config.constants,
-            self.config.symbols.get(ticker.contract.symbol),
+            self.config.symbol_config(ticker.contract.symbol),
             right,
         )
         if threshold_sigma:
@@ -2229,7 +2229,7 @@ class PortfolioManager:
         else:
             threshold_perc = get_write_threshold_perc(
                 self.config.constants,
-                self.config.symbols.get(ticker.contract.symbol),
+                self.config.symbol_config(ticker.contract.symbol),
                 right,
             )
             return (threshold_perc * ticker.close, absolute_daily_change)

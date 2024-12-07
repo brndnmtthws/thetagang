@@ -23,6 +23,7 @@ version       = "1.14.0"
   ib-async = "^1.0.3"
   pydantic = "^2.10.2"
   annotated-types = "^0.7.0"
+  polyfactory = "^2.18.1"
 
   [tool.poetry.group.dev.dependencies]
   autohooks              = ">=23.4,<25.0"

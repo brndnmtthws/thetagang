@@ -4,7 +4,13 @@ from datetime import date, timedelta
 from ib_async import Option, Order, PortfolioItem
 from ib_async.contract import Stock
 
-from thetagang.config import Config, SymbolConfig, Target
+from thetagang.test_config import (
+    SymbolConfigFactory,
+    SymbolConfigPutsFactory,
+    TargetConfigCallsFactory,
+    TargetConfigFactory,
+    TargetConfigPutsFactory,
+)
 from thetagang.util import (
     calculate_net_short_positions,
     get_target_delta,
@@ -107,50 +113,50 @@ def test_position_pnl() -> None:
 
 
 def test_get_delta() -> None:
-    config = Config(
-        target=Target(
-            delta=0.5, minimum_open_interest=1, dte=1, maximum_new_contracts_percent=0.5
-        ),
-        symbols={"SPY": SymbolConfig(weight=1.0)},
+    target_config = TargetConfigFactory.build(delta=0.5)
+    symbol_config = SymbolConfigFactory.build(weight=1.0)
+    assert 0.5 == get_target_delta(target_config, symbol_config, "P")
+    assert 0.5 == get_target_delta(target_config, symbol_config, "C")
+
+    target_config = TargetConfigFactory.build(
+        delta=0.5, puts=TargetConfigPutsFactory.build(delta=0.4)
     )
+    symbol_config = SymbolConfigFactory.build(weight=1.0)
+    assert 0.4 == get_target_delta(target_config, symbol_config, "P")
 
-    assert 0.5 == get_target_delta(config, "SPY", "P")
+    target_config = TargetConfigFactory.build(
+        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4)
+    )
+    symbol_config = SymbolConfigFactory.build(weight=1.0)
+    assert 0.5 == get_target_delta(target_config, symbol_config, "P")
 
-    config = {
-        "target": {"delta": 0.5, "puts": {"delta": 0.4}},
-        "symbols": {"SPY": {"weight": 1}},
-    }
-    assert 0.4 == get_target_delta(config, "SPY", "P")
+    target_config = TargetConfigFactory.build(
+        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4)
+    )
+    symbol_config = SymbolConfigFactory.build(weight=1.0)
+    assert 0.4 == get_target_delta(target_config, symbol_config, "C")
 
-    config = {
-        "target": {"delta": 0.5, "calls": {"delta": 0.4}},
-        "symbols": {"SPY": {"weight": 1}},
-    }
-    assert 0.5 == get_target_delta(config, "SPY", "P")
+    target_config = TargetConfigFactory.build(
+        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4)
+    )
+    symbol_config = SymbolConfigFactory.build(weight=1.0, delta=0.3)
+    assert 0.3 == get_target_delta(target_config, symbol_config, "C")
 
-    config = {
-        "target": {"delta": 0.5, "calls": {"delta": 0.4}},
-        "symbols": {"SPY": {"weight": 1}},
-    }
-    assert 0.4 == get_target_delta(config, "SPY", "C")
+    target_config = TargetConfigFactory.build(
+        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4)
+    )
+    symbol_config = SymbolConfigFactory.build(
+        weight=1.0, delta=0.3, puts=SymbolConfigPutsFactory.build(delta=0.2)
+    )
+    assert 0.3 == get_target_delta(target_config, symbol_config, "C")
 
-    config = {
-        "target": {"delta": 0.5, "calls": {"delta": 0.4}},
-        "symbols": {"SPY": {"weight": 1, "delta": 0.3}},
-    }
-    assert 0.3 == get_target_delta(config, "SPY", "C")
-
-    config = {
-        "target": {"delta": 0.5, "calls": {"delta": 0.4}},
-        "symbols": {"SPY": {"weight": 1, "delta": 0.3, "puts": {"delta": 0.2}}},
-    }
-    assert 0.3 == get_target_delta(config, "SPY", "C")
-
-    config = {
-        "target": {"delta": 0.5, "calls": {"delta": 0.4}},
-        "symbols": {"SPY": {"weight": 1, "delta": 0.3, "puts": {"delta": 0.2}}},
-    }
-    assert 0.2 == get_target_delta(config, "SPY", "P")
+    target_config = TargetConfigFactory.build(
+        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4)
+    )
+    symbol_config = SymbolConfigFactory.build(
+        weight=1.0, delta=0.3, puts=SymbolConfigPutsFactory.build(delta=0.2)
+    )
+    assert 0.2 == get_target_delta(target_config, symbol_config, "P")
 
 
 def con(dte: str, strike: float, right: str, position: float) -> PortfolioItem:

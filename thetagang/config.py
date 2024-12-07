@@ -1,8 +1,8 @@
 import math
+from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import Field, model_validator
-from pydantic.dataclasses import dataclass
 from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -427,7 +427,7 @@ class SymbolConfig:
         red: Optional[bool] = Field(default=None)
 
     @dataclass
-    class CallsConfig:
+    class Calls:
         cap_factor: Optional[float] = Field(default=None, ge=0, le=1)
         cap_target_floor: Optional[float] = Field(default=None, ge=0, le=1)
         excess_only: Optional[bool] = Field(default=None)
@@ -441,7 +441,7 @@ class SymbolConfig:
         )
 
     @dataclass
-    class PutsConfig:
+    class Puts:
         delta: Optional[float] = Field(default=None, ge=0, le=1)
         write_threshold: Optional[float] = Field(default=None, ge=0, le=1)
         write_threshold_sigma: Optional[float] = Field(default=None, gt=0)
@@ -458,8 +458,8 @@ class SymbolConfig:
     max_dte: Optional[int] = Field(default=None, ge=1)
     dte: Optional[int] = Field(default=None, ge=0)
     close_if_unable_to_roll: Optional[bool] = Field(default=None)
-    calls: Optional["SymbolConfig.CallsConfig"] = Field(default=None)
-    puts: Optional["SymbolConfig.PutsConfig"] = Field(default=None)
+    calls: Optional["SymbolConfig.Calls"] = Field(default=None)
+    puts: Optional["SymbolConfig.Puts"] = Field(default=None)
     adjust_price_after_delay: bool = Field(default=False)
     no_trading: Optional[bool] = Field(default=None)
 
@@ -485,6 +485,9 @@ class Config(DisplayMixin):
         symbol_config = self.symbols.get(symbole)
         return not symbol_config or not symbol_config.no_trading
 
+    def symbol_config(self, symbol: str) -> Optional[SymbolConfig]:
+        return self.symbols.get(symbol)
+
     @model_validator(mode="after")
     def check_symbols(self) -> Self:
         if not self.symbols:
@@ -493,9 +496,10 @@ class Config(DisplayMixin):
 
     @model_validator(mode="after")
     def check_symbol_weights(self) -> Self:
-        assert math.isclose(
+        if not math.isclose(
             1, sum([s.weight or 0.0 for s in self.symbols.values()]), rel_tol=1e-5
-        )
+        ):
+            raise ValueError("Symbol weights must sum to 1.0")
         return self
 
     def create_symbols_table(self) -> Table:
