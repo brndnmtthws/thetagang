@@ -1,5 +1,4 @@
 import math
-from dataclasses import field
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import Field, model_validator
@@ -83,7 +82,7 @@ class OptionChains:
 @dataclass
 class AlgoSettings:
     strategy: str = Field("Adaptive")
-    params: List[List[str]] = field(
+    params: List[List[str]] = Field(
         default_factory=lambda: [["adaptivePriority", "Patient"]]
     )
 
@@ -92,12 +91,10 @@ class AlgoSettings:
 class Orders(DisplayMixin):
     minimum_credit: float = Field(default=0.0, ge=0.0)
     exchange: str = Field(default="SMART")
-    algo: AlgoSettings = field(
-        default_factory=lambda: AlgoSettings(
-            "Adaptive", [["adaptivePriority", "Patient"]]
-        )
+    algo: AlgoSettings = Field(
+        default=AlgoSettings("Adaptive", [["adaptivePriority", "Patient"]])
     )
-    price_update_delay: List[int] = field(default_factory=lambda: [30, 60])
+    price_update_delay: List[int] = Field(default_factory=lambda: [30, 60])
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
@@ -163,7 +160,9 @@ class Watchdog:
     probeTimeout: int = Field(default=4)
     readonly: bool = Field(default=False)
     retryDelay: int = Field(default=2)
-    probeContract: ProbeContract = Field(default_factory=ProbeContract)
+    probeContract: "Watchdog.ProbeContract" = Field(
+        default_factory=lambda: Watchdog.ProbeContract()
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -184,7 +183,7 @@ class CashManagement(DisplayMixin):
     @dataclass
     class Orders:
         exchange: str = Field(default="SMART")
-        algo: AlgoSettings = field(default_factory=lambda: AlgoSettings("Vwap", []))
+        algo: AlgoSettings = Field(default_factory=lambda: AlgoSettings("Vwap", []))
 
     enabled: bool = Field(default=False)
     cash_fund: str = Field(default="SGOV")
@@ -192,7 +191,7 @@ class CashManagement(DisplayMixin):
     buy_threshold: int = Field(default=10000, ge=0)
     sell_threshold: int = Field(default=10000, ge=0)
     primary_exchange: str = Field(default="")
-    orders: "CashManagement.Orders" = field(
+    orders: "CashManagement.Orders" = Field(
         default_factory=lambda: CashManagement.Orders()
     )
 
@@ -220,7 +219,7 @@ class VIXCallHedge(DisplayMixin):
     ignore_dte: int = Field(default=0, ge=0)
     max_dte: Optional[int] = Field(default=None, ge=1)
     close_hedges_when_vix_exceeds: Optional[float] = Field(default=None)
-    allocation: List[Allocation] = Field(
+    allocation: List["VIXCallHedge.Allocation"] = Field(
         default_factory=lambda: [
             VIXCallHedge.Allocation(lower_bound=None, upper_bound=15.0, weight=0.0),
             VIXCallHedge.Allocation(lower_bound=15.0, upper_bound=30.0, weight=0.01),
@@ -279,8 +278,8 @@ class WriteWhen(DisplayMixin):
         excess_only: bool = Field(default=False)
 
     calculate_net_contracts: bool = Field(default=False)
-    calls: Calls = Field(default_factory=Calls)
-    puts: Puts = Field(default_factory=Puts)
+    calls: "WriteWhen.Calls" = Field(default_factory=lambda: WriteWhen.Calls())
+    puts: "WriteWhen.Puts" = Field(default_factory=lambda: WriteWhen.Puts())
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
@@ -409,7 +408,7 @@ class Target(DisplayMixin):
 @dataclass
 class SymbolConfig:
     @dataclass
-    class SymbolConfigWriteWhen:
+    class WriteWhen:
         green: Optional[bool] = Field(default=None)
         red: Optional[bool] = Field(default=None)
 
@@ -423,8 +422,8 @@ class SymbolConfig:
         write_threshold_sigma: Optional[float] = Field(default=None, gt=0)
         strike_limit: Optional[float] = Field(default=None, gt=0)
         maintain_high_water_mark: Optional[bool] = Field(default=None)
-        write_when: Optional["SymbolConfig.SymbolConfigWriteWhen"] = field(
-            default_factory=lambda: SymbolConfig.SymbolConfigWriteWhen()
+        write_when: Optional["SymbolConfig.WriteWhen"] = Field(
+            default_factory=lambda: SymbolConfig.WriteWhen()
         )
 
     @dataclass
@@ -433,8 +432,8 @@ class SymbolConfig:
         write_threshold: Optional[float] = Field(default=None, ge=0, le=1)
         write_threshold_sigma: Optional[float] = Field(default=None, gt=0)
         strike_limit: Optional[float] = Field(default=None, gt=0)
-        write_when: Optional["SymbolConfig.SymbolConfigWriteWhen"] = field(
-            default_factory=lambda: SymbolConfig.SymbolConfigWriteWhen()
+        write_when: Optional["SymbolConfig.WriteWhen"] = Field(
+            default_factory=lambda: SymbolConfig.WriteWhen()
         )
 
     weight: float = Field(..., ge=0, le=1)
@@ -458,15 +457,15 @@ class Config(DisplayMixin):
     roll_when: RollWhen
     target: Target
 
-    orders: Orders = field(default_factory=Orders)
-    ib_async: IBAsync = field(default_factory=IBAsync)
-    ibc: IBC = field(default_factory=IBC)
-    watchdog: Watchdog = field(default_factory=Watchdog)
-    cash_management: CashManagement = field(default_factory=CashManagement)
-    vix_call_hedge: VIXCallHedge = field(default_factory=VIXCallHedge)
-    write_when: WriteWhen = field(default_factory=WriteWhen)
-    symbols: Dict[str, SymbolConfig] = field(default_factory=dict)
-    constants: Constants = field(default_factory=Constants)
+    orders: Orders = Field(default_factory=Orders)
+    ib_async: IBAsync = Field(default_factory=IBAsync)
+    ibc: IBC = Field(default_factory=IBC)
+    watchdog: Watchdog = Field(default_factory=Watchdog)
+    cash_management: CashManagement = Field(default_factory=CashManagement)
+    vix_call_hedge: VIXCallHedge = Field(default_factory=VIXCallHedge)
+    write_when: WriteWhen = Field(default_factory=WriteWhen)
+    symbols: Dict[str, SymbolConfig] = Field(default_factory=dict)
+    constants: Constants = Field(default_factory=Constants)
 
     @model_validator(mode="after")
     def check_symbols(self) -> Self:
