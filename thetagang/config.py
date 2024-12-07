@@ -21,7 +21,7 @@ class DisplayMixin:
 
 
 @dataclass
-class Account(DisplayMixin):
+class AccountConfig(DisplayMixin):
     number: str = Field(...)
     cancel_orders: bool = Field(...)
     margin_usage: float = Field(ge=0.0)
@@ -41,7 +41,7 @@ class Account(DisplayMixin):
 
 
 @dataclass
-class Constants(DisplayMixin):
+class ConstantsConfig(DisplayMixin):
     @dataclass
     class WriteThreshold:
         write_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
@@ -50,8 +50,8 @@ class Constants(DisplayMixin):
     write_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     write_threshold_sigma: Optional[float] = Field(default=None, ge=0.0)
     daily_stddev_window: str = Field(default="30 D")
-    calls: Optional["Constants.WriteThreshold"] = None
-    puts: Optional["Constants.WriteThreshold"] = None
+    calls: Optional["ConstantsConfig.WriteThreshold"] = None
+    puts: Optional["ConstantsConfig.WriteThreshold"] = None
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
@@ -74,13 +74,13 @@ class Constants(DisplayMixin):
 
 
 @dataclass
-class OptionChains:
+class OptionChainsConfig:
     expirations: int = Field(..., ge=1)
     strikes: int = Field(..., ge=1)
 
 
 @dataclass
-class AlgoSettings:
+class AlgoSettingsConfig:
     strategy: str = Field("Adaptive")
     params: List[List[str]] = Field(
         default_factory=lambda: [["adaptivePriority", "Patient"]]
@@ -88,11 +88,11 @@ class AlgoSettings:
 
 
 @dataclass
-class Orders(DisplayMixin):
+class OrdersConfig(DisplayMixin):
     minimum_credit: float = Field(default=0.0, ge=0.0)
     exchange: str = Field(default="SMART")
-    algo: AlgoSettings = Field(
-        default=AlgoSettings("Adaptive", [["adaptivePriority", "Patient"]])
+    algo: AlgoSettingsConfig = Field(
+        default=AlgoSettingsConfig("Adaptive", [["adaptivePriority", "Patient"]])
     )
     price_update_delay: List[int] = Field(default_factory=lambda: [30, 60])
 
@@ -106,13 +106,13 @@ class Orders(DisplayMixin):
 
 
 @dataclass
-class IBAsync:
+class IBAsyncConfig:
     api_response_wait_time: int = Field(default=60, ge=0)
     logfile: Optional[str] = Field(default=None)
 
 
 @dataclass
-class IBC:
+class IBCConfig:
     tradingMode: Literal["live", "paper"] = Field(default="paper")
     password: Optional[str] = Field(default=None)
     userid: Optional[str] = Field(default=None)
@@ -143,7 +143,7 @@ class IBC:
 
 
 @dataclass
-class Watchdog:
+class WatchdogConfig:
     @dataclass
     class ProbeContract:
         currency: str = Field(default="USD")
@@ -160,8 +160,8 @@ class Watchdog:
     probeTimeout: int = Field(default=4)
     readonly: bool = Field(default=False)
     retryDelay: int = Field(default=2)
-    probeContract: "Watchdog.ProbeContract" = Field(
-        default_factory=lambda: Watchdog.ProbeContract()
+    probeContract: "WatchdogConfig.ProbeContract" = Field(
+        default_factory=lambda: WatchdogConfig.ProbeContract()
     )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -179,11 +179,13 @@ class Watchdog:
 
 
 @dataclass
-class CashManagement(DisplayMixin):
+class CashManagementConfig(DisplayMixin):
     @dataclass
     class Orders:
         exchange: str = Field(default="SMART")
-        algo: AlgoSettings = Field(default_factory=lambda: AlgoSettings("Vwap", []))
+        algo: AlgoSettingsConfig = Field(
+            default_factory=lambda: AlgoSettingsConfig("Vwap", [])
+        )
 
     enabled: bool = Field(default=False)
     cash_fund: str = Field(default="SGOV")
@@ -191,8 +193,8 @@ class CashManagement(DisplayMixin):
     buy_threshold: int = Field(default=10000, ge=0)
     sell_threshold: int = Field(default=10000, ge=0)
     primary_exchange: str = Field(default="")
-    orders: "CashManagement.Orders" = Field(
-        default_factory=lambda: CashManagement.Orders()
+    orders: "CashManagementConfig.Orders" = Field(
+        default_factory=lambda: CashManagementConfig.Orders()
     )
 
     def add_to_table(self, table: Table, section: str = "") -> None:
@@ -206,7 +208,7 @@ class CashManagement(DisplayMixin):
 
 
 @dataclass
-class VIXCallHedge(DisplayMixin):
+class VIXCallHedgeConfig(DisplayMixin):
     @dataclass
     class Allocation:
         weight: float = Field(..., ge=0.0)
@@ -219,12 +221,20 @@ class VIXCallHedge(DisplayMixin):
     ignore_dte: int = Field(default=0, ge=0)
     max_dte: Optional[int] = Field(default=None, ge=1)
     close_hedges_when_vix_exceeds: Optional[float] = Field(default=None)
-    allocation: List["VIXCallHedge.Allocation"] = Field(
+    allocation: List["VIXCallHedgeConfig.Allocation"] = Field(
         default_factory=lambda: [
-            VIXCallHedge.Allocation(lower_bound=None, upper_bound=15.0, weight=0.0),
-            VIXCallHedge.Allocation(lower_bound=15.0, upper_bound=30.0, weight=0.01),
-            VIXCallHedge.Allocation(lower_bound=30.0, upper_bound=50.0, weight=0.005),
-            VIXCallHedge.Allocation(lower_bound=50.0, upper_bound=None, weight=0.0),
+            VIXCallHedgeConfig.Allocation(
+                lower_bound=None, upper_bound=15.0, weight=0.0
+            ),
+            VIXCallHedgeConfig.Allocation(
+                lower_bound=15.0, upper_bound=30.0, weight=0.01
+            ),
+            VIXCallHedgeConfig.Allocation(
+                lower_bound=30.0, upper_bound=50.0, weight=0.005
+            ),
+            VIXCallHedgeConfig.Allocation(
+                lower_bound=50.0, upper_bound=None, weight=0.0
+            ),
         ]
     )
 
@@ -263,7 +273,7 @@ class VIXCallHedge(DisplayMixin):
 
 
 @dataclass
-class WriteWhen(DisplayMixin):
+class WriteWhenConfig(DisplayMixin):
     @dataclass
     class Puts:
         green: bool = Field(default=False)
@@ -278,8 +288,10 @@ class WriteWhen(DisplayMixin):
         excess_only: bool = Field(default=False)
 
     calculate_net_contracts: bool = Field(default=False)
-    calls: "WriteWhen.Calls" = Field(default_factory=lambda: WriteWhen.Calls())
-    puts: "WriteWhen.Puts" = Field(default_factory=lambda: WriteWhen.Puts())
+    calls: "WriteWhenConfig.Calls" = Field(
+        default_factory=lambda: WriteWhenConfig.Calls()
+    )
+    puts: "WriteWhenConfig.Puts" = Field(default_factory=lambda: WriteWhenConfig.Puts())
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
@@ -302,7 +314,7 @@ class WriteWhen(DisplayMixin):
 
 
 @dataclass
-class RollWhen(DisplayMixin):
+class RollWhenConfig(DisplayMixin):
     @dataclass
     class Calls:
         itm: bool = Field(default=True)
@@ -324,8 +336,10 @@ class RollWhen(DisplayMixin):
     close_at_pnl: float = Field(default=1.0)
     close_if_unable_to_roll: bool = Field(default=False)
     max_dte: Optional[int] = Field(default=None, ge=1)
-    calls: "RollWhen.Calls" = Field(default_factory=lambda: RollWhen.Calls())
-    puts: "RollWhen.Puts" = Field(default_factory=lambda: RollWhen.Puts())
+    calls: "RollWhenConfig.Calls" = Field(
+        default_factory=lambda: RollWhenConfig.Calls()
+    )
+    puts: "RollWhenConfig.Puts" = Field(default_factory=lambda: RollWhenConfig.Puts())
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
@@ -367,7 +381,7 @@ class RollWhen(DisplayMixin):
 
 
 @dataclass
-class Target(DisplayMixin):
+class TargetConfig(DisplayMixin):
     @dataclass
     class Puts:
         delta: Optional[float] = Field(default=None, ge=0.0, le=1.0)
@@ -382,8 +396,8 @@ class Target(DisplayMixin):
     delta: float = Field(default=0.3, ge=0.0, le=1.0)
     max_dte: Optional[int] = Field(default=None, ge=1)
     maximum_new_contracts: Optional[int] = Field(default=None, ge=1)
-    calls: "Target.Calls" = Field(default_factory=lambda: Target.Calls())
-    puts: "Target.Puts" = Field(default_factory=lambda: Target.Puts())
+    calls: "TargetConfig.Calls" = Field(default_factory=lambda: TargetConfig.Calls())
+    puts: "TargetConfig.Puts" = Field(default_factory=lambda: TargetConfig.Puts())
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
@@ -452,20 +466,20 @@ class SymbolConfig:
 
 @dataclass
 class Config(DisplayMixin):
-    account: Account
-    option_chains: OptionChains
-    roll_when: RollWhen
-    target: Target
+    account: AccountConfig
+    option_chains: OptionChainsConfig
+    roll_when: RollWhenConfig
+    target: TargetConfig
 
-    orders: Orders = Field(default_factory=Orders)
-    ib_async: IBAsync = Field(default_factory=IBAsync)
-    ibc: IBC = Field(default_factory=IBC)
-    watchdog: Watchdog = Field(default_factory=Watchdog)
-    cash_management: CashManagement = Field(default_factory=CashManagement)
-    vix_call_hedge: VIXCallHedge = Field(default_factory=VIXCallHedge)
-    write_when: WriteWhen = Field(default_factory=WriteWhen)
+    orders: OrdersConfig = Field(default_factory=OrdersConfig)
+    ib_async: IBAsyncConfig = Field(default_factory=IBAsyncConfig)
+    ibc: IBCConfig = Field(default_factory=IBCConfig)
+    watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
+    cash_management: CashManagementConfig = Field(default_factory=CashManagementConfig)
+    vix_call_hedge: VIXCallHedgeConfig = Field(default_factory=VIXCallHedgeConfig)
+    write_when: WriteWhenConfig = Field(default_factory=WriteWhenConfig)
     symbols: Dict[str, SymbolConfig] = Field(default_factory=dict)
-    constants: Constants = Field(default_factory=Constants)
+    constants: ConstantsConfig = Field(default_factory=ConstantsConfig)
 
     @model_validator(mode="after")
     def check_symbols(self) -> Self:
