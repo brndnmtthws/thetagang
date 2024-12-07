@@ -21,9 +21,9 @@ class DisplayMixin:
 
 class AccountConfig(BaseModel, DisplayMixin):
     number: str = Field(...)
-    cancel_orders: bool = Field(...)
-    margin_usage: float = Field(ge=0.0)
-    market_data_type: int = Field(ge=1, le=4)
+    margin_usage: float = Field(..., ge=0.0)
+    cancel_orders: bool = Field(default=True)
+    market_data_type: int = Field(default=1, ge=1, le=4)
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_row("[spring_green1]Account details")
