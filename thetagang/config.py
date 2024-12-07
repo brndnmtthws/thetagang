@@ -77,7 +77,9 @@ class OptionChainsConfig(BaseModel):
 class AlgoSettingsConfig(BaseModel):
     strategy: str = Field("Adaptive")
     params: List[List[str]] = Field(
-        default_factory=lambda: [["adaptivePriority", "Patient"]]
+        default_factory=lambda: [["adaptivePriority", "Patient"]],
+        min_length=0,
+        max_length=1,
     )
 
 
@@ -89,7 +91,9 @@ class OrdersConfig(BaseModel, DisplayMixin):
             strategy="Adaptive", params=[["adaptivePriority", "Patient"]]
         )
     )
-    price_update_delay: List[int] = Field(default_factory=lambda: [30, 60])
+    price_update_delay: List[int] = Field(
+        default_factory=lambda: [30, 60], min_length=2, max_length=2
+    )
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
