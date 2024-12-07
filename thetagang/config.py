@@ -92,8 +92,10 @@ class AlgoSettings:
 class Orders(DisplayMixin):
     minimum_credit: float = Field(default=0.0, ge=0.0)
     exchange: str = Field(default="SMART")
-    algo: AlgoSettings = Field(
-        default=AlgoSettings("Adaptive", [["adaptivePriority", "Patient"]])
+    algo: AlgoSettings = field(
+        default_factory=lambda: AlgoSettings(
+            "Adaptive", [["adaptivePriority", "Patient"]]
+        )
     )
     price_update_delay: List[int] = field(default_factory=lambda: [30, 60])
 
@@ -182,7 +184,7 @@ class CashManagement(DisplayMixin):
     @dataclass
     class Orders:
         exchange: str = Field(default="SMART")
-        algo: AlgoSettings = Field(default=AlgoSettings("Vwap", []))
+        algo: AlgoSettings = field(default_factory=lambda: AlgoSettings("Vwap", []))
 
     enabled: bool = Field(default=False)
     cash_fund: str = Field(default="SGOV")
