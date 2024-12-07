@@ -113,48 +113,58 @@ def test_position_pnl() -> None:
 
 
 def test_get_delta() -> None:
-    target_config = TargetConfigFactory.build(delta=0.5)
-    symbol_config = SymbolConfigFactory.build(weight=1.0)
+    target_config = TargetConfigFactory.build(delta=0.5, puts=None, calls=None)
+    symbol_config = SymbolConfigFactory.build(
+        weight=1.0, delta=None, puts=None, calls=None
+    )
     assert 0.5 == get_target_delta(target_config, symbol_config, "P")
     assert 0.5 == get_target_delta(target_config, symbol_config, "C")
 
     target_config = TargetConfigFactory.build(
-        delta=0.5, puts=TargetConfigPutsFactory.build(delta=0.4)
+        delta=0.5, puts=TargetConfigPutsFactory.build(delta=0.4), calls=None
     )
-    symbol_config = SymbolConfigFactory.build(weight=1.0)
+    symbol_config = SymbolConfigFactory.build(
+        weight=1.0, delta=None, puts=None, calls=None
+    )
     assert 0.4 == get_target_delta(target_config, symbol_config, "P")
 
     target_config = TargetConfigFactory.build(
-        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4)
+        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
     )
-    symbol_config = SymbolConfigFactory.build(weight=1.0)
+    symbol_config = SymbolConfigFactory.build(
+        weight=1.0, delta=None, puts=None, calls=None
+    )
     assert 0.5 == get_target_delta(target_config, symbol_config, "P")
 
     target_config = TargetConfigFactory.build(
-        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4)
+        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
     )
-    symbol_config = SymbolConfigFactory.build(weight=1.0)
+    symbol_config = SymbolConfigFactory.build(
+        weight=1.0, delta=None, puts=None, calls=None
+    )
     assert 0.4 == get_target_delta(target_config, symbol_config, "C")
 
     target_config = TargetConfigFactory.build(
-        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4)
-    )
-    symbol_config = SymbolConfigFactory.build(weight=1.0, delta=0.3)
-    assert 0.3 == get_target_delta(target_config, symbol_config, "C")
-
-    target_config = TargetConfigFactory.build(
-        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4)
+        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
     )
     symbol_config = SymbolConfigFactory.build(
-        weight=1.0, delta=0.3, puts=SymbolConfigPutsFactory.build(delta=0.2)
+        weight=1.0, delta=0.3, puts=None, calls=None
     )
     assert 0.3 == get_target_delta(target_config, symbol_config, "C")
 
     target_config = TargetConfigFactory.build(
-        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4)
+        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
     )
     symbol_config = SymbolConfigFactory.build(
-        weight=1.0, delta=0.3, puts=SymbolConfigPutsFactory.build(delta=0.2)
+        weight=1.0, delta=0.3, puts=SymbolConfigPutsFactory.build(delta=0.2), calls=None
+    )
+    assert 0.3 == get_target_delta(target_config, symbol_config, "C")
+
+    target_config = TargetConfigFactory.build(
+        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
+    )
+    symbol_config = SymbolConfigFactory.build(
+        weight=1.0, delta=0.3, puts=SymbolConfigPutsFactory.build(delta=0.2), calls=None
     )
     assert 0.2 == get_target_delta(target_config, symbol_config, "P")
 

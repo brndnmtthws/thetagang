@@ -108,23 +108,23 @@ class OrdersConfig(DisplayMixin):
 @dataclass
 class IBAsyncConfig:
     api_response_wait_time: int = Field(default=60, ge=0)
-    logfile: Optional[str] = Field(default=None)
+    logfile: Optional[str] = None
 
 
 @dataclass
 class IBCConfig:
     tradingMode: Literal["live", "paper"] = Field(default="paper")
-    password: Optional[str] = Field(default=None)
-    userid: Optional[str] = Field(default=None)
+    password: Optional[str] = None
+    userid: Optional[str] = None
     gateway: bool = Field(default=True)
     RaiseRequestErrors: bool = Field(default=False)
     ibcPath: str = Field(default="/opt/ibc")
     ibcIni: str = Field(default="/etc/thetagang/config.ini")
-    twsPath: Optional[str] = Field(default=None)
-    twsSettingsPath: Optional[str] = Field(default=None)
+    twsPath: Optional[str] = None
+    twsSettingsPath: Optional[str] = None
     javaPath: str = Field(default="/opt/java/openjdk/bin")
-    fixuserid: Optional[str] = Field(default=None)
-    fixpassword: Optional[str] = Field(default=None)
+    fixuserid: Optional[str] = None
+    fixpassword: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -220,7 +220,7 @@ class VIXCallHedgeConfig(DisplayMixin):
     target_dte: int = Field(default=30, gt=0)
     ignore_dte: int = Field(default=0, ge=0)
     max_dte: Optional[int] = Field(default=None, ge=1)
-    close_hedges_when_vix_exceeds: Optional[float] = Field(default=None)
+    close_hedges_when_vix_exceeds: Optional[float] = None
     allocation: List["VIXCallHedgeConfig.Allocation"] = Field(
         default_factory=lambda: [
             VIXCallHedgeConfig.Allocation(
@@ -423,19 +423,19 @@ class TargetConfig(DisplayMixin):
 class SymbolConfig:
     @dataclass
     class WriteWhen:
-        green: Optional[bool] = Field(default=None)
-        red: Optional[bool] = Field(default=None)
+        green: Optional[bool] = None
+        red: Optional[bool] = None
 
     @dataclass
     class Calls:
         cap_factor: Optional[float] = Field(default=None, ge=0, le=1)
         cap_target_floor: Optional[float] = Field(default=None, ge=0, le=1)
-        excess_only: Optional[bool] = Field(default=None)
+        excess_only: Optional[bool] = None
         delta: Optional[float] = Field(default=None, ge=0, le=1)
         write_threshold: Optional[float] = Field(default=None, ge=0, le=1)
         write_threshold_sigma: Optional[float] = Field(default=None, gt=0)
         strike_limit: Optional[float] = Field(default=None, gt=0)
-        maintain_high_water_mark: Optional[bool] = Field(default=None)
+        maintain_high_water_mark: Optional[bool] = None
         write_when: Optional["SymbolConfig.WriteWhen"] = Field(
             default_factory=lambda: SymbolConfig.WriteWhen()
         )
@@ -457,11 +457,11 @@ class SymbolConfig:
     write_threshold_sigma: Optional[float] = Field(default=None, gt=0)
     max_dte: Optional[int] = Field(default=None, ge=1)
     dte: Optional[int] = Field(default=None, ge=0)
-    close_if_unable_to_roll: Optional[bool] = Field(default=None)
-    calls: Optional["SymbolConfig.Calls"] = Field(default=None)
-    puts: Optional["SymbolConfig.Puts"] = Field(default=None)
+    close_if_unable_to_roll: Optional[bool] = None
+    calls: Optional["SymbolConfig.Calls"] = None
+    puts: Optional["SymbolConfig.Puts"] = None
     adjust_price_after_delay: bool = Field(default=False)
-    no_trading: Optional[bool] = Field(default=None)
+    no_trading: Optional[bool] = None
 
 
 @dataclass
