@@ -1,8 +1,8 @@
 import math
-from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import Field, model_validator
+from pydantic.dataclasses import dataclass
 from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
