@@ -15,7 +15,9 @@ def dfmt(amount: Optional[Union[int, str, float]], precision: int = 2) -> str:
     return ""
 
 
-def pfmt(amount: Union[str, float], precision: int = 2) -> str:
+def pfmt(amount: Union[str, float, None], precision: int = 2) -> str:
+    if amount is None:
+        return ""
     amount = float(amount) * 100.0
     rg = redgreen(amount)
     return f"[{rg}]{amount:.{precision}f}%[/{rg}]"
