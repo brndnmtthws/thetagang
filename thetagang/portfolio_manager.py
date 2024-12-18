@@ -1246,13 +1246,18 @@ class PortfolioManager:
         for position in positions:
             try:
                 position.contract.exchange = self.get_order_exchange()
-                ticker = await self.ibkr.get_ticker_for_contract(position.contract)
-                is_short = position.position < 0
-                price = (
-                    round(get_lower_price(ticker), 2)
-                    if is_short
-                    else round(get_higher_price(ticker), 2)
-                )
+                price = None
+                try:
+                    ticker = await self.ibkr.get_ticker_for_contract(position.contract)
+                    is_short = position.position < 0
+                    price = (
+                        round(get_lower_price(ticker), 2)
+                        if is_short
+                        else round(get_higher_price(ticker), 2)
+                    )
+                except RequiredFieldValidationError:
+                    # no market price was available, fallback to minimum tick
+                    pass
                 if util.isNan(price) or math.isnan(price) or not price:
                     # if the price is near zero or NaN, use the minimum price
                     log.warning(
