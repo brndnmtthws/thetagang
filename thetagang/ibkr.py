@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum
-from typing import Any, Awaitable, Callable, List
+from typing import Any, Awaitable, Callable, List, Optional
 
 from ib_async import (
     IB,
@@ -91,7 +91,7 @@ class IBKR:
         self,
         symbol: str,
         primary_exchange: str,
-        order_exchange: None = None,
+        order_exchange: Optional[str] = None,
         generic_tick_list: str = "",
         required_fields: List[TickerField] = [TickerField.MARKET_PRICE],
         optional_fields: List[TickerField] = [TickerField.MIDPOINT],
