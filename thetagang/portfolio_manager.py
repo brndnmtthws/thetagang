@@ -1258,7 +1258,7 @@ class PortfolioManager:
                 except RequiredFieldValidationError:
                     # no market price was available, fallback to minimum tick
                     pass
-                if util.isNan(price) or math.isnan(price) or not price:
+                if not price or util.isNan(price) or math.isnan(price):
                     # if the price is near zero or NaN, use the minimum price
                     log.warning(
                         f"Market price data unavailable for {position.contract.localSymbol}, using ticker.minTick={ticker.minTick}"
