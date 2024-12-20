@@ -1,12 +1,22 @@
 import math
 from operator import itemgetter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import ib_async.objects
 import ib_async.ticker
 from ib_async import AccountValue, Order, PortfolioItem, TagValue, Ticker, util
 from ib_async.contract import Option
 
+from thetagang.config import (
+    Config,
+    ConstantsConfig,
+    OrdersConfig,
+    RollWhenConfig,
+    SymbolConfig,
+    TargetConfig,
+    VIXCallHedgeConfig,
+    WriteWhenConfig,
+)
 from thetagang.options import option_dte
 
 
@@ -205,65 +215,77 @@ def midpoint_or_market_price(ticker: Ticker) -> float:
     return ticker.midpoint()
 
 
-def get_target_dte(config: Dict[str, Any], symbol: str) -> int:
-    if symbol in config["symbols"] and "dte" in config["symbols"][symbol]:
-        return config["symbols"][symbol]["dte"]
+def get_target_dte(
+    target_config: TargetConfig, symbol_config: Optional[SymbolConfig]
+) -> int:
+    return (
+        symbol_config.dte
+        if symbol_config and symbol_config.dte is not None
+        else target_config.dte
+    )
 
-    return config["target"]["dte"]
 
-
-def get_target_delta(config: Dict[str, Any], symbol: str, right: str) -> float:
+def get_target_delta(
+    target_config: TargetConfig, symbol_config: Optional[SymbolConfig], right: str
+) -> float:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
+
+    if symbol_config:
+        option_config = getattr(symbol_config, p_or_c, None)
+        if option_config and option_config.delta is not None:
+            return option_config.delta
+        if symbol_config.delta is not None:
+            return symbol_config.delta
+
+    target_option = getattr(target_config, p_or_c, None)
+    if target_option and target_option.delta is not None:
+        return target_option.delta
+
+    return target_config.delta
+
+
+def get_cap_factor(
+    write_when_config: WriteWhenConfig,
+    symbol_config: Optional[SymbolConfig],
+    symbol: str,
+) -> float:
     if (
-        p_or_c in config["symbols"][symbol]
-        and "delta" in config["symbols"][symbol][p_or_c]
+        symbol_config
+        and symbol_config.calls
+        and symbol_config.calls.cap_factor is not None
     ):
-        return config["symbols"][symbol][p_or_c]["delta"]
-    if "delta" in config["symbols"][symbol]:
-        return config["symbols"][symbol]["delta"]
-    if p_or_c in config["target"]:
-        return config["target"][p_or_c]["delta"]
-    return config["target"]["delta"]
+        return symbol_config.calls.cap_factor
+    return write_when_config.calls.cap_factor
 
 
-def get_cap_factor(config: Dict[str, Any], symbol: str) -> float:
+def get_cap_target_floor(
+    write_when_config: WriteWhenConfig, symbol_config: Optional[SymbolConfig]
+) -> float:
     if (
-        "calls" in config["symbols"][symbol]
-        and "cap_factor" in config["symbols"][symbol]["calls"]
+        symbol_config
+        and symbol_config.calls
+        and symbol_config.calls.cap_target_floor is not None
     ):
-        return config["symbols"][symbol]["calls"]["cap_factor"]
-    return config["write_when"]["calls"]["cap_factor"]
+        return symbol_config.calls.cap_target_floor
+    return write_when_config.calls.cap_target_floor
 
 
-def get_cap_target_floor(config: Dict[str, Any], symbol: str) -> float:
-    if (
-        "calls" in config["symbols"][symbol]
-        and "cap_target_floor" in config["symbols"][symbol]["calls"]
-    ):
-        return config["symbols"][symbol]["calls"]["cap_target_floor"]
-    return config["write_when"]["calls"]["cap_target_floor"]
-
-
-def get_strike_limit(
-    config: Dict[str, Any], symbol: str, right: str
-) -> Optional[float]:
+def get_strike_limit(config: Config, symbol: str, right: str) -> Optional[float]:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
-    if (
-        p_or_c in config["symbols"][symbol]
-        and "strike_limit" in config["symbols"][symbol][p_or_c]
-    ):
-        return config["symbols"][symbol][p_or_c]["strike_limit"]
-    return None
+    symbol_config = config.symbols.get(symbol)
+    option_config = getattr(symbol_config, p_or_c, None) if symbol_config else None
+    return option_config.strike_limit if option_config else None
 
 
 def get_target_calls(
-    config: Dict[str, Any], symbol: str, current_shares: int, target_shares: int
+    config: Config, symbol: str, current_shares: int, target_shares: int
 ) -> int:
-    if write_excess_calls_only(config, symbol):
+    symbole_config = config.symbols.get(symbol)
+    if write_excess_calls_only(config.write_when, symbole_config):
         return max([0, (current_shares - target_shares) // 100])
     else:
-        cap_factor = get_cap_factor(config, symbol)
-        cap_target_floor = get_cap_target_floor(config, symbol)
+        cap_factor = get_cap_factor(config.write_when, symbole_config, symbol)
+        cap_target_floor = get_cap_target_floor(config.write_when, symbole_config)
         min_uncovered = (target_shares * cap_target_floor) // 100
         max_covered = (current_shares * cap_factor) // 100
         total_coverable = current_shares // 100
@@ -272,84 +294,92 @@ def get_target_calls(
 
 
 def get_write_threshold_sigma(
-    config: Dict[str, Any], symbol: Optional[str], right: str
+    constants_config: Optional[ConstantsConfig],
+    symbol_config: Optional[SymbolConfig],
+    right: str,
 ) -> Optional[float]:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
-    if symbol:
-        if (
-            p_or_c in config["symbols"][symbol]
-            and "write_threshold_sigma" in config["symbols"][symbol][p_or_c]
-        ):
-            return config["symbols"][symbol][p_or_c]["write_threshold_sigma"]
-        if "write_threshold_sigma" in config["symbols"][symbol]:
-            return config["symbols"][symbol]["write_threshold_sigma"]
-        # if there's a percentage-based threshold defined, we want to use that, so we return None here
-        if (
-            p_or_c in config["symbols"][symbol]
-            and "write_threshold" in config["symbols"][symbol][p_or_c]
-        ) or "write_threshold" in config["symbols"][symbol]:
+
+    if symbol_config:
+        option_config = getattr(symbol_config, p_or_c, None)
+        if option_config:
+            if option_config.write_threshold_sigma is not None:
+                return option_config.write_threshold_sigma
+            if option_config.write_threshold is not None:
+                return None
+
+        if symbol_config.write_threshold_sigma is not None:
+            return symbol_config.write_threshold_sigma
+        if symbol_config.write_threshold is not None:
             return None
 
-    # check if there's a default value in constants
-    if (
-        p_or_c in config["constants"]
-        and "write_threshold_sigma" in config["constants"][p_or_c]
-    ):
-        return config["constants"][p_or_c]["write_threshold_sigma"]
-    if "write_threshold_sigma" in config["constants"]:
-        return config["constants"]["write_threshold_sigma"]
+    if constants_config:
+        option_constants = getattr(constants_config, p_or_c, None)
+        if option_constants and option_constants.write_threshold_sigma is not None:
+            return option_constants.write_threshold_sigma
+        if constants_config.write_threshold_sigma is not None:
+            return constants_config.write_threshold_sigma
 
     return None
 
 
 def get_write_threshold_perc(
-    config: Dict[str, Any], symbol: Optional[str], right: str
+    constants_config: ConstantsConfig,
+    symbole_config: Optional[SymbolConfig],
+    right: str,
 ) -> float:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
-    if symbol:
-        if (
-            p_or_c in config["symbols"][symbol]
-            and "write_threshold" in config["symbols"][symbol][p_or_c]
-        ):
-            return config["symbols"][symbol][p_or_c]["write_threshold"]
-        if "write_threshold" in config["symbols"][symbol]:
-            return config["symbols"][symbol]["write_threshold"]
 
-    # check if there's a default value in constants
-    if (
-        p_or_c in config["constants"]
-        and "write_threshold" in config["constants"][p_or_c]
-    ):
-        return config["constants"][p_or_c]["write_threshold"]
-    if "write_threshold" in config["constants"]:
-        return config["constants"]["write_threshold"]
+    if symbole_config:
+        option_config = getattr(symbole_config, p_or_c, None)
+        if option_config and option_config.write_threshold is not None:
+            return option_config.write_threshold
+        if symbole_config.write_threshold is not None:
+            return symbole_config.write_threshold
+
+    if constants_config:
+        option_constants = getattr(constants_config, p_or_c, None)
+        if option_constants and option_constants.write_threshold is not None:
+            return option_constants.write_threshold
+        if constants_config.write_threshold is not None:
+            return constants_config.write_threshold
+
     return 0.0
 
 
-def algo_params_from(params: List[str]) -> List[TagValue]:
+def algo_params_from(params: List[List[str]]) -> List[TagValue]:
     return [TagValue(p[0], p[1]) for p in params]
 
 
-def get_minimum_credit(config: Dict[str, Any]) -> float:
-    return config["orders"].get("minimum_credit", 0.0)
+def get_minimum_credit(orders_config: OrdersConfig) -> float:
+    return orders_config.minimum_credit
 
 
-def maintain_high_water_mark(config: Dict[str, Any], symbol: str) -> bool:
+def maintain_high_water_mark(
+    roll_when_config: RollWhenConfig, symbol_config: Optional[SymbolConfig]
+) -> bool:
     if (
-        "calls" in config["symbols"][symbol]
-        and "maintain_high_water_mark" in config["symbols"][symbol]["calls"]
+        symbol_config
+        and symbol_config.calls
+        and symbol_config.calls.maintain_high_water_mark is not None
     ):
-        return config["symbols"][symbol]["calls"]["maintain_high_water_mark"]
-    return config["roll_when"]["calls"]["maintain_high_water_mark"]
+        return symbol_config.calls.maintain_high_water_mark
+    return roll_when_config.calls.maintain_high_water_mark
 
 
-def get_max_dte_for(symbol: str, config: Dict[str, Any]) -> Optional[int]:
-    if symbol == "VIX" and "max_dte" in config["vix_call_hedge"]:
-        return config["vix_call_hedge"]["max_dte"]
-    if symbol in config["symbols"] and "max_dte" in config["symbols"][symbol]:
-        return config["symbols"][symbol]["max_dte"]
+def get_max_dte_for(
+    symbol: str,
+    target_config: TargetConfig,
+    vix_call_hedge_config: VIXCallHedgeConfig,
+    symbol_config: Optional[SymbolConfig],
+) -> Optional[int]:
+    if symbol == "VIX" and vix_call_hedge_config.max_dte is not None:
+        return vix_call_hedge_config.max_dte
 
-    return config["target"]["max_dte"]
+    if symbol_config and symbol_config.max_dte is not None:
+        return symbol_config.max_dte
+
+    return target_config.max_dte
 
 
 def would_increase_spread(order: Order, updated_price: float) -> bool:
@@ -362,46 +392,46 @@ def would_increase_spread(order: Order, updated_price: float) -> bool:
 
 
 def can_write_when(
-    config: Dict[str, Any], symbol: str, right: str
+    write_when_config: WriteWhenConfig,
+    symbol_config: Optional[SymbolConfig],
+    right: str,
 ) -> Tuple[bool, bool]:
     p_or_c = "calls" if right.upper().startswith("C") else "puts"
+
+    option_config = getattr(symbol_config, p_or_c, None) if symbol_config else None
+    default_config = getattr(write_when_config, p_or_c)
+
     can_write_when_green = (
-        config["symbols"][symbol][p_or_c]["write_when"]["green"]
-        if p_or_c in config["symbols"][symbol]
-        and "write_when" in config["symbols"][symbol][p_or_c]
-        and "green" in config["symbols"][symbol][p_or_c]["write_when"]
-        else config["write_when"][p_or_c]["green"]
+        option_config.write_when.green
+        if option_config and option_config.write_when
+        else default_config.green
     )
     can_write_when_red = (
-        config["symbols"][symbol][p_or_c]["write_when"]["red"]
-        if p_or_c in config["symbols"][symbol]
-        and "write_when" in config["symbols"][symbol][p_or_c]
-        and "red" in config["symbols"][symbol][p_or_c]["write_when"]
-        else config["write_when"][p_or_c]["red"]
+        option_config.write_when.red
+        if option_config is not None and option_config.write_when is not None
+        else default_config.red
     )
+
     return (can_write_when_green, can_write_when_red)
 
 
-def close_if_unable_to_roll(config: Dict[str, Any], symbol: str) -> bool:
-    close_if_unable_to_roll = (
-        config["symbols"][symbol]["close_if_unable_to_roll"]
-        if "close_if_unable_to_roll" in config["symbols"][symbol]
-        else config["roll_when"]["close_if_unable_to_roll"]
-    )
-    return close_if_unable_to_roll
-
-
-def trading_is_allowed(config: Dict[str, Any], symbol: str) -> bool:
+def close_if_unable_to_roll(
+    roll_when_config: RollWhenConfig, symbol_config: Optional[SymbolConfig]
+) -> bool:
     return (
-        "no_trading" not in config["symbols"][symbol]
-        or not config["symbols"][symbol]["no_trading"]
+        symbol_config.close_if_unable_to_roll
+        if symbol_config and symbol_config.close_if_unable_to_roll is not None
+        else roll_when_config.close_if_unable_to_roll
     )
 
 
-def write_excess_calls_only(config: Dict[str, Any], symbol: str) -> bool:
+def write_excess_calls_only(
+    write_when_config: WriteWhenConfig, symbol_config: Optional[SymbolConfig]
+) -> bool:
     if (
-        "calls" in config["symbols"][symbol]
-        and "excess_only" in config["symbols"][symbol]["calls"]
+        symbol_config
+        and symbol_config.calls
+        and symbol_config.calls.excess_only is not None
     ):
-        return config["symbols"][symbol]["calls"]["excess_only"]
-    return config["write_when"]["calls"]["excess_only"]
+        return symbol_config.calls.excess_only
+    return write_when_config.calls.excess_only
