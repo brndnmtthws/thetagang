@@ -364,6 +364,33 @@ class RollWhenConfig(BaseModel, DisplayMixin):
             f"{self.calls.maintain_high_water_mark}",
         )
 
+        table.add_section()
+        table.add_row("[spring_green1]When contracts are ITM")
+        table.add_row(
+            "",
+            "Roll puts",
+            "=",
+            f"{self.puts.itm}",
+        )
+        table.add_row(
+            "",
+            "Roll puts always",
+            "=",
+            f"{self.puts.always_when_itm}",
+        )
+        table.add_row(
+            "",
+            "Roll calls",
+            "=",
+            f"{self.calls.itm}",
+        )
+        table.add_row(
+            "",
+            "Roll calls always",
+            "=",
+            f"{self.calls.always_when_itm}",
+        )
+
 
 class TargetConfig(BaseModel, DisplayMixin):
     class Puts(BaseModel):
