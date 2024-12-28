@@ -507,6 +507,85 @@ class Config(BaseModel, DisplayMixin):
             raise ValueError("Symbol weights must sum to 1.0")
         return self
 
+    def get_target_delta(self, symbol: str, right: str) -> float:
+        p_or_c = "calls" if right.upper().startswith("C") else "puts"
+        symbol_config = self.symbols.get(symbol)
+
+        if symbol_config:
+            option_config = getattr(symbol_config, p_or_c, None)
+            if option_config and option_config.delta is not None:
+                return option_config.delta
+            if symbol_config.delta is not None:
+                return symbol_config.delta
+
+        target_option = getattr(self.target, p_or_c, None)
+        if target_option and target_option.delta is not None:
+            return target_option.delta
+
+        return self.target.delta
+
+    def maintain_high_water_mark(self, symbol: str) -> bool:
+        symbol_config = self.symbols.get(symbol)
+        if (
+            symbol_config
+            and symbol_config.calls
+            and symbol_config.calls.maintain_high_water_mark is not None
+        ):
+            return symbol_config.calls.maintain_high_water_mark
+        return self.roll_when.calls.maintain_high_water_mark
+
+    def get_write_threshold_sigma(
+        self,
+        symbol: str,
+        right: str,
+    ) -> Optional[float]:
+        p_or_c = "calls" if right.upper().startswith("C") else "puts"
+        symbol_config = self.symbols.get(symbol)
+
+        if symbol_config:
+            option_config = getattr(symbol_config, p_or_c, None)
+            if option_config:
+                if option_config.write_threshold_sigma is not None:
+                    return option_config.write_threshold_sigma
+                if option_config.write_threshold is not None:
+                    return None
+
+            if symbol_config.write_threshold_sigma is not None:
+                return symbol_config.write_threshold_sigma
+            if symbol_config.write_threshold is not None:
+                return None
+
+        option_constants = getattr(self.constants, p_or_c, None)
+        if option_constants and option_constants.write_threshold_sigma is not None:
+            return option_constants.write_threshold_sigma
+        if self.constants.write_threshold_sigma is not None:
+            return self.constants.write_threshold_sigma
+
+        return None
+
+    def get_write_threshold_perc(
+        self,
+        symbol: str,
+        right: str,
+    ) -> float:
+        p_or_c = "calls" if right.upper().startswith("C") else "puts"
+        symbol_config = self.symbols.get(symbol)
+
+        if symbol_config:
+            option_config = getattr(symbol_config, p_or_c, None)
+            if option_config and option_config.write_threshold is not None:
+                return option_config.write_threshold
+            if symbol_config.write_threshold is not None:
+                return symbol_config.write_threshold
+
+        option_constants = getattr(self.constants, p_or_c, None)
+        if option_constants and option_constants.write_threshold is not None:
+            return option_constants.write_threshold
+        if self.constants.write_threshold is not None:
+            return self.constants.write_threshold
+
+        return 0.0
+
     def create_symbols_table(self) -> Table:
         table = Table(
             title="Configured symbols and target weights",
@@ -525,24 +604,24 @@ class Config(BaseModel, DisplayMixin):
 
         for symbol, sconfig in self.symbols.items():
             call_thresh = (
-                f"{ffmt(sconfig.calls.write_threshold_sigma)}σ"
-                if sconfig.calls and sconfig.calls.write_threshold_sigma
-                else pfmt(sconfig.calls.write_threshold if sconfig.calls else None)
+                f"{ffmt(self.get_write_threshold_sigma(symbol, 'C'))}σ"
+                if self.get_write_threshold_sigma(symbol, "C")
+                else pfmt(self.get_write_threshold_perc(symbol, "C"))
             )
             put_thresh = (
-                f"{ffmt(sconfig.puts.write_threshold_sigma)}σ"
-                if sconfig.puts and sconfig.puts.write_threshold_sigma
-                else pfmt(sconfig.puts.write_threshold if sconfig.puts else None)
+                f"{ffmt(self.get_write_threshold_sigma(symbol, 'P'))}σ"
+                if self.get_write_threshold_sigma(symbol, "P")
+                else pfmt(self.get_write_threshold_perc(symbol, "P"))
             )
 
             table.add_row(
                 symbol,
                 pfmt(sconfig.weight or 0.0),
-                ffmt(sconfig.calls.delta if sconfig.calls else None),
+                ffmt(self.get_target_delta(symbol, "C")),
                 dfmt(sconfig.calls.strike_limit if sconfig.calls else None),
                 call_thresh,
-                str(sconfig.calls.maintain_high_water_mark if sconfig.calls else False),
-                ffmt(sconfig.puts.delta if sconfig.puts else None),
+                str(self.maintain_high_water_mark(symbol)),
+                ffmt(self.get_target_delta(symbol, "P")),
                 dfmt(sconfig.puts.strike_limit if sconfig.puts else None),
                 put_thresh,
             )
