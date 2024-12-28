@@ -9,7 +9,6 @@ from ib_async.contract import Option
 
 from thetagang.config import (
     Config,
-    ConstantsConfig,
     OrdersConfig,
     RollWhenConfig,
     SymbolConfig,
@@ -225,25 +224,6 @@ def get_target_dte(
     )
 
 
-def get_target_delta(
-    target_config: TargetConfig, symbol_config: Optional[SymbolConfig], right: str
-) -> float:
-    p_or_c = "calls" if right.upper().startswith("C") else "puts"
-
-    if symbol_config:
-        option_config = getattr(symbol_config, p_or_c, None)
-        if option_config and option_config.delta is not None:
-            return option_config.delta
-        if symbol_config.delta is not None:
-            return symbol_config.delta
-
-    target_option = getattr(target_config, p_or_c, None)
-    if target_option and target_option.delta is not None:
-        return target_option.delta
-
-    return target_config.delta
-
-
 def get_cap_factor(
     write_when_config: WriteWhenConfig,
     symbol_config: Optional[SymbolConfig],
@@ -293,78 +273,12 @@ def get_target_calls(
         return max([0, math.floor(min([max_covered, total_coverable - min_uncovered]))])
 
 
-def get_write_threshold_sigma(
-    constants_config: Optional[ConstantsConfig],
-    symbol_config: Optional[SymbolConfig],
-    right: str,
-) -> Optional[float]:
-    p_or_c = "calls" if right.upper().startswith("C") else "puts"
-
-    if symbol_config:
-        option_config = getattr(symbol_config, p_or_c, None)
-        if option_config:
-            if option_config.write_threshold_sigma is not None:
-                return option_config.write_threshold_sigma
-            if option_config.write_threshold is not None:
-                return None
-
-        if symbol_config.write_threshold_sigma is not None:
-            return symbol_config.write_threshold_sigma
-        if symbol_config.write_threshold is not None:
-            return None
-
-    if constants_config:
-        option_constants = getattr(constants_config, p_or_c, None)
-        if option_constants and option_constants.write_threshold_sigma is not None:
-            return option_constants.write_threshold_sigma
-        if constants_config.write_threshold_sigma is not None:
-            return constants_config.write_threshold_sigma
-
-    return None
-
-
-def get_write_threshold_perc(
-    constants_config: ConstantsConfig,
-    symbole_config: Optional[SymbolConfig],
-    right: str,
-) -> float:
-    p_or_c = "calls" if right.upper().startswith("C") else "puts"
-
-    if symbole_config:
-        option_config = getattr(symbole_config, p_or_c, None)
-        if option_config and option_config.write_threshold is not None:
-            return option_config.write_threshold
-        if symbole_config.write_threshold is not None:
-            return symbole_config.write_threshold
-
-    if constants_config:
-        option_constants = getattr(constants_config, p_or_c, None)
-        if option_constants and option_constants.write_threshold is not None:
-            return option_constants.write_threshold
-        if constants_config.write_threshold is not None:
-            return constants_config.write_threshold
-
-    return 0.0
-
-
 def algo_params_from(params: List[List[str]]) -> List[TagValue]:
     return [TagValue(p[0], p[1]) for p in params]
 
 
 def get_minimum_credit(orders_config: OrdersConfig) -> float:
     return orders_config.minimum_credit
-
-
-def maintain_high_water_mark(
-    roll_when_config: RollWhenConfig, symbol_config: Optional[SymbolConfig]
-) -> bool:
-    if (
-        symbol_config
-        and symbol_config.calls
-        and symbol_config.calls.maintain_high_water_mark is not None
-    ):
-        return symbol_config.calls.maintain_high_water_mark
-    return roll_when_config.calls.maintain_high_water_mark
 
 
 def get_max_dte_for(

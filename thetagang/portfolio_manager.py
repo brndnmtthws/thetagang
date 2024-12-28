@@ -41,11 +41,7 @@ from thetagang.util import (
     get_short_positions,
     get_strike_limit,
     get_target_calls,
-    get_target_delta,
     get_target_dte,
-    get_write_threshold_perc,
-    get_write_threshold_sigma,
-    maintain_high_water_mark,
     midpoint_or_market_price,
     net_option_positions,
     portfolio_positions_to_dict,
@@ -1320,9 +1316,7 @@ class PortfolioManager:
                         max([strike_limit or 0] + average_cost),
                         2,
                     )
-                    if maintain_high_water_mark(
-                        self.config.roll_when, self.config.symbol_config(symbol)
-                    ):
+                    if self.config.maintain_high_water_mark(symbol):
                         strike_limit = max([strike_limit, position.contract.strike])
 
                 elif right.startswith("P"):
@@ -1507,9 +1501,7 @@ class PortfolioManager:
         contract_target_delta: float = (
             target_delta
             if target_delta
-            else get_target_delta(
-                self.config.target, self.config.symbol_config(underlying.symbol), right
-            )
+            else self.config.get_target_delta(underlying.symbol, right)
         )
         contract_max_dte = get_max_dte_for(
             underlying.symbol,
@@ -2215,9 +2207,8 @@ class PortfolioManager:
         assert ticker.contract is not None
         absolute_daily_change = math.fabs(ticker.marketPrice() - ticker.close)
 
-        threshold_sigma = get_write_threshold_sigma(
-            self.config.constants,
-            self.config.symbol_config(ticker.contract.symbol),
+        threshold_sigma = self.config.get_write_threshold_sigma(
+            ticker.contract.symbol,
             right,
         )
         if threshold_sigma:
@@ -2232,9 +2223,8 @@ class PortfolioManager:
                 absolute_daily_change,
             )
         else:
-            threshold_perc = get_write_threshold_perc(
-                self.config.constants,
-                self.config.symbol_config(ticker.contract.symbol),
+            threshold_perc = self.config.get_write_threshold_perc(
+                ticker.contract.symbol,
                 right,
             )
             return (threshold_perc * ticker.close, absolute_daily_change)
