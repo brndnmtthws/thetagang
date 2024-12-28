@@ -5,6 +5,7 @@ from ib_async import Option, Order, PortfolioItem
 from ib_async.contract import Stock
 
 from thetagang.test_config import (
+    ConfigFactory,
     SymbolConfigFactory,
     SymbolConfigPutsFactory,
     TargetConfigCallsFactory,
@@ -13,7 +14,6 @@ from thetagang.test_config import (
 )
 from thetagang.util import (
     calculate_net_short_positions,
-    get_target_delta,
     position_pnl,
     weighted_avg_long_strike,
     weighted_avg_short_strike,
@@ -117,8 +117,9 @@ def test_get_delta() -> None:
     symbol_config = SymbolConfigFactory.build(
         weight=1.0, delta=None, puts=None, calls=None
     )
-    assert 0.5 == get_target_delta(target_config, symbol_config, "P")
-    assert 0.5 == get_target_delta(target_config, symbol_config, "C")
+    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
+    assert 0.5 == config.get_target_delta("SPY", "P")
+    assert 0.5 == config.get_target_delta("SPY", "C")
 
     target_config = TargetConfigFactory.build(
         delta=0.5, puts=TargetConfigPutsFactory.build(delta=0.4), calls=None
@@ -126,7 +127,8 @@ def test_get_delta() -> None:
     symbol_config = SymbolConfigFactory.build(
         weight=1.0, delta=None, puts=None, calls=None
     )
-    assert 0.4 == get_target_delta(target_config, symbol_config, "P")
+    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
+    assert 0.4 == config.get_target_delta("SPY", "P")
 
     target_config = TargetConfigFactory.build(
         delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
@@ -134,7 +136,8 @@ def test_get_delta() -> None:
     symbol_config = SymbolConfigFactory.build(
         weight=1.0, delta=None, puts=None, calls=None
     )
-    assert 0.5 == get_target_delta(target_config, symbol_config, "P")
+    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
+    assert 0.5 == config.get_target_delta("SPY", "P")
 
     target_config = TargetConfigFactory.build(
         delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
@@ -142,7 +145,8 @@ def test_get_delta() -> None:
     symbol_config = SymbolConfigFactory.build(
         weight=1.0, delta=None, puts=None, calls=None
     )
-    assert 0.4 == get_target_delta(target_config, symbol_config, "C")
+    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
+    assert 0.4 == config.get_target_delta("SPY", "C")
 
     target_config = TargetConfigFactory.build(
         delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
@@ -150,7 +154,8 @@ def test_get_delta() -> None:
     symbol_config = SymbolConfigFactory.build(
         weight=1.0, delta=0.3, puts=None, calls=None
     )
-    assert 0.3 == get_target_delta(target_config, symbol_config, "C")
+    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
+    assert 0.3 == config.get_target_delta("SPY", "C")
 
     target_config = TargetConfigFactory.build(
         delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
@@ -158,7 +163,8 @@ def test_get_delta() -> None:
     symbol_config = SymbolConfigFactory.build(
         weight=1.0, delta=0.3, puts=SymbolConfigPutsFactory.build(delta=0.2), calls=None
     )
-    assert 0.3 == get_target_delta(target_config, symbol_config, "C")
+    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
+    assert 0.3 == config.get_target_delta("SPY", "C")
 
     target_config = TargetConfigFactory.build(
         delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
@@ -166,7 +172,8 @@ def test_get_delta() -> None:
     symbol_config = SymbolConfigFactory.build(
         weight=1.0, delta=0.3, puts=SymbolConfigPutsFactory.build(delta=0.2), calls=None
     )
-    assert 0.2 == get_target_delta(target_config, symbol_config, "P")
+    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
+    assert 0.2 == config.get_target_delta("SPY", "P")
 
 
 def con(dte: str, strike: float, right: str, position: float) -> PortfolioItem:
