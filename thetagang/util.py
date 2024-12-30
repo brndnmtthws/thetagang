@@ -1,21 +1,13 @@
 import math
 from operator import itemgetter
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import ib_async.objects
 import ib_async.ticker
-from ib_async import AccountValue, Order, PortfolioItem, TagValue, Ticker, util
+from ib_async import AccountValue, Order, PortfolioItem, Ticker, util
 from ib_async.contract import Option
 
-from thetagang.config import (
-    Config,
-    OrdersConfig,
-    RollWhenConfig,
-    SymbolConfig,
-    TargetConfig,
-    VIXCallHedgeConfig,
-    WriteWhenConfig,
-)
+from thetagang.config import Config
 from thetagang.options import option_dte
 
 
@@ -214,86 +206,18 @@ def midpoint_or_market_price(ticker: Ticker) -> float:
     return ticker.midpoint()
 
 
-def get_target_dte(
-    target_config: TargetConfig, symbol_config: Optional[SymbolConfig]
-) -> int:
-    return (
-        symbol_config.dte
-        if symbol_config and symbol_config.dte is not None
-        else target_config.dte
-    )
-
-
-def get_cap_factor(
-    write_when_config: WriteWhenConfig,
-    symbol_config: Optional[SymbolConfig],
-    symbol: str,
-) -> float:
-    if (
-        symbol_config
-        and symbol_config.calls
-        and symbol_config.calls.cap_factor is not None
-    ):
-        return symbol_config.calls.cap_factor
-    return write_when_config.calls.cap_factor
-
-
-def get_cap_target_floor(
-    write_when_config: WriteWhenConfig, symbol_config: Optional[SymbolConfig]
-) -> float:
-    if (
-        symbol_config
-        and symbol_config.calls
-        and symbol_config.calls.cap_target_floor is not None
-    ):
-        return symbol_config.calls.cap_target_floor
-    return write_when_config.calls.cap_target_floor
-
-
-def get_strike_limit(config: Config, symbol: str, right: str) -> Optional[float]:
-    p_or_c = "calls" if right.upper().startswith("C") else "puts"
-    symbol_config = config.symbols.get(symbol)
-    option_config = getattr(symbol_config, p_or_c, None) if symbol_config else None
-    return option_config.strike_limit if option_config else None
-
-
 def get_target_calls(
     config: Config, symbol: str, current_shares: int, target_shares: int
 ) -> int:
-    symbole_config = config.symbols.get(symbol)
-    if write_excess_calls_only(config.write_when, symbole_config):
+    if config.write_excess_calls_only(symbol):
         return max([0, (current_shares - target_shares) // 100])
     else:
-        cap_factor = get_cap_factor(config.write_when, symbole_config, symbol)
-        cap_target_floor = get_cap_target_floor(config.write_when, symbole_config)
+        cap_factor = config.get_cap_factor(symbol)
+        cap_target_floor = config.get_cap_target_floor(symbol)
         min_uncovered = (target_shares * cap_target_floor) // 100
         max_covered = (current_shares * cap_factor) // 100
         total_coverable = current_shares // 100
-
         return max([0, math.floor(min([max_covered, total_coverable - min_uncovered]))])
-
-
-def algo_params_from(params: List[List[str]]) -> List[TagValue]:
-    return [TagValue(p[0], p[1]) for p in params]
-
-
-def get_minimum_credit(orders_config: OrdersConfig) -> float:
-    return orders_config.minimum_credit
-
-
-def get_max_dte_for(
-    symbol: str,
-    target_config: TargetConfig,
-    vix_call_hedge_config: VIXCallHedgeConfig,
-    symbol_config: Optional[SymbolConfig],
-) -> Optional[int]:
-    if symbol == "VIX" and vix_call_hedge_config.max_dte is not None:
-        return vix_call_hedge_config.max_dte
-
-    if symbol_config and symbol_config.max_dte is not None:
-        return symbol_config.max_dte
-
-    return target_config.max_dte
 
 
 def would_increase_spread(order: Order, updated_price: float) -> bool:
@@ -303,49 +227,3 @@ def would_increase_spread(order: Order, updated_price: float) -> bool:
         or order.action == "SELL"
         and updated_price > order.lmtPrice
     )
-
-
-def can_write_when(
-    write_when_config: WriteWhenConfig,
-    symbol_config: Optional[SymbolConfig],
-    right: str,
-) -> Tuple[bool, bool]:
-    p_or_c = "calls" if right.upper().startswith("C") else "puts"
-
-    option_config = getattr(symbol_config, p_or_c, None) if symbol_config else None
-    default_config = getattr(write_when_config, p_or_c)
-
-    can_write_when_green = (
-        option_config.write_when.green
-        if option_config and option_config.write_when
-        else default_config.green
-    )
-    can_write_when_red = (
-        option_config.write_when.red
-        if option_config is not None and option_config.write_when is not None
-        else default_config.red
-    )
-
-    return (can_write_when_green, can_write_when_red)
-
-
-def close_if_unable_to_roll(
-    roll_when_config: RollWhenConfig, symbol_config: Optional[SymbolConfig]
-) -> bool:
-    return (
-        symbol_config.close_if_unable_to_roll
-        if symbol_config and symbol_config.close_if_unable_to_roll is not None
-        else roll_when_config.close_if_unable_to_roll
-    )
-
-
-def write_excess_calls_only(
-    write_when_config: WriteWhenConfig, symbol_config: Optional[SymbolConfig]
-) -> bool:
-    if (
-        symbol_config
-        and symbol_config.calls
-        and symbol_config.calls.excess_only is not None
-    ):
-        return symbol_config.calls.excess_only
-    return write_when_config.calls.excess_only
