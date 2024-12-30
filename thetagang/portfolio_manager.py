@@ -28,20 +28,13 @@ from thetagang.orders import Orders
 from thetagang.trades import Trades
 from thetagang.util import (
     account_summary_to_dict,
-    algo_params_from,
     calculate_net_short_positions,
-    can_write_when,
-    close_if_unable_to_roll,
     count_long_option_positions,
     count_short_option_positions,
     get_higher_price,
     get_lower_price,
-    get_max_dte_for,
-    get_minimum_credit,
     get_short_positions,
-    get_strike_limit,
     get_target_calls,
-    get_target_dte,
     midpoint_or_market_price,
     net_option_positions,
     portfolio_positions_to_dict,
@@ -744,7 +737,7 @@ class PortfolioManager:
             strike_limit = math.ceil(
                 max(
                     [
-                        get_strike_limit(self.config, symbol, "C") or 0,
+                        self.config.get_strike_limit(symbol, "C") or 0,
                     ]
                     + [
                         p.averageCost or 0
@@ -797,8 +790,8 @@ class PortfolioManager:
                 ):
                     return False
 
-                (can_write_when_green, can_write_when_red) = can_write_when(
-                    self.config.write_when, self.config.symbol_config(symbol), "C"
+                (can_write_when_green, can_write_when_red) = self.config.can_write_when(
+                    symbol, "C"
                 )
 
                 if not can_write_when_green and ticker.marketPrice() > ticker.close:
@@ -868,7 +861,7 @@ class PortfolioManager:
                     ),
                     "C",
                     strike_limit,
-                    minimum_price=lambda: get_minimum_credit(self.config.orders),
+                    minimum_price=lambda: self.config.orders.minimum_credit,
                 )
             except (RuntimeError, NoValidContractsError):
                 log.error(
@@ -904,7 +897,7 @@ class PortfolioManager:
                     ),
                     "P",
                     strike_limit,
-                    minimum_price=lambda: get_minimum_credit(self.config.orders),
+                    minimum_price=lambda: self.config.orders.minimum_credit,
                 )
             except (RuntimeError, NoValidContractsError):
                 log.error(
@@ -1112,8 +1105,8 @@ class PortfolioManager:
                 if puts_to_write <= 0 or not self.config.trading_is_allowed(symbol):
                     return False
 
-                (can_write_when_green, can_write_when_red) = can_write_when(
-                    self.config.write_when, self.config.symbol_config(symbol), "P"
+                (can_write_when_green, can_write_when_red) = self.config.can_write_when(
+                    symbol, "P"
                 )
 
                 if not can_write_when_green and ticker.marketPrice() > ticker.close:
@@ -1174,7 +1167,7 @@ class PortfolioManager:
                 )
                 puts_to_write = min([additional_quantity, maximum_new_contracts])
                 if puts_to_write > 0:
-                    strike_limit = get_strike_limit(self.config, symbol, "P")
+                    strike_limit = self.config.get_strike_limit(symbol, "P")
                     if strike_limit:
                         put_actions_table.add_row(
                             symbol,
@@ -1243,17 +1236,17 @@ class PortfolioManager:
             try:
                 position.contract.exchange = self.get_order_exchange()
                 price = None
-                try:
-                    ticker = await self.ibkr.get_ticker_for_contract(position.contract)
-                    is_short = position.position < 0
-                    price = (
-                        round(get_lower_price(ticker), 2)
-                        if is_short
-                        else round(get_higher_price(ticker), 2)
-                    )
-                except RequiredFieldValidationError:
-                    # no market price was available, fallback to minimum tick
-                    pass
+                ticker = await self.ibkr.get_ticker_for_contract(
+                    position.contract,
+                    required_fields=[],
+                    optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
+                )
+                is_short = position.position < 0
+                price = (
+                    round(get_lower_price(ticker), 2)
+                    if is_short
+                    else round(get_higher_price(ticker), 2)
+                )
                 if not price or util.isNan(price) or math.isnan(price):
                     # if the price is near zero or NaN, use the minimum price
                     log.warning(
@@ -1301,7 +1294,7 @@ class PortfolioManager:
                     optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
                 )
 
-                strike_limit = get_strike_limit(self.config, symbol, right)
+                strike_limit = self.config.get_strike_limit(symbol, right)
                 if right.startswith("C"):
                     average_cost = (
                         [
@@ -1348,11 +1341,11 @@ class PortfolioManager:
                 kind = "calls" if right.startswith("C") else "puts"
 
                 minimum_price = (
-                    (lambda: get_minimum_credit(self.config.orders))
+                    (lambda: self.config.orders.minimum_credit)
                     if not getattr(self.config.roll_when, kind).credit_only
                     else (
                         lambda: midpoint_or_market_price(buy_ticker)
-                        + get_minimum_credit(self.config.orders)
+                        + self.config.orders.minimum_credit
                     )
                 )
 
@@ -1395,7 +1388,7 @@ class PortfolioManager:
                 )
                 # a buy order should be at most the minimum price, when we expect a credit
                 price = (
-                    min([price, -get_minimum_credit(self.config.orders)])
+                    min([price, -self.config.orders.minimum_credit])
                     if getattr(self.config.roll_when, kind).credit_only
                     else price
                 )
@@ -1454,10 +1447,7 @@ class PortfolioManager:
             except NoValidContractsError:
                 dte = option_dte(position.contract.lastTradeDateOrContractMonth)
                 if (
-                    close_if_unable_to_roll(
-                        self.config.roll_when,
-                        self.config.symbol_config(position.contract.symbol),
-                    )
+                    self.config.close_if_unable_to_roll(position.contract.symbol)
                     and self.config.roll_when.max_dte
                     and dte <= self.config.roll_when.max_dte
                     and position_pnl(position) > 0
@@ -1492,22 +1482,15 @@ class PortfolioManager:
         target_delta: Optional[float] = None,
     ) -> Ticker:
         contract_target_dte: int = (
-            target_dte
-            if target_dte
-            else get_target_dte(
-                self.config.target, self.config.symbol_config(underlying.symbol)
-            )
+            target_dte if target_dte else self.config.get_target_dte(underlying.symbol)
         )
         contract_target_delta: float = (
             target_delta
             if target_delta
             else self.config.get_target_delta(underlying.symbol, right)
         )
-        contract_max_dte = get_max_dte_for(
+        contract_max_dte = self.config.get_max_dte_for(
             underlying.symbol,
-            self.config.target,
-            self.config.vix_call_hedge,
-            self.config.symbol_config(underlying.symbol),
         )
 
         log.notice(
@@ -1762,8 +1745,13 @@ class PortfolioManager:
     def get_algo_strategy(self) -> str:
         return self.config.orders.algo.strategy
 
+    def algo_params_from(self, params: List[List[str]]) -> List[TagValue]:
+        from ib_async import TagValue
+
+        return [TagValue(p[0], p[1]) for p in params]
+
     def get_algo_params(self) -> List[TagValue]:
-        return algo_params_from(self.config.orders.algo.params)
+        return self.algo_params_from(self.config.orders.algo.params)
 
     def get_order_exchange(self) -> str:
         return self.config.orders.exchange
@@ -1922,7 +1910,7 @@ class PortfolioManager:
                         0,
                         target_delta=delta,
                         target_dte=target_dte,
-                        minimum_price=lambda: get_minimum_credit(self.config.orders),
+                        minimum_price=lambda: self.config.orders.minimum_credit,
                     )
                     if not isinstance(buy_ticker.contract, Option):
                         raise RuntimeError(
@@ -1943,6 +1931,7 @@ class PortfolioManager:
                         algoParams=self.get_algo_params(),
                         tif="DAY",
                         account=self.account_number,
+                        transmit=True,
                     )
 
                     self.enqueue_order(buy_ticker.contract, order)
@@ -2044,6 +2033,7 @@ class PortfolioManager:
                         )
                         if symbol not in portfolio_positions:
                             # we don't have any positions to sell
+                            # we don't have any positions to sell
                             log.warning(
                                 f"Will sell {symbol} with qty={-qty} at"
                                 f" price={price}, but we have no position to sell"
@@ -2071,7 +2061,7 @@ class PortfolioManager:
                         abs(qty),
                         round(price, 2),
                         algoStrategy=algo.strategy,
-                        algoParams=algo_params_from(algo.params),
+                        algoParams=self.algo_params_from(algo.params),
                         tif="DAY",
                         account=self.account_number,
                         transmit=True,
@@ -2149,7 +2139,7 @@ class PortfolioManager:
                 updated_price = np.sign(order.lmtPrice) * max(
                     [
                         (
-                            get_minimum_credit(self.config.orders)
+                            self.config.orders.minimum_credit
                             if order.action == "BUY" and order.lmtPrice <= 0.0
                             else 0.0
                         ),

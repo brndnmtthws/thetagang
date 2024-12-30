@@ -1,5 +1,5 @@
 import math
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 from rich import box
@@ -652,6 +652,83 @@ class Config(BaseModel, DisplayMixin):
         tree.add(Group(":yin_yang: Symbology", self.create_symbols_table()))
 
         console.print(Panel(tree, title="Config"))
+
+    def get_target_dte(self, symbol: str) -> int:
+        symbol_config = self.symbols.get(symbol)
+        return (
+            symbol_config.dte
+            if symbol_config and symbol_config.dte is not None
+            else self.target.dte
+        )
+
+    def get_cap_factor(self, symbol: str) -> float:
+        symbol_config = self.symbols.get(symbol)
+        if (
+            symbol_config
+            and symbol_config.calls
+            and symbol_config.calls.cap_factor is not None
+        ):
+            return symbol_config.calls.cap_factor
+        return self.write_when.calls.cap_factor
+
+    def get_cap_target_floor(self, symbol: str) -> float:
+        symbol_config = self.symbols.get(symbol)
+        if (
+            symbol_config
+            and symbol_config.calls
+            and symbol_config.calls.cap_target_floor is not None
+        ):
+            return symbol_config.calls.cap_target_floor
+        return self.write_when.calls.cap_target_floor
+
+    def get_strike_limit(self, symbol: str, right: str) -> Optional[float]:
+        p_or_c = "calls" if right.upper().startswith("C") else "puts"
+        symbol_config = self.symbols.get(symbol)
+        option_config = getattr(symbol_config, p_or_c, None) if symbol_config else None
+        return option_config.strike_limit if option_config else None
+
+    def write_excess_calls_only(self, symbol: str) -> bool:
+        symbol_config = self.symbols.get(symbol)
+        if (
+            symbol_config
+            and symbol_config.calls
+            and symbol_config.calls.excess_only is not None
+        ):
+            return symbol_config.calls.excess_only
+        return self.write_when.calls.excess_only
+
+    def get_max_dte_for(self, symbol: str) -> Optional[int]:
+        if symbol == "VIX" and self.vix_call_hedge.max_dte is not None:
+            return self.vix_call_hedge.max_dte
+        symbol_config = self.symbols.get(symbol)
+        if symbol_config and symbol_config.max_dte is not None:
+            return symbol_config.max_dte
+        return self.target.max_dte
+
+    def can_write_when(self, symbol: str, right: str) -> Tuple[bool, bool]:
+        symbol_config = self.symbols.get(symbol)
+        p_or_c = "calls" if right.upper().startswith("C") else "puts"
+        option_config = getattr(symbol_config, p_or_c, None) if symbol_config else None
+        default_config = getattr(self.write_when, p_or_c)
+        can_write_when_green = (
+            option_config.write_when.green
+            if option_config and option_config.write_when
+            else default_config.green
+        )
+        can_write_when_red = (
+            option_config.write_when.red
+            if option_config and option_config.write_when
+            else default_config.red
+        )
+        return (can_write_when_green, can_write_when_red)
+
+    def close_if_unable_to_roll(self, symbol: str) -> bool:
+        symbol_config = self.symbols.get(symbol)
+        return (
+            symbol_config.close_if_unable_to_roll
+            if symbol_config and symbol_config.close_if_unable_to_roll is not None
+            else self.roll_when.close_if_unable_to_roll
+        )
 
 
 def normalize_config(config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
