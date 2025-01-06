@@ -232,11 +232,8 @@ class IBKR:
         """
         await self.ib.qualifyContractsAsync(contract)
         ticker = self.ib.reqMktData(contract, genericTickList=generic_tick_list)
-        try:
-            await handler(ticker)
-            return ticker
-        finally:
-            self.ib.cancelMktData(contract)
+        await handler(ticker)
+        return ticker
 
     async def __ticker_wait_for_condition__(
         self, ticker: Ticker, condition: Callable[[Ticker], bool], timeout: float
