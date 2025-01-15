@@ -707,16 +707,22 @@ class Config(BaseModel, DisplayMixin):
     def can_write_when(self, symbol: str, right: str) -> Tuple[bool, bool]:
         symbol_config = self.symbols.get(symbol)
         p_or_c = "calls" if right.upper().startswith("C") else "puts"
-        option_config = getattr(symbol_config, p_or_c, None) if symbol_config else None
+        option_config = (
+            getattr(symbol_config, p_or_c, None) if symbol_config is not None else None
+        )
         default_config = getattr(self.write_when, p_or_c)
         can_write_when_green = (
             option_config.write_when.green
-            if option_config is not None and option_config.write_when is not None
+            if option_config is not None
+            and option_config.write_when is not None
+            and option_config.write_when.green is not None
             else default_config.green
         )
         can_write_when_red = (
             option_config.write_when.red
-            if option_config is not None and option_config.write_when is not None
+            if option_config is not None
+            and option_config.write_when is not None
+            and option_config.write_when.red is not None
             else default_config.red
         )
         return (can_write_when_green, can_write_when_red)
