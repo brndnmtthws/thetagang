@@ -10,34 +10,20 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-        poetry-version: ["1.4.0"]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python ${{ matrix.python-version }}
-        id: setup-python
-        uses: actions/setup-python@v5
+
+      - name: Install uv and set the python version with caching
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Cache ~/.cache/pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: python-${{ steps.setup-python.outputs.python-version }}
-      - name: Cache ~/.cache/pypoetry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pypoetry
-          key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
-      - name: Run image
-        uses: abatilo/actions-poetry@v4
-        with:
-          poetry-version: ${{ matrix.poetry-version }}
-      - name: Install dependencies
-        run: |
-          poetry install
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
       - name: Test with pytest
-        run: |
-          poetry run py.test
+        run: uv run py.test
 
   build-and-publish:
     needs: test
@@ -45,22 +31,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+
+      - name: Install uv and set the python version with caching
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.x"
-      - name: Run image
-        uses: abatilo/actions-poetry@v4
-        with:
-          poetry-version: "1.4.0"
-      - name: Install dependencies
-        run: |
-          poetry install
+          python-version: 3.11
+
+      - name: Install the project
+        run: uv sync --all-extras
+
       - name: Build
-        run: |
-          poetry build
+        run: uv build
+
       - name: Publish
         env:
           POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_TOKEN }}
-        run: |
-          poetry publish
+        run: uv publish

@@ -29,42 +29,25 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-        poetry-version: ["1.4.0"]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        id: setup-python
-        uses: actions/setup-python@v5
+      - name: Install uv and set the python version with caching
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
+          enable-cache: true
 
-      - name: Cache ~/.cache/pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: python-${{ steps.setup-python.outputs.python-version }}
-      - name: Cache ~/.cache/pypoetry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pypoetry
-          key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
-      - name: Install poetry
-        uses: abatilo/actions-poetry@v4
-        with:
-          poetry-version: ${{ matrix.poetry-version }}
-      - name: Install dependencies
-        run: |
-          poetry install
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
       - name: Test with pytest
-        run: |
-          poetry run py.test
+        run: uv run py.test
 
   build-and-push:
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
 
     steps:
       - uses: actions/checkout@v4
@@ -82,33 +65,17 @@ jobs:
         if: steps.cache-tws.outputs.cache-hit != 'true'
         run: ./extract-installer.sh
 
-      - name: Set up Python ${{ matrix.python-version }}
-        id: setup-python
-        uses: actions/setup-python@v5
+      - name: Install uv and set the python version with caching
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.11"
+          python-version: 3.11
+          enable-cache: true
 
-      - name: Cache ~/.cache/pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: python-${{ steps.setup-python.outputs.python-version }}
-      - name: Cache ~/.cache/pypoetry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pypoetry
-          key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
+      - name: Install the project
+        run: uv sync --all-extras
 
-      - name: Install poetry
-        uses: abatilo/actions-poetry@v4
-        with:
-          poetry-version: "1.4.0"
-      - name: Install dependencies
-        run: |
-          poetry install --only main --no-root
       - name: Build package
-        run: |
-          poetry build
+        run: uv build
 
       # Install the cosign tool except on PR
       # https://github.com/sigstore/cosign-installer

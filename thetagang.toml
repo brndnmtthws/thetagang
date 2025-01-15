@@ -288,7 +288,7 @@ calculate_net_contracts = false
 
 [target]
 # Target 45 or more days to expiry
-# This value can also be set per-symbol, with `symbols.<symbol>.dte` 
+# This value can also be set per-symbol, with `symbols.<symbol>.dte`
 # (see `symbols.QQQ` example below).
 dte = 45
 

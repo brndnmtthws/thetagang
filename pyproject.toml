@@ -1,64 +1,46 @@
-[tool.poetry]
-authors       = ["Brenden Matthews <brenden@brndn.io>"]
-description   = "ThetaGang is an IBKR bot for getting money"
-documentation = "https://github.com/brndnmtthws/thetagang/blob/master/README.md"
-homepage      = "https://github.com/brndnmtthws/thetagang"
-license       = "AGPL-3.0-only"
-name          = "thetagang"
-readme        = "README.md"
-repository    = "https://github.com/brndnmtthws/thetagang.git"
-version       = "1.14.0"
+[project]
+authors = [{ name = "Brenden Matthews", email = "brenden@brndn.io" }]
+dependencies = [
+  "click>=8.1.3,<9",
+  "click-log>=0.4.0,<0.5",
+  "more-itertools>=9.1,<11.0",
+  "numpy>=1.26,<3.0",
+  "python-dateutil>=2.8.1,<3",
+  "pytimeparse>=1.1.8,<2",
+  "rich>=13.7.0,<14",
+  "schema>=0.7.5,<0.8",
+  "toml>=0.10.2,<0.11",
+  "ib-async>=1.0.3,<2",
+  "pydantic>=2.10.2,<3",
+  "annotated-types>=0.7.0,<0.8",
+  "polyfactory>=2.18.1,<3",
+]
+description = "ThetaGang is an IBKR bot for getting money"
+license = "AGPL-3.0-only"
+name = "thetagang"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+version = "1.14.0"
 
-  [tool.poetry.dependencies]
-  click           = "^8.1.3"
-  click-log       = "^0.4.0"
-  more-itertools  = ">=9.1,<11.0"
-  numpy           = ">=1.26,<3.0"
-  python          = ">=3.10,<3.13"
-  python-dateutil = "^2.8.1"
-  pytimeparse     = "^1.1.8"
-  rich            = "^13.7.0"
-  schema          = "^0.7.5"
-  toml            = "^0.10.2"
-  ib-async = "^1.0.3"
-  pydantic = "^2.10.2"
-  annotated-types = "^0.7.0"
-  polyfactory = "^2.18.1"
+  [project.urls]
+  "Bug Tracker" = "https://github.com/brndnmtthws/thetagang/issues"
+  Documentation = "https://github.com/brndnmtthws/thetagang/blob/master/README.md"
+  GitHub        = "https://github.com/brndnmtthws/thetagang"
+  Homepage      = "https://github.com/brndnmtthws/thetagang"
+  Repository    = "https://github.com/brndnmtthws/thetagang.git"
 
-  [tool.poetry.group.dev.dependencies]
-  autohooks              = ">=23.4,<25.0"
-  autohooks-plugin-black = ">=22.11,<24.0"
-  autohooks-plugin-ruff  = ">=23.10,<25.0"
-  black                  = "^24.1.1"
-  pytest                 = "^8.0.0"
-  pytest-watch           = "^4.2.0"
-  ruff                   = ">=0.5.0,<0.10.0"
+  [project.scripts]
+  thetagang = "thetagang.entry:cli"
 
-[tool.poetry.urls]
-"Bug Tracker" = "https://github.com/brndnmtthws/thetagang/issues"
-"GitHub"      = "https://github.com/brndnmtthws/thetagang"
-
-[tool.poetry.scripts]
-thetagang = 'thetagang.entry:cli'
-
-[tool.pylint.messages_control]
-disable = "C0330, C0326"
-
-[tool.pylint.format]
-max-line-length = "120"
-
-[tool.autohooks]
-mode = "poetry"
-pre-commit = [
-  "autohooks.plugins.black",
-  "autohooks.plugins.ruff",
+[dependency-groups]
+dev = [
+  "pre-commit>=4.0.1",
+  "pytest>=8.0.0,<9",
+  "pytest-watch>=4.2.0,<5",
+  "ruff>=0.9.1,<0.10.0",
 ]
 
-[build-system]
-build-backend = "poetry.masonry.api"
-requires      = ["poetry>=0.12"]
-
-[tool.ruff]
+[tool.lint]
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.
 # Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
 # McCabe complexity (`C901`) by default. "A" enables type annotation checks.
@@ -75,7 +57,7 @@ unfixable = []
 # Same as Black.
 line-length = 88
 
-target-version = "py39"
+target-version = "py310"
 
 [tool.pyright]
 defineConstant          = { DEBUG = true }
@@ -84,3 +66,10 @@ reportUnknownLambdaType = false
 stubPath                = "stubs"
 venv                    = ".venv"
 venvPath                = "."
+
+[build-system]
+build-backend = "hatchling.build"
+requires      = ["hatchling"]
+
+[tool.uv]
+package = true
