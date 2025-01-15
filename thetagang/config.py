@@ -33,7 +33,7 @@ class AccountConfig(BaseModel, DisplayMixin):
             "",
             "Margin usage",
             "=",
-            f"{self.margin_usage} ({pfmt(self.margin_usage,0)})",
+            f"{self.margin_usage} ({pfmt(self.margin_usage, 0)})",
         )
         table.add_row("", "Market data type", "=", f"{self.market_data_type}")
 
@@ -329,7 +329,7 @@ class RollWhenConfig(BaseModel, DisplayMixin):
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
         table.add_row("[spring_green1]Close option positions")
-        table.add_row("", "When P&L", ">=", f"{pfmt(self.close_at_pnl,0)}")
+        table.add_row("", "When P&L", ">=", f"{pfmt(self.close_at_pnl, 0)}")
         table.add_row(
             "", "Close if unable to roll", "=", f"{self.close_if_unable_to_roll}"
         )
@@ -340,7 +340,7 @@ class RollWhenConfig(BaseModel, DisplayMixin):
             "",
             "Days to expiry",
             "<=",
-            f"{self.dte} and P&L >= {self.min_pnl} ({pfmt(self.min_pnl,0)})",
+            f"{self.dte} and P&L >= {self.min_pnl} ({pfmt(self.min_pnl, 0)})",
         )
 
         if self.max_dte:
@@ -348,10 +348,10 @@ class RollWhenConfig(BaseModel, DisplayMixin):
                 "",
                 "P&L",
                 ">=",
-                f"{self.pnl} ({pfmt(self.pnl,0)}) and DTE <= {self.max_dte}",
+                f"{self.pnl} ({pfmt(self.pnl, 0)}) and DTE <= {self.max_dte}",
             )
         else:
-            table.add_row("", "P&L", ">=", f"{self.pnl} ({pfmt(self.pnl,0)})")
+            table.add_row("", "P&L", ">=", f"{self.pnl} ({pfmt(self.pnl, 0)})")
 
         table.add_row("", "Puts: credit only", "=", f"{self.puts.credit_only}")
         table.add_row("", "Puts: roll excess", "=", f"{self.puts.has_excess}")
@@ -423,13 +423,12 @@ class TargetConfig(BaseModel, DisplayMixin):
             "",
             "Maximum new contracts",
             "=",
-            f"{pfmt(self.maximum_new_contracts_percent,0)} of buying power",
+            f"{pfmt(self.maximum_new_contracts_percent, 0)} of buying power",
         )
         table.add_row("", "Minimum open interest", "=", f"{self.minimum_open_interest}")
 
 
 class SymbolConfig(BaseModel):
-
     class WriteWhen(BaseModel):
         green: Optional[bool] = None
         red: Optional[bool] = None
@@ -486,8 +485,8 @@ class Config(BaseModel, DisplayMixin):
     symbols: Dict[str, SymbolConfig] = Field(default_factory=dict)
     constants: ConstantsConfig = Field(default_factory=ConstantsConfig)
 
-    def trading_is_allowed(self, symbole: str) -> bool:
-        symbol_config = self.symbols.get(symbole)
+    def trading_is_allowed(self, symbol: str) -> bool:
+        symbol_config = self.symbols.get(symbol)
         return not symbol_config or not symbol_config.no_trading
 
     def symbol_config(self, symbol: str) -> Optional[SymbolConfig]:
@@ -664,8 +663,8 @@ class Config(BaseModel, DisplayMixin):
     def get_cap_factor(self, symbol: str) -> float:
         symbol_config = self.symbols.get(symbol)
         if (
-            symbol_config
-            and symbol_config.calls
+            symbol_config is not None
+            and symbol_config.calls is not None
             and symbol_config.calls.cap_factor is not None
         ):
             return symbol_config.calls.cap_factor
@@ -674,8 +673,8 @@ class Config(BaseModel, DisplayMixin):
     def get_cap_target_floor(self, symbol: str) -> float:
         symbol_config = self.symbols.get(symbol)
         if (
-            symbol_config
-            and symbol_config.calls
+            symbol_config is not None
+            and symbol_config.calls is not None
             and symbol_config.calls.cap_target_floor is not None
         ):
             return symbol_config.calls.cap_target_floor
@@ -690,8 +689,8 @@ class Config(BaseModel, DisplayMixin):
     def write_excess_calls_only(self, symbol: str) -> bool:
         symbol_config = self.symbols.get(symbol)
         if (
-            symbol_config
-            and symbol_config.calls
+            symbol_config is not None
+            and symbol_config.calls is not None
             and symbol_config.calls.excess_only is not None
         ):
             return symbol_config.calls.excess_only
@@ -701,7 +700,7 @@ class Config(BaseModel, DisplayMixin):
         if symbol == "VIX" and self.vix_call_hedge.max_dte is not None:
             return self.vix_call_hedge.max_dte
         symbol_config = self.symbols.get(symbol)
-        if symbol_config and symbol_config.max_dte is not None:
+        if symbol_config is not None and symbol_config.max_dte is not None:
             return symbol_config.max_dte
         return self.target.max_dte
 
@@ -712,12 +711,12 @@ class Config(BaseModel, DisplayMixin):
         default_config = getattr(self.write_when, p_or_c)
         can_write_when_green = (
             option_config.write_when.green
-            if option_config and option_config.write_when
+            if option_config is not None and option_config.write_when is not None
             else default_config.green
         )
         can_write_when_red = (
             option_config.write_when.red
-            if option_config and option_config.write_when
+            if option_config is not None and option_config.write_when is not None
             else default_config.red
         )
         return (can_write_when_green, can_write_when_red)
@@ -726,7 +725,8 @@ class Config(BaseModel, DisplayMixin):
         symbol_config = self.symbols.get(symbol)
         return (
             symbol_config.close_if_unable_to_roll
-            if symbol_config and symbol_config.close_if_unable_to_roll is not None
+            if symbol_config is not None
+            and symbol_config.close_if_unable_to_roll is not None
             else self.roll_when.close_if_unable_to_roll
         )
 

@@ -16,34 +16,23 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-        poetry-version: ["1.4.0"]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        id: setup-python
+
+      - name: Install uv and set the python version with caching
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Cache ~/.cache/pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: python-${{ steps.setup-python.outputs.python-version }}
-      - name: Cache ~/.cache/pypoetry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pypoetry
-          key: python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('poetry.lock') }}
-      - name: Install poetry
-        uses: abatilo/actions-poetry@v4
-        with:
-          poetry-version: ${{ matrix.poetry-version }}
-      - name: Install dependencies
-        run: |
-          poetry install
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
       - name: Test with pytest
-        run: |
-          poetry run py.test
-      - name: Check formatting with black
-        run: |
-          poetry run black thetagang --check --diff --color
+        run: uv run py.test
+
+      - name: Check lints with ruff
+        run: uv run ruff check --diff
+
+      - name: Check formatting with ruff
+        run: uv run ruff format --check --diff

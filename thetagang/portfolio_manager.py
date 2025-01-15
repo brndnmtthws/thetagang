@@ -190,7 +190,7 @@ class PortfolioManager:
                 table.add_row(
                     f"{put.contract.localSymbol}",
                     "[blue]Roll",
-                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config.roll_when.dte} and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}",
+                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config.roll_when.dte} and P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_min_pnl, 1)}",
                 )
                 return True
             table.add_row(
@@ -204,7 +204,7 @@ class PortfolioManager:
                 table.add_row(
                     f"{put.contract.localSymbol}",
                     "[blue]Roll",
-                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config.roll_when.max_dte} and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_pnl , 1)}",
+                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config.roll_when.max_dte} and P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
                 )
             else:
                 table.add_row(
@@ -287,13 +287,13 @@ class PortfolioManager:
                     f"{call.contract.localSymbol}",
                     "[blue]Roll",
                     f"[blue]Can be rolled because DTE of {dte} is <= {self.config.roll_when.dte}"
-                    f" and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_min_pnl , 1)}",
+                    f" and P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_min_pnl, 1)}",
                 )
                 return True
             table.add_row(
                 f"{call.contract.localSymbol}",
                 "[cyan1]None",
-                f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl , 1)}",
+                f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl, 1)}",
             )
 
         if pnl >= roll_when_pnl:
@@ -302,7 +302,7 @@ class PortfolioManager:
                     f"{call.contract.localSymbol}",
                     "[blue]Roll",
                     f"[blue]Can be rolled because DTE of {dte} is <= {self.config.roll_when.max_dte}"
-                    f" and P&L of {pfmt(pnl , 1)} is >= {pfmt(roll_when_pnl , 1)}",
+                    f" and P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
                 )
             else:
                 table.add_row(
@@ -534,10 +534,11 @@ class PortfolioManager:
             log.print(positions_table)
 
             # Look for lots of stock that don't have covered calls
-            (call_actions_table, calls_to_write) = (
-                await self.check_for_uncovered_positions(
-                    account_summary, portfolio_positions
-                )
+            (
+                call_actions_table,
+                calls_to_write,
+            ) = await self.check_for_uncovered_positions(
+                account_summary, portfolio_positions
             )
 
             log.print(put_actions_table)
@@ -809,9 +810,10 @@ class PortfolioManager:
                     )
                     return False
 
-                (write_threshold, absolute_daily_change) = (
-                    await self.get_write_threshold(ticker, "C")
-                )
+                (
+                    write_threshold,
+                    absolute_daily_change,
+                ) = await self.get_write_threshold(ticker, "C")
                 if absolute_daily_change < write_threshold:
                     call_actions_table.add_row(
                         symbol,
@@ -1124,9 +1126,10 @@ class PortfolioManager:
                     )
                     return False
 
-                (write_threshold, absolute_daily_change) = (
-                    await self.get_write_threshold(ticker, "P")
-                )
+                (
+                    write_threshold,
+                    absolute_daily_change,
+                ) = await self.get_write_threshold(ticker, "P")
                 if absolute_daily_change < write_threshold:
                     put_actions_table.add_row(
                         symbol,
@@ -1439,7 +1442,7 @@ class PortfolioManager:
                 from_strike = position.contract.strike
                 to_strike = sell_ticker.contract.strike
                 log.info(
-                    f"{symbol}: Rolling from_strike={from_strike} to_strike={to_strike} from_dte={from_dte} to_dte={to_dte} price={dfmt(price,3)} qty_to_roll={qty_to_roll}"
+                    f"{symbol}: Rolling from_strike={from_strike} to_strike={to_strike} from_dte={from_dte} to_dte={to_dte} price={dfmt(price, 3)} qty_to_roll={qty_to_roll}"
                 )
 
                 # Enqueue order
@@ -1495,8 +1498,8 @@ class PortfolioManager:
 
         log.notice(
             f"{underlying.symbol}: Searching option chain for "
-            f"right={right} strike_limit={strike_limit} minimum_price={dfmt(minimum_price(),3)} "
-            f"fallback_minimum_price={dfmt(fallback_minimum_price() if fallback_minimum_price else 0,3)} "
+            f"right={right} strike_limit={strike_limit} minimum_price={dfmt(minimum_price(), 3)} "
+            f"fallback_minimum_price={dfmt(fallback_minimum_price() if fallback_minimum_price else 0, 3)} "
             f"contract_target_dte={contract_target_dte} contract_max_dte={contract_max_dte} "
             f"contract_target_delta={contract_target_delta}, "
             "this can take a while...",
@@ -1737,7 +1740,7 @@ class PortfolioManager:
             f"{underlying.symbol}: Found suitable contract at "
             f"strike={the_chosen_ticker.contract.strike} "
             f"dte={option_dte(the_chosen_ticker.contract.lastTradeDateOrContractMonth)} "
-            f"price={dfmt(midpoint_or_market_price(the_chosen_ticker),3)}"
+            f"price={dfmt(midpoint_or_market_price(the_chosen_ticker), 3)}"
         )
 
         return the_chosen_ticker
@@ -1768,9 +1771,9 @@ class PortfolioManager:
                 log.warning("🛑 VIX call hedging not enabled, skipping...")
                 return None
 
-            async def vix_calls_should_be_closed() -> (
-                tuple[bool, Optional[Ticker], Optional[float]]
-            ):
+            async def vix_calls_should_be_closed() -> tuple[
+                bool, Optional[Ticker], Optional[float]
+            ]:
                 if self.config.vix_call_hedge.close_hedges_when_vix_exceeds:
                     vix_contract = Index("VIX", "CBOE", "USD")
                     vix_ticker = await self.ibkr.get_ticker_for_contract(vix_contract)

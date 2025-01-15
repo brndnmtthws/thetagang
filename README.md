@@ -187,8 +187,8 @@ gateway.
 
 To use the bot, you'll need an Interactive Brokers account with a working
 installation of IBC. If you want to modify the bot, you'll need an
-installation of Python 3.8 or newer with the
-[`poetry`](https://python-poetry.org/) package manager.
+installation of Python 3.10 or newer with the
+[`uv`](https://docs.astral.sh/uv/) package manager.
 
 One more thing: to run this on a live account, you'll require enough capital
 to purchase at least 100 shares of the stocks or ETFs you choose. For
@@ -292,9 +292,10 @@ recommendations and resources:
 Check out the code to your local machine and install the Python dependencies:
 
 ```console
-poetry install
-poetry run autohooks activate
-poetry run thetagang -h
+# Install the pre-commit hooks
+uv run pre-commit instal
+# Run thetagang
+uv run thetagang -h
 ```
 
 You are now ready to make a splash! 🐳
