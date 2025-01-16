@@ -4,6 +4,7 @@ import toml
 from ib_async import IB, IBC, Contract, Watchdog, util
 from rich.console import Console
 
+from thetagang import log
 from thetagang.config import Config, normalize_config
 from thetagang.portfolio_manager import PortfolioManager
 
@@ -24,6 +25,7 @@ def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) ->
         util.logToFile(config.ib_async.logfile)
 
     async def onConnected() -> None:
+        log.info(f"Connected to IB Gateway, serverVersion={ib.client.serverVersion()}")
         await portfolio_manager.manage()
 
     ib = IB()
@@ -45,6 +47,7 @@ def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) ->
         # TWS version is pinned to current stable
         ibc_config = config.ibc
         ibc = IBC(1030, **ibc_config.to_dict())
+        log.info(f"Starting TWS with twsVersion={ibc.twsVersion}")
 
         ib.RaiseRequestErrors = ibc_config.RaiseRequestErrors
 
