@@ -293,7 +293,7 @@ Check out the code to your local machine and install the Python dependencies:
 
 ```console
 # Install the pre-commit hooks
-uv run pre-commit instal
+uv run pre-commit install
 # Run thetagang
 uv run thetagang -h
 ```
