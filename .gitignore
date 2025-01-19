@@ -149,3 +149,6 @@ cython_debug/
 
 # Ignore dotenv/direnv files
 .env*
+
+# Ignore notebooks
+*.ipynb

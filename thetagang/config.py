@@ -1,4 +1,5 @@
 import math
+from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
@@ -469,11 +470,34 @@ class SymbolConfig(BaseModel):
     no_trading: Optional[bool] = None
 
 
+class ActionWhenClosedEnum(str, Enum):
+    wait = "wait"
+    exit = "exit"
+    continue_ = "continue"
+
+
+class ExchangeHoursConfig(BaseModel, DisplayMixin):
+    exchange: str = Field(default="XNYS")
+    action_when_closed: ActionWhenClosedEnum = Field(default=ActionWhenClosedEnum.exit)
+    delay_after_open: int = Field(default=1800, ge=0)
+    delay_before_close: int = Field(default=1800, ge=0)
+    max_wait_until_open: int = Field(default=3600, ge=0)
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_row("[spring_green1]Exchange hours")
+        table.add_row("", "Exchange", "=", self.exchange)
+        table.add_row("", "Action when closed", "=", self.action_when_closed)
+        table.add_row("", "Delay after open", "=", f"{self.delay_after_open}s")
+        table.add_row("", "Delay before close", "=", f"{self.delay_before_close}s")
+        table.add_row("", "Max wait until open", "=", f"{self.max_wait_until_open}s")
+
+
 class Config(BaseModel, DisplayMixin):
     account: AccountConfig
     option_chains: OptionChainsConfig
     roll_when: RollWhenConfig
     target: TargetConfig
+    exchange_hours: ExchangeHoursConfig = Field(default_factory=ExchangeHoursConfig)
 
     orders: OrdersConfig = Field(default_factory=OrdersConfig)
     ib_async: IBAsyncConfig = Field(default_factory=IBAsyncConfig)
@@ -636,6 +660,7 @@ class Config(BaseModel, DisplayMixin):
 
         # Add all component tables
         self.account.add_to_table(config_table)
+        self.exchange_hours.add_to_table(config_table)
         if self.constants:
             self.constants.add_to_table(config_table)
         self.orders.add_to_table(config_table)
