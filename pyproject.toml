@@ -14,6 +14,7 @@ dependencies = [
   "pydantic>=2.10.2,<3",
   "annotated-types>=0.7.0,<0.8",
   "polyfactory>=2.18.1,<3",
+  "exchange-calendars>=4.8",
 ]
 description = "ThetaGang is an IBKR bot for getting money"
 license = "AGPL-3.0-only"

@@ -616,3 +616,41 @@ sell_threshold = 10000
       # ["noTakeLiq", "1"],
     ]
     strategy = "Vwap"
+
+[exchange_hours]
+# ThetaGang can check whether the market is open before running. This is useful
+# to avoid placing orders when the market is closed. We can also (for example)
+# avoid running too early (i.e., immediately after market open) to avoid the
+# initial volatility, or too late (i.e., immediately before market close) to
+# avoid the closing volatility.
+
+# The exchange to check for market hours. XNYS is the NYSE, but you can use any
+# of the ISO exchange codes from
+# https://github.com/gerrymanoim/exchange_calendars?tab=readme-ov-file#Calendars.
+#
+# For example, you'd use "XTKS" for the Tokyo Stock Exchange, "XLON" for the
+# London Stock Exchange, or "XHKG" for the Hong Kong Stock Exchange.
+exchange = "XNYS"
+
+# If the market is closed, we can either exit immediately, wait until it's
+# time to begin, or continue as normal. Specify "exit" to exit, "wait" to wait,
+# and "continue" to continue.
+#
+# Setting this to "continue" is equivalent to disabling this feature.
+action_when_closed = "exit"
+
+# The maximum amount of time, in seconds, to wait for the market to open if you
+# set `exchange_hours.action_when_closed = "wait"`. For example, a value of 3600
+# means ThetaGang will only wait for the market to open if it's within 1 hour of
+# the current time.
+max_wait_until_open = 3600
+
+# The amount of time, in seconds, after the market open, to wait before running
+# ThetaGang. For example, if this is set to 1800, ThetaGang will consider the
+# market closed until 30 minutes after the open.
+delay_after_open = 1800
+
+# The amount of time, in seconds, before the market close, to stop running
+# ThetaGang. For example, if set to 1800, ThetaGang will consider the market
+# closed 30 minutes prior to the actual close.
+delay_before_close = 1800

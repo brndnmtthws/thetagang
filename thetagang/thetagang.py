@@ -6,6 +6,7 @@ from rich.console import Console
 
 from thetagang import log
 from thetagang.config import Config, normalize_config
+from thetagang.exchange_hours import need_to_exit
 from thetagang.portfolio_manager import PortfolioManager
 
 util.patchAsyncio()
@@ -23,6 +24,10 @@ def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) ->
 
     if config.ib_async.logfile:
         util.logToFile(config.ib_async.logfile)
+
+    # Check if exchange is open before continuing
+    if need_to_exit(config.exchange_hours):
+        return
 
     async def onConnected() -> None:
         log.info(f"Connected to IB Gateway, serverVersion={ib.client.serverVersion()}")
