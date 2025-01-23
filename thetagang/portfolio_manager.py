@@ -2169,7 +2169,6 @@ class PortfolioManager:
                     log.info(
                         f"{contract.symbol}: Resubmitting {order.action} {contract.secType} order with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
                     )
-                    order.lmtPrice = float(updated_price)
 
                     # For some reason, we need to create a new order object
                     # and populate the fields rather than modifying the
@@ -2177,7 +2176,7 @@ class PortfolioManager:
                     order = LimitOrder(
                         order.action,
                         order.totalQuantity,
-                        updated_price,
+                        float(updated_price),
                         orderId=order.orderId,
                         algoStrategy=order.algoStrategy,
                         algoParams=order.algoParams,
