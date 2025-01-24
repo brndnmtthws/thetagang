@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 
 import exchange_calendars as xcals
 import pandas as pd
+from rich import box
+from rich.table import Table
 
 from thetagang import log
 from thetagang.config import ExchangeHoursConfig
@@ -22,7 +24,14 @@ def determine_action(config: ExchangeHoursConfig, now: datetime) -> str:
         start = open + pd.Timedelta(seconds=config.delay_after_open)
         end = close - pd.Timedelta(seconds=config.delay_before_close)
 
-        log.info(f"Exchange hours open={open}, close={close}, start={start}, end={end}")
+        table = Table(box=box.SIMPLE)
+        table.add_column("Exchange Hours")
+        table.add_column(config.exchange)
+        table.add_row("Open", str(open))
+        table.add_row("Close", str(close))
+        table.add_row("Start", str(start))
+        table.add_row("End", str(end))
+        log.print(table)
 
         if start <= now <= end:
             # Exchange is open
