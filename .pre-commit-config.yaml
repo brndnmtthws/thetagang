@@ -12,6 +12,9 @@ repos:
       # Run the linter.
       - id: ruff
         args: [--fix]
+        # Reorder imports.
+      - id: ruff
+        args: [check, --select, I, --fix]
       # Run the formatter.
       - id: ruff-format
   - repo: https://github.com/astral-sh/uv-pre-commit
