@@ -42,8 +42,8 @@ RUN apt-get update \
   xdg-utils \
   xvfb \
   && if test "$(dpkg --print-architecture)" = "armhf" ; then python3 -m pip config set global.extra-index-url https://www.piwheels.org/simple ; fi \
-  && echo '8c6c9dab4f9aae91482d857a4578b56e3cf222cb6930ee599ed4b1c166aba037  ibc.zip' | tee ibc.zip.sha256 \
-  && wget -q https://github.com/IbcAlpha/IBC/releases/download/3.18.0-Update.1/IBCLinux-3.18.0.zip -O ibc.zip \
+  && echo 'a3f9b93ea1ff6740d2880760fb73e1a6e63b454f86fe6366779ebd9cd41c1542  ibc.zip' | tee ibc.zip.sha256 \
+  && wget -q https://github.com/IbcAlpha/IBC/releases/download/3.20.0/IBCLinux-3.20.0.zip -O ibc.zip \
   && sha256sum -c ibc.zip.sha256 \
   && unzip ibc.zip -d /opt/ibc \
   && chmod o+x /opt/ibc/*.sh /opt/ibc/*/*.sh \
