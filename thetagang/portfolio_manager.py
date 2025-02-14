@@ -1432,8 +1432,6 @@ class PortfolioManager:
                     "BUY",
                     qty_to_roll,
                     round(price, 2),
-                    algoStrategy=self.get_algo_strategy(),
-                    algoParams=self.get_algo_params(),
                     tif="DAY",
                     account=self.account_number,
                 )

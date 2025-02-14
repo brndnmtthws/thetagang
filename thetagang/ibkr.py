@@ -203,7 +203,7 @@ class IBKR:
                 f"{trade.contract.symbol}: {trade.orderStatus.filled} filled, {trade.orderStatus.remaining} remaining"
             )
         if "Cancelled" in trade.orderStatus.status:
-            log.warning(f"{trade.contract.symbol}: Order cancelled")
+            log.warning(f"{trade.contract.symbol}: Order cancelled, trade={trade}")
         else:
             log.info(
                 f"{trade.contract.symbol}: Order updated with status={trade.orderStatus.status}"
