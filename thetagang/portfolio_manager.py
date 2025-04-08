@@ -1257,7 +1257,7 @@ class PortfolioManager:
                     )
                     price = ticker.minTick
 
-                # Round VIX prices to nearest $0.05
+                # Round VIX prices according to contract specifications
                 if position.contract.symbol == "VIX":
                     price = self.round_vix_price(price)
 
@@ -1400,7 +1400,7 @@ class PortfolioManager:
                     else price
                 )
 
-                # Round VIX prices to nearest $0.05
+                # Round VIX prices according to contract specifications
                 if position.contract.symbol == "VIX":
                     price = self.round_vix_price(price)
 
@@ -1839,7 +1839,7 @@ class PortfolioManager:
                             position.contract
                         )
                         price = round(get_lower_price(sell_ticker), 2)
-                        # Round VIX price to nearest $0.05 to conform to contract spec
+                        # Round VIX price according to contract specifications
                         price = self.round_vix_price(price)
                         qty = abs(position.position)
                         order = LimitOrder(
@@ -1939,7 +1939,7 @@ class PortfolioManager:
                             f"Something went wrong, buy_ticker={buy_ticker}"
                         )
                     price = round(get_lower_price(buy_ticker), 2)
-                    # Round VIX price to nearest $0.05 to conform to contract spec
+                    # Round VIX price according to contract specifications
                     price = self.round_vix_price(price)
                     qty = math.floor(
                         allocation_amount
@@ -2171,8 +2171,8 @@ class PortfolioManager:
                     ]
                 )
 
-                # Round VIX prices to nearest $0.05
                 if trade.contract.symbol == "VIX":
+                    # Round VIX prices according to contract specifications
                     updated_price = self.round_vix_price(updated_price)
 
                 # We only want to tighten spreads, not widen them. If the
