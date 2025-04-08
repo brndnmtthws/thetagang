@@ -1257,6 +1257,10 @@ class PortfolioManager:
                     )
                     price = ticker.minTick
 
+                # Round VIX prices according to contract specifications
+                if position.contract.symbol == "VIX":
+                    price = self.round_vix_price(price)
+
                 qty = abs(position.position)
                 order = LimitOrder(
                     "BUY" if is_short else "SELL",
@@ -1395,6 +1399,10 @@ class PortfolioManager:
                     if getattr(self.config.roll_when, kind).credit_only
                     else price
                 )
+
+                # Round VIX prices according to contract specifications
+                if position.contract.symbol == "VIX":
+                    price = self.round_vix_price(price)
 
                 # store a copy of the contracts so we can retrieve them later by conId
                 self.qualified_contracts[position.contract.conId] = position.contract
@@ -1757,6 +1765,17 @@ class PortfolioManager:
     def get_order_exchange(self) -> str:
         return self.config.orders.exchange
 
+    def round_vix_price(self, price: float) -> float:
+        """
+        Rounds a VIX price according to contract specifications:
+        - For prices below $3: round to nearest $0.01
+        - For prices $3 and above: round to nearest $0.05
+        """
+        if price >= 3.0:
+            return round(price * 20) / 20  # Round to nearest $0.05
+        else:
+            return round(price * 100) / 100  # Round to nearest $0.01
+
     async def do_vix_hedging(
         self,
         account_summary: Dict[str, AccountValue],
@@ -1820,6 +1839,8 @@ class PortfolioManager:
                             position.contract
                         )
                         price = round(get_lower_price(sell_ticker), 2)
+                        # Round VIX price according to contract specifications
+                        price = self.round_vix_price(price)
                         qty = abs(position.position)
                         order = LimitOrder(
                             "SELL",
@@ -1918,6 +1939,8 @@ class PortfolioManager:
                             f"Something went wrong, buy_ticker={buy_ticker}"
                         )
                     price = round(get_lower_price(buy_ticker), 2)
+                    # Round VIX price according to contract specifications
+                    price = self.round_vix_price(price)
                     qty = math.floor(
                         allocation_amount
                         / price
@@ -2147,6 +2170,10 @@ class PortfolioManager:
                         math.fabs(round((order.lmtPrice + ticker.midpoint()) / 2.0, 2)),
                     ]
                 )
+
+                if trade.contract.symbol == "VIX":
+                    # Round VIX prices according to contract specifications
+                    updated_price = self.round_vix_price(updated_price)
 
                 # We only want to tighten spreads, not widen them. If the
                 # resulting price change would increase the spread, we'll
