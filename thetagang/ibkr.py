@@ -134,21 +134,46 @@ class IBKR:
         optional_fields: List[TickerField] = [TickerField.MIDPOINT],
     ) -> Ticker:
         required_handlers = [
-            self.__ticker_field_handler__(field) for field in required_fields
+            (field, self.__ticker_field_handler__(field)) for field in required_fields
         ]
         optional_handlers = [
-            self.__ticker_field_handler__(field) for field in optional_fields
+            (field, self.__ticker_field_handler__(field)) for field in optional_fields
         ]
 
         async def ticker_handler(ticker: Ticker) -> None:
-            required_tasks = [handler(ticker) for handler in required_handlers]
-            optional_tasks = [handler(ticker) for handler in optional_handlers]
-            required_results, optional_results = await asyncio.gather(
-                asyncio.gather(*required_tasks), asyncio.gather(*optional_tasks)
+            required_tasks = [handler(ticker) for _, handler in required_handlers]
+            optional_tasks = [handler(ticker) for _, handler in optional_handlers]
+
+            # Gather results, allowing optional tasks to potentially fail (timeout)
+            results = await asyncio.gather(
+                asyncio.gather(*required_tasks),
+                asyncio.gather(
+                    *optional_tasks, return_exceptions=False
+                ),  # Don't raise exceptions here for optional
             )
-            if not all(required_results):
+            required_results = results[0]
+            optional_results = results[1]
+
+            # Check required results
+            failed_required_fields = [
+                field.name
+                for i, (field, _) in enumerate(required_handlers)
+                if not required_results[i]
+            ]
+            if failed_required_fields:
                 raise RequiredFieldValidationError(
-                    "Not all required fields were processed successfully"
+                    f"Required fields timed out for {contract.localSymbol}: {', '.join(failed_required_fields)}"
+                )
+
+            # Log warnings for optional results that timed out
+            failed_optional_fields = [
+                field.name
+                for i, (field, _) in enumerate(optional_handlers)
+                if not optional_results[i]
+            ]
+            if failed_optional_fields:
+                log.warning(
+                    f"Optional fields timed out for {contract.localSymbol}: {', '.join(failed_optional_fields)}"
                 )
 
         return await self.__market_data_streaming_handler__(
@@ -265,7 +290,16 @@ class IBKR:
             )
             for trade in trades
         ]
-        await log.track_async(tasks, "Waiting for orders to be submitted...")
+        results = await log.track_async(tasks, "Waiting for orders to be submitted...")
+        if not all(results):
+            failed_trades = [
+                f"{trade.contract.symbol} (OrderId: {trade.order.orderId})"
+                for i, trade in enumerate(trades)
+                if not results[i]
+            ]
+            raise RuntimeError(
+                f"Timeout waiting for orders to submit: {', '.join(failed_trades)}"
+            )
 
     async def wait_for_orders_complete(
         self, trades: List[Trade], timetout: int = 60
@@ -278,7 +312,18 @@ class IBKR:
             )
             for trade in trades
         ]
-        await log.track_async(tasks, description="Waiting for orders to complete...")
+        results = await log.track_async(
+            tasks, description="Waiting for orders to complete..."
+        )
+        if not all(results):
+            incomplete_trades = [
+                f"{trade.contract.symbol} (OrderId: {trade.order.orderId})"
+                for i, trade in enumerate(trades)
+                if not results[i]
+            ]
+            log.warning(
+                f"Timeout waiting for orders to complete: {', '.join(incomplete_trades)}"
+            )
 
     async def __trade_wait_for_condition__(
         self, trade: Trade, condition: Callable[[Trade], bool], timeout: float
