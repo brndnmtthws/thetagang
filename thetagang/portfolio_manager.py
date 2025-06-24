@@ -2232,7 +2232,7 @@ class PortfolioManager:
         self, ticker: Ticker, right: str
     ) -> tuple[float, float]:
         assert ticker.contract is not None
-        close_price = self.get_safe_close_price(ticker)
+        close_price = self.get_close_price(ticker)
         absolute_daily_change = math.fabs(ticker.marketPrice() - close_price)
 
         threshold_sigma = self.config.get_write_threshold_sigma(
