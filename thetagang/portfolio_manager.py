@@ -58,6 +58,14 @@ class NoValidContractsError(Exception):
 
 
 class PortfolioManager:
+    @staticmethod
+    def get_close_price(ticker: Ticker) -> float:
+        """Get the close price from ticker, falling back to market price if close is NaN.
+
+        This handles the ib_async v2.0.1 change where ticker.close defaults to NaN.
+        """
+        return ticker.close if not util.isNan(ticker.close) else ticker.marketPrice()
+
     def __init__(
         self,
         config: Config,
@@ -795,18 +803,19 @@ class PortfolioManager:
                     symbol, "C"
                 )
 
-                if not can_write_when_green and ticker.marketPrice() > ticker.close:
+                close_price = self.get_close_price(ticker)
+                if not can_write_when_green and ticker.marketPrice() > close_price:
                     call_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice():.2f} > close={ticker.close}",
+                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice():.2f} > close={close_price}",
                     )
                     return False
-                if not can_write_when_red and ticker.marketPrice() < ticker.close:
+                if not can_write_when_red and ticker.marketPrice() < close_price:
                     call_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice():.2f} < close={ticker.close}",
+                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice():.2f} < close={close_price}",
                     )
                     return False
 
@@ -1111,18 +1120,19 @@ class PortfolioManager:
                     symbol, "P"
                 )
 
-                if not can_write_when_green and ticker.marketPrice() > ticker.close:
+                close_price = self.get_close_price(ticker)
+                if not can_write_when_green and ticker.marketPrice() > close_price:
                     put_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice():.2f} > close={ticker.close}",
+                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice():.2f} > close={close_price}",
                     )
                     return False
-                if not can_write_when_red and ticker.marketPrice() < ticker.close:
+                if not can_write_when_red and ticker.marketPrice() < close_price:
                     put_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice():.2f} < close={ticker.close}",
+                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice():.2f} < close={close_price}",
                     )
                     return False
 
@@ -2222,7 +2232,8 @@ class PortfolioManager:
         self, ticker: Ticker, right: str
     ) -> tuple[float, float]:
         assert ticker.contract is not None
-        absolute_daily_change = math.fabs(ticker.marketPrice() - ticker.close)
+        close_price = self.get_close_price(ticker)
+        absolute_daily_change = math.fabs(ticker.marketPrice() - close_price)
 
         threshold_sigma = self.config.get_write_threshold_sigma(
             ticker.contract.symbol,
@@ -2236,7 +2247,7 @@ class PortfolioManager:
             stddev = np.std(np.diff(log_prices), ddof=1)
 
             return (
-                ticker.close * (np.exp(stddev) - 1).astype(float) * threshold_sigma,
+                close_price * (np.exp(stddev) - 1).astype(float) * threshold_sigma,
                 absolute_daily_change,
             )
         else:
@@ -2244,4 +2255,4 @@ class PortfolioManager:
                 ticker.contract.symbol,
                 right,
             )
-            return (threshold_perc * ticker.close, absolute_daily_change)
+            return (threshold_perc * close_price, absolute_daily_change)
