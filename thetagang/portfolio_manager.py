@@ -1590,6 +1590,9 @@ class PortfolioManager:
 
         contracts = await self.ibkr.qualify_contracts(*contracts)
 
+        # Filter out None values
+        contracts = [c for c in contracts if c is not None]
+
         # exclude strike, but only for the first exp
         if exclude_exp_strike:
             contracts = [
