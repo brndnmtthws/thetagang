@@ -20,7 +20,7 @@ description = "ThetaGang is an IBKR bot for getting money"
 license = "AGPL-3.0-only"
 name = "thetagang"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.10,<3.14"
 version = "1.15.1"
 
   [project.urls]
