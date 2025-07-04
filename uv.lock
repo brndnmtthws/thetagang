@@ -624,7 +624,7 @@ wheels = [
 
 [[package]]
 name = "thetagang"
-version = "1.14.2"
+version = "1.15.0"
 source = { editable = "." }
 dependencies = [
     { name = "annotated-types" },
