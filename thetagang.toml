@@ -347,6 +347,11 @@ minimum_open_interest = 10
   # The target delta may also be specified per-symbol, and takes precedence over
   # `target.delta` or `target.puts/calls.delta`. You can specify a value for the
   # symbol, or override individually for puts/calls.
+  #
+  # Additionally, you can enable buy-only rebalancing for any symbol by setting
+  # `buy_only_rebalancing = true`. This will cause the bot to buy shares directly
+  # instead of writing puts, which is useful for maintaining core positions in
+  # certain assets. See the TLT example below for more details.
   [symbols.SPY]
   weight = 0.4
 
@@ -445,6 +450,28 @@ minimum_open_interest = 10
   # parts = 20
   # Override delta for this particular symbol, for both puts and calls.
   delta = 0.4
+
+  # Buy-only rebalancing: this will buy shares directly instead of writing puts
+  # to build the position. This is useful for symbols where you want to maintain
+  # a core position without the complexity of options.
+  #
+  # When buy_only_rebalancing = true:
+  # - The bot will never write puts for this symbol
+  # - It will buy shares directly when below target allocation
+  # - It will only buy (never sell) to maintain target weight
+  # - You can still write covered calls on the shares you own
+  # - The position is built through direct stock purchases instead of CSPs
+  #
+  # Minimum thresholds (optional):
+  # - buy_only_min_threshold_shares: Minimum number of shares to buy (default: 1)
+  # - buy_only_min_threshold_amount: Minimum dollar amount for a purchase
+  #   * Dollar amount takes precedence over share count
+  #   * If min amount < 1 share price, it rounds up to 1 share
+  #
+  # Examples:
+  # buy_only_rebalancing = true
+  # buy_only_min_threshold_shares = 10  # Only buy if buying at least 10 shares
+  # buy_only_min_threshold_amount = 1000.0  # Only buy if order is at least $1000
 
   [symbols.ABNB]
   # For symbols that require an exchange, which is typically any company stock,

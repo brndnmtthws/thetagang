@@ -468,6 +468,9 @@ class SymbolConfig(BaseModel):
     puts: Optional["SymbolConfig.Puts"] = None
     adjust_price_after_delay: bool = Field(default=False)
     no_trading: Optional[bool] = None
+    buy_only_rebalancing: Optional[bool] = None
+    buy_only_min_threshold_shares: Optional[int] = Field(default=None, ge=1)
+    buy_only_min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
 
 
 class ActionWhenClosedEnum(str, Enum):
@@ -512,6 +515,10 @@ class Config(BaseModel, DisplayMixin):
     def trading_is_allowed(self, symbol: str) -> bool:
         symbol_config = self.symbols.get(symbol)
         return not symbol_config or not symbol_config.no_trading
+
+    def is_buy_only_rebalancing(self, symbol: str) -> bool:
+        symbol_config = self.symbols.get(symbol)
+        return symbol_config is not None and symbol_config.buy_only_rebalancing is True
 
     def symbol_config(self, symbol: str) -> Optional[SymbolConfig]:
         return self.symbols.get(symbol)
@@ -617,6 +624,7 @@ class Config(BaseModel, DisplayMixin):
         )
         table.add_column("Symbol")
         table.add_column("Weight", justify="right")
+        table.add_column("Buy-only", justify="center")
         table.add_column("Call delta", justify="right")
         table.add_column("Call strike limit", justify="right")
         table.add_column("Call threshold", justify="right")
@@ -640,6 +648,7 @@ class Config(BaseModel, DisplayMixin):
             table.add_row(
                 symbol,
                 pfmt(sconfig.weight or 0.0),
+                "✓" if sconfig.buy_only_rebalancing else "",
                 ffmt(self.get_target_delta(symbol, "C")),
                 dfmt(sconfig.calls.strike_limit if sconfig.calls else None),
                 call_thresh,
