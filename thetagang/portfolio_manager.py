@@ -555,6 +555,18 @@ class PortfolioManager:
             log.print(call_actions_table)
             await self.write_calls(calls_to_write)
 
+            # Check for buy-only rebalancing positions
+            (
+                buy_actions_table,
+                stocks_to_buy,
+            ) = await self.check_buy_only_positions(
+                account_summary, portfolio_positions
+            )
+
+            if stocks_to_buy:
+                log.print(buy_actions_table)
+                await self.execute_buy_orders(stocks_to_buy)
+
             # Refresh positions, in case anything changed from the orders above
             portfolio_positions = self.get_portfolio_positions()
 
@@ -1053,13 +1065,20 @@ class PortfolioManager:
                 net_short_call_count = short_call_count = long_call_count = 0
                 short_call_avg_strike = long_call_avg_strike = None
 
-            qty_to_write = math.floor(
-                self.target_quantities[symbol]
-                - current_position
-                - 100 * net_short_put_count
-            )
-            net_target_shares = qty_to_write
-            net_target_puts = net_target_shares // 100
+            # Check if this symbol is in buy-only rebalancing mode
+            if self.config.is_buy_only_rebalancing(symbol):
+                # For buy-only symbols, we don't subtract puts from target
+                qty_to_write = 0  # No puts to write
+                net_target_shares = self.target_quantities[symbol] - current_position
+                net_target_puts = 0
+            else:
+                qty_to_write = math.floor(
+                    self.target_quantities[symbol]
+                    - current_position
+                    - 100 * net_short_put_count
+                )
+                net_target_shares = qty_to_write
+                net_target_puts = net_target_shares // 100
 
             if calculate_net_contracts:
                 positions_summary_table.add_row(
@@ -1114,6 +1133,10 @@ class PortfolioManager:
                 puts_to_write: int,
             ) -> bool:
                 if puts_to_write <= 0 or not self.config.trading_is_allowed(symbol):
+                    return False
+
+                # Skip put writing for buy-only rebalancing symbols
+                if self.config.is_buy_only_rebalancing(symbol):
                     return False
 
                 (can_write_when_green, can_write_when_red) = self.config.can_write_when(
@@ -1219,6 +1242,233 @@ class PortfolioManager:
         await log.track_async(tasks, description="Generating positions summary...")
 
         return (positions_summary_table, put_actions_table, to_write)
+
+    async def check_buy_only_positions(
+        self,
+        account_summary: Dict[str, AccountValue],
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+    ) -> Tuple[Table, List[Tuple[str, str, int]]]:
+        """Check which buy-only rebalancing symbols need direct stock purchases."""
+        # Get stock positions
+        stock_positions = [
+            position
+            for symbol in portfolio_positions
+            for position in portfolio_positions[symbol]
+            if isinstance(position.contract, Stock)
+        ]
+
+        total_buying_power = self.get_buying_power(account_summary)
+
+        stock_symbols: Dict[str, PortfolioItem] = dict()
+        for stock in stock_positions:
+            symbol = stock.contract.symbol
+            stock_symbols[symbol] = stock
+
+        buy_actions_table = Table(title="Buy-only rebalancing summary")
+        buy_actions_table.add_column("Symbol")
+        buy_actions_table.add_column("Current shares", justify="right")
+        buy_actions_table.add_column("Target shares", justify="right")
+        buy_actions_table.add_column("Shares to buy", justify="right")
+        buy_actions_table.add_column("Action")
+
+        to_buy: List[Tuple[str, str, int]] = []
+
+        # Only check symbols configured for buy-only rebalancing
+        buy_only_symbols = [
+            symbol
+            for symbol in self.config.symbols.keys()
+            if self.config.is_buy_only_rebalancing(symbol)
+        ]
+
+        if not buy_only_symbols:
+            return (buy_actions_table, to_buy)
+
+        async def check_buy_position_task(symbol: str) -> None:
+            ticker = await self.ibkr.get_ticker_for_stock(
+                symbol, self.get_primary_exchange(symbol)
+            )
+
+            current_position = math.floor(
+                stock_symbols[symbol].position if symbol in stock_symbols else 0
+            )
+
+            target_value = round(
+                self.config.symbols[symbol].weight * total_buying_power, 2
+            )
+            market_price = ticker.marketPrice()
+            if (
+                not market_price
+                or math.isnan(market_price)
+                or math.isclose(market_price, 0)
+            ):
+                log.error(
+                    f"Invalid market price for {symbol} (market_price={market_price}), skipping for now"
+                )
+                return
+
+            target_shares = math.floor(target_value / market_price)
+            shares_to_buy = target_shares - current_position
+
+            # Check minimum thresholds
+            symbol_config = self.config.symbols[symbol]
+            min_shares = symbol_config.buy_only_min_threshold_shares or 1
+            min_amount = symbol_config.buy_only_min_threshold_amount
+
+            # If we're below target but target is less than minimum shares,
+            # check if we should still buy to meet minimum threshold
+            if shares_to_buy <= 0 and current_position == 0 and target_value > 0:
+                # Check if min_amount is less than 1 share and we should buy 1 share
+                if min_amount and min_amount < market_price:
+                    shares_to_buy = 1 - current_position
+                elif not min_amount and min_shares == 1:
+                    # Default behavior: buy at least 1 share if we have any allocation
+                    shares_to_buy = 1 - current_position
+
+            # Only buy if we need more shares (never sell in buy-only mode)
+            if shares_to_buy > 0:
+                # Check if we meet the minimum thresholds
+                order_amount = shares_to_buy * market_price
+
+                # Dollar amount threshold takes precedence
+                if min_amount and order_amount < min_amount:
+                    # If dollar amount is less than 1 share worth, round up to 1 share
+                    if min_amount < market_price:
+                        shares_to_buy = 1
+                        order_amount = market_price
+                    else:
+                        buy_actions_table.add_row(
+                            symbol,
+                            ifmt(current_position),
+                            ifmt(target_shares),
+                            ifmt(shares_to_buy),
+                            f"[yellow]Below min amount ${min_amount:.2f} (would be ${order_amount:.2f})",
+                        )
+                        return
+
+                # Check minimum shares threshold
+                if shares_to_buy < min_shares:
+                    buy_actions_table.add_row(
+                        symbol,
+                        ifmt(current_position),
+                        ifmt(target_shares),
+                        ifmt(shares_to_buy),
+                        f"[yellow]Below min shares {min_shares}",
+                    )
+                    return
+
+                # Check if we have enough buying power
+                cost = shares_to_buy * market_price
+                available_buying_power = self.get_buying_power(account_summary)
+
+                if cost > available_buying_power:
+                    # Adjust shares to what we can afford
+                    shares_to_buy = math.floor(available_buying_power / market_price)
+
+                    # Re-check thresholds after adjustment
+                    order_amount = shares_to_buy * market_price
+                    if min_amount and order_amount < min_amount:
+                        # If we can afford at least 1 share and min amount is less than 1 share, buy 1
+                        if (
+                            available_buying_power >= market_price
+                            and min_amount < market_price
+                        ):
+                            shares_to_buy = 1
+                        else:
+                            buy_actions_table.add_row(
+                                symbol,
+                                ifmt(current_position),
+                                ifmt(target_shares),
+                                ifmt(0),
+                                f"[yellow]Insufficient buying power to meet min amount ${min_amount:.2f}",
+                            )
+                            return
+                    if shares_to_buy < min_shares:
+                        buy_actions_table.add_row(
+                            symbol,
+                            ifmt(current_position),
+                            ifmt(target_shares),
+                            ifmt(0),
+                            f"[yellow]Insufficient buying power to meet min shares {min_shares}",
+                        )
+                        return
+
+                if shares_to_buy > 0:
+                    buy_actions_table.add_row(
+                        symbol,
+                        ifmt(current_position),
+                        ifmt(target_shares),
+                        ifmt(shares_to_buy),
+                        f"[green]Buy {shares_to_buy} shares",
+                    )
+                    to_buy.append(
+                        (symbol, self.get_primary_exchange(symbol), shares_to_buy)
+                    )
+                else:
+                    buy_actions_table.add_row(
+                        symbol,
+                        ifmt(current_position),
+                        ifmt(target_shares),
+                        ifmt(0),
+                        "[yellow]Insufficient buying power",
+                    )
+            else:
+                buy_actions_table.add_row(
+                    symbol,
+                    ifmt(current_position),
+                    ifmt(target_shares),
+                    ifmt(0),
+                    "[cyan]At or above target",
+                )
+
+        tasks = [check_buy_position_task(symbol) for symbol in buy_only_symbols]
+        await log.track_async(tasks, description="Checking buy-only positions...")
+
+        return (buy_actions_table, to_buy)
+
+    async def execute_buy_orders(self, buy_orders: List[Tuple[str, str, int]]) -> None:
+        """Execute direct stock buy orders for buy-only rebalancing symbols."""
+        for symbol, primary_exchange, quantity in buy_orders:
+            try:
+                stock_contract = Stock(
+                    symbol,
+                    self.get_order_exchange(),
+                    currency="USD",
+                    primaryExchange=primary_exchange,
+                )
+
+                # Get current market price
+                ticker = await self.ibkr.get_ticker_for_contract(
+                    stock_contract,
+                    required_fields=[],
+                    optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
+                )
+
+                # Use limit order at midpoint or slightly above ask
+                limit_price = round(midpoint_or_market_price(ticker), 2)
+
+                # Create buy order
+                order = LimitOrder(
+                    "BUY",
+                    quantity,
+                    limit_price,
+                    algoStrategy=self.get_algo_strategy(),
+                    algoParams=self.get_algo_params(),
+                    tif="DAY",
+                    account=self.account_number,
+                )
+
+                log.notice(
+                    f"Buy-only rebalancing: buying {quantity} shares of {symbol} @ ${limit_price}"
+                )
+
+                # Enqueue order for later submission
+                self.enqueue_order(stock_contract, order)
+
+            except Exception as e:
+                log.error(
+                    f"{symbol}: Failed to execute buy order for {quantity} shares. Error: {e}"
+                )
+                continue
 
     async def close_puts(self, puts: List[PortfolioItem]) -> None:
         return await self.close_positions("P", puts)
@@ -1987,7 +2237,10 @@ class PortfolioManager:
                 return float(
                     self.qualified_contracts[contract.comboLegs[0].conId].multiplier
                 )
-            return float(contract.multiplier)
+            elif contract.secType == "STK":
+                # Stock contracts have a multiplier of 1
+                return 1.0
+            return float(contract.multiplier or 100)
 
         return sum(
             [
