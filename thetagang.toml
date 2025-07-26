@@ -465,13 +465,15 @@ minimum_open_interest = 10
   # Minimum thresholds (optional):
   # - buy_only_min_threshold_shares: Minimum number of shares to buy (default: 1)
   # - buy_only_min_threshold_amount: Minimum dollar amount for a purchase
-  #   * Dollar amount takes precedence over share count
+  # - buy_only_min_threshold_percent: Minimum as percentage of net liquidation value
+  #   * Priority: percent-based (if specified) > dollar amount > share count
   #   * If min amount < 1 share price, it rounds up to 1 share
   #
   # Examples:
   # buy_only_rebalancing = true
   # buy_only_min_threshold_shares = 10  # Only buy if buying at least 10 shares
   # buy_only_min_threshold_amount = 1000.0  # Only buy if order is at least $1000
+  # buy_only_min_threshold_percent = 0.01  # Only buy if order is at least 1% of NLV
 
   [symbols.ABNB]
   # For symbols that require an exchange, which is typically any company stock,
