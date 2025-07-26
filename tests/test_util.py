@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from ib_async import Option, Order, PortfolioItem
 from ib_async.contract import Stock
 
-from thetagang.test_config import (
+from tests.test_config import (
     ConfigFactory,
     SymbolConfigFactory,
     SymbolConfigPutsFactory,
