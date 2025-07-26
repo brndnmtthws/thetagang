@@ -1313,6 +1313,18 @@ class PortfolioManager:
             symbol_config = self.config.symbols[symbol]
             min_shares = symbol_config.buy_only_min_threshold_shares or 1
             min_amount = symbol_config.buy_only_min_threshold_amount
+            min_percent = symbol_config.buy_only_min_threshold_percent
+
+            # Calculate minimum amount from percentage if specified
+            if min_percent is not None:
+                # Get net liquidation value from account summary
+                net_liquidation_value = float(account_summary["NetLiquidation"].value)
+                percent_min_amount = net_liquidation_value * min_percent
+                # If both percent and amount are specified, use the larger one
+                if min_amount is not None:
+                    min_amount = max(min_amount, percent_min_amount)
+                else:
+                    min_amount = percent_min_amount
 
             # If we're below target but target is less than minimum shares,
             # check if we should still buy to meet minimum threshold

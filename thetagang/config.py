@@ -471,6 +471,9 @@ class SymbolConfig(BaseModel):
     buy_only_rebalancing: Optional[bool] = None
     buy_only_min_threshold_shares: Optional[int] = Field(default=None, ge=1)
     buy_only_min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
+    buy_only_min_threshold_percent: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
 
 
 class ActionWhenClosedEnum(str, Enum):

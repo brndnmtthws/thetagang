@@ -1,0 +1,2 @@
+[lint.per-file-ignores]
+"thetagang/test_*.py" = ["ANN"]
