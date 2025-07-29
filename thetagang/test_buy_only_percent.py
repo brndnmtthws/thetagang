@@ -45,6 +45,7 @@ class TestBuyOnlyPercentageThreshold:
                 buy_only_min_threshold_shares=None,
                 buy_only_min_threshold_amount=None,
                 buy_only_min_threshold_percent=0.02,  # 2% of NLV
+                buy_only_min_threshold_percent_relative=None,
             ),
         }
         portfolio_manager.config.is_buy_only_rebalancing = mocker.Mock(
@@ -98,6 +99,7 @@ class TestBuyOnlyPercentageThreshold:
                 buy_only_min_threshold_shares=None,
                 buy_only_min_threshold_amount=None,
                 buy_only_min_threshold_percent=0.01,  # 1% of NLV
+                buy_only_min_threshold_percent_relative=None,
             ),
         }
         portfolio_manager.config.is_buy_only_rebalancing = mocker.Mock(
@@ -152,6 +154,7 @@ class TestBuyOnlyPercentageThreshold:
                 buy_only_min_threshold_shares=None,
                 buy_only_min_threshold_amount=1000.0,  # $1000
                 buy_only_min_threshold_percent=0.025,  # 2.5% of NLV
+                buy_only_min_threshold_percent_relative=None,
             ),
         }
         portfolio_manager.config.is_buy_only_rebalancing = mocker.Mock(
@@ -205,6 +208,7 @@ class TestBuyOnlyPercentageThreshold:
                 buy_only_min_threshold_shares=None,
                 buy_only_min_threshold_amount=3000.0,  # $3000
                 buy_only_min_threshold_percent=0.005,  # 0.5% of NLV = $500
+                buy_only_min_threshold_percent_relative=None,
             ),
         }
         portfolio_manager.config.is_buy_only_rebalancing = mocker.Mock(

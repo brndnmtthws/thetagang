@@ -41,6 +41,7 @@ dev = [
   "pytest-asyncio>=0.23.0,<0.24",
   "pytest-watch>=4.2.0,<5",
   "ruff>=0.9.1,<0.10.0",
+  "pyright>=1.1.388",
 ]
 
 [tool.ruff]
