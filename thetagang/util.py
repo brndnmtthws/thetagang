@@ -223,7 +223,9 @@ def get_target_calls(
 def would_increase_spread(order: Order, updated_price: float) -> bool:
     return (
         order.action == "BUY"
+        and order.lmtPrice is not None
         and updated_price < order.lmtPrice
         or order.action == "SELL"
+        and order.lmtPrice is not None
         and updated_price > order.lmtPrice
     )

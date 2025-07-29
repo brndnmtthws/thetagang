@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum
-from typing import Any, Awaitable, Callable, List, Optional
+from typing import Any, Awaitable, Callable, Coroutine, List, Optional
 
 from ib_async import (
     IB,
@@ -85,7 +85,17 @@ class IBKR:
         )
 
     async def qualify_contracts(self, *contracts: Contract) -> List[Contract]:
-        return await self.ib.qualifyContractsAsync(*contracts)
+        results = await self.ib.qualifyContractsAsync(*contracts)
+        # Filter out None values and flatten any nested lists
+        qualified: List[Contract] = []
+        for result in results:
+            if result is None:
+                continue
+            elif isinstance(result, list):
+                qualified.extend(c for c in result if c is not None)
+            else:
+                qualified.append(result)
+        return qualified
 
     async def get_ticker_for_stock(
         self,
@@ -119,7 +129,9 @@ class IBKR:
                 contract, generic_tick_list, required_fields, optional_fields
             )
 
-        tasks = [get_ticker_task(contract) for contract in contracts]
+        tasks: List[Coroutine[Any, Any, Ticker]] = [
+            get_ticker_task(contract) for contract in contracts
+        ]
         tickers = await log.track_async(
             tasks,
             description=f"{underlying_symbol}: Gathering tickers, waiting for required & optional fields...",
@@ -281,7 +293,7 @@ class IBKR:
     async def wait_for_submitting_orders(
         self, trades: List[Trade], timetout: int = 60
     ) -> None:
-        tasks = [
+        tasks: List[Coroutine[Any, Any, bool]] = [
             self.__trade_wait_for_condition__(
                 trade,
                 lambda trade: trade.orderStatus.status
@@ -304,7 +316,7 @@ class IBKR:
     async def wait_for_orders_complete(
         self, trades: List[Trade], timetout: int = 60
     ) -> None:
-        tasks = [
+        tasks: List[Coroutine[Any, Any, bool]] = [
             self.__trade_wait_for_condition__(
                 trade,
                 lambda trade: trade.isDone(),

@@ -744,7 +744,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "pre-commit", specifier = ">=4.0.1" },
-    { name = "pyright", specifier = ">=1.1.388" },
+    { name = "pyright", specifier = ">=1.1.403" },
     { name = "pytest", specifier = ">=8.0.0,<9" },
     { name = "pytest-asyncio", specifier = ">=0.23.0,<0.24" },
     { name = "pytest-mock", specifier = ">=3.14.0,<4" },

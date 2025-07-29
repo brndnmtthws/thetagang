@@ -39,7 +39,7 @@ class Orders:
                 contract.exchange,
                 Pretty(contract, indent_size=2),
                 order.action,
-                dfmt(order.lmtPrice),
+                dfmt(float(order.lmtPrice) if order.lmtPrice is not None else None),
                 ifmt(int(order.totalQuantity)),
             )
 
