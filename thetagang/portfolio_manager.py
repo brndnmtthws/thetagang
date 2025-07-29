@@ -804,6 +804,7 @@ class PortfolioManager:
                 symbol: str,
                 ticker: Optional[Ticker],
                 calls_to_write: int,
+                stock_count: int,
             ) -> bool:
                 nonlocal write_threshold, absolute_daily_change
                 if (
@@ -846,9 +847,67 @@ class PortfolioManager:
                         f" less than write_threshold={write_threshold:.2f}",
                     )
                     return False
+
+                # Check call writing thresholds
+                symbol_config = self.config.symbols[symbol]
+                # Use symbol-specific value if set, otherwise use global default
+                min_percent = symbol_config.write_calls_only_min_threshold_percent
+                if min_percent is None:
+                    min_percent = self.config.write_when.calls.min_threshold_percent
+
+                min_percent_relative = (
+                    symbol_config.write_calls_only_min_threshold_percent_relative
+                )
+                if min_percent_relative is None:
+                    min_percent_relative = (
+                        self.config.write_when.calls.min_threshold_percent_relative
+                    )
+
+                if min_percent is not None or min_percent_relative is not None:
+                    # Get current stock value
+                    current_stock_value = stock_count * ticker.marketPrice()
+
+                    # Check absolute threshold
+                    if min_percent is not None:
+                        net_liquidation_value = float(
+                            account_summary["NetLiquidation"].value
+                        )
+                        position_percent = current_stock_value / net_liquidation_value
+
+                        if position_percent < min_percent:
+                            call_actions_table.add_row(
+                                symbol,
+                                "[yellow]None",
+                                f"[yellow]Position {position_percent:.1%} of NLV below threshold {min_percent:.1%}",
+                            )
+                            return False
+
+                    # Check relative threshold
+                    if (
+                        min_percent_relative is not None
+                        and self.target_quantities.get(symbol, 0) > 0
+                    ):
+                        target_value = (
+                            self.target_quantities[symbol] * ticker.marketPrice()
+                        )
+                        if target_value > 0:
+                            relative_excess = (
+                                current_stock_value - target_value
+                            ) / target_value
+
+                            if relative_excess < min_percent_relative:
+                                call_actions_table.add_row(
+                                    symbol,
+                                    "[yellow]None",
+                                    f"[yellow]Position excess {relative_excess:.1%} below threshold {min_percent_relative:.1%}",
+                                )
+                                return False
+
                 return True
 
-            ok_to_write = await is_ok_to_write_calls(symbol, ticker, calls_to_write)
+            ok_to_write = await is_ok_to_write_calls(
+                symbol, ticker, calls_to_write, stock_count
+            )
             strike_limit = math.ceil(max([strike_limit, ticker.marketPrice()]))
 
             if calls_to_write > 0 and ok_to_write:

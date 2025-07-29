@@ -245,6 +245,22 @@ calculate_net_contracts = false
   green = true
   red   = false
 
+  # Global call writing thresholds (can be overridden per symbol)
+  # These work the same as buy_only thresholds but limit call writing
+  #
+  # Only write calls if position is at least X% of net liquidation value
+  # min_threshold_percent = 0.05  # Only write calls if position >= 5% of NLV
+  #
+  # Only write calls if position exceeds target allocation by X%
+  # min_threshold_percent_relative = 0.2  # Only write calls if position > 20% above target
+  #
+  # Example: If you set min_threshold_percent_relative = 0.2 and a symbol has 10% target allocation:
+  # - If position is 11% of NLV (10% above target), no calls written
+  # - If position is 13% of NLV (30% above target), calls can be written
+  #
+  # These can be overridden per symbol using write_calls_only_min_threshold_percent
+  # and write_calls_only_min_threshold_percent_relative in the symbol config
+
   # With covered calls, we can cap the number of calls to write by this factor. At
   # 1.0, we write covered calls on 100% of our positions. At 0.5, we'd only write
   # on 50% of our positions. This value must be between 1 and 0 inclusive.
@@ -481,6 +497,19 @@ minimum_open_interest = 10
   # If TLT is allocated 50% but currently only 25% of NLV:
   # - Relative difference = (50% - 25%) / 50% = 50%
   # - If threshold = 0.1 (10%), then 50% > 10%, so buy is allowed
+  #
+  # Call writing thresholds (similar to buy thresholds but for limiting call writes):
+  # - write_calls_only_min_threshold_percent: Only write calls if position is at least X% of NLV
+  # - write_calls_only_min_threshold_percent_relative: Only write calls if position exceeds target by X%
+  #
+  # Examples:
+  # write_calls_only_min_threshold_percent = 0.05  # Only write calls if position is at least 5% of NLV
+  # write_calls_only_min_threshold_percent_relative = 0.2  # Only write calls if position exceeds target by 20%
+  #
+  # Relative threshold example for calls:
+  # If SPY is allocated 20% but currently 30% of NLV:
+  # - Relative excess = (30% - 20%) / 20% = 50%
+  # - If threshold = 0.2 (20%), then 50% > 20%, so call writing is allowed
 
   [symbols.ABNB]
   # For symbols that require an exchange, which is typically any company stock,
