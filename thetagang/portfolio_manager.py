@@ -567,6 +567,17 @@ class PortfolioManager:
                 log.print(buy_actions_table)
                 await self.execute_buy_orders(stocks_to_buy)
 
+            # Check for sell-only rebalancing positions
+            (
+                sell_actions_table,
+                stocks_to_sell,
+            ) = await self.check_sell_only_positions(
+                account_summary, portfolio_positions
+            )
+            if stocks_to_sell:
+                log.print(sell_actions_table)
+                await self.execute_sell_orders(stocks_to_sell)
+
             # Refresh positions, in case anything changed from the orders above
             portfolio_positions = self.get_portfolio_positions()
 
@@ -814,6 +825,10 @@ class PortfolioManager:
                 ):
                     return False
 
+                # Skip call writing for sell-only rebalancing symbols
+                if self.config.is_sell_only_rebalancing(symbol):
+                    return False
+
                 (can_write_when_green, can_write_when_red) = self.config.can_write_when(
                     symbol, "C"
                 )
@@ -926,6 +941,12 @@ class PortfolioManager:
                         calls_to_write,
                         strike_limit,
                     )
+                )
+            elif calls_to_write > 0 and self.config.is_sell_only_rebalancing(symbol):
+                call_actions_table.add_row(
+                    symbol,
+                    "[cyan1]None",
+                    "[cyan1]Skipping call writing for sell-only rebalancing symbol",
                 )
 
         tasks: List[Coroutine[Any, Any, None]] = [
@@ -1565,6 +1586,212 @@ class PortfolioManager:
             except Exception as e:
                 log.error(
                     f"{symbol}: Failed to execute buy order for {quantity} shares. Error: {e}"
+                )
+                continue
+
+    async def check_sell_only_positions(
+        self,
+        account_summary: Dict[str, AccountValue],
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+    ) -> Tuple[Table, List[Tuple[str, str, int]]]:
+        """Check which sell-only rebalancing symbols need direct stock sales."""
+        # Get stock positions
+        stock_positions = [
+            position
+            for symbol in portfolio_positions
+            for position in portfolio_positions[symbol]
+            if isinstance(position.contract, Stock)
+        ]
+
+        total_buying_power = self.get_buying_power(account_summary)
+
+        stock_symbols: Dict[str, PortfolioItem] = dict()
+        for stock in stock_positions:
+            symbol = stock.contract.symbol
+            stock_symbols[symbol] = stock
+
+        sell_actions_table = Table(title="Sell-only rebalancing summary")
+        sell_actions_table.add_column("Symbol")
+        sell_actions_table.add_column("Current shares", justify="right")
+        sell_actions_table.add_column("Target shares", justify="right")
+        sell_actions_table.add_column("Shares to sell", justify="right")
+        sell_actions_table.add_column("Action")
+
+        to_sell: List[Tuple[str, str, int]] = []
+
+        # Only check symbols configured for sell-only rebalancing
+        sell_only_symbols = [
+            symbol
+            for symbol in self.config.symbols.keys()
+            if self.config.is_sell_only_rebalancing(symbol)
+        ]
+
+        if not sell_only_symbols:
+            return (sell_actions_table, to_sell)
+
+        async def check_sell_position_task(symbol: str) -> None:
+            ticker = await self.ibkr.get_ticker_for_stock(
+                symbol, self.get_primary_exchange(symbol)
+            )
+
+            current_position = math.floor(
+                stock_symbols[symbol].position if symbol in stock_symbols else 0
+            )
+
+            target_value = round(
+                self.config.symbols[symbol].weight * total_buying_power, 2
+            )
+            market_price = ticker.marketPrice()
+            if (
+                not market_price
+                or math.isnan(market_price)
+                or math.isclose(market_price, 0)
+            ):
+                log.error(
+                    f"Invalid market price for {symbol} (market_price={market_price}), skipping for now"
+                )
+                return
+
+            target_shares = math.floor(target_value / market_price)
+            shares_to_sell = current_position - target_shares
+
+            # Check minimum thresholds
+            symbol_config = self.config.symbols[symbol]
+            min_shares = symbol_config.sell_only_min_threshold_shares or 1
+            min_amount = symbol_config.sell_only_min_threshold_amount
+            min_percent = symbol_config.sell_only_min_threshold_percent
+            min_percent_relative = (
+                symbol_config.sell_only_min_threshold_percent_relative
+            )
+
+            # Calculate minimum amount from percentage if specified
+            if min_percent is not None:
+                # Get net liquidation value from account summary
+                net_liquidation_value = float(account_summary["NetLiquidation"].value)
+                percent_min_amount = net_liquidation_value * min_percent
+                # If both percent and amount are specified, use the larger one
+                if min_amount is not None:
+                    min_amount = max(min_amount, percent_min_amount)
+                else:
+                    min_amount = percent_min_amount
+
+            # Check relative percentage threshold (only when we're above target)
+            if (
+                min_percent_relative is not None
+                and target_value > 0
+                and shares_to_sell > 0
+            ):
+                current_value = current_position * market_price
+                relative_diff = (current_value - target_value) / target_value
+
+                # If relative difference is below threshold, skip this symbol
+                if relative_diff < min_percent_relative:
+                    sell_actions_table.add_row(
+                        symbol,
+                        ifmt(current_position),
+                        ifmt(target_shares),
+                        ifmt(0),
+                        f"[yellow]Below relative threshold {min_percent_relative:.1%} (diff: {relative_diff:.1%})",
+                    )
+                    return
+
+            # Only sell if we have excess shares (never buy in sell-only mode)
+            if shares_to_sell > 0:
+                # Check if we meet the minimum thresholds
+                order_amount = shares_to_sell * market_price
+
+                # Dollar amount threshold takes precedence
+                if min_amount and order_amount < min_amount:
+                    sell_actions_table.add_row(
+                        symbol,
+                        ifmt(current_position),
+                        ifmt(target_shares),
+                        ifmt(shares_to_sell),
+                        f"[yellow]Below min amount ${min_amount:.2f} (would be ${order_amount:.2f})",
+                    )
+                    return
+
+                # Check minimum shares threshold
+                if shares_to_sell < min_shares:
+                    sell_actions_table.add_row(
+                        symbol,
+                        ifmt(current_position),
+                        ifmt(target_shares),
+                        ifmt(shares_to_sell),
+                        f"[yellow]Below min shares {min_shares}",
+                    )
+                    return
+
+                sell_actions_table.add_row(
+                    symbol,
+                    ifmt(current_position),
+                    ifmt(target_shares),
+                    ifmt(shares_to_sell),
+                    f"[green]Sell {shares_to_sell} shares",
+                )
+                to_sell.append(
+                    (symbol, self.get_primary_exchange(symbol), shares_to_sell)
+                )
+            else:
+                sell_actions_table.add_row(
+                    symbol,
+                    ifmt(current_position),
+                    ifmt(target_shares),
+                    ifmt(0),
+                    "[cyan]At or below target",
+                )
+
+        tasks: List[Coroutine[Any, Any, None]] = [
+            check_sell_position_task(symbol) for symbol in sell_only_symbols
+        ]
+        await log.track_async(tasks, description="Checking sell-only positions...")
+
+        return (sell_actions_table, to_sell)
+
+    async def execute_sell_orders(
+        self, sell_orders: List[Tuple[str, str, int]]
+    ) -> None:
+        """Execute direct stock sell orders for sell-only rebalancing symbols."""
+        for symbol, primary_exchange, quantity in sell_orders:
+            try:
+                stock_contract = Stock(
+                    symbol,
+                    self.get_order_exchange(),
+                    currency="USD",
+                    primaryExchange=primary_exchange,
+                )
+
+                # Get current market price
+                ticker = await self.ibkr.get_ticker_for_contract(
+                    stock_contract,
+                    self.get_order_exchange(),
+                )
+                market_price = ticker.marketPrice()
+
+                # Place sell order at 1% below market price
+                limit_price = round(market_price * 0.99, 2)
+
+                # Create sell order
+                order = LimitOrder(
+                    "SELL",
+                    quantity,
+                    limit_price,
+                    algoStrategy=self.get_algo_strategy(),
+                    algoParams=self.get_algo_params(),
+                    tif="DAY",
+                    account=self.account_number,
+                )
+
+                log.notice(
+                    f"Sell-only rebalancing: selling {quantity} shares of {symbol} @ ${limit_price}"
+                )
+
+                # Enqueue order for later submission
+                self.enqueue_order(stock_contract, order)
+
+            except Exception as e:
+                log.error(
+                    f"{symbol}: Failed to execute sell order for {quantity} shares. Error: {e}"
                 )
                 continue
 
