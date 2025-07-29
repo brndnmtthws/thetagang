@@ -248,18 +248,21 @@ class TestPortfolioManager:
                 buy_only_min_threshold_shares=None,
                 buy_only_min_threshold_amount=None,
                 buy_only_min_threshold_percent=None,
+                buy_only_min_threshold_percent_relative=None,
             ),
             "MSFT": mocker.Mock(
                 weight=0.3,
                 buy_only_min_threshold_shares=None,
                 buy_only_min_threshold_amount=None,
                 buy_only_min_threshold_percent=None,
+                buy_only_min_threshold_percent_relative=None,
             ),
             "GOOGL": mocker.Mock(
                 weight=0.2,
                 buy_only_min_threshold_shares=None,
                 buy_only_min_threshold_amount=None,
                 buy_only_min_threshold_percent=None,
+                buy_only_min_threshold_percent_relative=None,
             ),
         }
         portfolio_manager.config.is_buy_only_rebalancing = mocker.Mock(
@@ -403,6 +406,7 @@ class TestPortfolioManager:
                 buy_only_min_threshold_shares=None,
                 buy_only_min_threshold_amount=None,
                 buy_only_min_threshold_percent=None,
+                buy_only_min_threshold_percent_relative=None,
             ),
         }
         portfolio_manager.config.is_buy_only_rebalancing = mocker.Mock(
@@ -497,6 +501,7 @@ class TestPortfolioManager:
                 buy_only_min_threshold_shares=10,
                 buy_only_min_threshold_amount=None,
                 buy_only_min_threshold_percent=None,
+                buy_only_min_threshold_percent_relative=None,
             ),
         }
         portfolio_manager.config.is_buy_only_rebalancing = mocker.Mock(
@@ -548,6 +553,7 @@ class TestPortfolioManager:
                 buy_only_min_threshold_shares=None,
                 buy_only_min_threshold_amount=1000.0,
                 buy_only_min_threshold_percent=None,
+                buy_only_min_threshold_percent_relative=None,
             ),
         }
         portfolio_manager.config.is_buy_only_rebalancing = mocker.Mock(
@@ -601,6 +607,7 @@ class TestPortfolioManager:
                 buy_only_min_threshold_shares=None,
                 buy_only_min_threshold_amount=100.0,  # Less than 1 share
                 buy_only_min_threshold_percent=None,
+                buy_only_min_threshold_percent_relative=None,
             ),
         }
         portfolio_manager.config.is_buy_only_rebalancing = mocker.Mock(
@@ -657,6 +664,7 @@ class TestPortfolioManager:
                 buy_only_min_threshold_shares=1,  # Would allow purchase
                 buy_only_min_threshold_amount=2000.0,  # Would block purchase
                 buy_only_min_threshold_percent=None,
+                buy_only_min_threshold_percent_relative=None,
             ),
         }
         portfolio_manager.config.is_buy_only_rebalancing = mocker.Mock(

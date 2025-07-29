@@ -474,6 +474,9 @@ class SymbolConfig(BaseModel):
     buy_only_min_threshold_percent: Optional[float] = Field(
         default=None, ge=0.0, le=1.0
     )
+    buy_only_min_threshold_percent_relative: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
 
 
 class ActionWhenClosedEnum(str, Enum):

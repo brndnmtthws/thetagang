@@ -1314,6 +1314,7 @@ class PortfolioManager:
             min_shares = symbol_config.buy_only_min_threshold_shares or 1
             min_amount = symbol_config.buy_only_min_threshold_amount
             min_percent = symbol_config.buy_only_min_threshold_percent
+            min_percent_relative = symbol_config.buy_only_min_threshold_percent_relative
 
             # Calculate minimum amount from percentage if specified
             if min_percent is not None:
@@ -1325,6 +1326,26 @@ class PortfolioManager:
                     min_amount = max(min_amount, percent_min_amount)
                 else:
                     min_amount = percent_min_amount
+
+            # Check relative percentage threshold (only when we're below target)
+            if (
+                min_percent_relative is not None
+                and target_value > 0
+                and shares_to_buy > 0
+            ):
+                current_value = current_position * market_price
+                relative_diff = (target_value - current_value) / target_value
+
+                # If relative difference is below threshold, skip this symbol
+                if relative_diff < min_percent_relative:
+                    buy_actions_table.add_row(
+                        symbol,
+                        ifmt(current_position),
+                        ifmt(target_shares),
+                        ifmt(0),
+                        f"[yellow]Below relative threshold {min_percent_relative:.1%} (diff: {relative_diff:.1%})",
+                    )
+                    return
 
             # If we're below target but target is less than minimum shares,
             # check if we should still buy to meet minimum threshold
