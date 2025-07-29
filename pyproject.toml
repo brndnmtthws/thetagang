@@ -41,7 +41,7 @@ dev = [
   "pytest-asyncio>=0.23.0,<0.24",
   "pytest-watch>=4.2.0,<5",
   "ruff>=0.9.1,<0.10.0",
-  "pyright>=1.1.388",
+  "pyright>=1.1.403",
 ]
 
 [tool.ruff]
@@ -67,6 +67,7 @@ reportUnknownLambdaType = false
 stubPath                = "stubs"
 venv                    = ".venv"
 venvPath                = "."
+exclude                 = ["stubs", ".venv", "**/__pycache__"]
 
 [build-system]
 build-backend = "hatchling.build"

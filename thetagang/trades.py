@@ -55,7 +55,11 @@ class Trades:
                 trade.contract.exchange,
                 Pretty(trade.contract, indent_size=2),
                 trade.order.action,
-                dfmt(trade.order.lmtPrice),
+                dfmt(
+                    float(trade.order.lmtPrice)
+                    if trade.order.lmtPrice is not None
+                    else None
+                ),
                 ifmt(int(trade.order.totalQuantity)),
                 trade.orderStatus.status,
                 ffmt(trade.orderStatus.filled, 0),

@@ -36,3 +36,6 @@ jobs:
 
       - name: Check formatting with ruff
         run: uv run ruff format --check --diff
+
+      - name: Check types with pyright
+        run: uv run pyright

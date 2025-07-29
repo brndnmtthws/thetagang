@@ -3,7 +3,7 @@ import math
 import random
 import sys
 from asyncio import Future
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
 import numpy as np
 from ib_async import (
@@ -451,7 +451,7 @@ class PortfolioManager:
                     pos.contract.lastTradeDateOrContractMonth
                 )
 
-        tasks = [
+        tasks: List[Coroutine[Any, Any, None]] = [
             load_position_task(position)
             for _, positions in portfolio_positions.items()
             for position in positions
@@ -645,7 +645,9 @@ class PortfolioManager:
             elif self.put_can_be_closed(put, table):
                 closeable_puts.append(put)
 
-        tasks = [check_put_can_be_rolled_task(put, table) for put in puts]
+        tasks: List[Coroutine[Any, Any, None]] = [
+            check_put_can_be_rolled_task(put, table) for put in puts
+        ]
         await log.track_async(tasks, "Checking rollable/closeable puts...")
 
         total_rollable_puts = math.floor(sum([abs(p.position) for p in rollable_puts]))
@@ -867,7 +869,9 @@ class PortfolioManager:
                     )
                 )
 
-        tasks = [update_to_write_task(symbol) for symbol in portfolio_positions]
+        tasks: List[Coroutine[Any, Any, None]] = [
+            update_to_write_task(symbol) for symbol in portfolio_positions
+        ]
         await log.track_async(tasks, description="Checking for uncovered positions...")
 
         return (call_actions_table, to_write)
@@ -1179,7 +1183,7 @@ class PortfolioManager:
                 "ok_to_write": ok_to_write,
             }
 
-        tasks = [
+        tasks: List[Coroutine[Any, Any, None]] = [
             calculate_target_position_task(symbol)
             for symbol in self.config.symbols.keys()
         ]
@@ -1235,7 +1239,7 @@ class PortfolioManager:
                     "on net liquidation and target margin usage",
                 )
 
-        tasks = [
+        tasks: List[Coroutine[Any, Any, None]] = [
             update_to_write_task(symbol, target)
             for symbol, target in target_additional_quantity.items()
         ]
@@ -1453,7 +1457,9 @@ class PortfolioManager:
                     "[cyan]At or above target",
                 )
 
-        tasks = [check_buy_position_task(symbol) for symbol in buy_only_symbols]
+        tasks: List[Coroutine[Any, Any, None]] = [
+            check_buy_position_task(symbol) for symbol in buy_only_symbols
+        ]
         await log.track_async(tasks, description="Checking buy-only positions...")
 
         return (buy_actions_table, to_buy)
@@ -2277,13 +2283,17 @@ class PortfolioManager:
 
         return sum(
             [
-                order.lmtPrice * order.totalQuantity * get_multiplier(contract)
+                float(order.lmtPrice or 0)
+                * order.totalQuantity
+                * get_multiplier(contract)
                 for (contract, order) in self.orders.records()
                 if order.action == "SELL"
             ]
         ) - sum(
             [
-                order.lmtPrice * order.totalQuantity * get_multiplier(contract)
+                float(order.lmtPrice or 0)
+                * order.totalQuantity
+                * get_multiplier(contract)
                 for (contract, order) in self.orders.records()
                 if order.action == "BUY"
             ]
@@ -2459,14 +2469,20 @@ class PortfolioManager:
                 )
 
                 (contract, order) = (trade.contract, trade.order)
-                updated_price = np.sign(order.lmtPrice) * max(
+                updated_price = np.sign(float(order.lmtPrice or 0)) * max(
                     [
                         (
                             self.config.orders.minimum_credit
-                            if order.action == "BUY" and order.lmtPrice <= 0.0
+                            if order.action == "BUY"
+                            and float(order.lmtPrice or 0) <= 0.0
                             else 0.0
                         ),
-                        math.fabs(round((order.lmtPrice + ticker.midpoint()) / 2.0, 2)),
+                        math.fabs(
+                            round(
+                                (float(order.lmtPrice or 0) + ticker.midpoint()) / 2.0,
+                                2,
+                            )
+                        ),
                     ]
                 )
 
@@ -2480,18 +2496,18 @@ class PortfolioManager:
                 if would_increase_spread(order, updated_price):
                     log.warning(
                         f"Skipping order for {contract.symbol}"
-                        f" with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}, because updated price would increase spread"
+                        f" with old lmtPrice={dfmt(float(order.lmtPrice or 0))} updated lmtPrice={dfmt(updated_price)}, because updated price would increase spread"
                     )
                     return
 
                 # Check if the updated price is actually any different
                 # before proceeding, and make sure the signs match so we
                 # don't switch a credit to a debit or vice versa.
-                if order.lmtPrice != updated_price and np.sign(
-                    order.lmtPrice
+                if float(order.lmtPrice or 0) != updated_price and np.sign(
+                    float(order.lmtPrice or 0)
                 ) == np.sign(updated_price):
                     log.info(
-                        f"{contract.symbol}: Resubmitting {order.action} {contract.secType} order with old lmtPrice={dfmt(order.lmtPrice)} updated lmtPrice={dfmt(updated_price)}"
+                        f"{contract.symbol}: Resubmitting {order.action} {contract.secType} order with old lmtPrice={dfmt(float(order.lmtPrice or 0))} updated lmtPrice={dfmt(updated_price)}"
                     )
 
                     # For some reason, we need to create a new order object

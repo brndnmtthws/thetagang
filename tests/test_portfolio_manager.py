@@ -350,8 +350,9 @@ class TestPortfolioManager:
         mocker.patch("thetagang.portfolio_manager.Stock", return_value=mock_stock)
 
         # Mock LimitOrder class
+        mock_limit_order = mocker.patch("thetagang.portfolio_manager.LimitOrder")
         mock_order = mocker.Mock()
-        mocker.patch("thetagang.portfolio_manager.LimitOrder", return_value=mock_order)
+        mock_limit_order.return_value = mock_order
 
         # Mock log.notice and log.error
         mocker.patch("thetagang.log.notice")
@@ -373,9 +374,7 @@ class TestPortfolioManager:
         assert portfolio_manager.enqueue_order.call_count == 2
 
         # Verify order parameters
-        from thetagang.portfolio_manager import LimitOrder
-
-        LimitOrder.assert_any_call(
+        mock_limit_order.assert_any_call(
             "BUY",
             50,
             150.0,
@@ -384,7 +383,7 @@ class TestPortfolioManager:
             tif="DAY",
             account=portfolio_manager.account_number,
         )
-        LimitOrder.assert_any_call(
+        mock_limit_order.assert_any_call(
             "BUY",
             30,
             150.0,
