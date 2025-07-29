@@ -461,6 +461,33 @@ minimum_open_interest = 10
     # value.
     excess_only = false
 
+# Sell-only rebalancing example:
+# This symbol demonstrates sell-only rebalancing, which is useful for gradually
+# reducing positions when they exceed target allocation.
+#
+# [symbols.TSLA]
+# weight = 0.1
+# sell_only_rebalancing = true
+# sell_only_min_threshold_shares = 5  # Only sell if selling at least 5 shares
+# sell_only_min_threshold_percent_relative = 0.2  # Only sell if >20% above target
+#
+# When TSLA grows to more than 12% of portfolio (20% above 10% target), the bot
+# will sell shares to bring it back to 10%. No puts are written, and no calls
+# are written on this position.
+
+# Band rebalancing example (both buy and sell):
+# This creates a rebalancing "band" around the target allocation.
+#
+# [symbols.BTC]
+# weight = 0.05
+# buy_only_rebalancing = true
+# sell_only_rebalancing = true
+# buy_only_min_threshold_percent_relative = 0.15   # Buy when >15% below target
+# sell_only_min_threshold_percent_relative = 0.15  # Sell when >15% above target
+#
+# This keeps BTC between 4.25% and 5.75% of the portfolio (±15% of 5% target).
+# No options are written on this position.
+
   [symbols.TLT]
   weight = 0.2
   # parts = 20
