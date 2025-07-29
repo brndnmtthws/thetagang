@@ -275,6 +275,10 @@ class WriteWhenConfig(BaseModel, DisplayMixin):
         cap_factor: float = Field(default=1.0, ge=0.0, le=1.0)
         cap_target_floor: float = Field(default=0.0, ge=0.0, le=1.0)
         excess_only: bool = Field(default=False)
+        min_threshold_percent: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+        min_threshold_percent_relative: Optional[float] = Field(
+            default=None, ge=0.0, le=1.0
+        )
 
     calculate_net_contracts: bool = Field(default=False)
     calls: "WriteWhenConfig.Calls" = Field(
@@ -300,6 +304,20 @@ class WriteWhenConfig(BaseModel, DisplayMixin):
             "", "Call cap target floor", "=", f"{pfmt(self.calls.cap_target_floor)}"
         )
         table.add_row("", "Excess only", "=", f"{self.calls.excess_only}")
+        if self.calls.min_threshold_percent is not None:
+            table.add_row(
+                "",
+                "Calls min threshold %",
+                "=",
+                f"{pfmt(self.calls.min_threshold_percent)}",
+            )
+        if self.calls.min_threshold_percent_relative is not None:
+            table.add_row(
+                "",
+                "Calls min threshold % relative",
+                "=",
+                f"{pfmt(self.calls.min_threshold_percent_relative)}",
+            )
 
 
 class RollWhenConfig(BaseModel, DisplayMixin):
@@ -475,6 +493,12 @@ class SymbolConfig(BaseModel):
         default=None, ge=0.0, le=1.0
     )
     buy_only_min_threshold_percent_relative: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    write_calls_only_min_threshold_percent: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    write_calls_only_min_threshold_percent_relative: Optional[float] = Field(
         default=None, ge=0.0, le=1.0
     )
 
