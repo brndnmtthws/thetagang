@@ -1035,6 +1035,41 @@ class PortfolioManager:
             * self.config.account.margin_usage
         )
 
+    def format_weight_info(
+        self,
+        symbol: str,
+        position_values: Dict[str, float],
+        total_portfolio_value: float,
+    ) -> Tuple[str, str]:
+        """Format weight information for a position.
+
+        Returns:
+            Tuple of (formatted_info_string, color_code)
+        """
+        if total_portfolio_value <= 0:
+            return "", ""
+
+        current_value = position_values.get(symbol, 0)
+        current_weight = current_value / total_portfolio_value
+        target_weight = self.config.symbols[symbol].weight
+        abs_diff = current_weight - target_weight
+        rel_diff = (abs_diff / target_weight) if target_weight > 0 else 0
+
+        # Format the weight information
+        weight_info = f"Weight: {current_weight:.1%} (target: {target_weight:.1%})"
+        diff_info = f"Diff: {abs_diff:+.1%} (rel: {rel_diff:+.1%})"
+
+        # Add color coding based on relative difference
+        if abs(rel_diff) < 0.1:  # Within 10% relative
+            color = "[green]"
+        elif abs(rel_diff) < 0.25:  # Within 25% relative
+            color = "[yellow]"
+        else:
+            color = "[red]"
+
+        formatted_info = f"{color}{weight_info} | {diff_info}[/]"
+        return formatted_info, color
+
     async def check_if_can_write_puts(
         self,
         account_summary: Dict[str, AccountValue],
@@ -1205,35 +1240,24 @@ class PortfolioManager:
                 )
 
                 # Add weight information row
-                if total_portfolio_value > 0:
-                    current_value = position_values.get(symbol, 0)
-                    current_weight = current_value / total_portfolio_value
-                    target_weight = self.config.symbols[symbol].weight
-                    abs_diff = current_weight - target_weight
-                    rel_diff = (abs_diff / target_weight) if target_weight > 0 else 0
-
-                    # Format the weight information
-                    weight_info = (
-                        f"Weight: {current_weight:.1%} (target: {target_weight:.1%})"
-                    )
-                    diff_info = f"Diff: {abs_diff:+.1%} (rel: {rel_diff:+.1%})"
-
-                    # Add color coding based on relative difference
-                    if abs(rel_diff) < 0.1:  # Within 10% relative
-                        color = "[green]"
-                    elif abs(rel_diff) < 0.25:  # Within 25% relative
-                        color = "[yellow]"
-                    else:
-                        color = "[red]"
-
+                formatted_info, _ = self.format_weight_info(
+                    symbol, position_values, total_portfolio_value
+                )
+                if formatted_info:
+                    # For calculate_net_contracts=True, we need 12 columns
                     positions_summary_table.add_row(
-                        "",
-                        "",
-                        "",
-                        "",
-                        "",
-                        f"{color}{weight_info} | {diff_info}[/]",
-                        "",
+                        "",  # Symbol
+                        "",  # Shares
+                        "",  # Short puts
+                        "",  # Long puts
+                        "",  # Net short puts
+                        formatted_info,  # Short calls (placing weight info here)
+                        "",  # Long calls
+                        "",  # Net short calls
+                        "",  # Target value
+                        "",  # Target share qty
+                        "",  # Net target shares
+                        "",  # Net target contracts
                     )
             else:
                 positions_summary_table.add_row(
@@ -1258,34 +1282,22 @@ class PortfolioManager:
                 )
 
                 # Add weight information row
-                if total_portfolio_value > 0:
-                    current_value = position_values.get(symbol, 0)
-                    current_weight = current_value / total_portfolio_value
-                    target_weight = self.config.symbols[symbol].weight
-                    abs_diff = current_weight - target_weight
-                    rel_diff = (abs_diff / target_weight) if target_weight > 0 else 0
-
-                    # Format the weight information
-                    weight_info = (
-                        f"Weight: {current_weight:.1%} (target: {target_weight:.1%})"
-                    )
-                    diff_info = f"Diff: {abs_diff:+.1%} (rel: {rel_diff:+.1%})"
-
-                    # Add color coding based on relative difference
-                    if abs(rel_diff) < 0.1:  # Within 10% relative
-                        color = "[green]"
-                    elif abs(rel_diff) < 0.25:  # Within 25% relative
-                        color = "[yellow]"
-                    else:
-                        color = "[red]"
-
+                formatted_info, _ = self.format_weight_info(
+                    symbol, position_values, total_portfolio_value
+                )
+                if formatted_info:
+                    # For calculate_net_contracts=False, we need 10 columns
                     positions_summary_table.add_row(
-                        "",
-                        "",
-                        "",
-                        "",
-                        f"{color}{weight_info} | {diff_info}[/]",
-                        "",
+                        "",  # Symbol
+                        "",  # Shares
+                        "",  # Short puts
+                        "",  # Long puts
+                        formatted_info,  # Short calls (placing weight info here)
+                        "",  # Long calls
+                        "",  # Target value
+                        "",  # Target share qty
+                        "",  # Net target shares
+                        "",  # Net target contracts
                     )
             positions_summary_table.add_section()
 
