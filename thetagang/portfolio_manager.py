@@ -1055,6 +1055,17 @@ class PortfolioManager:
             symbol = stock.contract.symbol
             stock_symbols[symbol] = stock
 
+        # Calculate total portfolio value excluding VIX and cash fund
+        total_portfolio_value = 0.0
+        position_values: Dict[str, float] = dict()
+        for stock in stock_positions:
+            symbol = stock.contract.symbol
+            # Exclude VIX and cash fund from portfolio value calculation
+            if symbol != "VIX" and symbol != self.config.cash_management.cash_fund:
+                value = stock.marketValue
+                position_values[symbol] = value
+                total_portfolio_value += value
+
         targets: Dict[str, float] = dict()
         target_additional_quantity: Dict[str, Dict[str, int | bool]] = dict()
 
@@ -1107,6 +1118,10 @@ class PortfolioManager:
                 )
                 return
             self.target_quantities[symbol] = math.floor(targets[symbol] / market_price)
+
+            # Track current position value if not already calculated
+            if symbol not in position_values:
+                position_values[symbol] = current_position * market_price
 
             if symbol in portfolio_positions:
                 # Current number of puts
@@ -1188,6 +1203,38 @@ class PortfolioManager:
                     dfmt(short_call_avg_strike),
                     dfmt(long_call_avg_strike),
                 )
+
+                # Add weight information row
+                if total_portfolio_value > 0:
+                    current_value = position_values.get(symbol, 0)
+                    current_weight = current_value / total_portfolio_value
+                    target_weight = self.config.symbols[symbol].weight
+                    abs_diff = current_weight - target_weight
+                    rel_diff = (abs_diff / target_weight) if target_weight > 0 else 0
+
+                    # Format the weight information
+                    weight_info = (
+                        f"Weight: {current_weight:.1%} (target: {target_weight:.1%})"
+                    )
+                    diff_info = f"Diff: {abs_diff:+.1%} (rel: {rel_diff:+.1%})"
+
+                    # Add color coding based on relative difference
+                    if abs(rel_diff) < 0.1:  # Within 10% relative
+                        color = "[green]"
+                    elif abs(rel_diff) < 0.25:  # Within 25% relative
+                        color = "[yellow]"
+                    else:
+                        color = "[red]"
+
+                    positions_summary_table.add_row(
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        f"{color}{weight_info} | {diff_info}[/]",
+                        "",
+                    )
             else:
                 positions_summary_table.add_row(
                     symbol,
@@ -1209,6 +1256,37 @@ class PortfolioManager:
                     dfmt(short_call_avg_strike),
                     dfmt(long_call_avg_strike),
                 )
+
+                # Add weight information row
+                if total_portfolio_value > 0:
+                    current_value = position_values.get(symbol, 0)
+                    current_weight = current_value / total_portfolio_value
+                    target_weight = self.config.symbols[symbol].weight
+                    abs_diff = current_weight - target_weight
+                    rel_diff = (abs_diff / target_weight) if target_weight > 0 else 0
+
+                    # Format the weight information
+                    weight_info = (
+                        f"Weight: {current_weight:.1%} (target: {target_weight:.1%})"
+                    )
+                    diff_info = f"Diff: {abs_diff:+.1%} (rel: {rel_diff:+.1%})"
+
+                    # Add color coding based on relative difference
+                    if abs(rel_diff) < 0.1:  # Within 10% relative
+                        color = "[green]"
+                    elif abs(rel_diff) < 0.25:  # Within 25% relative
+                        color = "[yellow]"
+                    else:
+                        color = "[red]"
+
+                    positions_summary_table.add_row(
+                        "",
+                        "",
+                        "",
+                        "",
+                        f"{color}{weight_info} | {diff_info}[/]",
+                        "",
+                    )
             positions_summary_table.add_section()
 
             async def is_ok_to_write_puts(
