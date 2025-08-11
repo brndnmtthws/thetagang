@@ -38,9 +38,9 @@ dev = [
   "pre-commit>=4.0.1",
   "pytest>=8.0.0,<9",
   "pytest-mock>=3.14.0,<4",
-  "pytest-asyncio>=0.23.0,<0.24",
+  "pytest-asyncio>=0.23.0,<1.2",
   "pytest-watch>=4.2.0,<5",
-  "ruff>=0.9.1,<0.10.0",
+  "ruff>=0.9.1,<0.13.0",
   "pyright>=1.1.403",
 ]
 
