@@ -51,7 +51,7 @@ def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) ->
     if not without_ibc:
         # TWS version is pinned to current stable
         ibc_config = config.ibc
-        ibc = IBC(1039, **ibc_config.to_dict())
+        ibc = IBC(1037, **ibc_config.to_dict())
         log.info(f"Starting TWS with twsVersion={ibc.twsVersion}")
 
         ib.RaiseRequestErrors = ibc_config.RaiseRequestErrors
