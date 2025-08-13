@@ -1044,7 +1044,7 @@ class PortfolioManager:
         """Format weight information for a position.
 
         Returns:
-            Tuple of (formatted_info_string, color_code)
+            Tuple of (weight_info_string, diff_info_string)
         """
         if total_portfolio_value <= 0:
             return "", ""
@@ -1067,8 +1067,9 @@ class PortfolioManager:
         else:
             color = "[red]"
 
-        formatted_info = f"{color}{weight_info} | {diff_info}[/]"
-        return formatted_info, color
+        formatted_weight = f"{color}{weight_info}[/]"
+        formatted_diff = f"{color}{diff_info}[/]"
+        return formatted_weight, formatted_diff
 
     async def check_if_can_write_puts(
         self,
@@ -1240,10 +1241,10 @@ class PortfolioManager:
                 )
 
                 # Add weight information row
-                formatted_info, _ = self.format_weight_info(
+                weight_info, diff_info = self.format_weight_info(
                     symbol, position_values, total_portfolio_value
                 )
-                if formatted_info:
+                if weight_info:
                     # For calculate_net_contracts=True, we need 12 columns
                     positions_summary_table.add_row(
                         "",  # Symbol
@@ -1251,12 +1252,12 @@ class PortfolioManager:
                         "",  # Short puts
                         "",  # Long puts
                         "",  # Net short puts
-                        formatted_info,  # Short calls (placing weight info here)
+                        "",  # Short calls
                         "",  # Long calls
                         "",  # Net short calls
-                        "",  # Target value
+                        weight_info,  # Target value (weight info here)
                         "",  # Target share qty
-                        "",  # Net target shares
+                        diff_info,  # Net target shares (diff info here)
                         "",  # Net target contracts
                     )
             else:
@@ -1282,21 +1283,21 @@ class PortfolioManager:
                 )
 
                 # Add weight information row
-                formatted_info, _ = self.format_weight_info(
+                weight_info, diff_info = self.format_weight_info(
                     symbol, position_values, total_portfolio_value
                 )
-                if formatted_info:
+                if weight_info:
                     # For calculate_net_contracts=False, we need 10 columns
                     positions_summary_table.add_row(
                         "",  # Symbol
                         "",  # Shares
                         "",  # Short puts
                         "",  # Long puts
-                        formatted_info,  # Short calls (placing weight info here)
+                        "",  # Short calls
                         "",  # Long calls
-                        "",  # Target value
+                        weight_info,  # Target value (weight info here)
                         "",  # Target share qty
-                        "",  # Net target shares
+                        diff_info,  # Net target shares (diff info here)
                         "",  # Net target contracts
                     )
             positions_summary_table.add_section()
