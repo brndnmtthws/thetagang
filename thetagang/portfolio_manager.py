@@ -1039,18 +1039,18 @@ class PortfolioManager:
         self,
         symbol: str,
         position_values: Dict[str, float],
-        total_portfolio_value: float,
+        weight_base_value: float,
     ) -> Tuple[str, str]:
-        """Format weight information for a position.
+        """Format weight information for a position using the configured weight base.
 
         Returns:
             Tuple of (weight_info_string, diff_info_string)
         """
-        if total_portfolio_value <= 0:
+        if weight_base_value <= 0:
             return "", ""
 
         current_value = position_values.get(symbol, 0)
-        current_weight = current_value / total_portfolio_value
+        current_weight = current_value / weight_base_value
         target_weight = self.config.symbols[symbol].weight
         abs_diff = current_weight - target_weight
         rel_diff = (abs_diff / target_weight) if target_weight > 0 else 0
@@ -1091,8 +1091,7 @@ class PortfolioManager:
             symbol = stock.contract.symbol
             stock_symbols[symbol] = stock
 
-        # Calculate total portfolio value excluding VIX and cash fund
-        total_portfolio_value = 0.0
+        # Track position market values (excluding VIX and cash fund) for reporting
         position_values: Dict[str, float] = dict()
         for stock in stock_positions:
             symbol = stock.contract.symbol
@@ -1100,7 +1099,6 @@ class PortfolioManager:
             if symbol != "VIX" and symbol != self.config.cash_management.cash_fund:
                 value = stock.marketValue
                 position_values[symbol] = value
-                total_portfolio_value += value
 
         targets: Dict[str, float] = dict()
         target_additional_quantity: Dict[str, Dict[str, int | bool]] = dict()
@@ -1242,7 +1240,7 @@ class PortfolioManager:
 
                 # Add weight information row
                 weight_info, diff_info = self.format_weight_info(
-                    symbol, position_values, total_portfolio_value
+                    symbol, position_values, total_buying_power
                 )
                 if weight_info:
                     # For calculate_net_contracts=True, we need 12 columns
@@ -1284,7 +1282,7 @@ class PortfolioManager:
 
                 # Add weight information row
                 weight_info, diff_info = self.format_weight_info(
-                    symbol, position_values, total_portfolio_value
+                    symbol, position_values, total_buying_power
                 )
                 if weight_info:
                     # For calculate_net_contracts=False, we need 10 columns
