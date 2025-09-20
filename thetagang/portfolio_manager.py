@@ -693,13 +693,18 @@ class PortfolioManager:
         table.add_column("Action")
         table.add_column("Detail")
 
-        for c in log.track(
-            calls, description="Checking rollable/closeable calls...", total=len(calls)
-        ):
-            if await self.call_can_be_rolled(c, table):
-                rollable_calls.append(c)
-            elif self.call_can_be_closed(c, table):
-                closeable_calls.append(c)
+        async def check_call_can_be_rolled_task(
+            call: PortfolioItem, table: Table
+        ) -> None:
+            if await self.call_can_be_rolled(call, table):
+                rollable_calls.append(call)
+            elif self.call_can_be_closed(call, table):
+                closeable_calls.append(call)
+
+        tasks: List[Coroutine[Any, Any, None]] = [
+            check_call_can_be_rolled_task(call, table) for call in calls
+        ]
+        await log.track_async(tasks, "Checking rollable/closeable calls...")
 
         total_rollable_calls = math.floor(
             sum([abs(p.position) for p in rollable_calls])
