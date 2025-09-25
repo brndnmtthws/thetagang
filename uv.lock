@@ -693,7 +693,7 @@ wheels = [
 
 [[package]]
 name = "thetagang"
-version = "1.16.1"
+version = "1.16.2"
 source = { editable = "." }
 dependencies = [
     { name = "annotated-types" },
@@ -746,10 +746,10 @@ dev = [
     { name = "pre-commit", specifier = ">=4.0.1" },
     { name = "pyright", specifier = ">=1.1.403" },
     { name = "pytest", specifier = ">=8.0.0,<9" },
-    { name = "pytest-asyncio", specifier = ">=0.23.0,<1.2" },
+    { name = "pytest-asyncio", specifier = ">=0.23.0,<1.3" },
     { name = "pytest-mock", specifier = ">=3.14.0,<4" },
     { name = "pytest-watch", specifier = ">=4.2.0,<5" },
-    { name = "ruff", specifier = ">=0.9.1,<0.13.0" },
+    { name = "ruff", specifier = ">=0.9.1,<0.14.0" },
 ]
 
 [[package]]
