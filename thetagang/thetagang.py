@@ -17,6 +17,19 @@ def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) ->
     config = Config.from_dict(raw_config)
     config.display(config_path)
 
+    try:
+        logfile_path = config.ib_async.resolve_logfile()
+    except OSError as error:
+        log.warning(
+            "Unable to initialise ib_async logging: "
+            f"{error}. Logging to file will be disabled."
+        )
+    else:
+        if logfile_path != config.ib_async.logfile:
+            config.ib_async.logfile = logfile_path
+            log.notice(f"ib_async logfile redirected to {logfile_path}")
+        util.logToFile(str(logfile_path))
+
     if dry_run:
         log.notice("Dry-run flag detected: no trades are ever submitted by this CLI.")
 
