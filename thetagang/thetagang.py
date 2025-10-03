@@ -1,76 +1,48 @@
-from asyncio import Future
+from __future__ import annotations
 
 import toml
-from ib_async import IB, IBC, Contract, Watchdog, util
-from rich.console import Console
+from ib_async import IB, util
 
 from thetagang import log
-from thetagang.config import Config, normalize_config
-from thetagang.exchange_hours import need_to_exit
+from thetagang.config import Config
 from thetagang.portfolio_manager import PortfolioManager
 
 util.patchAsyncio()
 
-console = Console()
-
 
 def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) -> None:
     with open(config_path, "r", encoding="utf8") as file:
-        config = toml.load(file)
+        raw_config = toml.load(file)
 
-    config = Config(**normalize_config(config))  # type: ignore
-
+    config = Config.from_dict(raw_config)
     config.display(config_path)
 
-    if config.ib_async.logfile:
-        util.logToFile(config.ib_async.logfile)
-
-    # Check if exchange is open before continuing
-    if need_to_exit(config.exchange_hours):
-        return
-
-    async def onConnected() -> None:
-        log.info(f"Connected to IB Gateway, serverVersion={ib.client.serverVersion()}")
-        await portfolio_manager.manage()
-
-    ib = IB()
-    ib.connectedEvent += onConnected
-
-    completion_future: Future[bool] = util.getLoop().create_future()
-    portfolio_manager = PortfolioManager(config, ib, completion_future, dry_run)
-
-    probe_contract_config = config.watchdog.probeContract
-    watchdog_config = config.watchdog
-    probeContract = Contract(
-        secType=probe_contract_config.secType,
-        symbol=probe_contract_config.symbol,
-        currency=probe_contract_config.currency,
-        exchange=probe_contract_config.exchange,
-    )
+    if dry_run:
+        log.notice("Dry-run flag detected: no trades are ever submitted by this CLI.")
 
     if not without_ibc:
-        # TWS version is pinned to current stable
-        ibc_config = config.ibc
-        ibc = IBC(1037, **ibc_config.to_dict())
-        log.info(f"Starting TWS with twsVersion={ibc.twsVersion}")
-
-        ib.RaiseRequestErrors = ibc_config.RaiseRequestErrors
-
-        watchdog = Watchdog(
-            ibc, ib, probeContract=probeContract, **watchdog_config.to_dict()
+        log.notice(
+            "Automatic IB Gateway management is no longer available. "
+            "Ensure the gateway is running and pass --without-ibc to suppress this message."
         )
-        watchdog.start()
 
-        ib.run(completion_future)  # type: ignore
-        watchdog.stop()
-        ibc.terminate()
-    else:
-        ib.connect(
-            watchdog_config.host,
-            watchdog_config.port,
-            clientId=watchdog_config.clientId,
-            timeout=watchdog_config.probeTimeout,
-            account=config.account.number,
-        )
-        ib.run(completion_future)  # type: ignore
+    ib = IB()
+
+    async def main() -> None:
+        viewer = PortfolioManager(config, ib, log.console)
+        await viewer.run()
         ib.disconnect()
+
+    ib.connect(
+        config.connection.host,
+        config.connection.port,
+        clientId=config.connection.client_id,
+        account=config.account.number,
+    )
+    ib.reqMarketDataType(config.account.market_data_type)
+
+    try:
+        ib.run(main())  # type: ignore[arg-type]
+    finally:
+        if ib.isConnected():
+            ib.disconnect()

@@ -25,21 +25,21 @@ CONTEXT_SETTINGS = dict(
 @click.option(
     "--without-ibc",
     is_flag=True,
-    help="Run without IBC. Enable this if you want to run the TWS "
-    "gateway yourself, without having ThetaGang manage it for you.",
+    help=(
+        "Skip legacy IBC management messaging. Ensure the IB Gateway "
+        "is already running before invoking the CLI."
+    ),
 )
 @click.option(
     "--dry-run",
     is_flag=True,
-    help="Perform a dry run. This will display the the orders without sending any live trades.",
+    help=(
+        "Retained for backwards compatibility. The CLI never submits trades "
+        "so this flag only adjusts log messaging."
+    ),
 )
 def cli(config: str, without_ibc: bool, dry_run: bool) -> None:
-    """ThetaGang is an IBKR bot for collecting money.
-
-    You can configure this tool by supplying a toml configuration file.
-    There's a sample config on GitHub, here:
-    https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml
-    """
+    """Display the IBKR account summary and any open positions."""
 
     from .thetagang import start
 

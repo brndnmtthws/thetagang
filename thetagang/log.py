@@ -1,7 +1,6 @@
 import asyncio
-from typing import Any, Coroutine, Iterable, Iterator, List, Union
+from typing import Any, Coroutine, Iterable, Iterator, List, TypeVar, Union
 
-from annotated_types import T
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -13,6 +12,8 @@ from rich.progress import (
 )
 from rich.table import Table
 from rich.theme import Theme
+
+T = TypeVar("T")
 
 custom_theme = Theme(
     {

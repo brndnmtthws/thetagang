@@ -1,88 +1,26 @@
-from polyfactory.factories.pydantic_factory import ModelFactory
-
-from thetagang.config import (
-    AccountConfig,
-    Config,
-    OptionChainsConfig,
-    RollWhenConfig,
-    SymbolConfig,
-    TargetConfig,
-)
+from thetagang.config import Config
 
 
-class TargetConfigFactory(ModelFactory[TargetConfig]): ...
+def test_config_from_dict_minimal() -> None:
+    raw = {"account": {"number": "DU123"}}
+    config = Config.from_dict(raw)
+
+    assert config.account.number == "DU123"
+    assert config.account.market_data_type == 1
+    assert config.connection.host == "127.0.0.1"
+    assert config.connection.port == 7497
+    assert config.connection.client_id == 1
 
 
-class TargetConfigPutsFactory(ModelFactory[TargetConfig.Puts]): ...
+def test_config_records_ignored_sections() -> None:
+    raw = {
+        "account": {"number": "DU123", "market_data_type": 3},
+        "connection": {"host": "ib", "port": 4001, "client_id": 42},
+        "symbols": {},
+        "orders": {},
+    }
+    config = Config.from_dict(raw)
 
-
-class TargetConfigCallsFactory(ModelFactory[TargetConfig.Calls]): ...
-
-
-class RollWhenConfigFactory(ModelFactory[RollWhenConfig]): ...
-
-
-class OptionChainsConfigFactory(ModelFactory[OptionChainsConfig]): ...
-
-
-class AccountConfigFactory(ModelFactory[AccountConfig]): ...
-
-
-class SymbolConfigFactory(ModelFactory[SymbolConfig]): ...
-
-
-class SymbolConfigPutsFactory(ModelFactory[SymbolConfig.Puts]): ...
-
-
-class SymbolConfigCallsFactory(ModelFactory[SymbolConfig.Calls]): ...
-
-
-class ConfigFactory(ModelFactory[Config]): ...
-
-
-def test_trading_is_allowed_with_symbol_no_trading() -> None:
-    config = ConfigFactory.build(
-        symbols={"AAPL": SymbolConfigFactory.build(no_trading=True, weight=1.0)},
-    )
-    assert not config.trading_is_allowed("AAPL")
-
-
-def test_trading_is_allowed_with_symbol_trading_allowed() -> None:
-    config = ConfigFactory.build(
-        symbols={"AAPL": SymbolConfigFactory.build(no_trading=False, weight=1.0)},
-    )
-    assert config.trading_is_allowed("AAPL")
-
-
-def test_is_buy_only_rebalancing_when_true() -> None:
-    config = ConfigFactory.build(
-        symbols={
-            "AAPL": SymbolConfigFactory.build(buy_only_rebalancing=True, weight=1.0)
-        },
-    )
-    assert config.is_buy_only_rebalancing("AAPL")
-
-
-def test_is_buy_only_rebalancing_when_false() -> None:
-    config = ConfigFactory.build(
-        symbols={
-            "AAPL": SymbolConfigFactory.build(buy_only_rebalancing=False, weight=1.0)
-        },
-    )
-    assert not config.is_buy_only_rebalancing("AAPL")
-
-
-def test_is_buy_only_rebalancing_when_none() -> None:
-    config = ConfigFactory.build(
-        symbols={
-            "AAPL": SymbolConfigFactory.build(buy_only_rebalancing=None, weight=1.0)
-        },
-    )
-    assert not config.is_buy_only_rebalancing("AAPL")
-
-
-def test_is_buy_only_rebalancing_for_missing_symbol() -> None:
-    config = ConfigFactory.build(
-        symbols={"AAPL": SymbolConfigFactory.build(weight=1.0)},
-    )
-    assert not config.is_buy_only_rebalancing("MSFT")
+    assert config.account.market_data_type == 3
+    assert config.connection.host == "ib"
+    assert config.ignored_sections == ["orders", "symbols"]
