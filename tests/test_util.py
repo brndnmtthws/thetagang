@@ -111,6 +111,46 @@ def test_position_pnl() -> None:
     )
     assert round(position_pnl(spy_put), 2) == -0.13
 
+    zero_avg_cost = PortfolioItem(
+        contract=Stock(
+            conId=999001,
+            symbol="IWM",
+            right="0",
+            primaryExchange="ARCA",
+            currency="USD",
+            localSymbol="IWM",
+            tradingClass="IWM",
+        ),
+        position=50.0,
+        marketPrice=200.0,
+        marketValue=10000.0,
+        averageCost=0.0,
+        unrealizedPNL=500.0,
+        realizedPNL=0.0,
+        account="DU2962946",
+    )
+    assert position_pnl(zero_avg_cost) == 0.0
+
+    flat_position = PortfolioItem(
+        contract=Stock(
+            conId=999002,
+            symbol="QQQ",
+            right="0",
+            primaryExchange="NASDAQ",
+            currency="USD",
+            localSymbol="QQQ",
+            tradingClass="QQQ",
+        ),
+        position=0.0,
+        marketPrice=300.0,
+        marketValue=0.0,
+        averageCost=150.0,
+        unrealizedPNL=0.0,
+        realizedPNL=0.0,
+        account="DU2962946",
+    )
+    assert position_pnl(flat_position) == 0.0
+
 
 def test_get_delta() -> None:
     target_config = TargetConfigFactory.build(delta=0.5, puts=None, calls=None)

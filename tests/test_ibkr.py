@@ -4,7 +4,12 @@ import pytest
 from ib_async import IB, Contract, Order, OrderStatus, Stock, Ticker, Trade
 
 from thetagang import log
-from thetagang.ibkr import IBKR, RequiredFieldValidationError, TickerField
+from thetagang.ibkr import (
+    IBKR,
+    IBKRRequestTimeout,
+    RequiredFieldValidationError,
+    TickerField,
+)
 
 # Mark all tests in this module as asyncio
 pytestmark = pytest.mark.asyncio
@@ -49,9 +54,6 @@ def mock_trade(mocker):
     trade.order.orderId = 123
     trade.orderStatus = mocker.Mock(spec=OrderStatus)
     return trade
-
-
-# --- Tests for get_ticker_for_contract ---
 
 
 async def test_get_ticker_for_contract_success(ibkr, mock_ib, mock_ticker, mocker):
@@ -161,9 +163,6 @@ async def test_get_ticker_for_contract_optional_timeout(
     assert "MIDPOINT" in mock_log_warning.call_args[0][0]
 
 
-# --- Tests for wait_for_submitting_orders ---
-
-
 async def test_wait_for_submitting_orders_success(ibkr, mock_trade, mocker):
     """Test wait_for_submitting_orders when all waits succeed."""
     mocker.patch.object(
@@ -215,9 +214,6 @@ async def test_wait_for_submitting_orders_timeout(ibkr, mock_trade, mocker):
     assert ibkr.__trade_wait_for_condition__.call_count == 2
 
 
-# --- Tests for wait_for_orders_complete ---
-
-
 async def test_wait_for_orders_complete_success(ibkr, mock_trade, mocker):
     """Test wait_for_orders_complete when all waits succeed."""
     mocker.patch.object(
@@ -265,3 +261,75 @@ async def test_wait_for_orders_complete_timeout(ibkr, mock_trade, mocker):
     assert "Timeout waiting for orders to complete" in mock_log_warning.call_args[0][0]
     assert "FAIL (OrderId: 2)" in mock_log_warning.call_args[0][0]
     assert "PASS (OrderId: 1)" not in mock_log_warning.call_args[0][0]
+
+
+async def test_refresh_account_updates_uses_timeout_wrapper(ibkr, mocker):
+    """refresh_account_updates delegates to _await_with_timeout."""
+    req_future: asyncio.Future = asyncio.get_running_loop().create_future()
+    req_future.set_result(None)
+    ibkr.ib.reqAccountUpdatesAsync = mocker.Mock(return_value=req_future)
+    await_wrapper = mocker.patch.object(
+        ibkr, "_await_with_timeout", new=mocker.AsyncMock(return_value=None)
+    )
+
+    await ibkr.refresh_account_updates("ACC123")
+
+    ibkr.ib.reqAccountUpdatesAsync.assert_called_once_with("ACC123")
+    assert await_wrapper.await_count == 1
+    await_args = await_wrapper.await_args
+    assert await_args.args[0] is req_future
+    assert await_args.args[1] == "account updates"
+
+
+async def test_refresh_positions_uses_timeout_wrapper(ibkr, mocker):
+    """refresh_positions delegates to _await_with_timeout."""
+    req_future: asyncio.Future = asyncio.get_running_loop().create_future()
+    req_future.set_result([])
+    ibkr.ib.reqPositionsAsync = mocker.Mock(return_value=req_future)
+    await_wrapper = mocker.patch.object(
+        ibkr, "_await_with_timeout", new=mocker.AsyncMock(return_value=[])
+    )
+
+    result = await ibkr.refresh_positions()
+
+    assert result == []
+    ibkr.ib.reqPositionsAsync.assert_called_once_with()
+    assert await_wrapper.await_count == 1
+    await_args = await_wrapper.await_args
+    assert await_args.args[0] is req_future
+    assert await_args.args[1] == "positions snapshot"
+
+
+async def test_refresh_account_updates_propagates_timeout(ibkr, mocker):
+    """refresh_account_updates re-raises IBKRRequestTimeout."""
+    ibkr.ib.reqAccountUpdatesAsync = mocker.Mock(return_value=object())
+    mocker.patch.object(
+        ibkr,
+        "_await_with_timeout",
+        new=mocker.AsyncMock(
+            side_effect=IBKRRequestTimeout(
+                "account updates", ibkr.api_response_wait_time
+            )
+        ),
+    )
+
+    with pytest.raises(IBKRRequestTimeout):
+        await ibkr.refresh_account_updates("ACC123")
+
+
+async def test_await_with_timeout_wraps_timeout_error(ibkr, mocker):
+    """_await_with_timeout raises IBKRRequestTimeout on asyncio timeout."""
+
+    async def dummy() -> None:
+        return None
+
+    async def fake_wait_for(awaitable, timeout):
+        await awaitable
+        raise asyncio.TimeoutError()
+
+    mocker.patch("thetagang.ibkr.asyncio.wait_for", new=fake_wait_for)
+
+    with pytest.raises(IBKRRequestTimeout) as excinfo:
+        await ibkr._await_with_timeout(dummy(), "positions snapshot")
+
+    assert "positions snapshot" in str(excinfo.value)

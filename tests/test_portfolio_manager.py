@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
 from ib_async import IB, Stock, Ticker
 
+from thetagang.ibkr import IBKRRequestTimeout
 from thetagang.portfolio_manager import PortfolioManager
 
 
@@ -23,6 +26,8 @@ def mock_config(mocker):
     config.ib_async.api_response_wait_time = 1
     config.orders = mocker.Mock()
     config.orders.exchange = "SMART"
+    config.cash_management = mocker.Mock()
+    config.cash_management.cash_fund = "MMDA1"
     return config
 
 
@@ -237,6 +242,95 @@ class TestPortfolioManager:
         # If MSFT was added to to_write, verify it's not AAPL
         for symbol, _, _, _ in to_write:
             assert symbol != "AAPL"
+
+    @pytest.mark.asyncio
+    async def test_get_portfolio_positions_success(self, portfolio_manager, mocker):
+        """Returns filtered positions when both portfolio and snapshot succeed."""
+        portfolio_manager.config.symbols = {"AAPL": mocker.Mock()}
+
+        portfolio_item = SimpleNamespace(
+            account="TEST123",
+            contract=SimpleNamespace(symbol="AAPL", conId=1),
+            position=5,
+            averageCost=100.0,
+            marketPrice=105.0,
+            marketValue=525.0,
+            unrealizedPNL=25.0,
+        )
+        snapshot_position = SimpleNamespace(
+            account="TEST123",
+            contract=SimpleNamespace(symbol="AAPL", conId=1),
+            position=5,
+        )
+
+        portfolio_manager.ibkr.refresh_account_updates = mocker.AsyncMock()
+        portfolio_manager.ibkr.portfolio = mocker.Mock(return_value=[portfolio_item])
+        portfolio_manager.ibkr.refresh_positions = mocker.AsyncMock(
+            return_value=[snapshot_position]
+        )
+
+        result = await portfolio_manager.get_portfolio_positions()
+
+        assert result == {"AAPL": [portfolio_item]}
+        portfolio_manager.ibkr.refresh_account_updates.assert_awaited_once_with(
+            "TEST123"
+        )
+        portfolio_manager.ibkr.refresh_positions.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_portfolio_positions_retries_on_account_timeout(
+        self, portfolio_manager, mocker
+    ):
+        """Retries when account update snapshot times out, then returns data."""
+        portfolio_manager.config.symbols = {}
+
+        sleep_mock = mocker.patch(
+            "thetagang.portfolio_manager.asyncio.sleep", new=mocker.AsyncMock()
+        )
+
+        portfolio_manager.ibkr.refresh_account_updates = mocker.AsyncMock(
+            side_effect=[
+                IBKRRequestTimeout("account updates", 1),
+                None,
+            ]
+        )
+        portfolio_manager.ibkr.portfolio = mocker.Mock(return_value=[])
+        portfolio_manager.ibkr.refresh_positions = mocker.AsyncMock(return_value=[])
+
+        result = await portfolio_manager.get_portfolio_positions()
+
+        assert result == {}
+        assert portfolio_manager.ibkr.refresh_account_updates.await_count == 2
+        sleep_mock.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_portfolio_positions_raises_after_missing_positions(
+        self, portfolio_manager, mocker
+    ):
+        """Raises when portfolio snapshot never includes tracked positions."""
+        portfolio_manager.config.symbols = {"AAPL": mocker.Mock()}
+
+        sleep_mock = mocker.patch(
+            "thetagang.portfolio_manager.asyncio.sleep", new=mocker.AsyncMock()
+        )
+
+        portfolio_manager.ibkr.refresh_account_updates = mocker.AsyncMock()
+        portfolio_manager.ibkr.portfolio = mocker.Mock(return_value=[])
+
+        tracked_position = SimpleNamespace(
+            account="TEST123",
+            contract=SimpleNamespace(symbol="AAPL", conId=1),
+            position=5,
+        )
+        portfolio_manager.ibkr.refresh_positions = mocker.AsyncMock(
+            return_value=[tracked_position]
+        )
+
+        with pytest.raises(RuntimeError):
+            await portfolio_manager.get_portfolio_positions()
+
+        assert portfolio_manager.ibkr.refresh_positions.await_count == 3
+        sleep_mock.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_check_buy_only_positions(self, portfolio_manager, mocker):

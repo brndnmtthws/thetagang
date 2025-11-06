@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum
-from typing import Any, Awaitable, Callable, Coroutine, List, Optional
+from typing import Any, Awaitable, Callable, Coroutine, List, Optional, TypeVar
 
 from ib_async import (
     IB,
@@ -10,6 +10,7 @@ from ib_async import (
     OptionChain,
     Order,
     PortfolioItem,
+    Position,
     Stock,
     Ticker,
     Trade,
@@ -33,6 +34,18 @@ class RequiredFieldValidationError(Exception):
     def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(self.message)
+
+
+class IBKRRequestTimeout(RuntimeError):
+    """Raised when an IBKR request does not complete within the configured timeout."""
+
+    def __init__(self, description: str, timeout_seconds: int) -> None:
+        super().__init__(
+            f"Timed out waiting for {description} after {timeout_seconds} seconds"
+        )
+
+
+T = TypeVar("T")
 
 
 class IBKR:
@@ -78,6 +91,19 @@ class IBKR:
 
     def cancel_order(self, order: Order) -> None:
         self.ib.cancelOrder(order)
+
+    async def refresh_account_updates(self, account: str) -> None:
+        await self._await_with_timeout(
+            self.ib.reqAccountUpdatesAsync(account), "account updates"
+        )
+
+    async def refresh_positions(self) -> List[Position]:
+        return await self._await_with_timeout(
+            self.ib.reqPositionsAsync(), "positions snapshot"
+        )
+
+    def positions(self, account: str) -> List[Position]:
+        return self.ib.positions(account)
 
     async def get_chains_for_contract(self, contract: Contract) -> List[OptionChain]:
         return await self.ib.reqSecDefOptParamsAsync(
@@ -245,6 +271,14 @@ class IBKR:
             log.info(
                 f"{trade.contract.symbol}: Order updated with status={trade.orderStatus.status}"
             )
+
+    async def _await_with_timeout(self, awaitable: Awaitable[T], description: str) -> T:
+        try:
+            return await asyncio.wait_for(
+                awaitable, timeout=self.api_response_wait_time
+            )
+        except asyncio.TimeoutError as exc:
+            raise IBKRRequestTimeout(description, self.api_response_wait_time) from exc
 
     async def __market_data_streaming_handler__(
         self,

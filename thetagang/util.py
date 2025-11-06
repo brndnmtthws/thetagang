@@ -33,7 +33,10 @@ def portfolio_positions_to_dict(
 
 
 def position_pnl(position: ib_async.objects.PortfolioItem) -> float:
-    return position.unrealizedPNL / abs(position.averageCost * position.position)
+    denominator = position.averageCost * position.position
+    if denominator == 0:
+        return 0.0
+    return position.unrealizedPNL / abs(denominator)
 
 
 def get_short_positions(
