@@ -2196,13 +2196,16 @@ class PortfolioManager:
 
         chains = await self.ibkr.get_chains_for_contract(underlying)
 
-        # Some option contracts (e.g. IWM) have multiple trading classes; pick the one that matches the underlying exchange
+        # Some option contracts (e.g. IWM) have multiple trading classes; pick the one that matches the underlying exchange and trading class
         chain = next(
             c
             for c in chains
             if (
                 c.exchange == underlying.exchange
-                and c.tradingClass == underlying.tradingClass
+                # Some underlying contracts do not have a tradingClass e.g. VIX.
+                # And some underlying contracts have a trading class that doesn't match the chain's trading class e.g. RKLB's trading class is "SCM" (not sure why).
+                # If we find other cases that need special handling, it might be better to loosen the matching criteria here, i.e. incrementally add filters if more than 1 chain found.
+                and c.tradingClass == underlying.symbol
             )
         )
 
