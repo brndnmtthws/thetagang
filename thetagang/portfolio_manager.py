@@ -2196,7 +2196,15 @@ class PortfolioManager:
 
         chains = await self.ibkr.get_chains_for_contract(underlying)
 
-        chain = next(c for c in chains if c.exchange == underlying.exchange)
+        # Some option contracts (e.g. IWM) have multiple trading classes; pick the one that matches the underlying exchange
+        chain = next(
+            c
+            for c in chains
+            if (
+                c.exchange == underlying.exchange
+                and c.tradingClass == underlying.tradingClass
+            )
+        )
 
         def valid_strike(strike: float) -> bool:
             if right.startswith("P") and strike_limit:
