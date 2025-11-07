@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import math
 import random
@@ -23,7 +24,12 @@ from rich.table import Table
 from thetagang import log
 from thetagang.config import Config
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
-from thetagang.ibkr import IBKR, RequiredFieldValidationError, TickerField
+from thetagang.ibkr import (
+    IBKR,
+    IBKRRequestTimeout,
+    RequiredFieldValidationError,
+    TickerField,
+)
 from thetagang.orders import Orders
 from thetagang.trades import Trades
 from thetagang.util import (
@@ -339,12 +345,115 @@ class PortfolioManager:
                 or item.contract.symbol == self.config.cash_management.cash_fund
             )
             and item.position != 0
-            and item.averageCost != 0
         ]
 
-    def get_portfolio_positions(self) -> Dict[str, List[PortfolioItem]]:
-        portfolio_positions = self.ibkr.portfolio(account=self.account_number)
-        return portfolio_positions_to_dict(self.filter_positions(portfolio_positions))
+    async def get_portfolio_positions(self) -> Dict[str, List[PortfolioItem]]:
+        attempts = 3
+        symbols = set(self.get_symbols())
+
+        for attempt in range(1, attempts + 1):
+            try:
+                await self.ibkr.refresh_account_updates(self.account_number)
+            except IBKRRequestTimeout as exc:
+                log.warning(
+                    f"Attempt {attempt}/{attempts}: {exc}. Retrying account update request..."
+                )
+                if attempt == attempts:
+                    raise
+                await asyncio.sleep(1)
+                continue
+
+            portfolio_positions = self.ibkr.portfolio(account=self.account_number)
+            filtered_positions = self.filter_positions(portfolio_positions)
+            portfolio_by_symbol = portfolio_positions_to_dict(filtered_positions)
+            filtered_conids = {item.contract.conId for item in filtered_positions}
+
+            if portfolio_by_symbol:
+                # Still verify against the latest positions snapshot to ensure we didn't
+                # lose any holdings in the portfolio view.
+                try:
+                    positions_snapshot = await self.ibkr.refresh_positions()
+                except IBKRRequestTimeout as exc:
+                    log.warning(
+                        f"Attempt {attempt}/{attempts}: {exc}. Retrying positions snapshot request..."
+                    )
+                    if attempt == attempts:
+                        raise
+                    await asyncio.sleep(1)
+                    continue
+
+                tracked_positions = [
+                    pos
+                    for pos in positions_snapshot
+                    if pos.account == self.account_number
+                    and (
+                        pos.contract.symbol in symbols
+                        or pos.contract.symbol == "VIX"
+                        or pos.contract.symbol == self.config.cash_management.cash_fund
+                    )
+                    and pos.position != 0
+                ]
+                missing_positions = [
+                    pos
+                    for pos in tracked_positions
+                    if pos.contract.conId not in filtered_conids
+                ]
+
+                if not missing_positions:
+                    return portfolio_by_symbol
+
+                missing_symbols = ", ".join(
+                    sorted({pos.contract.symbol for pos in missing_positions})
+                )
+                log.warning(
+                    (
+                        f"Attempt {attempt}/{attempts}: Portfolio snapshot is missing "
+                        f"{len(missing_positions)} of {len(tracked_positions)} tracked "
+                        f"positions (symbols: {missing_symbols}). Waiting briefly before retrying..."
+                    )
+                )
+                await asyncio.sleep(1)
+                continue
+
+            try:
+                positions_snapshot = await self.ibkr.refresh_positions()
+            except IBKRRequestTimeout as exc:
+                log.warning(
+                    f"Attempt {attempt}/{attempts}: {exc}. Retrying positions snapshot request..."
+                )
+                if attempt == attempts:
+                    raise
+                await asyncio.sleep(1)
+                continue
+
+            tracked_positions = [
+                pos
+                for pos in positions_snapshot
+                if pos.account == self.account_number
+                and (
+                    pos.contract.symbol in symbols
+                    or pos.contract.symbol == "VIX"
+                    or pos.contract.symbol == self.config.cash_management.cash_fund
+                )
+                and pos.position != 0
+            ]
+
+            if not tracked_positions:
+                return portfolio_by_symbol
+
+            log.warning(
+                (
+                    f"Attempt {attempt}/{attempts}: IBKR reported {len(tracked_positions)} "
+                    "tracked positions but returned an empty portfolio snapshot. "
+                    "Waiting briefly before retrying..."
+                )
+            )
+            await asyncio.sleep(1)
+
+        raise RuntimeError(
+            "Failed to load IBKR portfolio positions after multiple attempts. "
+            "Aborting run to avoid trading on incomplete data."
+        )
 
     def initialize_account(self) -> None:
         self.ibkr.set_market_data_type(self.config.account.market_data_type)
@@ -406,7 +515,7 @@ class PortfolioManager:
         )
         log.print(Panel(table))
 
-        portfolio_positions = self.get_portfolio_positions()
+        portfolio_positions = await self.get_portfolio_positions()
 
         position_values: Dict[int, Dict[str, str]] = {}
 
@@ -579,7 +688,7 @@ class PortfolioManager:
                 await self.execute_sell_orders(stocks_to_sell)
 
             # Refresh positions, in case anything changed from the orders above
-            portfolio_positions = self.get_portfolio_positions()
+            portfolio_positions = await self.get_portfolio_positions()
 
             (rollable_puts, closeable_puts, group1) = await self.check_puts(
                 portfolio_positions
