@@ -304,6 +304,41 @@ class TestPortfolioManager:
         sleep_mock.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_get_portfolio_positions_falls_back_after_account_timeouts(
+        self, portfolio_manager, mocker
+    ):
+        """Continues with cached portfolio data after repeated account timeouts."""
+        portfolio_manager.config.symbols = {"AAPL": mocker.Mock()}
+
+        portfolio_item = SimpleNamespace(
+            account="TEST123",
+            contract=SimpleNamespace(symbol="AAPL", conId=1),
+            position=5,
+            averageCost=100.0,
+            marketPrice=105.0,
+            marketValue=525.0,
+            unrealizedPNL=25.0,
+        )
+        snapshot_position = SimpleNamespace(
+            account="TEST123",
+            contract=SimpleNamespace(symbol="AAPL", conId=1),
+            position=5,
+        )
+
+        portfolio_manager.ibkr.refresh_account_updates = mocker.AsyncMock(
+            side_effect=[IBKRRequestTimeout("account updates", 1) for _ in range(3)]
+        )
+        portfolio_manager.ibkr.portfolio = mocker.Mock(return_value=[portfolio_item])
+        portfolio_manager.ibkr.refresh_positions = mocker.AsyncMock(
+            return_value=[snapshot_position]
+        )
+
+        result = await portfolio_manager.get_portfolio_positions()
+
+        assert result == {"AAPL": [portfolio_item]}
+        assert portfolio_manager.ibkr.refresh_account_updates.await_count == 3
+
+    @pytest.mark.asyncio
     async def test_get_portfolio_positions_raises_after_missing_positions(
         self, portfolio_manager, mocker
     ):
