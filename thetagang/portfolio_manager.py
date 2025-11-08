@@ -355,13 +355,19 @@ class PortfolioManager:
             try:
                 await self.ibkr.refresh_account_updates(self.account_number)
             except IBKRRequestTimeout as exc:
-                log.warning(
-                    f"Attempt {attempt}/{attempts}: {exc}. Retrying account update request..."
-                )
                 if attempt == attempts:
-                    raise
-                await asyncio.sleep(1)
-                continue
+                    log.warning(
+                        (
+                            f"Attempt {attempt}/{attempts}: {exc}. "
+                            "Proceeding without a fresh account update snapshot."
+                        )
+                    )
+                else:
+                    log.warning(
+                        f"Attempt {attempt}/{attempts}: {exc}. Retrying account update request..."
+                    )
+                    await asyncio.sleep(1)
+                    continue
 
             portfolio_positions = self.ibkr.portfolio(account=self.account_number)
             filtered_positions = self.filter_positions(portfolio_positions)
