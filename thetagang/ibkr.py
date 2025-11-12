@@ -49,6 +49,8 @@ T = TypeVar("T")
 
 
 class IBKR:
+    ACCOUNT_VALUE_HEALTH_TAGS = {"NetLiquidation", "TotalCashValue", "BuyingPower"}
+
     def __init__(
         self, ib: IB, api_response_wait_time: int, default_order_exchange: str
     ) -> None:
@@ -93,9 +95,29 @@ class IBKR:
         self.ib.cancelOrder(order)
 
     async def refresh_account_updates(self, account: str) -> None:
-        await self._await_with_timeout(
-            self.ib.reqAccountUpdatesAsync(account), "account updates"
-        )
+        if self._account_snapshot_ready(account):
+            log.info(
+                f"{account}: Account snapshot already populated, skipping refresh wait."
+            )
+            return
+
+        try:
+            await self._await_with_timeout(
+                self.ib.reqAccountUpdatesAsync(account), "account updates"
+            )
+        except IBKRRequestTimeout:
+            if self._account_snapshot_ready(account):
+                log.info(
+                    f"{account}: Account snapshot populated while waiting for account updates."
+                )
+                return
+            raise
+
+        if not self._account_snapshot_ready(account):
+            raise IBKRRequestTimeout(
+                "account updates (no usable account values)",
+                self.api_response_wait_time,
+            )
 
     async def refresh_positions(self) -> List[Position]:
         return await self._await_with_timeout(
@@ -279,6 +301,39 @@ class IBKR:
             )
         except asyncio.TimeoutError as exc:
             raise IBKRRequestTimeout(description, self.api_response_wait_time) from exc
+
+    def _account_snapshot_ready(self, account: str) -> bool:
+        """Return True if IB has populated non-zero account values for account."""
+        wrapper = getattr(self.ib, "wrapper", None)
+        if wrapper is None:
+            return False
+
+        values_dict = getattr(wrapper, "accountValues", None)
+        if not values_dict:
+            return False
+
+        for value in values_dict.values():
+            if (
+                value.account != account
+                or value.tag not in self.ACCOUNT_VALUE_HEALTH_TAGS
+            ):
+                continue
+
+            if self._account_value_has_data(value):
+                return True
+
+        return False
+
+    @staticmethod
+    def _account_value_has_data(value: AccountValue) -> bool:
+        raw_value = getattr(value, "value", None)
+        if raw_value in (None, ""):
+            return False
+
+        try:
+            return float(raw_value) != 0.0
+        except (TypeError, ValueError):
+            return False
 
     async def __market_data_streaming_handler__(
         self,

@@ -1,7 +1,17 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
-from ib_async import IB, Contract, Order, OrderStatus, Stock, Ticker, Trade
+from ib_async import (
+    IB,
+    AccountValue,
+    Contract,
+    Order,
+    OrderStatus,
+    Stock,
+    Ticker,
+    Trade,
+)
 
 from thetagang import log
 from thetagang.ibkr import (
@@ -25,6 +35,8 @@ def mock_ib(mocker):
     mock.orderStatusEvent.__iadd__ = mocker.Mock(
         return_value=None
     )  # Allow += operation
+    mock.wrapper = mocker.Mock()
+    mock.wrapper.accountValues = {}
     return mock
 
 
@@ -268,6 +280,7 @@ async def test_refresh_account_updates_uses_timeout_wrapper(ibkr, mocker):
     req_future: asyncio.Future = asyncio.get_running_loop().create_future()
     req_future.set_result(None)
     ibkr.ib.reqAccountUpdatesAsync = mocker.Mock(return_value=req_future)
+    mocker.patch.object(ibkr, "_account_snapshot_ready", side_effect=[False, True])
     await_wrapper = mocker.patch.object(
         ibkr, "_await_with_timeout", new=mocker.AsyncMock(return_value=None)
     )
@@ -315,6 +328,106 @@ async def test_refresh_account_updates_propagates_timeout(ibkr, mocker):
 
     with pytest.raises(IBKRRequestTimeout):
         await ibkr.refresh_account_updates("ACC123")
+
+
+async def test_refresh_account_updates_skips_when_snapshot_ready(ibkr, mocker):
+    """No request issued when account snapshot already populated."""
+    mocker.patch.object(ibkr, "_account_snapshot_ready", return_value=True)
+
+    await ibkr.refresh_account_updates("ACC123")
+
+    ibkr.ib.reqAccountUpdatesAsync.assert_not_called()
+
+
+async def test_refresh_account_updates_allows_timeout_if_data_ready(ibkr, mocker):
+    """A timeout is ignored when snapshot becomes ready while waiting."""
+    mocker.patch.object(ibkr, "_account_snapshot_ready", side_effect=[False, True])
+    ibkr.ib.reqAccountUpdatesAsync = mocker.Mock(return_value=object())
+    mocker.patch.object(
+        ibkr,
+        "_await_with_timeout",
+        new=mocker.AsyncMock(
+            side_effect=IBKRRequestTimeout(
+                "account updates", ibkr.api_response_wait_time
+            )
+        ),
+    )
+
+    await ibkr.refresh_account_updates("ACC123")
+
+    assert ibkr._account_snapshot_ready.call_count == 2
+
+
+async def test_refresh_account_updates_raises_when_snapshot_never_populates(
+    ibkr, mocker
+):
+    """If data never arrives, an IBKRRequestTimeout is raised."""
+    mocker.patch.object(ibkr, "_account_snapshot_ready", return_value=False)
+    ibkr.ib.reqAccountUpdatesAsync = mocker.Mock(return_value=object())
+    mocker.patch.object(
+        ibkr, "_await_with_timeout", new=mocker.AsyncMock(return_value=None)
+    )
+
+    with pytest.raises(IBKRRequestTimeout) as excinfo:
+        await ibkr.refresh_account_updates("ACC123")
+
+    assert "no usable account values" in str(excinfo.value)
+
+
+async def test_account_snapshot_ready_checks_for_non_zero_account_values(ibkr, mock_ib):
+    """Helper returns True only when tracked tags have non-zero data."""
+    mock_ib.wrapper.accountValues = {
+        ("ACC123", "NetLiquidation", "USD", ""): AccountValue(
+            "ACC123", "NetLiquidation", "0", "USD", ""
+        )
+    }
+
+    assert ibkr._account_snapshot_ready("ACC123") is False
+
+    mock_ib.wrapper.accountValues = {
+        ("ACC123", "NetLiquidation", "USD", ""): AccountValue(
+            "ACC123", "NetLiquidation", "100000", "USD", ""
+        )
+    }
+
+    assert ibkr._account_snapshot_ready("ACC123") is True
+
+
+async def test_account_snapshot_ready_ignores_other_accounts_and_tags(ibkr, mock_ib):
+    """Values for other accounts or untracked tags should not mark snapshot ready."""
+    mock_ib.wrapper.accountValues = {
+        ("OTHER", "NetLiquidation", "USD", ""): AccountValue(
+            "OTHER", "NetLiquidation", "100000", "USD", ""
+        ),
+        ("ACC123", "GrossPositionValue", "USD", ""): AccountValue(
+            "ACC123", "GrossPositionValue", "5000", "USD", ""
+        ),
+    }
+
+    assert ibkr._account_snapshot_ready("ACC123") is False
+
+
+async def test_account_snapshot_ready_handles_missing_wrapper_or_values(ibkr, mock_ib):
+    """Return False when wrapper or accountValues are absent."""
+    mock_ib.wrapper.accountValues = {}
+    assert ibkr._account_snapshot_ready("ACC123") is False
+
+    mock_ib.wrapper = None
+    assert ibkr._account_snapshot_ready("ACC123") is False
+
+
+async def test_account_value_has_data_true_for_non_zero_numeric(ibkr):
+    """Helper treats any non-zero numeric string as usable data."""
+    value = AccountValue("ACC123", "NetLiquidation", "123.45", "USD", "")
+    assert ibkr._account_value_has_data(value) is True
+
+
+@pytest.mark.parametrize("raw_value", ["0", "0.0", "", None, "abc"])
+async def test_account_value_has_data_false_for_invalid_inputs(ibkr, raw_value):
+    """Helper rejects zero, empty, None, and non-numeric values."""
+    value = SimpleNamespace(value=raw_value)
+
+    assert ibkr._account_value_has_data(value) is False
 
 
 async def test_await_with_timeout_wraps_timeout_error(ibkr, mocker):
