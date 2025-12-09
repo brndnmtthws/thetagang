@@ -1973,12 +1973,12 @@ class PortfolioManager:
                 # Get current market price
                 ticker = await self.ibkr.get_ticker_for_contract(
                     stock_contract,
-                    self.get_order_exchange(),
+                    required_fields=[],
+                    optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
                 )
-                market_price = ticker.marketPrice()
 
-                # Place sell order at 1% below market price
-                limit_price = round(market_price * 0.99, 2)
+                # Place sell order near the tape using midpoint with market fallback
+                limit_price = round(midpoint_or_market_price(ticker), 2)
 
                 # Create sell order
                 order = LimitOrder(
