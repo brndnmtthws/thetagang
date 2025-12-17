@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum
-from typing import Any, Awaitable, Callable, Coroutine, List, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Coroutine, List, Optional, TypeVar, cast
 
 from ib_async import (
     IB,
@@ -140,7 +140,9 @@ class IBKR:
             if result is None:
                 continue
             elif isinstance(result, list):
-                qualified.extend(c for c in result if c is not None)
+                for contract in result:
+                    if contract is not None:
+                        qualified.append(cast(Contract, contract))
             else:
                 qualified.append(result)
         return qualified

@@ -538,12 +538,13 @@ class PortfolioManager:
             return ""
 
         async def load_position_task(pos: PortfolioItem) -> None:
+            qty = pos.position
+            if isinstance(qty, float):
+                qty_display = ifmt(int(qty)) if qty.is_integer() else ffmt(qty, 4)
+            else:
+                qty_display = ifmt(int(qty))
             position_values[pos.contract.conId] = {
-                "qty": (
-                    ifmt(int(pos.position))
-                    if pos.position.is_integer()
-                    else ffmt(pos.position, 4)
-                ),
+                "qty": qty_display,
                 "mktprice": dfmt(pos.marketPrice),
                 "avgprice": dfmt(pos.averageCost),
                 "value": dfmt(pos.marketValue, 0),
@@ -2422,12 +2423,12 @@ class PortfolioManager:
             return False
 
         def delta_is_valid(ticker: Ticker) -> bool:
+            model_greeks = ticker.modelGreeks
+            delta = model_greeks.delta if model_greeks is not None else None
             return (
-                ticker.modelGreeks is not None
-                and ticker.modelGreeks
-                and ticker.modelGreeks.delta is not None
-                and not util.isNan(ticker.modelGreeks.delta)
-                and abs(ticker.modelGreeks.delta) <= contract_target_delta
+                delta is not None
+                and not util.isNan(delta)
+                and abs(delta) <= contract_target_delta
             )
 
         def price_is_valid(ticker: Ticker) -> bool:
