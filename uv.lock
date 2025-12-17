@@ -693,7 +693,7 @@ wheels = [
 
 [[package]]
 name = "thetagang"
-version = "1.16.3"
+version = "1.16.4"
 source = { editable = "." }
 dependencies = [
     { name = "annotated-types" },
