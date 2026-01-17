@@ -18,12 +18,16 @@ class Trades:
         self.__records: List[Trade] = []
 
     def submit_order(
-        self, contract: Contract, order: LimitOrder, idx: Optional[int] = None
+        self,
+        contract: Contract,
+        order: LimitOrder,
+        idx: Optional[int] = None,
+        intent_id: Optional[int] = None,
     ) -> None:
         try:
             trade = self.ibkr.place_order(contract, order)
             if self.data_store:
-                self.data_store.record_order(contract, order)
+                self.data_store.record_order(contract, order, intent_id=intent_id)
             if idx is not None:
                 self.__replace_trade(trade, idx)
             else:

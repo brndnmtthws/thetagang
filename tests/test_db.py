@@ -6,7 +6,14 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 import thetagang.db as db_module
-from thetagang.db import DataStore, HistoricalBar, run_migrations, sqlite_db_path
+from thetagang.db import (
+    DataStore,
+    HistoricalBar,
+    OrderIntent,
+    OrderRecord,
+    run_migrations,
+    sqlite_db_path,
+)
 
 
 def test_data_store_records_executions_and_queries(tmp_path) -> None:
@@ -179,3 +186,45 @@ def test_record_executions_parses_string_times(tmp_path) -> None:
     )
 
     assert last == datetime(2024, 1, 5, 12, 0, 0)
+
+
+def test_record_order_intent_links_orders(tmp_path) -> None:
+    db_path = tmp_path / "state.db"
+    data_store = DataStore(
+        f"sqlite:///{db_path}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=True,
+        config_text="test",
+    )
+
+    contract = SimpleNamespace(
+        symbol="AAA",
+        secType="STK",
+        conId=101,
+        exchange="SMART",
+        currency="USD",
+    )
+    order = SimpleNamespace(
+        action="BUY",
+        totalQuantity=10,
+        lmtPrice=123.45,
+        orderType="LMT",
+        orderRef="tg:test",
+        tif="DAY",
+    )
+
+    intent_id = data_store.record_order_intent(contract, order)
+    assert intent_id is not None
+    data_store.record_order(contract, order, intent_id=intent_id)
+
+    with data_store.session_scope() as session:
+        intent_row = session.execute(
+            select(OrderIntent.id, OrderIntent.dry_run).limit(1)
+        ).one()
+        record_intent_id = session.execute(
+            select(OrderRecord.intent_id).limit(1)
+        ).scalar_one()
+
+    assert intent_row.id == intent_id
+    assert intent_row.dry_run is True
+    assert record_intent_id == intent_id
