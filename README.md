@@ -79,10 +79,6 @@ config:
 - Regime-aware rebalancing gates
 - Exchange-hours enforcement
 
-You could use this tool on individual stocks, but I don't
-recommend it because I am not smart enough to understand which stocks to buy.
-That's why I buy index funds.
-
 ThetaGang will try to acquire your desired allocation of each stock or ETF
 according to the weights you specify in the config. To acquire the positions,
 the script will write puts when conditions are met (config parameters, adequate
@@ -94,18 +90,6 @@ the money, they will be ignored until they expire and are exercised (after which
 you will own the underlying). When rolling puts, the strike of the new contracts
 are capped at the old strike plus the premium received (to prevent your account
 from blowing due to over-ratcheting up the buying power usage).
-
-**⚠️ IMPORTANT RISK WARNING**: Selling naked puts has unlimited downside risk.
-If the underlying goes to $0, you lose the full strike price × 100 shares per
-contract, minus the small premium received. Selling options is NOT "free money"
-and only makes sense when:
-- You're willing to own the underlying at the strike price
-- You believe implied volatility exceeds realized volatility
-- You have adequate capital to handle worst-case scenarios
-- You understand and accept the risks involved
-
-This strategy can and will lose money in trending markets or during sharp
-declines. The premium collected is compensation for taking on this risk.
 
 If puts are exercised due to being ITM at expiration, you will own the stock,
 and ThetaGang switches from writing puts to writing calls at a strike at least
@@ -171,16 +155,6 @@ management by purchasing a fund when you have extra cash. Although you do earn
 a yield on your cash balance, it's not the juiciest yield you can get, so a
 little optimization might help you earn 1 or 2 extra pennies to take the edge
 off your rent payments.
-
-There are quite a few ETFs that might be a decent place to stash your cash, and
-you should do some internet searches to find the most appropriate one for you
-and your feelings. Here are some internet web searches that you can test out to
-get some information on cash funds (ETFs):
-
-- ["cash etf reddit"](https://www.google.com/search?q=cash+etf+reddit)
-- ["sgov reddit"](https://www.google.com/search?q=sgov+reddit)
-- ["shv reddit"](https://www.google.com/search?q=shv+reddit)
-- ["short term government bond etf reddit"](https://www.google.com/search?q=short+term+government+bond+etf+reddit)
 
 You can enable cash management with:
 
@@ -376,45 +350,16 @@ involve significant changes to the underlying algorithm.
 If you find something that you think is a bug, or some other issue, please
 [create a new issue](https://github.com/brndnmtthws/thetagang/issues/new).
 
-## "Show me your gains bro" – i.e., what are the returns?
-
-As discussed elsewhere in this README, you must conduct your own research, and
-I suggest starting with resources such as CBOE's BXM and BXDM indices and
-comparing those to SPX. I've had a lot of people complain because "that
-strategy isn't better than buy and hold BRUH"–let me assure you, that is not my
-goal with this.
-
-There are conflicting opinions about whether selling options is good or bad,
-more or less risky, yadda yadda, but generally, the risk profile for covered
-calls and naked puts is no worse than the worst case for simply holding an
-ETF or stock. I'd argue that selling a naked put is better than
-buying SPY with a limit order, because at least if SPY goes to zero you keep
-the premium from selling the option. The main downside is that returns are
-capped on the upside. Depending on your goals, this may not matter. If you're
-like me, then you'd rather have consistent returns and give up a little bit
-of potential upside.
-
-Generally speaking, the point of selling options is not to exceed the returns
-of the underlying, but rather to reduce risk. Reducing risk is an important
-feature because it, in turn, allows one to increase risk in other ways
-(i.e., allocate a higher percentage to stocks or buy riskier assets).
-
-Whether you use this or not is up to you. I have not one single fuck to give,
-whether you use it or not. I am not here to convince you to use it, I merely
-want to share knowledge and perhaps help create a little bit of wealth
-redistribution.
-
-💫
-
 ## Requirements
 
 The bot is based on the [ib_async](https://github.com/ib-api-reloaded/ib_async)
 library, and uses [IBC](https://github.com/IbcAlpha/IBC) for managing the API
-gateway.
+gateway. The bundled IBC configuration targets the current stable TWS/Gateway
+version (see `IBC(1037, ...)` in the code).
 
 To use the bot, you'll need an Interactive Brokers account with a working
 installation of IBC. If you want to modify the bot, you'll need an
-installation of Python 3.10 to 3.13 with the
+installation of Python 3.10 to 3.14 with the
 [`uv`](https://docs.astral.sh/uv/) package manager.
 
 One more thing: to run this on a live account, you'll require enough capital
@@ -423,9 +368,8 @@ example, if SPY is trading at $300/share you'd need $30,000 available. You
 can search for lower priced alternatives, but these tend to have low volume
 on options which may not be appropriate for this strategy. You should
 generally avoid low volume ETFs/stocks. If you don't have that kind of
-capital, you'll need to keep renting out your time to the capitalists until
-you can become a capitalist yourself. That's the way the pyramid scheme we
-call capitalism works.
+capital, you'll need to keep renting out your time until you can become a
+capitalist yourself.
 
 ## Installation
 
@@ -438,15 +382,49 @@ pip install thetagang
 
 It's recommended you familiarize yourself with
 [IBC](https://github.com/IbcAlpha/IBC) so you know how it works. You'll need
-to know how to configure the various knows and settings, and make sure things
+to know how to configure the various knobs and settings, and make sure things
 like API ports are configured correctly. If you don't want to mess around too
 much, consider [running ThetaGang with Docker](#running-with-docker).
+
+## Quickstart (paper trading)
+
+1) Copy the sample config and edit the required fields:
+
+```console
+curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/thetagang.toml -o ./thetagang.toml
+```
+
+At a minimum, update:
+- `account.number`
+- `ibc.userid` and `ibc.password`
+- `ibc.tradingMode = "paper"`
+- your `symbols.<SYMBOL>.weight` allocations
+
+If you're running locally (not Docker), update the Docker defaults:
+- `ibc.ibcIni` should point to your local `config.ini`
+- `ib_async.logfile` should be a writable local path (or unset)
+- `database.path` is relative to the config file location
+
+2) Run a dry run to verify connectivity and config:
+
+```console
+thetagang --config ./thetagang.toml --dry-run
+```
 
 ## Usage
 
 ```console
 thetagang -h
 ```
+
+Common flags:
+- `--config` path to a toml config (required)
+- `--dry-run` show proposed orders without submitting trades
+- `--without-ibc` connect to a running IB Gateway/TWS you started yourself
+- `-v/--verbosity` increase log verbosity (repeatable)
+
+All CLI options support environment variables with the `THETAGANG_` prefix.
+Example: `THETAGANG_CONFIG=./thetagang.toml`.
 
 ## State Database
 
@@ -499,6 +477,17 @@ Now, to run ThetaGang with Docker:
 
 ```console
 docker run --rm -i --net host \
+    -v ~/thetagang:/etc/thetagang \
+    brndnmtthws/thetagang:main \
+    --config /etc/thetagang/thetagang.toml
+```
+
+On macOS/Windows, `--net host` is not supported. Use explicit port mapping and
+set `watchdog.host` to `host.docker.internal` in your config:
+
+```console
+docker run --rm -i \
+    -p 7497:7497 \
     -v ~/thetagang:/etc/thetagang \
     brndnmtthws/thetagang:main \
     --config /etc/thetagang/thetagang.toml
@@ -595,6 +584,18 @@ recommendations and resources:
   tool](https://www.portfoliovisualizer.com/optimize-portfolio) to get an idea
   of drawdown and typical volatility
 
+## Running without IBC
+
+If you already run IB Gateway/TWS manually, you can skip IBC management:
+
+```console
+thetagang --config ./thetagang.toml --without-ibc
+```
+
+Ensure the following match your gateway settings:
+- `watchdog.host`, `watchdog.port`, `watchdog.clientId`
+- `ib_async.api_response_wait_time` for slower connections
+
 ## Development
 
 Check out the code to your local machine and install the Python dependencies:
@@ -606,8 +607,6 @@ uv run pre-commit install
 uv run thetagang -h
 ```
 
-You are now ready to make a splash! 🐳
-
 ## FAQ
 
 | Error | Cause | Resolution |
@@ -616,16 +615,6 @@ You are now ready to make a splash! 🐳
 | No market data during competing live session | Your account is logged in somewhere else, such as the IBKR web portal, the desktop app, or even another instance of this script. | Log out of all sessions and then re-run the script. |
 | `ib_async.wrapper ERROR Error 200, reqId 10: The contract description specified for SYMBOL is ambiguous.` | IBKR needs to know which exchange is the primary exchange for a given symbol. | You need to specify the primary exchange for the stock. This is normal for companies, typically. For ETFs it usually isn't required. Specify the `primary_exchange` parameter for the symbol, i.e., `primary_exchange = "NYSE"`. |
 | IBKey and MFA-related authentication issues | IBKR requires MFA for the primary account user. | Create a second account with limited permissions using the web portal (remove withdrawal/transfer, client management, IP restriction, etc permissions) and set an IP restriction if possible. When logging into the second account, ignore the MFA nags and do not enable MFA. A [more detailed set of instructions can be found here](https://github.com/Voyz/ibeam/wiki/Runtime-environment#using-a-secondary-account), from a different project. |
-
-## Support and sponsorship
-
-If you get some value out of this, please consider [sponsoring me](https://github.com/sponsors/brndnmtthws)
-to continue maintaining this project well into the future. Like
-everyone else in the world, I'm just trying to survive.
-
-If you like what you see but want something different, I am willing
-to work on bespoke or custom trading bots for a fee. Reach out
-to me directly through my GitHub profile.
 
 ## Stargazers over time
 
