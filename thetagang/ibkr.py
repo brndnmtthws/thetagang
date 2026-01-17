@@ -7,6 +7,8 @@ from ib_async import (
     AccountValue,
     BarDataList,
     Contract,
+    ExecutionFilter,
+    Fill,
     OptionChain,
     Order,
     PortfolioItem,
@@ -78,6 +80,12 @@ class IBKR:
             "TRADES",
             True,
         )
+
+    async def request_executions(
+        self,
+        exec_filter: Optional[ExecutionFilter] = None,
+    ) -> List[Fill]:
+        return await self.ib.reqExecutionsAsync(exec_filter)
 
     def set_market_data_type(
         self,
@@ -372,7 +380,7 @@ class IBKR:
             if condition(ticker):
                 event.set()
 
-        ticker.updateEvent += onTicker  # type: ignore
+        ticker.updateEvent += onTicker  # type: ignore[reportAttributeAccessIssue]
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
             return True

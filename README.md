@@ -8,12 +8,15 @@ _Beat the capitalists at their own game with ThetaGang 📈_
 
 ![Decay my sweet babies](thetagang.jpg)
 
-ThetaGang is an [IBKR](https://www.interactivebrokers.com/) trading bot for
-collecting premium by selling options using "The Wheel" strategy. The Wheel
-is a strategy that [surfaced on
+ThetaGang is an [IBKR](https://www.interactivebrokers.com/) trading bot that
+started as a basic implementation of "The Wheel" strategy and has grown into a
+broader, configurable portfolio automation tool. The Wheel is a strategy that
+[surfaced on
 Reddit](https://www.reddit.com/r/options/comments/a36k4j/the_wheel_aka_triple_income_strategy_explained/),
-but has been used by many in the past. This bot implements a slightly
-modified version of The Wheel, with my own personal tweaks.
+but has been used by many in the past. ThetaGang still supports a modified
+version of The Wheel, and now also includes features like direct share
+rebalancing, cash management, VIX call hedging, regime-aware rebalancing, and
+exchange-hours gating.
 
 ## Risk Disclaimer
 
@@ -66,6 +69,16 @@ strategies as long as you have the buying power available and set the
 appropriate configuration (in particular, by setting
 `write_when.calculate_net_contracts = true`).
 
+Over time, additional features were added to support different portfolio
+workflows and risk controls. You can enable or disable them independently via
+config:
+
+- Direct share rebalancing (buy-only and sell-only modes)
+- Cash management via a cash-equivalent fund
+- VIX call hedging
+- Regime-aware rebalancing gates
+- Exchange-hours enforcement
+
 You could use this tool on individual stocks, but I don't
 recommend it because I am not smart enough to understand which stocks to buy.
 That's why I buy index funds.
@@ -114,7 +127,8 @@ implications, but that is outside the scope of this README.
 
 In normal usage, you would run the script as a cronjob on a daily, weekly, or
 monthly basis according to your preferences. Running more frequently than
-daily is not recommended, but the choice is yours.
+daily is not recommended, but the choice is yours. Some features (like
+regime-aware rebalancing) assume a daily cadence.
 
 ![Paper account sample output](sample.png)
 
@@ -201,6 +215,35 @@ buy_only_min_threshold_amount = 1000  # Minimum dollar amount to buy
 ```
 
 This feature is useful for maintaining target allocations in stocks with limited options liquidity or when you want to dollar-cost average into positions.
+
+### Regime-Aware Rebalancing
+
+Regime-aware rebalancing lets you gate share rebalances on a simple regime
+filter before acting. It builds a proxy series from the configured symbols’
+daily closes, then checks for “choppy/mean-reverting” conditions using
+choppiness and efficiency thresholds. If the regime passes, and allocations
+drift beyond the soft relative band around target weights (or cash flow moves
+all positions in the same direction), it queues share trades to move back
+toward targets. A hard relative band acts as a safety rail and triggers even
+when the regime filter fails, optionally rebalancing only partway back to
+target. A cooldown prevents frequent soft-band rebalances and is based on
+recent executions tagged with `tg:regime-rebalance`. When using this feature,
+run the script once per day.
+
+```toml
+[regime_rebalance]
+enabled = true
+symbols = ["QQQ", "BTAL"]
+lookback_days = 40
+soft_band = 0.25  # +/-25% relative drift from target weight
+hard_band = 0.50  # +/-50% relative drift from target weight
+hard_band_rebalance_fraction = 1.0  # 1.0 = full to target, 0.5 = halfway
+cooldown_days = 5
+choppiness_min = 3.0
+efficiency_max = 0.30
+order_history_lookback_days = 30
+shares_only = true  # disable option writes/rolls while rebalancing
+```
 
 ### Exchange Hours Management
 

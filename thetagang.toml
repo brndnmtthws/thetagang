@@ -488,6 +488,28 @@ minimum_open_interest = 10
 # This keeps BTC between 4.25% and 5.75% of the portfolio (±15% of 5% target).
 # No options are written on this position.
 
+# Regime-aware rebalancing example:
+# This will rebalance the listed symbols when allocations drift beyond a
+# relative band around target weights. The soft band uses the regime filter and
+# cooldown to harvest variance in choppy markets. The hard band is a safety
+# rail that ignores the regime filter and cooldown to prevent extreme drift. You
+# can optionally rebalance only partway back to target on a hard-band breach.
+# Rebalances are gated by a cooldown that counts trading sessions after the last
+# rebalance (based on executions whose orderRef starts with "tg:regime-rebalance").
+#
+# [regime_rebalance]
+# enabled = true
+# symbols = ["TQQQ", "BTAL"]
+# lookback_days = 40
+# soft_band = 0.25  # +/-25% relative drift from target weight
+# hard_band = 0.50  # +/-50% relative drift from target weight
+# hard_band_rebalance_fraction = 1.0  # 1.0 = full to target, 0.5 = halfway
+# cooldown_days = 5
+# choppiness_min = 3.0
+# efficiency_max = 0.30
+# order_history_lookback_days = 30  # look back this many calendar days for fills
+# shares_only = false  # when true, disables all option writes/rolls
+
   [symbols.TLT]
   weight = 0.2
   # parts = 20

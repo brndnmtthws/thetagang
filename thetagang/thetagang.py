@@ -61,7 +61,7 @@ def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) ->
         )
         watchdog.start()
 
-        ib.run(completion_future)  # type: ignore
+        ib.run(completion_future)
         watchdog.stop()
         ibc.terminate()
     else:
@@ -72,5 +72,5 @@ def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) ->
             timeout=watchdog_config.probeTimeout,
             account=config.account.number,
         )
-        ib.run(completion_future)  # type: ignore
+        ib.run(completion_future)
         ib.disconnect()

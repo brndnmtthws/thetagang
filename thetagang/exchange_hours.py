@@ -17,9 +17,9 @@ def determine_action(config: ExchangeHoursConfig, now: datetime) -> str:
     calendar = xcals.get_calendar(config.exchange)
     today = now.date()
 
-    if calendar.is_session(today):  # type: ignore
-        open = calendar.session_open(today)  # type: ignore
-        close = calendar.session_close(today)  # type: ignore
+    if calendar.is_session(today):
+        open = calendar.session_open(today)
+        close = calendar.session_close(today)
 
         start = open + pd.Timedelta(seconds=config.delay_after_open)
         end = close - pd.Timedelta(seconds=config.delay_before_close)
@@ -53,9 +53,9 @@ def waited_for_open(config: ExchangeHoursConfig, now: datetime) -> bool:
     calendar = xcals.get_calendar(config.exchange)
     today = now.date()
 
-    next_session = calendar.date_to_session(today, direction="next")  # type: ignore
+    next_session = calendar.date_to_session(today, direction="next")
 
-    open = calendar.session_open(next_session)  # type: ignore
+    open = calendar.session_open(next_session)
     start = open + pd.Timedelta(seconds=config.delay_after_open)
 
     seconds_until_start = (start - now).total_seconds()
