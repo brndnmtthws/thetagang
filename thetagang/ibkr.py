@@ -21,6 +21,7 @@ from ib_async import (
 from rich.console import Console
 
 from thetagang import log
+from thetagang.db import DataStore
 
 console = Console()
 
@@ -54,12 +55,17 @@ class IBKR:
     ACCOUNT_VALUE_HEALTH_TAGS = {"NetLiquidation", "TotalCashValue", "BuyingPower"}
 
     def __init__(
-        self, ib: IB, api_response_wait_time: int, default_order_exchange: str
+        self,
+        ib: IB,
+        api_response_wait_time: int,
+        default_order_exchange: str,
+        data_store: Optional[DataStore] = None,
     ) -> None:
         self.ib = ib
         self.ib.orderStatusEvent += self.orderStatusEvent
         self.api_response_wait_time = api_response_wait_time
         self.default_order_exchange = default_order_exchange
+        self.data_store = data_store
 
     def portfolio(self, account: str) -> List[PortfolioItem]:
         return self.ib.portfolio(account)
@@ -72,7 +78,7 @@ class IBKR:
         contract: Contract,
         duration: str,
     ) -> BarDataList:
-        return await self.ib.reqHistoricalDataAsync(
+        bars = await self.ib.reqHistoricalDataAsync(
             contract,
             "",
             duration,
@@ -80,12 +86,18 @@ class IBKR:
             "TRADES",
             True,
         )
+        if self.data_store:
+            self.data_store.record_historical_bars(contract.symbol, "1 day", bars)
+        return bars
 
     async def request_executions(
         self,
         exec_filter: Optional[ExecutionFilter] = None,
     ) -> List[Fill]:
-        return await self.ib.reqExecutionsAsync(exec_filter)
+        fills = await self.ib.reqExecutionsAsync(exec_filter)
+        if self.data_store:
+            self.data_store.record_executions(fills)
+        return fills
 
     def set_market_data_type(
         self,
@@ -303,6 +315,8 @@ class IBKR:
             log.info(
                 f"{trade.contract.symbol}: Order updated with status={trade.orderStatus.status}"
             )
+        if self.data_store:
+            self.data_store.record_order_status(trade)
 
     async def _await_with_timeout(self, awaitable: Awaitable[T], description: str) -> T:
         try:
@@ -380,7 +394,7 @@ class IBKR:
             if condition(ticker):
                 event.set()
 
-        ticker.updateEvent += onTicker  # type: ignore[reportAttributeAccessIssue]
+        ticker.updateEvent += onTicker
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
             return True

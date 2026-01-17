@@ -1,6 +1,7 @@
 [project]
 authors = [{ name = "Brenden Matthews", email = "brenden@brndn.io" }]
 dependencies = [
+  "alembic>=1.13,<2",
   "click>=8.1.3,<9",
   "click-log>=0.4.0,<0.5",
   "more-itertools>=9.1,<11.0",
@@ -9,6 +10,7 @@ dependencies = [
   "pytimeparse>=1.1.8,<2",
   "rich>=13.7.0,<15",
   "schema>=0.7.5,<0.8",
+  "sqlalchemy>=2.0,<3",
   "toml>=0.10.2,<0.11",
   "ib-async>=2.0.1,<3",
   "pydantic>=2.10.2,<3",
@@ -20,8 +22,8 @@ description = "ThetaGang is an IBKR bot for getting money"
 license = "AGPL-3.0-only"
 name = "thetagang"
 readme = "README.md"
-requires-python = ">=3.10,<3.14"
-version = "1.16.4"
+requires-python = ">=3.10,<3.15"
+version = "2.0.0"
 
   [project.urls]
   "Bug Tracker" = "https://github.com/brndnmtthws/thetagang/issues"
@@ -40,8 +42,8 @@ dev = [
   "pytest-mock>=3.14.0,<4",
   "pytest-asyncio>=0.23.0,<1.4",
   "pytest-watch>=4.2.0,<5",
-  "ruff>=0.9.1",
-  "pyright>=1.1.403",
+  "ruff>=0.14.13",
+  "ty>=0.0.12,<1",
 ]
 
 [tool.ruff]
@@ -60,18 +62,12 @@ select = ["ANN", "E4", "E7", "E9", "F", "I", "W"]
 fixable   = ["ALL"]
 unfixable = []
 
-[tool.pyright]
-defineConstant          = { DEBUG = true }
-pythonVersion           = "3.10"
-reportUnknownLambdaType = false
-stubPath                = "stubs"
-venv                    = ".venv"
-venvPath                = "."
-exclude                 = ["stubs", ".venv", "**/__pycache__"]
-
 [build-system]
 build-backend = "hatchling.build"
 requires      = ["hatchling"]
+
+[tool.hatch.build]
+include = ["thetagang/**", "alembic.ini", "alembic/**"]
 
 [tool.uv]
 package = true

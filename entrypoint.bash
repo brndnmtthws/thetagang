@@ -9,4 +9,4 @@ export DISPLAY=:1
 # make sure jni path is set
 export LD_LIBRARY_PATH="/usr/lib/$(arch)-linux-gnu/jni"
 
-exec /usr/local/bin/thetagang "$@"
+exec thetagang "$@"

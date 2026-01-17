@@ -1,5 +1,6 @@
 import math
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
@@ -108,6 +109,29 @@ class OrdersConfig(BaseModel, DisplayMixin):
 class IBAsyncConfig(BaseModel):
     api_response_wait_time: int = Field(default=60, ge=0)
     logfile: Optional[str] = None
+
+
+class DatabaseConfig(BaseModel, DisplayMixin):
+    enabled: bool = Field(default=True)
+    path: str = Field(default="data/thetagang.db")
+    url: Optional[str] = None
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_section()
+        table.add_row("[spring_green1]Database")
+        table.add_row("", "Enabled", "=", f"{self.enabled}")
+        table.add_row("", "Path", "=", self.path)
+        if self.url:
+            table.add_row("", "URL", "=", self.url)
+
+    def resolve_url(self, config_path: str) -> str:
+        if self.url:
+            return self.url
+        base_dir = Path(config_path).resolve().parent
+        db_path = Path(self.path)
+        if not db_path.is_absolute():
+            db_path = base_dir / db_path
+        return f"sqlite:///{db_path}"
 
 
 class IBCConfig(BaseModel):
@@ -582,6 +606,7 @@ class Config(BaseModel, DisplayMixin):
     exchange_hours: ExchangeHoursConfig = Field(default_factory=ExchangeHoursConfig)
 
     orders: OrdersConfig = Field(default_factory=OrdersConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     ib_async: IBAsyncConfig = Field(default_factory=IBAsyncConfig)
     ibc: IBCConfig = Field(default_factory=IBCConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
@@ -764,6 +789,7 @@ class Config(BaseModel, DisplayMixin):
         if self.constants:
             self.constants.add_to_table(config_table)
         self.orders.add_to_table(config_table)
+        self.database.add_to_table(config_table)
         self.roll_when.add_to_table(config_table)
         self.write_when.add_to_table(config_table)
         self.target.add_to_table(config_table)

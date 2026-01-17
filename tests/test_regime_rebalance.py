@@ -6,6 +6,7 @@ from ib_async import IB, Stock
 
 import thetagang.portfolio_manager as pm_module
 from thetagang.config import RegimeRebalanceConfig, normalize_config
+from thetagang.db import DataStore
 from thetagang.portfolio_manager import PortfolioManager
 
 
@@ -54,6 +55,54 @@ def portfolio_manager(mock_ib, mocker):
 
     completion_future = mocker.Mock()
     return PortfolioManager(config, mock_ib, completion_future, dry_run=False)
+
+
+@pytest.fixture
+def portfolio_manager_with_db(mock_ib, mocker, tmp_path):
+    config = mocker.Mock()
+    config.account = mocker.Mock()
+    config.account.number = "TEST123"
+    config.account.margin_usage = 1.0
+    config.ib_async = mocker.Mock()
+    config.ib_async.api_response_wait_time = 1
+    config.orders = mocker.Mock()
+    config.orders.exchange = "SMART"
+    config.orders.algo = mocker.Mock()
+    config.orders.algo.strategy = "Adaptive"
+    config.orders.algo.params = []
+    config.exchange_hours = mocker.Mock()
+    config.exchange_hours.exchange = "XNYS"
+    config.trading_is_allowed = mocker.Mock(return_value=True)
+
+    config.symbols = {
+        "AAA": SimpleNamespace(weight=0.5, primary_exchange="NYSE"),
+        "BBB": SimpleNamespace(weight=0.5, primary_exchange="NYSE"),
+    }
+    config.regime_rebalance = SimpleNamespace(
+        enabled=True,
+        symbols=["AAA", "BBB"],
+        lookback_days=3,
+        soft_band=0.10,
+        hard_band=0.80,
+        hard_band_rebalance_fraction=1.0,
+        cooldown_days=2,
+        choppiness_min=0.1,
+        efficiency_max=0.9,
+        eps=1e-8,
+        order_history_lookback_days=30,
+    )
+
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'state.db'}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=False,
+        config_text="test",
+    )
+
+    completion_future = mocker.Mock()
+    return PortfolioManager(
+        config, mock_ib, completion_future, dry_run=False, data_store=data_store
+    )
 
 
 def _freeze_now(monkeypatch, fixed: datetime) -> None:
@@ -290,6 +339,43 @@ async def test_regime_rebalance_ignores_non_matching_order_refs(
     )
 
     assert last_rebalance == datetime(2024, 1, 7)
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_uses_db_for_cooldown(
+    portfolio_manager_with_db, mocker, monkeypatch
+):
+    fills = [
+        SimpleNamespace(
+            execution=SimpleNamespace(
+                execId="1",
+                orderRef="tg:regime-rebalance:AAA",
+                time=datetime(2024, 1, 5, 12, 0, 0),
+            ),
+            contract=SimpleNamespace(symbol="AAA"),
+            time=datetime(2024, 1, 5, 12, 0, 0),
+        ),
+        SimpleNamespace(
+            execution=SimpleNamespace(
+                execId="2",
+                orderRef="tg:regime-rebalance:BBB",
+                time=datetime(2024, 1, 7, 12, 0, 0),
+            ),
+            contract=SimpleNamespace(symbol="BBB"),
+            time=datetime(2024, 1, 7, 12, 0, 0),
+        ),
+    ]
+    portfolio_manager_with_db.data_store.record_executions(fills)
+    portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
+        return_value=[]
+    )
+    _freeze_now(monkeypatch, datetime(2024, 1, 10, 12, 0, 0))
+
+    last_rebalance = await portfolio_manager_with_db._get_last_regime_rebalance_time(
+        ["AAA", "BBB"]
+    )
+
+    assert last_rebalance == datetime(2024, 1, 7, 12, 0, 0)
 
 
 @pytest.mark.asyncio

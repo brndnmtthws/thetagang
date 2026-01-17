@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v6
 
@@ -37,5 +37,5 @@ jobs:
       - name: Check formatting with ruff
         run: uv run ruff format --check --diff
 
-      - name: Check types with pyright
-        run: uv run pyright
+      - name: Check types with ty
+        run: uvx ty check

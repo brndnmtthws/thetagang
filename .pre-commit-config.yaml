@@ -38,10 +38,3 @@ repos:
         types: [python]
         pass_filenames: false
         require_serial: true
-      - id: pyright
-        name: pyright
-        entry: uv run pyright
-        language: system
-        types: [python]
-        pass_filenames: true
-        require_serial: true

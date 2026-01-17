@@ -4,7 +4,7 @@ import click
 import click_log
 
 logger = logging.getLogger(__name__)
-click_log.basic_config(logger)  # type: ignore[reportAttributeAccessIssue]
+click_log.basic_config(logger)
 
 
 CONTEXT_SETTINGS = dict(
@@ -13,7 +13,7 @@ CONTEXT_SETTINGS = dict(
 
 
 @click.command(context_settings=CONTEXT_SETTINGS)
-@click_log.simple_verbosity_option(logger)  # type: ignore[reportAttributeAccessIssue]
+@click_log.simple_verbosity_option(logger)
 @click.option(
     "-c",
     "--config",
