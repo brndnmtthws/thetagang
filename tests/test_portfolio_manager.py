@@ -605,8 +605,8 @@ class TestPortfolioManager:
         # Mock the orders.records() to return our test orders
         portfolio_manager.orders.records = mocker.Mock(
             return_value=[
-                (mock_stock, stock_buy_order),
-                (mock_option, option_sell_order),
+                (mock_stock, stock_buy_order, None),
+                (mock_option, option_sell_order, None),
             ]
         )
 
