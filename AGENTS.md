@@ -3,6 +3,10 @@
 ## Project Structure & Module Organization
 - Core trading code lives in `thetagang/`; the CLI entry point is `thetagang/entry.py`, with the main orchestration in `portfolio_manager.py` and configuration models
 in `config.py`.
+- The Click CLI command is defined in `thetagang/main.py` and re-exported by
+  `thetagang/entry.py` for the `thetagang` console script.
+- Runtime startup wiring (config loading, IBKR/IBC setup, event loop, dry run
+  control flow) lives in `thetagang/thetagang.py`.
 - Broker integrations and execution helpers sit in `thetagang/ibkr.py`, `orders.py`, and related utilities under the same package.
 - Supporting scripts and assets reside in `tws/`, `lib/`, and the packaging files `pyproject.toml` and `uv.lock`; sample configs and data are under `data/` and
 `thetagang.toml`.
@@ -13,7 +17,7 @@ in `config.py`.
 - `uv run pytest` — run the full test suite; append a path (e.g., `tests/test_portfolio_manager.py`) to scope runs.
 - `uv run pytest --cov=thetagang` — gather coverage for trading logic changes.
 - `uv run ruff check .` / `uv run ruff format .` — lint and auto-format the codebase.
-- `uv run pyright` — perform static type checking.
+- `uv run ty check` — perform static type checking.
 - `uv run pre-commit run --all-files` — replicate the CI hook set before pushing.
 
 ## Coding Style & Naming Conventions

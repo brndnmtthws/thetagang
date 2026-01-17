@@ -35,13 +35,10 @@ RUN apt-get update \
   libxrender1 \
   libxtst6 \
   openjfx \
-  python3-pip \
-  python3-setuptools \
   unzip \
   wget \
   xdg-utils \
   xvfb \
-  && if test "$(dpkg --print-architecture)" = "armhf" ; then python3 -m pip config set global.extra-index-url https://www.piwheels.org/simple ; fi \
   && echo 'a3f9b93ea1ff6740d2880760fb73e1a6e63b454f86fe6366779ebd9cd41c1542  ibc.zip' | tee ibc.zip.sha256 \
   && wget -q https://github.com/IbcAlpha/IBC/releases/download/3.20.0/IBCLinux-3.20.0.zip -O ibc.zip \
   && sha256sum -c ibc.zip.sha256 \
@@ -51,6 +48,9 @@ RUN apt-get update \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
+ENV VIRTUAL_ENV="/opt/venv"
+ENV PATH="/opt/venv/bin:/root/.local/bin:${PATH}"
+
 WORKDIR /src
 
 ADD ./tws/Jts /root/Jts
@@ -58,7 +58,11 @@ ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
 ADD ./data/jxbrowser-linux64-arm-7.29.jar /root/Jts/1037/jars/
 
-RUN python3 -m pip install dist/thetagang-*.whl \
+RUN wget -qO- https://astral.sh/uv/install.sh | sh \
+  && uv python install 3.14 \
+  && uv venv /opt/venv --python 3.14 \
+  && if test "$(dpkg --print-architecture)" = "armhf" ; then export PIP_EXTRA_INDEX_URL=https://www.piwheels.org/simple ; fi \
+  && uv pip install --python /opt/venv/bin/python dist/thetagang-*.whl \
   && rm -rf /root/.cache \
   && rm -rf dist \
   && echo '--module-path /usr/share/openjfx/lib' | tee -a /root/Jts/*/tws.vmoptions \

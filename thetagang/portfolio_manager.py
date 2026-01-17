@@ -26,6 +26,7 @@ from rich.table import Table
 
 from thetagang import log
 from thetagang.config import Config
+from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import (
     IBKR,
@@ -81,19 +82,22 @@ class PortfolioManager:
         ib: IB,
         completion_future: Future[bool],
         dry_run: bool,
+        data_store: Optional[DataStore] = None,
     ) -> None:
         self.account_number = config.account.number
         self.config = config
+        self.data_store = data_store
         self.ibkr = IBKR(
             ib,
             config.ib_async.api_response_wait_time,
             config.orders.exchange,
+            data_store=data_store,
         )
         self.completion_future = completion_future
         self.has_excess_calls: set[str] = set()
         self.has_excess_puts: set[str] = set()
         self.orders: Orders = Orders()
-        self.trades: Trades = Trades(self.ibkr)
+        self.trades: Trades = Trades(self.ibkr, data_store=data_store)
         self.target_quantities: Dict[str, int] = {}
         self.qualified_contracts: Dict[int, Contract] = {}
         self.dry_run = dry_run
@@ -544,6 +548,9 @@ class PortfolioManager:
         log.print(Panel(table))
 
         portfolio_positions = await self.get_portfolio_positions()
+        if self.data_store:
+            self.data_store.record_account_snapshot(account_summary)
+            self.data_store.record_positions_snapshot(portfolio_positions)
 
         position_values: Dict[int, Dict[str, str]] = {}
 
@@ -667,7 +674,10 @@ class PortfolioManager:
         return (account_summary, portfolio_positions)
 
     async def manage(self) -> None:
+        had_error = False
         try:
+            if self.data_store:
+                self.data_store.record_event("run_start", {"dry_run": self.dry_run})
             self.initialize_account()
             (account_summary, portfolio_positions) = await self.summarize_account()
 
@@ -783,11 +793,14 @@ class PortfolioManager:
 
             log.info("ThetaGang is done, shutting down! Cya next time. :sparkles:")
         except:
+            had_error = True
             log.error("ThetaGang terminated with error...")
             raise
 
         finally:
             # Shut it down
+            if self.data_store:
+                self.data_store.record_event("run_end", {"success": not had_error})
             self.completion_future.set_result(True)
 
     async def check_puts(
@@ -1680,8 +1693,16 @@ class PortfolioManager:
         lookback_days = max(regime_rebalance.order_history_lookback_days, 1)
         start_time = datetime.now() - timedelta(days=lookback_days)
         exec_filter = ExecutionFilter(time=start_time.strftime("%Y%m%d %H:%M:%S"))
-        fills = await self.ibkr.request_executions(exec_filter)
 
+        if self.data_store:
+            fills = await self.ibkr.request_executions(exec_filter)
+            return self.data_store.get_last_regime_rebalance_time(
+                symbols,
+                self.regime_rebalance_order_ref_prefix,
+                start_time,
+            )
+
+        fills = await self.ibkr.request_executions(exec_filter)
         last_rebalance: Optional[datetime] = None
         for fill in fills:
             execution = fill.execution
@@ -1959,6 +1980,23 @@ class PortfolioManager:
             f"cooldown_ok={cooldown_ok} cash_signal="
             f"{'in' if all_below else 'out' if all_above else 'mix'}"
         )
+        if self.data_store:
+            self.data_store.record_event(
+                "regime_rebalance_gate",
+                {
+                    "symbols": symbols,
+                    "max_relative_drift": max_relative_drift,
+                    "soft_band": regime_rebalance.soft_band,
+                    "hard_band": regime_rebalance.hard_band,
+                    "hard_breach": hard_breach,
+                    "soft_breach": soft_breach,
+                    "choppiness": choppiness,
+                    "efficiency": efficiency,
+                    "cooldown_ok": cooldown_ok,
+                    "cash_signal": "in" if all_below else "out" if all_above else "mix",
+                    "orders": to_trade,
+                },
+            )
 
         return (table, to_trade)
 
@@ -3404,6 +3442,23 @@ class PortfolioManager:
         if not contract:
             return
         self.orders.add_order(contract, order)
+        if self.data_store:
+            self.data_store.record_event(
+                "order_enqueued",
+                {
+                    "symbol": getattr(contract, "symbol", None),
+                    "sec_type": getattr(contract, "secType", None),
+                    "con_id": getattr(contract, "conId", None),
+                    "exchange": getattr(contract, "exchange", None),
+                    "currency": getattr(contract, "currency", None),
+                    "action": getattr(order, "action", None),
+                    "quantity": getattr(order, "totalQuantity", None),
+                    "limit_price": getattr(order, "lmtPrice", None),
+                    "order_type": getattr(order, "orderType", None),
+                    "order_ref": getattr(order, "orderRef", None),
+                },
+                symbol=getattr(contract, "symbol", None),
+            )
 
     def submit_orders(self) -> None:
         for contract, order in self.orders.records():

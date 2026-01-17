@@ -448,6 +448,23 @@ much, consider [running ThetaGang with Docker](#running-with-docker).
 thetagang -h
 ```
 
+## State Database
+
+ThetaGang can persist a SQLite database with order activity, executions,
+historical bars, account snapshots, and decision gates. By default, the database
+is created relative to your config file, and it is reused across runs to build a
+long-lived history.
+
+```toml
+[database]
+enabled = true
+path = "data/thetagang.db"
+# url = "sqlite:////abs/path/thetagang.db"
+```
+
+For Docker runs, make sure the `data/` directory is inside the mounted config
+volume so the database persists between runs.
+
 ## Up and running with Docker
 
 My preferred way for running ThetaGang is to use a cronjob to execute Docker
@@ -475,7 +492,8 @@ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/ibc-config
 Edit `~/thetagang/thetagang.toml` to suit your needs. Pay particular
 attention to the symbols and weights. At a minimum, you must change the
 username, password, and account number. You may also want to change the
-trading move from paper to live when needed.
+trading move from paper to live when needed. If you enable the database,
+create `~/thetagang/data/` so the SQLite file is persisted.
 
 Now, to run ThetaGang with Docker:
 
