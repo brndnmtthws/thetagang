@@ -4,6 +4,7 @@ from thetagang.config import (
     AccountConfig,
     Config,
     OptionChainsConfig,
+    RegimeRebalanceConfig,
     RollWhenConfig,
     SymbolConfig,
     TargetConfig,
@@ -37,7 +38,19 @@ class SymbolConfigPutsFactory(ModelFactory[SymbolConfig.Puts]): ...
 class SymbolConfigCallsFactory(ModelFactory[SymbolConfig.Calls]): ...
 
 
-class ConfigFactory(ModelFactory[Config]): ...
+class RegimeRebalanceConfigFactory(ModelFactory[RegimeRebalanceConfig]):
+    soft_band = 0.10
+    hard_band = 0.50
+
+
+class ConfigFactory(ModelFactory[Config]):
+    @classmethod
+    def build(cls, factory_use_construct: bool = False, **kwargs):
+        kwargs.setdefault(
+            "regime_rebalance",
+            RegimeRebalanceConfigFactory.build(soft_band=0.10, hard_band=0.50),
+        )
+        return super().build(factory_use_construct=factory_use_construct, **kwargs)
 
 
 def test_trading_is_allowed_with_symbol_no_trading() -> None:

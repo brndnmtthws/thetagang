@@ -4,11 +4,14 @@ import math
 import random
 import sys
 from asyncio import Future
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
+import exchange_calendars as xcals
 import numpy as np
 from ib_async import (
     AccountValue,
+    ExecutionFilter,
     PortfolioItem,
     TagValue,
     Ticker,
@@ -94,6 +97,7 @@ class PortfolioManager:
         self.target_quantities: Dict[str, int] = {}
         self.qualified_contracts: Dict[int, Contract] = {}
         self.dry_run = dry_run
+        self.regime_rebalance_order_ref_prefix = "tg:regime-rebalance"
 
     def get_short_calls(
         self, portfolio_positions: Dict[str, List[PortfolioItem]]
@@ -104,6 +108,24 @@ class PortfolioManager:
         self, portfolio_positions: Dict[str, List[PortfolioItem]]
     ) -> List[PortfolioItem]:
         return self.get_short_contracts(portfolio_positions, "P")
+
+    def _regime_rebalance_symbols(self) -> set[str]:
+        regime_rebalance = getattr(self.config, "regime_rebalance", None)
+        if not regime_rebalance or not getattr(regime_rebalance, "enabled", False):
+            return set()
+        symbols = getattr(regime_rebalance, "symbols", [])
+        if not isinstance(symbols, (list, tuple, set)):
+            return set()
+        return set(symbols)
+
+    def options_trading_enabled(self) -> bool:
+        regime_rebalance = getattr(self.config, "regime_rebalance", None)
+        if not regime_rebalance:
+            return True
+        return not (
+            getattr(regime_rebalance, "enabled", False)
+            and getattr(regime_rebalance, "shares_only", False)
+        )
 
     def get_short_contracts(
         self, portfolio_positions: Dict[str, List[PortfolioItem]], right: str
@@ -649,27 +671,46 @@ class PortfolioManager:
             self.initialize_account()
             (account_summary, portfolio_positions) = await self.summarize_account()
 
-            # Check if we have enough buying power to write some puts
-            (
-                positions_table,
-                put_actions_table,
-                puts_to_write,
-            ) = await self.check_if_can_write_puts(account_summary, portfolio_positions)
-            log.print(positions_table)
+            options_enabled = self.options_trading_enabled()
+            if options_enabled:
+                # Check if we have enough buying power to write some puts
+                (
+                    positions_table,
+                    put_actions_table,
+                    puts_to_write,
+                ) = await self.check_if_can_write_puts(
+                    account_summary, portfolio_positions
+                )
+                log.print(positions_table)
 
-            # Look for lots of stock that don't have covered calls
+                # Look for lots of stock that don't have covered calls
+                (
+                    call_actions_table,
+                    calls_to_write,
+                ) = await self.check_for_uncovered_positions(
+                    account_summary, portfolio_positions
+                )
+
+                log.print(put_actions_table)
+                await self.write_puts(puts_to_write)
+
+                log.print(call_actions_table)
+                await self.write_calls(calls_to_write)
+            else:
+                log.notice(
+                    "Regime rebalancing shares-only enabled; skipping option writes and rolls."
+                )
+
+            # Check for regime-aware rebalancing positions
             (
-                call_actions_table,
-                calls_to_write,
-            ) = await self.check_for_uncovered_positions(
+                regime_actions_table,
+                regime_orders,
+            ) = await self.check_regime_rebalance_positions(
                 account_summary, portfolio_positions
             )
-
-            log.print(put_actions_table)
-            await self.write_puts(puts_to_write)
-
-            log.print(call_actions_table)
-            await self.write_calls(calls_to_write)
+            if regime_orders:
+                log.print(regime_actions_table)
+                await self.execute_regime_rebalance_orders(regime_orders)
 
             # Check for buy-only rebalancing positions
             (
@@ -697,23 +738,25 @@ class PortfolioManager:
             # Refresh positions, in case anything changed from the orders above
             portfolio_positions = await self.get_portfolio_positions()
 
-            (rollable_puts, closeable_puts, group1) = await self.check_puts(
-                portfolio_positions
-            )
-            (rollable_calls, closeable_calls, group2) = await self.check_calls(
-                portfolio_positions
-            )
-            log.print(Panel(Group(group1, group2)))
-
-            await self.close_puts(
-                closeable_puts + await self.roll_puts(rollable_puts, account_summary)
-            )
-            await self.close_calls(
-                closeable_calls
-                + await self.roll_calls(
-                    rollable_calls, account_summary, portfolio_positions
+            if options_enabled:
+                (rollable_puts, closeable_puts, group1) = await self.check_puts(
+                    portfolio_positions
                 )
-            )
+                (rollable_calls, closeable_calls, group2) = await self.check_calls(
+                    portfolio_positions
+                )
+                log.print(Panel(Group(group1, group2)))
+
+                await self.close_puts(
+                    closeable_puts
+                    + await self.roll_puts(rollable_puts, account_summary)
+                )
+                await self.close_calls(
+                    closeable_calls
+                    + await self.roll_calls(
+                        rollable_calls, account_summary, portfolio_positions
+                    )
+                )
 
             # check if we should do VIX call hedging
             await self.do_vix_hedging(account_summary, portfolio_positions)
@@ -1537,6 +1580,431 @@ class PortfolioManager:
 
         return (positions_summary_table, put_actions_table, to_write)
 
+    async def _get_regime_proxy_series(
+        self,
+        symbols: List[str],
+        lookback_days: int,
+        cooldown_days: int,
+    ) -> Tuple[List[date], List[float]]:
+        trading_days_needed = lookback_days + 1 + max(cooldown_days, 0)
+        calendar_days = math.ceil(trading_days_needed * 7 / 5) + 5
+        duration = f"{calendar_days} D"
+
+        async def fetch_history_task(symbol: str) -> Tuple[str, List[Any]]:
+            contract = Stock(
+                symbol,
+                self.get_order_exchange(),
+                currency="USD",
+                primaryExchange=self.get_primary_exchange(symbol),
+            )
+            bars = await self.ibkr.request_historical_data(contract, duration)
+            return symbol, list(bars)
+
+        tasks: List[Coroutine[Any, Any, Tuple[str, List[Any]]]] = [
+            fetch_history_task(symbol) for symbol in symbols
+        ]
+        histories = await log.track_async(
+            tasks, description="Fetching regime rebalancing history..."
+        )
+
+        closes_by_symbol: Dict[str, Dict[date, float]] = {}
+        for symbol, bars in histories:
+            closes: Dict[date, float] = {}
+            for bar in bars:
+                bar_date = bar.date.date() if hasattr(bar.date, "date") else bar.date
+                closes[bar_date] = float(bar.close)
+            closes_by_symbol[symbol] = closes
+
+        common_dates = set.intersection(
+            *(set(closes.keys()) for closes in closes_by_symbol.values())
+        )
+        if not common_dates:
+            log.error(
+                "Regime-aware rebalancing history has no common dates across symbols."
+            )
+            raise ValueError(
+                "Regime-aware rebalancing requires aligned history for all symbols."
+            )
+
+        sorted_dates = sorted(common_dates)
+        if len(sorted_dates) < 2:
+            log.error("Regime-aware rebalancing history has fewer than 2 points.")
+            raise ValueError(
+                "Regime-aware rebalancing requires at least 2 history points."
+            )
+
+        weights = {symbol: self.config.symbols[symbol].weight for symbol in symbols}
+        total_weight = sum(weights.values())
+        if total_weight <= 0:
+            log.error("Regime-aware rebalancing weights sum to zero, skipping.")
+            raise ValueError(
+                "Regime-aware rebalancing weights must sum to a positive value."
+            )
+        normalized_weights = {
+            symbol: weight / total_weight for symbol, weight in weights.items()
+        }
+
+        normalized_series = [1.0]
+        for prev_date, curr_date in zip(sorted_dates[:-1], sorted_dates[1:]):
+            daily_factor = 0.0
+            for symbol in symbols:
+                prev_close = closes_by_symbol[symbol].get(prev_date)
+                curr_close = closes_by_symbol[symbol].get(curr_date)
+                if (
+                    prev_close is None
+                    or curr_close is None
+                    or math.isnan(prev_close)
+                    or math.isnan(curr_close)
+                    or math.isclose(prev_close, 0)
+                    or math.isclose(curr_close, 0)
+                ):
+                    log.error(
+                        f"Invalid close for {symbol} on {prev_date} or {curr_date} "
+                        f"(prev={prev_close}, curr={curr_close})."
+                    )
+                    raise ValueError(
+                        "Regime-aware rebalancing found invalid historical closes."
+                    )
+                daily_factor += normalized_weights[symbol] * (curr_close / prev_close)
+            normalized_series.append(normalized_series[-1] * daily_factor)
+
+        return (sorted_dates, normalized_series)
+
+    async def _get_last_regime_rebalance_time(
+        self, symbols: List[str]
+    ) -> Optional[datetime]:
+        regime_rebalance = getattr(self.config, "regime_rebalance", None)
+        if not regime_rebalance or not getattr(regime_rebalance, "enabled", False):
+            return None
+
+        lookback_days = max(regime_rebalance.order_history_lookback_days, 1)
+        start_time = datetime.now() - timedelta(days=lookback_days)
+        exec_filter = ExecutionFilter(time=start_time.strftime("%Y%m%d %H:%M:%S"))
+        fills = await self.ibkr.request_executions(exec_filter)
+
+        last_rebalance: Optional[datetime] = None
+        for fill in fills:
+            execution = fill.execution
+            if not execution.orderRef:
+                continue
+            if not execution.orderRef.startswith(
+                self.regime_rebalance_order_ref_prefix
+            ):
+                continue
+            if fill.contract.symbol not in symbols:
+                continue
+            fill_time = fill.time or execution.time
+            if last_rebalance is None or fill_time > last_rebalance:
+                last_rebalance = fill_time
+
+        return last_rebalance
+
+    def _cooldown_elapsed(self, last_rebalance: datetime, cooldown_days: int) -> bool:
+        if cooldown_days <= 0:
+            return True
+
+        now = datetime.now()
+        if last_rebalance >= now:
+            return False
+
+        start_date = last_rebalance.date()
+        end_date = now.date()
+        if end_date < start_date:
+            return False
+
+        try:
+            exchange = self.config.exchange_hours.exchange
+            calendar = xcals.get_calendar(exchange)
+            sessions = calendar.sessions_in_range(start_date, end_date)
+            session_dates = [session.date() for session in sessions]
+            sessions_after = [d for d in session_dates if d > start_date]
+            return len(sessions_after) >= cooldown_days
+        except Exception as exc:
+            log.warning(f"Regime rebalancing cooldown fallback to calendar days: {exc}")
+            return (end_date - start_date).days >= cooldown_days
+
+    async def check_regime_rebalance_positions(
+        self,
+        account_summary: Dict[str, AccountValue],
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+    ) -> Tuple[Table, List[Tuple[str, str, int]]]:
+        table = Table(title="Regime-aware rebalancing summary")
+        table.add_column("Symbol")
+        table.add_column("Current weight", justify="right")
+        table.add_column("Target weight", justify="right")
+        table.add_column("Current shares", justify="right")
+        table.add_column("Target shares", justify="right")
+        table.add_column("Shares to trade", justify="right")
+        table.add_column("Gate", justify="center")
+        table.add_column("Action")
+
+        to_trade: List[Tuple[str, str, int]] = []
+        regime_rebalance = getattr(self.config, "regime_rebalance", None)
+        if not regime_rebalance or not getattr(regime_rebalance, "enabled", False):
+            return (table, to_trade)
+
+        symbols = list(getattr(regime_rebalance, "symbols", []))
+        if not symbols:
+            log.warning(
+                "Regime-aware rebalancing enabled but no symbols are configured."
+            )
+            return (table, to_trade)
+
+        missing_symbols = [
+            symbol for symbol in symbols if symbol not in self.config.symbols
+        ]
+        if missing_symbols:
+            log.error(
+                f"Regime-aware rebalancing symbols missing from config: {', '.join(missing_symbols)}"
+            )
+            raise ValueError(
+                "Regime-aware rebalancing requires symbols present in config."
+            )
+
+        total_value = self.get_buying_power(account_summary)
+        if total_value <= 0:
+            log.error("Buying power is not positive, skipping rebalancing.")
+            raise ValueError("Regime-aware rebalancing requires positive buying power.")
+
+        stock_positions = [
+            position
+            for symbol in portfolio_positions
+            for position in portfolio_positions[symbol]
+            if isinstance(position.contract, Stock)
+        ]
+        stock_symbols: Dict[str, PortfolioItem] = {
+            position.contract.symbol: position for position in stock_positions
+        }
+
+        async def get_ticker_task(symbol: str) -> Tuple[str, Ticker]:
+            ticker = await self.ibkr.get_ticker_for_stock(
+                symbol, self.get_primary_exchange(symbol)
+            )
+            return symbol, ticker
+
+        ticker_tasks: List[Coroutine[Any, Any, Tuple[str, Ticker]]] = [
+            get_ticker_task(symbol) for symbol in symbols
+        ]
+        ticker_results = await log.track_async(
+            ticker_tasks, description="Fetching regime rebalancing prices..."
+        )
+        tickers = {symbol: ticker for symbol, ticker in ticker_results}
+
+        current_weights: Dict[str, float] = {}
+        current_positions: Dict[str, int] = {}
+        current_values: Dict[str, float] = {}
+        market_prices: Dict[str, float] = {}
+        target_values: Dict[str, float] = {}
+        relative_ratios: Dict[str, float] = {}
+        relative_drifts: Dict[str, float] = {}
+        for symbol in symbols:
+            ticker = tickers[symbol]
+            market_price = ticker.marketPrice()
+            if (
+                not market_price
+                or math.isnan(market_price)
+                or math.isclose(market_price, 0)
+            ):
+                log.error(
+                    f"Invalid market price for {symbol} (market_price={market_price}), skipping for now"
+                )
+                raise ValueError(
+                    "Regime-aware rebalancing requires valid market prices."
+                )
+            market_prices[symbol] = market_price
+
+            current_position = math.floor(
+                stock_symbols[symbol].position if symbol in stock_symbols else 0
+            )
+            current_positions[symbol] = current_position
+            current_value = current_position * market_price
+            current_values[symbol] = current_value
+            current_weights[symbol] = current_value / total_value
+            target_weight = self.config.symbols[symbol].weight
+            if target_weight <= 0:
+                log.error(
+                    f"Regime-aware rebalancing requires positive target weight for {symbol}."
+                )
+                raise ValueError(
+                    "Regime-aware rebalancing requires positive target weights."
+                )
+            target_values[symbol] = target_weight * total_value
+            relative_ratio = current_weights[symbol] / target_weight
+            relative_ratios[symbol] = relative_ratio
+            relative_drifts[symbol] = abs(relative_ratio - 1.0)
+
+        dates, values = await self._get_regime_proxy_series(
+            symbols,
+            regime_rebalance.lookback_days,
+            regime_rebalance.cooldown_days,
+        )
+        if len(values) < regime_rebalance.lookback_days + 1:
+            log.error("Insufficient historical data for regime rebalancing, aborting.")
+            raise ValueError("Regime-aware rebalancing requires full lookback history.")
+
+        window = np.array(values[-(regime_rebalance.lookback_days + 1) :])
+        safe_prev = np.maximum(window[:-1], regime_rebalance.eps)
+        safe_curr = np.maximum(window[1:], regime_rebalance.eps)
+        r = np.log(safe_curr / safe_prev)
+        sigma = math.sqrt(float(np.sum(r * r)))
+        disp = abs(float(np.sum(r)))
+        choppiness = sigma / max(disp, regime_rebalance.eps)
+        chop_ok = choppiness >= regime_rebalance.choppiness_min
+
+        diffs = np.abs(np.diff(window))
+        efficiency = abs(float(window[-1] - window[0])) / max(
+            float(np.sum(diffs)), regime_rebalance.eps
+        )
+        er_ok = efficiency <= regime_rebalance.efficiency_max
+        regime_ok = chop_ok and er_ok
+
+        last_rebalance = await self._get_last_regime_rebalance_time(symbols)
+        cooldown_ok = True
+        if last_rebalance and regime_rebalance.cooldown_days > 0:
+            cooldown_ok = self._cooldown_elapsed(
+                last_rebalance, regime_rebalance.cooldown_days
+            )
+
+        soft_breach = any(
+            drift + regime_rebalance.eps >= regime_rebalance.soft_band
+            for drift in relative_drifts.values()
+        )
+        hard_breach = any(
+            drift + regime_rebalance.eps >= regime_rebalance.hard_band
+            for drift in relative_drifts.values()
+        )
+
+        below_flags: List[bool] = []
+        above_flags: List[bool] = []
+        for symbol in symbols:
+            tolerance = market_prices[symbol]
+            target_value = target_values[symbol]
+            current_value = current_values[symbol]
+            below_flags.append(current_value < target_value - tolerance)
+            above_flags.append(current_value > target_value + tolerance)
+
+        all_below = any(below_flags) and not any(above_flags)
+        all_above = any(above_flags) and not any(below_flags)
+        cash_flow_ok = all_below or all_above
+
+        max_relative_drift = max(relative_drifts.values()) if relative_drifts else 0.0
+        hard_rebalance = hard_breach
+        soft_rebalance = (soft_breach or cash_flow_ok) and regime_ok and cooldown_ok
+        should_rebalance = hard_rebalance or soft_rebalance
+        rebalance_fraction = 1.0
+        if hard_rebalance:
+            rebalance_fraction = regime_rebalance.hard_band_rebalance_fraction
+        for symbol in symbols:
+            target_weight = self.config.symbols[symbol].weight
+            target_value = target_weight * total_value
+            target_shares = math.floor(target_value / market_prices[symbol])
+            shares_to_trade = target_shares - current_positions[symbol]
+            if hard_rebalance and not math.isclose(rebalance_fraction, 1.0):
+                shares_to_trade = int(round(shares_to_trade * rebalance_fraction))
+            band_status = "hard" if hard_breach else "soft" if soft_breach else "no"
+            gate_status = (
+                f"band={band_status} "
+                f"regime={'ok' if regime_ok else 'no'} "
+                f"cooldown={'ok' if cooldown_ok else 'no'} "
+                f"cash={'in' if all_below else 'out' if all_above else 'mix'}"
+            )
+            trading_allowed = self.config.trading_is_allowed(symbol)
+
+            cash_direction_ok = True
+            if all_below:
+                cash_direction_ok = shares_to_trade > 0
+            elif all_above:
+                cash_direction_ok = shares_to_trade < 0
+
+            if (
+                trading_allowed
+                and should_rebalance
+                and cash_direction_ok
+                and shares_to_trade != 0
+            ):
+                to_trade.append(
+                    (
+                        symbol,
+                        self.get_primary_exchange(symbol),
+                        shares_to_trade,
+                    )
+                )
+                action = (
+                    f"[green]Buy {shares_to_trade}"
+                    if shares_to_trade > 0
+                    else f"[green]Sell {abs(shares_to_trade)}"
+                )
+            elif not trading_allowed:
+                action = "[cyan]Skip (no_trading)"
+            else:
+                action = "[cyan]Hold"
+
+            table.add_row(
+                symbol,
+                pfmt(current_weights[symbol]),
+                pfmt(self.config.symbols[symbol].weight),
+                ifmt(current_positions[symbol]),
+                ifmt(target_shares),
+                ifmt(shares_to_trade),
+                gate_status,
+                action,
+            )
+
+        log.info(
+            f"Regime rebalancing gates: max_relative_drift={pfmt(max_relative_drift)} "
+            f"soft_band={pfmt(regime_rebalance.soft_band, 0)} "
+            f"hard_band={pfmt(regime_rebalance.hard_band, 0)} "
+            f"hard_breach={hard_breach} soft_breach={soft_breach} "
+            f"chop={ffmt(choppiness)} er={pfmt(efficiency)} "
+            f"cooldown_ok={cooldown_ok} cash_signal="
+            f"{'in' if all_below else 'out' if all_above else 'mix'}"
+        )
+
+        return (table, to_trade)
+
+    async def execute_regime_rebalance_orders(
+        self, orders: List[Tuple[str, str, int]]
+    ) -> None:
+        """Execute direct stock orders for regime-aware rebalancing."""
+        for symbol, primary_exchange, quantity in orders:
+            try:
+                action = "BUY" if quantity > 0 else "SELL"
+                stock_contract = Stock(
+                    symbol,
+                    self.get_order_exchange(),
+                    currency="USD",
+                    primaryExchange=primary_exchange,
+                )
+
+                ticker = await self.ibkr.get_ticker_for_contract(
+                    stock_contract,
+                    required_fields=[],
+                    optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
+                )
+                limit_price = round(midpoint_or_market_price(ticker), 2)
+
+                order = LimitOrder(
+                    action,
+                    abs(quantity),
+                    limit_price,
+                    algoStrategy=self.get_algo_strategy(),
+                    algoParams=self.get_algo_params(),
+                    tif="DAY",
+                    account=self.account_number,
+                    orderRef=f"{self.regime_rebalance_order_ref_prefix}:{symbol}",
+                )
+
+                log.notice(
+                    f"Regime rebalancing: {action.lower()} {abs(quantity)} shares of {symbol} @ ${limit_price}"
+                )
+
+                self.enqueue_order(stock_contract, order)
+            except Exception as e:
+                log.error(
+                    f"{symbol}: Failed to execute regime rebalance order. Error: {e}"
+                )
+                continue
+
     async def check_buy_only_positions(
         self,
         account_summary: Dict[str, AccountValue],
@@ -1568,10 +2036,12 @@ class PortfolioManager:
         to_buy: List[Tuple[str, str, int]] = []
 
         # Only check symbols configured for buy-only rebalancing
+        regime_symbols = self._regime_rebalance_symbols()
         buy_only_symbols = [
             symbol
             for symbol in self.config.symbols.keys()
             if self.config.is_buy_only_rebalancing(symbol)
+            and symbol not in regime_symbols
         ]
 
         if not buy_only_symbols:
@@ -1830,10 +2300,12 @@ class PortfolioManager:
         to_sell: List[Tuple[str, str, int]] = []
 
         # Only check symbols configured for sell-only rebalancing
+        regime_symbols = self._regime_rebalance_symbols()
         sell_only_symbols = [
             symbol
             for symbol in self.config.symbols.keys()
             if self.config.is_sell_only_rebalancing(symbol)
+            and symbol not in regime_symbols
         ]
 
         if not sell_only_symbols:

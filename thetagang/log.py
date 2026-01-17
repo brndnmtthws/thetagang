@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from typing import Any, Coroutine, Iterable, Iterator, List, Union
 
 from annotated_types import T
@@ -38,7 +39,8 @@ def warning(text: str) -> None:
 
 
 def error(text: str) -> None:
-    console.print_exception()
+    if sys.exc_info()[0] is not None:
+        console.print_exception()
     console.print(text, style="red")
 
 

@@ -512,6 +512,46 @@ class SymbolConfig(BaseModel):
     )
 
 
+class RegimeRebalanceConfig(BaseModel, DisplayMixin):
+    enabled: bool = Field(default=False)
+    symbols: List[str] = Field(default_factory=list)
+    lookback_days: int = Field(default=40, ge=1)
+    soft_band: float = Field(default=0.10, ge=0.0, le=1.0)
+    hard_band: float = Field(default=0.50, ge=0.0, le=1.0)
+    hard_band_rebalance_fraction: float = Field(default=1.0, gt=0.0, le=1.0)
+    cooldown_days: int = Field(default=5, ge=0)
+    choppiness_min: float = Field(default=3.0, ge=0.0)
+    efficiency_max: float = Field(default=0.30, ge=0.0, le=1.0)
+    eps: float = Field(default=1e-8, gt=0.0)
+    order_history_lookback_days: int = Field(default=30, ge=1)
+    shares_only: bool = Field(default=False)
+
+    @model_validator(mode="after")
+    def validate_bands(self) -> Self:
+        if self.hard_band < self.soft_band:
+            raise ValueError("regime_rebalance.hard_band must be >= soft_band")
+        return self
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_section()
+        table.add_row("[spring_green1]Regime-aware rebalancing")
+        table.add_row("", "Enabled", "=", f"{self.enabled}")
+        table.add_row("", "Symbols", "=", ", ".join(self.symbols) or "-")
+        table.add_row("", "Lookback days", "=", f"{self.lookback_days}")
+        table.add_row("", "Soft band (relative)", "=", f"{pfmt(self.soft_band, 0)}")
+        table.add_row("", "Hard band (relative)", "=", f"{pfmt(self.hard_band, 0)}")
+        table.add_row(
+            "",
+            "Hard band rebalance fraction",
+            "=",
+            f"{pfmt(self.hard_band_rebalance_fraction, 0)}",
+        )
+        table.add_row("", "Cooldown days", "=", f"{self.cooldown_days}")
+        table.add_row("", "Choppiness min", "=", f"{ffmt(self.choppiness_min)}")
+        table.add_row("", "Efficiency max", "=", f"{pfmt(self.efficiency_max)}")
+        table.add_row("", "Shares only", "=", f"{self.shares_only}")
+
+
 class ActionWhenClosedEnum(str, Enum):
     wait = "wait"
     exit = "exit"
@@ -550,6 +590,9 @@ class Config(BaseModel, DisplayMixin):
     write_when: WriteWhenConfig = Field(default_factory=WriteWhenConfig)
     symbols: Dict[str, SymbolConfig] = Field(default_factory=dict)
     constants: ConstantsConfig = Field(default_factory=ConstantsConfig)
+    regime_rebalance: RegimeRebalanceConfig = Field(
+        default_factory=RegimeRebalanceConfig
+    )
 
     def trading_is_allowed(self, symbol: str) -> bool:
         symbol_config = self.symbols.get(symbol)
@@ -562,6 +605,9 @@ class Config(BaseModel, DisplayMixin):
     def is_sell_only_rebalancing(self, symbol: str) -> bool:
         symbol_config = self.symbols.get(symbol)
         return symbol_config is not None and symbol_config.sell_only_rebalancing is True
+
+    def is_regime_rebalance_symbol(self, symbol: str) -> bool:
+        return self.regime_rebalance.enabled and symbol in self.regime_rebalance.symbols
 
     def symbol_config(self, symbol: str) -> Optional[SymbolConfig]:
         return self.symbols.get(symbol)
@@ -723,6 +769,7 @@ class Config(BaseModel, DisplayMixin):
         self.target.add_to_table(config_table)
         self.cash_management.add_to_table(config_table)
         self.vix_call_hedge.add_to_table(config_table)
+        self.regime_rebalance.add_to_table(config_table)
 
         # Create tree and add tables
         tree = Tree(":control_knobs:")
