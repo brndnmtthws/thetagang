@@ -93,12 +93,34 @@ class PositionSnapshot(Base):
     right: Mapped[Optional[str]] = mapped_column(String)
 
 
+class OrderIntent(Base):
+    __tablename__ = "order_intents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
+    symbol: Mapped[str] = mapped_column(String, nullable=False)
+    sec_type: Mapped[Optional[str]] = mapped_column(String)
+    con_id: Mapped[Optional[int]] = mapped_column(Integer)
+    exchange: Mapped[Optional[str]] = mapped_column(String)
+    currency: Mapped[Optional[str]] = mapped_column(String)
+    action: Mapped[Optional[str]] = mapped_column(String)
+    quantity: Mapped[Optional[float]] = mapped_column(Float)
+    limit_price: Mapped[Optional[float]] = mapped_column(Float)
+    order_type: Mapped[Optional[str]] = mapped_column(String)
+    order_ref: Mapped[Optional[str]] = mapped_column(String)
+    tif: Mapped[Optional[str]] = mapped_column(String)
+    payload_json: Mapped[Optional[str]] = mapped_column(Text)
+
+
 class OrderRecord(Base):
     __tablename__ = "orders"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    intent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("order_intents.id"))
     symbol: Mapped[str] = mapped_column(String, nullable=False)
     sec_type: Mapped[Optional[str]] = mapped_column(String)
     con_id: Mapped[Optional[int]] = mapped_column(Integer)
@@ -241,6 +263,7 @@ class DataStore:
         self.engine = create_engine(db_url, future=True, connect_args=connect_args)
         self.Session = sessionmaker(bind=self.engine, future=True)
         run_migrations(db_url)
+        self.dry_run = dry_run
         self.run_id = self._create_run(config_path, dry_run, config_text)
 
     @contextmanager
@@ -353,12 +376,52 @@ class DataStore:
         except Exception as exc:
             log.warning(f"Failed to record positions snapshot: {exc}")
 
-    def record_order(self, contract: Any, order: Any) -> None:
+    def record_order_intent(self, contract: Any, order: Any) -> Optional[int]:
+        try:
+
+            def _safe_vars(obj: Any) -> Dict[str, Any]:
+                try:
+                    return dict(vars(obj))
+                except TypeError:
+                    return {"repr": repr(obj)}
+
+            payload = {
+                "contract": _safe_vars(contract),
+                "order": _safe_vars(order),
+            }
+            with self.session_scope() as session:
+                intent = OrderIntent(
+                    run_id=self.run_id,
+                    dry_run=self.dry_run,
+                    symbol=getattr(contract, "symbol", "") or "",
+                    sec_type=getattr(contract, "secType", None),
+                    con_id=getattr(contract, "conId", None),
+                    exchange=getattr(contract, "exchange", None),
+                    currency=getattr(contract, "currency", None),
+                    action=getattr(order, "action", None),
+                    quantity=getattr(order, "totalQuantity", None),
+                    limit_price=getattr(order, "lmtPrice", None),
+                    order_type=getattr(order, "orderType", None),
+                    order_ref=getattr(order, "orderRef", None),
+                    tif=getattr(order, "tif", None),
+                    payload_json=json.dumps(payload, default=str),
+                )
+                session.add(intent)
+                session.flush()
+                return int(intent.id)
+        except Exception as exc:
+            log.warning(f"Failed to record order intent: {exc}")
+            return None
+
+    def record_order(
+        self, contract: Any, order: Any, intent_id: Optional[int] = None
+    ) -> None:
         try:
             with self.session_scope() as session:
                 session.add(
                     OrderRecord(
                         run_id=self.run_id,
+                        intent_id=intent_id,
                         symbol=getattr(contract, "symbol", "") or "",
                         sec_type=getattr(contract, "secType", None),
                         con_id=getattr(contract, "conId", None),

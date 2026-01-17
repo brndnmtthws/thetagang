@@ -3303,7 +3303,7 @@ class PortfolioManager:
                 float(order.lmtPrice or 0)
                 * order.totalQuantity
                 * get_multiplier(contract)
-                for (contract, order) in self.orders.records()
+                for (contract, order, _intent_id) in self.orders.records()
                 if order.action == "SELL"
             ]
         ) - sum(
@@ -3311,7 +3311,7 @@ class PortfolioManager:
                 float(order.lmtPrice or 0)
                 * order.totalQuantity
                 * get_multiplier(contract)
-                for (contract, order) in self.orders.records()
+                for (contract, order, _intent_id) in self.orders.records()
                 if order.action == "BUY"
             ]
         )
@@ -3441,7 +3441,10 @@ class PortfolioManager:
     def enqueue_order(self, contract: Optional[Contract], order: LimitOrder) -> None:
         if not contract:
             return
-        self.orders.add_order(contract, order)
+        intent_id = None
+        if self.data_store:
+            intent_id = self.data_store.record_order_intent(contract, order)
+        self.orders.add_order(contract, order, intent_id)
         if self.data_store:
             self.data_store.record_event(
                 "order_enqueued",
@@ -3456,13 +3459,14 @@ class PortfolioManager:
                     "limit_price": getattr(order, "lmtPrice", None),
                     "order_type": getattr(order, "orderType", None),
                     "order_ref": getattr(order, "orderRef", None),
+                    "intent_id": intent_id,
                 },
                 symbol=getattr(contract, "symbol", None),
             )
 
     def submit_orders(self) -> None:
-        for contract, order in self.orders.records():
-            self.trades.submit_order(contract, order)
+        for contract, order, intent_id in self.orders.records():
+            self.trades.submit_order(contract, order, intent_id=intent_id)
         self.trades.print_summary()
 
     async def adjust_prices(self) -> None:
