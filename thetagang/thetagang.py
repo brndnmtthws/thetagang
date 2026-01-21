@@ -71,11 +71,16 @@ def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) ->
         watchdog = Watchdog(
             ibc, ib, probeContract=probeContract, **watchdog_config.to_dict()
         )
-        watchdog.start()
 
-        ib.run(completion_future)
-        watchdog.stop()
-        ibc.terminate()
+        async def run_with_watchdog() -> None:
+            watchdog.start()
+            try:
+                await completion_future
+            finally:
+                watchdog.stop()
+                await ibc.terminateAsync()
+
+        ib.run(run_with_watchdog())
     else:
         ib.connect(
             watchdog_config.host,
