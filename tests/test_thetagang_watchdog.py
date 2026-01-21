@@ -51,7 +51,7 @@ def test_watchdog_runs_inside_task(monkeypatch, tmp_path):
             captured["watchdog"] = self
 
         def start(self):
-            assert asyncio.current_task() is not None
+            assert asyncio.get_running_loop() is loop
             self.started = True
 
         def stop(self):
