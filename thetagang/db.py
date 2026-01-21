@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import shutil
@@ -200,6 +201,10 @@ def make_alembic_config(db_url: str) -> AlembicConfig:
     alembic_cfg = AlembicConfig(str(base_dir / "alembic.ini"))
     alembic_cfg.set_main_option("sqlalchemy.url", db_url)
     alembic_cfg.set_main_option("script_location", str(base_dir / "alembic"))
+    configure_logger = (
+        logging.getLogger("thetagang.main").getEffectiveLevel() <= logging.INFO
+    )
+    alembic_cfg.attributes["configure_logger"] = configure_logger
     return alembic_cfg
 
 
