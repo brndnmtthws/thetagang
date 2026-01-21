@@ -1,3 +1,4 @@
+import asyncio
 from asyncio import Future
 
 import toml
@@ -10,7 +11,12 @@ from thetagang.db import DataStore, sqlite_db_path
 from thetagang.exchange_hours import need_to_exit
 from thetagang.portfolio_manager import PortfolioManager
 
-util.patchAsyncio()
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    pass
+else:
+    util.patchAsyncio()
 
 console = Console()
 

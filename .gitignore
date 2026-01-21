@@ -152,3 +152,6 @@ cython_debug/
 
 # Ignore notebooks
 *.ipynb
+
+# Ignore local db for testing
+data/thetagang.db

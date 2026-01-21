@@ -13,7 +13,7 @@ CONTEXT_SETTINGS = dict(
 
 
 @click.command(context_settings=CONTEXT_SETTINGS)
-@click_log.simple_verbosity_option(logger)
+@click_log.simple_verbosity_option(logger, default="WARNING")
 @click.option(
     "-c",
     "--config",
@@ -40,6 +40,13 @@ def cli(config: str, without_ibc: bool, dry_run: bool) -> None:
     There's a sample config on GitHub, here:
     https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml
     """
+
+    if logger.getEffectiveLevel() > logging.INFO:
+        logging.getLogger("alembic").setLevel(logging.WARNING)
+        logging.getLogger("alembic.runtime").setLevel(logging.WARNING)
+        logging.getLogger("alembic.runtime.migration").setLevel(logging.WARNING)
+        logging.getLogger("ib_async").setLevel(logging.WARNING)
+        logging.getLogger("ib_async.client").setLevel(logging.WARNING)
 
     from .thetagang import start
 
