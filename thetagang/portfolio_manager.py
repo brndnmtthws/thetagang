@@ -718,8 +718,11 @@ class PortfolioManager:
             ) = await self.check_regime_rebalance_positions(
                 account_summary, portfolio_positions
             )
-            if regime_orders:
+            if getattr(self.config, "regime_rebalance", None) and getattr(
+                self.config.regime_rebalance, "enabled", False
+            ):
                 log.print(regime_actions_table)
+            if regime_orders:
                 await self.execute_regime_rebalance_orders(regime_orders)
 
             # Check for buy-only rebalancing positions
@@ -1751,11 +1754,9 @@ class PortfolioManager:
     ) -> Tuple[Table, List[Tuple[str, str, int]]]:
         table = Table(title="Regime-aware rebalancing summary")
         table.add_column("Symbol")
-        table.add_column("Current weight", justify="right")
-        table.add_column("Target weight", justify="right")
-        table.add_column("Current shares", justify="right")
-        table.add_column("Target shares", justify="right")
-        table.add_column("Shares to trade", justify="right")
+        table.add_column("Weights", justify="right")
+        table.add_column("Value", justify="right")
+        table.add_column("Shares", justify="right")
         table.add_column("Gate", justify="center")
         table.add_column("Action")
 
@@ -1915,6 +1916,7 @@ class PortfolioManager:
         rebalance_fraction = 1.0
         if hard_rebalance:
             rebalance_fraction = regime_rebalance.hard_band_rebalance_fraction
+        regime_summary: List[Dict[str, Any]] = []
         for symbol in symbols:
             target_weight = self.config.symbols[symbol].weight
             target_value = target_weight * total_value
@@ -1960,15 +1962,38 @@ class PortfolioManager:
             else:
                 action = "[cyan]Hold"
 
+            weight_delta = current_weights[symbol] - target_weight
+            value_delta = current_values[symbol] - target_value
+            shares_delta = current_positions[symbol] - target_shares
+
             table.add_row(
                 symbol,
-                pfmt(current_weights[symbol]),
-                pfmt(self.config.symbols[symbol].weight),
-                ifmt(current_positions[symbol]),
-                ifmt(target_shares),
-                ifmt(shares_to_trade),
+                f"{pfmt(current_weights[symbol])}->{pfmt(target_weight)} "
+                f"({pfmt(weight_delta)})",
+                f"{dfmt(current_values[symbol])}->{dfmt(target_value)} "
+                f"({dfmt(value_delta)})",
+                f"{ifmt(current_positions[symbol])}->{ifmt(target_shares)} "
+                f"({ifmt(shares_delta)})",
                 gate_status,
                 action,
+            )
+            regime_summary.append(
+                {
+                    "symbol": symbol,
+                    "market_price": market_prices[symbol],
+                    "current_weight": current_weights[symbol],
+                    "target_weight": target_weight,
+                    "current_value": current_values[symbol],
+                    "target_value": target_value,
+                    "current_shares": current_positions[symbol],
+                    "target_shares": target_shares,
+                    "shares_to_trade": shares_to_trade,
+                    "weight_delta": weight_delta,
+                    "value_delta": value_delta,
+                    "shares_delta": shares_delta,
+                    "trading_allowed": trading_allowed,
+                    "action": action,
+                }
             )
 
         log.info(
@@ -1995,6 +2020,19 @@ class PortfolioManager:
                     "cooldown_ok": cooldown_ok,
                     "cash_signal": "in" if all_below else "out" if all_above else "mix",
                     "orders": to_trade,
+                },
+            )
+            self.data_store.record_event(
+                "regime_rebalance_summary",
+                {
+                    "symbols": symbols,
+                    "total_value": total_value,
+                    "hard_breach": hard_breach,
+                    "soft_breach": soft_breach,
+                    "regime_ok": regime_ok,
+                    "cooldown_ok": cooldown_ok,
+                    "cash_signal": "in" if all_below else "out" if all_above else "mix",
+                    "summary": regime_summary,
                 },
             )
 
