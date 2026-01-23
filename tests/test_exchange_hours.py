@@ -1,6 +1,9 @@
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+import pandas as pd
+
+import thetagang.exchange_hours as exchange_hours
 from thetagang.config import ActionWhenClosedEnum, ExchangeHoursConfig
 from thetagang.exchange_hours import determine_action, waited_for_open
 
@@ -99,6 +102,114 @@ def test_waited_for_open_negative_difference(mock_sleep):
     # 'now' is already after the start time
     now = datetime(2025, 1, 21, 15, 0, tzinfo=timezone.utc)
 
-    # seconds_until_start will be negative, but code checks if it's < max_wait_until_open
+    # seconds_until_start will be negative, so no sleep is required
     assert waited_for_open(config, now) is True
-    mock_sleep.assert_called_once()
+    mock_sleep.assert_not_called()
+
+
+def test_determine_action_outside_schedule_returns_exit(monkeypatch):
+    class DummyCalendar:
+        def __init__(self):
+            self.sessions = pd.DatetimeIndex([pd.Timestamp("2025-01-21")])
+            self.schedule = pd.DataFrame(
+                {
+                    "open": [pd.Timestamp("2025-01-21 14:30:00+00:00")],
+                    "close": [pd.Timestamp("2025-01-21 21:00:00+00:00")],
+                },
+                index=self.sessions,
+            )
+
+    monkeypatch.setattr(
+        exchange_hours.xcals, "get_calendar", lambda *_: DummyCalendar()
+    )
+
+    config = ExchangeHoursConfig(
+        exchange="XNYS",
+        delay_after_open=0,
+        delay_before_close=0,
+        action_when_closed=ActionWhenClosedEnum.exit,
+    )
+    now = datetime(2025, 1, 22, 15, 0, tzinfo=timezone.utc)
+
+    result = determine_action(config, now)
+    assert result == "exit"
+
+
+def test_determine_action_missing_open_close_defaults_to_closed_action(monkeypatch):
+    class DummyCalendar:
+        def __init__(self):
+            self.sessions = pd.DatetimeIndex([pd.Timestamp("2025-01-21")])
+            self.schedule = pd.DataFrame(
+                {
+                    "open": [pd.NaT],
+                    "close": [pd.NaT],
+                },
+                index=self.sessions,
+            )
+
+    monkeypatch.setattr(
+        exchange_hours.xcals, "get_calendar", lambda *_: DummyCalendar()
+    )
+
+    config = ExchangeHoursConfig(
+        exchange="XNYS",
+        delay_after_open=0,
+        delay_before_close=0,
+        action_when_closed=ActionWhenClosedEnum.exit,
+    )
+    now = datetime(2025, 1, 21, 15, 0, tzinfo=timezone.utc)
+
+    result = determine_action(config, now)
+    assert result == "exit"
+
+
+def test_determine_action_out_of_bounds_date_returns_closed_action(monkeypatch):
+    class DummyCalendar:
+        def __init__(self):
+            self.sessions = pd.DatetimeIndex([])
+            self.schedule = pd.DataFrame({"open": [], "close": []}, index=self.sessions)
+
+    monkeypatch.setattr(
+        exchange_hours.xcals, "get_calendar", lambda *_: DummyCalendar()
+    )
+
+    config = ExchangeHoursConfig(
+        exchange="XNYS",
+        delay_after_open=0,
+        delay_before_close=0,
+        action_when_closed=ActionWhenClosedEnum.exit,
+    )
+    now = datetime(2525, 1, 21, 15, 0, tzinfo=timezone.utc)
+
+    result = determine_action(config, now)
+    assert result == "exit"
+
+
+@patch("thetagang.exchange_hours.time.sleep")
+def test_waited_for_open_no_upcoming_sessions(mock_sleep, monkeypatch):
+    class DummyCalendar:
+        def __init__(self):
+            self.sessions = pd.DatetimeIndex([pd.Timestamp("2025-01-21")])
+            self.schedule = pd.DataFrame(
+                {
+                    "open": [pd.Timestamp("2025-01-21 14:30:00+00:00")],
+                    "close": [pd.Timestamp("2025-01-21 21:00:00+00:00")],
+                },
+                index=self.sessions,
+            )
+
+    monkeypatch.setattr(
+        exchange_hours.xcals, "get_calendar", lambda *_: DummyCalendar()
+    )
+
+    config = ExchangeHoursConfig(
+        exchange="XNYS",
+        delay_after_open=60,
+        delay_before_close=60,
+        action_when_closed=ActionWhenClosedEnum.wait,
+        max_wait_until_open=600,
+    )
+    now = datetime(2025, 1, 22, 14, 29, tzinfo=timezone.utc)
+
+    assert waited_for_open(config, now) is False
+    mock_sleep.assert_not_called()

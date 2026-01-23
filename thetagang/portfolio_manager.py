@@ -9,6 +9,7 @@ from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
 import exchange_calendars as xcals
 import numpy as np
+import pandas as pd
 from ib_async import (
     AccountValue,
     ExecutionFilter,
@@ -1739,12 +1740,20 @@ class PortfolioManager:
         try:
             exchange = self.config.exchange_hours.exchange
             calendar = xcals.get_calendar(exchange)
-            sessions = calendar.sessions_in_range(start_date, end_date)
+            start_ts = pd.Timestamp(start_date)
+            end_ts = pd.Timestamp(end_date)
+            sessions = calendar.sessions
+            sessions = sessions[(sessions >= start_ts) & (sessions <= end_ts)]
+            if sessions.empty:
+                raise ValueError("No exchange sessions found in cooldown window.")
             session_dates = [session.date() for session in sessions]
             sessions_after = [d for d in session_dates if d > start_date]
             return len(sessions_after) >= cooldown_days
         except Exception as exc:
-            log.warning(f"Regime rebalancing cooldown fallback to calendar days: {exc}")
+            log.warning(
+                "Regime rebalancing cooldown calculation failed "
+                f"({type(exc).__name__}); using calendar days."
+            )
             return (end_date - start_date).days >= cooldown_days
 
     async def check_regime_rebalance_positions(
