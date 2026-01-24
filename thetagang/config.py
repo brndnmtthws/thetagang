@@ -546,6 +546,11 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
     cooldown_days: int = Field(default=5, ge=0)
     choppiness_min: float = Field(default=3.0, ge=0.0)
     efficiency_max: float = Field(default=0.30, ge=0.0, le=1.0)
+    flow_trade_min: float = Field(default=2000.0, ge=0.0)
+    flow_trade_stop: float = Field(default=1000.0, ge=0.0)
+    flow_imbalance_tau: float = Field(default=0.70, ge=0.0, le=1.0)
+    deficit_rail_start: float = Field(default=5000.0, ge=0.0)
+    deficit_rail_stop: float = Field(default=2500.0, ge=0.0)
     eps: float = Field(default=1e-8, gt=0.0)
     order_history_lookback_days: int = Field(default=30, ge=1)
     shares_only: bool = Field(default=False)
@@ -554,6 +559,14 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
     def validate_bands(self) -> Self:
         if self.hard_band < self.soft_band:
             raise ValueError("regime_rebalance.hard_band must be >= soft_band")
+        if self.flow_trade_min < self.flow_trade_stop:
+            raise ValueError(
+                "regime_rebalance.flow_trade_min must be >= flow_trade_stop"
+            )
+        if self.deficit_rail_start < self.deficit_rail_stop:
+            raise ValueError(
+                "regime_rebalance.deficit_rail_start must be >= deficit_rail_stop"
+            )
         return self
 
     def add_to_table(self, table: Table, section: str = "") -> None:
@@ -573,6 +586,11 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
         table.add_row("", "Cooldown days", "=", f"{self.cooldown_days}")
         table.add_row("", "Choppiness min", "=", f"{ffmt(self.choppiness_min)}")
         table.add_row("", "Efficiency max", "=", f"{pfmt(self.efficiency_max)}")
+        table.add_row("", "Flow trade min", "=", f"{dfmt(self.flow_trade_min)}")
+        table.add_row("", "Flow trade stop", "=", f"{dfmt(self.flow_trade_stop)}")
+        table.add_row("", "Flow imbalance tau", "=", f"{ffmt(self.flow_imbalance_tau)}")
+        table.add_row("", "Deficit rail start", "=", f"{dfmt(self.deficit_rail_start)}")
+        table.add_row("", "Deficit rail stop", "=", f"{dfmt(self.deficit_rail_stop)}")
         table.add_row("", "Shares only", "=", f"{self.shares_only}")
 
 

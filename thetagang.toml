@@ -517,6 +517,11 @@ minimum_open_interest = 10
 # cooldown_days = 5
 # choppiness_min = 3.0
 # efficiency_max = 0.30
+# flow_trade_min = 2000  # absolute excess cash needed to start flow trades
+# flow_trade_stop = 1000  # hysteresis stop once within this band
+# flow_imbalance_tau = 0.70  # 0..1, higher requires more directional coherence
+# deficit_rail_start = 5000  # absolute deficit that triggers safety rail
+# deficit_rail_stop = 2500  # hysteresis stop once within this band
 # order_history_lookback_days = 30  # look back this many calendar days for fills
 # shares_only = false  # when true, disables all option writes/rolls
 

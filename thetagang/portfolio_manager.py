@@ -1602,7 +1602,13 @@ class PortfolioManager:
         symbols: List[str],
         lookback_days: int,
         cooldown_days: int,
+        weights_override: Optional[Dict[str, float]] = None,
     ) -> Tuple[List[date], List[float]]:
+        if weights_override:
+            symbols = list(weights_override.keys())
+        if not symbols:
+            log.error("Regime-aware rebalancing has no symbols to build a proxy.")
+            raise ValueError("Regime-aware rebalancing requires proxy symbols.")
         trading_days_needed = lookback_days + 1 + max(cooldown_days, 0)
         calendar_days = math.ceil(trading_days_needed * 7 / 5) + 5
         duration = f"{calendar_days} D"
@@ -1650,7 +1656,10 @@ class PortfolioManager:
                 "Regime-aware rebalancing requires at least 2 history points."
             )
 
-        weights = {symbol: self.config.symbols[symbol].weight for symbol in symbols}
+        if weights_override:
+            weights = weights_override
+        else:
+            weights = {symbol: self.config.symbols[symbol].weight for symbol in symbols}
         total_weight = sum(weights.values())
         if total_weight <= 0:
             log.error("Regime-aware rebalancing weights sum to zero, skipping.")
@@ -1792,6 +1801,23 @@ class PortfolioManager:
                 "Regime-aware rebalancing requires symbols present in config."
             )
 
+        zero_weight_symbols = [
+            symbol for symbol in symbols if self.config.symbols[symbol].weight <= 0
+        ]
+        if zero_weight_symbols:
+            log.warning(
+                "Regime-aware rebalancing ignoring zero-weight symbols: "
+                f"{', '.join(zero_weight_symbols)}"
+            )
+        symbols = [
+            symbol for symbol in symbols if self.config.symbols[symbol].weight > 0
+        ]
+        if not symbols:
+            log.error("Regime-aware rebalancing has no positive-weight symbols.")
+            raise ValueError(
+                "Regime-aware rebalancing requires positive target weights."
+            )
+
         total_value = self.get_buying_power(account_summary)
         if total_value <= 0:
             log.error("Buying power is not positive, skipping rebalancing.")
@@ -1825,9 +1851,11 @@ class PortfolioManager:
         current_positions: Dict[str, int] = {}
         current_values: Dict[str, float] = {}
         market_prices: Dict[str, float] = {}
+        target_shares: Dict[str, int] = {}
         target_values: Dict[str, float] = {}
         relative_ratios: Dict[str, float] = {}
         relative_drifts: Dict[str, float] = {}
+        share_gaps: Dict[str, int] = {}
         for symbol in symbols:
             ticker = tickers[symbol]
             market_price = ticker.marketPrice()
@@ -1852,22 +1880,35 @@ class PortfolioManager:
             current_values[symbol] = current_value
             current_weights[symbol] = current_value / total_value
             target_weight = self.config.symbols[symbol].weight
-            if target_weight <= 0:
-                log.error(
-                    f"Regime-aware rebalancing requires positive target weight for {symbol}."
-                )
-                raise ValueError(
-                    "Regime-aware rebalancing requires positive target weights."
-                )
             target_values[symbol] = target_weight * total_value
+            target_shares[symbol] = math.floor(target_values[symbol] / market_price)
+            share_gaps[symbol] = target_shares[symbol] - current_position
             relative_ratio = current_weights[symbol] / target_weight
             relative_ratios[symbol] = relative_ratio
             relative_drifts[symbol] = abs(relative_ratio - 1.0)
+
+        invested_value = sum(current_values.values())
+        proxy_symbols = [symbol for symbol in symbols if current_values[symbol] > 0]
+        proxy_weights: Dict[str, float] = {}
+        if proxy_symbols:
+            proxy_invested = sum(current_values[symbol] for symbol in proxy_symbols)
+            proxy_weights = {
+                symbol: current_values[symbol] / proxy_invested
+                for symbol in proxy_symbols
+            }
+        else:
+            log.warning(
+                "Regime proxy has no invested symbols; falling back to target weights."
+            )
+            proxy_weights = {
+                symbol: self.config.symbols[symbol].weight for symbol in symbols
+            }
 
         dates, values = await self._get_regime_proxy_series(
             symbols,
             regime_rebalance.lookback_days,
             regime_rebalance.cooldown_days,
+            weights_override=proxy_weights,
         )
         if len(values) < regime_rebalance.lookback_days + 1:
             log.error("Insufficient historical data for regime rebalancing, aborting.")
@@ -1905,66 +1946,285 @@ class PortfolioManager:
             for drift in relative_drifts.values()
         )
 
-        below_flags: List[bool] = []
-        above_flags: List[bool] = []
-        for symbol in symbols:
-            tolerance = market_prices[symbol]
-            target_value = target_values[symbol]
-            current_value = current_values[symbol]
-            below_flags.append(current_value < target_value - tolerance)
-            above_flags.append(current_value > target_value + tolerance)
-
-        all_below = any(below_flags) and not any(above_flags)
-        all_above = any(above_flags) and not any(below_flags)
-        cash_flow_ok = all_below or all_above
-
         max_relative_drift = max(relative_drifts.values()) if relative_drifts else 0.0
         hard_rebalance = hard_breach
-        soft_rebalance = (soft_breach or cash_flow_ok) and regime_ok and cooldown_ok
-        should_rebalance = hard_rebalance or soft_rebalance
+        soft_rebalance = soft_breach and regime_ok and cooldown_ok
         rebalance_fraction = 1.0
         if hard_rebalance:
             rebalance_fraction = regime_rebalance.hard_band_rebalance_fraction
+
+        share_tolerance = 1
+        flow_active = False
+        deficit_active = False
+        if self.data_store:
+            state = self.data_store.get_last_event_payload("regime_rebalance_state")
+            if state:
+                flow_active = bool(state.get("flow_active", False))
+                deficit_active = bool(state.get("deficit_active", False))
+
+        excess_cash = total_value - invested_value
+        flow_gate = False
+        deficit_gate = False
+        if excess_cash < 0:
+            deficit_amount = -excess_cash
+            deficit_gate = deficit_amount >= regime_rebalance.deficit_rail_start or (
+                deficit_active and deficit_amount >= regime_rebalance.deficit_rail_stop
+            )
+            if not deficit_gate:
+                flow_gate = deficit_amount >= regime_rebalance.flow_trade_min or (
+                    flow_active and deficit_amount >= regime_rebalance.flow_trade_stop
+                )
+        else:
+            flow_gate = excess_cash >= regime_rebalance.flow_trade_min or (
+                flow_active and excess_cash >= regime_rebalance.flow_trade_stop
+            )
+
+        allowed_symbols = {
+            symbol for symbol in symbols if self.config.trading_is_allowed(symbol)
+        }
+
+        def build_flow_orders(amount: float) -> Dict[str, int]:
+            if amount == 0:
+                return {}
+            active_symbols = [
+                symbol
+                for symbol in symbols
+                if symbol in allowed_symbols
+                and abs(share_gaps[symbol]) > share_tolerance
+            ]
+            if not active_symbols:
+                return {}
+            net_gap = sum(share_gaps[symbol] for symbol in active_symbols)
+            tot_gap = sum(abs(share_gaps[symbol]) for symbol in active_symbols)
+            if tot_gap <= 0:
+                return {}
+
+            ok_buy = net_gap > regime_rebalance.flow_imbalance_tau * tot_gap
+            ok_sell = net_gap < -regime_rebalance.flow_imbalance_tau * tot_gap
+            if amount > 0 and not ok_buy:
+                return {}
+            if amount < 0 and not ok_sell:
+                return {}
+
+            orders: Dict[str, int] = {}
+            if amount > 0:
+                deficits = {
+                    symbol: max(share_gaps[symbol], 0) for symbol in active_symbols
+                }
+                total_deficit = sum(deficits.values())
+                if total_deficit <= 0:
+                    return {}
+                for symbol in active_symbols:
+                    deficit = deficits[symbol]
+                    if deficit <= 0:
+                        continue
+                    if not self.config.trading_is_allowed(symbol):
+                        continue
+                    max_buy = max(
+                        (target_shares[symbol] + share_tolerance)
+                        - current_positions[symbol],
+                        0,
+                    )
+                    if max_buy <= 0:
+                        continue
+                    alloc = amount * (deficit / total_deficit)
+                    buy_shares = min(int(alloc // market_prices[symbol]), max_buy)
+                    if buy_shares > 0:
+                        orders[symbol] = buy_shares
+            else:
+                need = -amount
+                excesses = {
+                    symbol: max(-share_gaps[symbol], 0) for symbol in active_symbols
+                }
+                total_excess = sum(excesses.values())
+                if total_excess <= 0:
+                    return {}
+                for symbol in active_symbols:
+                    excess = excesses[symbol]
+                    if excess <= 0:
+                        continue
+                    if not self.config.trading_is_allowed(symbol):
+                        continue
+                    max_sell = max(
+                        current_positions[symbol]
+                        - max(target_shares[symbol] - share_tolerance, 0),
+                        0,
+                    )
+                    if max_sell <= 0:
+                        continue
+                    alloc = need * (excess / total_excess)
+                    sell_shares = min(
+                        math.ceil(alloc / market_prices[symbol]), max_sell
+                    )
+                    if sell_shares > 0:
+                        orders[symbol] = -sell_shares
+            return orders
+
+        def build_deficit_orders(
+            shares_state: Dict[str, int],
+            amount: float,
+            allow_below_target: bool,
+            allowed_symbols: set[str],
+        ) -> Dict[str, int]:
+            if amount <= 0:
+                return {}
+            orders: Dict[str, int] = {}
+            initial_amount = amount
+
+            overweight_symbols = [
+                symbol
+                for symbol in symbols
+                if shares_state[symbol] > target_shares[symbol] + share_tolerance
+                and symbol in allowed_symbols
+            ]
+            if overweight_symbols:
+                overages = {
+                    symbol: max(
+                        shares_state[symbol]
+                        - (target_shares[symbol] + share_tolerance),
+                        0,
+                    )
+                    for symbol in overweight_symbols
+                }
+                total_over = sum(overages.values())
+                for symbol in overweight_symbols:
+                    over = overages[symbol]
+                    if over <= 0:
+                        continue
+                    max_sell = max(
+                        shares_state[symbol]
+                        - max(target_shares[symbol] - share_tolerance, 0),
+                        0,
+                    )
+                    if max_sell <= 0:
+                        continue
+                    alloc = (
+                        initial_amount * (over / total_over)
+                        if total_over > 0
+                        else amount
+                    )
+                    alloc = min(alloc, amount)
+                    sell_shares = min(
+                        math.ceil(alloc / market_prices[symbol]), max_sell
+                    )
+                    if sell_shares > 0:
+                        orders[symbol] = orders.get(symbol, 0) - sell_shares
+                        amount -= sell_shares * market_prices[symbol]
+                        if amount <= 0:
+                            return orders
+
+            if not allow_below_target:
+                return orders
+
+            while amount > 0:
+                any_sold = False
+                for symbol in symbols:
+                    if self.config.symbols[symbol].weight <= 0:
+                        continue
+                    if symbol not in allowed_symbols:
+                        continue
+                    max_sell = shares_state[symbol] + orders.get(symbol, 0)
+                    if max_sell <= 0:
+                        continue
+                    alloc = amount * self.config.symbols[symbol].weight
+                    sell_shares = min(
+                        math.ceil(alloc / market_prices[symbol]), max_sell
+                    )
+                    if sell_shares <= 0:
+                        continue
+                    orders[symbol] = orders.get(symbol, 0) - sell_shares
+                    amount -= sell_shares * market_prices[symbol]
+                    any_sold = True
+                    if amount <= 0:
+                        break
+                if not any_sold:
+                    break
+            return orders
+
+        orders_by_symbol: Dict[str, int] = {}
+        rebalance_mode = "no"
+        deficit_gate_after = False
+        if hard_rebalance or soft_rebalance:
+            rebalance_mode = "hard" if hard_rebalance else "soft"
+            for symbol in symbols:
+                desired = target_shares[symbol] - current_positions[symbol]
+                if hard_rebalance and not math.isclose(rebalance_fraction, 1.0):
+                    desired = int(round(desired * rebalance_fraction))
+                if desired == 0:
+                    continue
+                if symbol in allowed_symbols:
+                    orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + desired
+
+            shares_after = {
+                symbol: current_positions[symbol] + orders_by_symbol.get(symbol, 0)
+                for symbol in symbols
+            }
+            invested_after = sum(
+                shares_after[symbol] * market_prices[symbol] for symbol in symbols
+            )
+            excess_after = total_value - invested_after
+            deficit_amount_after = max(0.0, -excess_after)
+            deficit_gate_after = (
+                deficit_amount_after >= regime_rebalance.deficit_rail_stop
+            )
+            if deficit_gate_after:
+                deficit_needed = max(
+                    0.0, deficit_amount_after - regime_rebalance.deficit_rail_stop
+                )
+                deficit_orders = build_deficit_orders(
+                    shares_after,
+                    deficit_needed,
+                    allow_below_target=True,
+                    allowed_symbols=allowed_symbols,
+                )
+                if deficit_orders:
+                    rebalance_mode = f"{rebalance_mode}+deficit"
+                    for symbol, delta in deficit_orders.items():
+                        if delta == 0:
+                            continue
+                        orders_by_symbol[symbol] = (
+                            orders_by_symbol.get(symbol, 0) + delta
+                        )
+        elif deficit_gate:
+            rebalance_mode = "deficit"
+            deficit_needed = max(0.0, -excess_cash - regime_rebalance.deficit_rail_stop)
+            deficit_orders = build_deficit_orders(
+                current_positions,
+                deficit_needed,
+                allow_below_target=True,
+                allowed_symbols=allowed_symbols,
+            )
+            if deficit_orders:
+                for symbol, delta in deficit_orders.items():
+                    if delta == 0:
+                        continue
+                    orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + delta
+        elif flow_gate:
+            rebalance_mode = "flow"
+            flow_orders = build_flow_orders(excess_cash)
+            for symbol, delta in flow_orders.items():
+                if delta == 0:
+                    continue
+                orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + delta
         regime_summary: List[Dict[str, Any]] = []
         for symbol in symbols:
             target_weight = self.config.symbols[symbol].weight
-            target_value = target_weight * total_value
-            target_shares = math.floor(target_value / market_prices[symbol])
-            shares_to_trade = target_shares - current_positions[symbol]
-            if hard_rebalance and not math.isclose(rebalance_fraction, 1.0):
-                shares_to_trade = int(round(shares_to_trade * rebalance_fraction))
-            band_status = "hard" if hard_breach else "soft" if soft_breach else "no"
-            gate_status = (
-                f"band={band_status} "
-                f"regime={'ok' if regime_ok else 'no'} "
-                f"cooldown={'ok' if cooldown_ok else 'no'} "
-                f"cash={'in' if all_below else 'out' if all_above else 'mix'}"
-            )
+            target_value = target_values[symbol]
+            target_share = target_shares[symbol]
+            trade_shares = orders_by_symbol.get(symbol, 0)
             trading_allowed = self.config.trading_is_allowed(symbol)
-
-            cash_direction_ok = True
-            if all_below:
-                cash_direction_ok = shares_to_trade > 0
-            elif all_above:
-                cash_direction_ok = shares_to_trade < 0
-
-            if (
-                trading_allowed
-                and should_rebalance
-                and cash_direction_ok
-                and shares_to_trade != 0
-            ):
+            if trade_shares != 0:
                 to_trade.append(
                     (
                         symbol,
                         self.get_primary_exchange(symbol),
-                        shares_to_trade,
+                        trade_shares,
                     )
                 )
                 action = (
-                    f"[green]Buy {shares_to_trade}"
-                    if shares_to_trade > 0
-                    else f"[green]Sell {abs(shares_to_trade)}"
+                    f"[green]Buy {trade_shares}"
+                    if trade_shares > 0
+                    else f"[green]Sell {abs(trade_shares)}"
                 )
             elif not trading_allowed:
                 action = "[cyan]Skip (no_trading)"
@@ -1973,7 +2233,16 @@ class PortfolioManager:
 
             weight_delta = current_weights[symbol] - target_weight
             value_delta = current_values[symbol] - target_value
-            shares_delta = current_positions[symbol] - target_shares
+            shares_delta = current_positions[symbol] - target_share
+            band_status = "hard" if hard_breach else "soft" if soft_breach else "no"
+            gate_status = (
+                f"mode={rebalance_mode} "
+                f"band={band_status} "
+                f"regime={'ok' if regime_ok else 'no'} "
+                f"cooldown={'ok' if cooldown_ok else 'no'} "
+                f"flow={'on' if flow_gate else 'off'} "
+                f"deficit={'on' if deficit_gate else 'off'}"
+            )
 
             table.add_row(
                 symbol,
@@ -1981,7 +2250,7 @@ class PortfolioManager:
                 f"({pfmt(weight_delta)})",
                 f"{dfmt(current_values[symbol])}->{dfmt(target_value)} "
                 f"({dfmt(value_delta)})",
-                f"{ifmt(current_positions[symbol])}->{ifmt(target_shares)} "
+                f"{ifmt(current_positions[symbol])}->{ifmt(target_share)} "
                 f"({ifmt(shares_delta)})",
                 gate_status,
                 action,
@@ -1995,8 +2264,8 @@ class PortfolioManager:
                     "current_value": current_values[symbol],
                     "target_value": target_value,
                     "current_shares": current_positions[symbol],
-                    "target_shares": target_shares,
-                    "shares_to_trade": shares_to_trade,
+                    "target_shares": target_share,
+                    "shares_to_trade": trade_shares,
                     "weight_delta": weight_delta,
                     "value_delta": value_delta,
                     "shares_delta": shares_delta,
@@ -2011,10 +2280,21 @@ class PortfolioManager:
             f"hard_band={pfmt(regime_rebalance.hard_band, 0)} "
             f"hard_breach={hard_breach} soft_breach={soft_breach} "
             f"chop={ffmt(choppiness)} er={pfmt(efficiency)} "
-            f"cooldown_ok={cooldown_ok} cash_signal="
-            f"{'in' if all_below else 'out' if all_above else 'mix'}"
+            f"cooldown_ok={cooldown_ok} mode={rebalance_mode} "
+            f"flow_gate={flow_gate} deficit_gate={deficit_gate} "
+            f"flow_active={flow_active} deficit_active={deficit_active} "
+            f"flow_min={dfmt(regime_rebalance.flow_trade_min)} "
+            f"flow_stop={dfmt(regime_rebalance.flow_trade_stop)} "
+            f"deficit_start={dfmt(regime_rebalance.deficit_rail_start)} "
+            f"deficit_stop={dfmt(regime_rebalance.deficit_rail_stop)} "
+            f"excess_cash={dfmt(excess_cash)}"
         )
         if self.data_store:
+            deficit_active_state = (
+                deficit_gate_after
+                if (hard_rebalance or soft_rebalance)
+                else deficit_gate
+            )
             self.data_store.record_event(
                 "regime_rebalance_gate",
                 {
@@ -2027,7 +2307,10 @@ class PortfolioManager:
                     "choppiness": choppiness,
                     "efficiency": efficiency,
                     "cooldown_ok": cooldown_ok,
-                    "cash_signal": "in" if all_below else "out" if all_above else "mix",
+                    "flow_gate": flow_gate,
+                    "deficit_gate": deficit_gate,
+                    "excess_cash": excess_cash,
+                    "mode": rebalance_mode,
                     "orders": to_trade,
                 },
             )
@@ -2040,8 +2323,18 @@ class PortfolioManager:
                     "soft_breach": soft_breach,
                     "regime_ok": regime_ok,
                     "cooldown_ok": cooldown_ok,
-                    "cash_signal": "in" if all_below else "out" if all_above else "mix",
+                    "flow_gate": flow_gate,
+                    "deficit_gate": deficit_gate,
+                    "excess_cash": excess_cash,
+                    "mode": rebalance_mode,
                     "summary": regime_summary,
+                },
+            )
+            self.data_store.record_event(
+                "regime_rebalance_state",
+                {
+                    "flow_active": rebalance_mode == "flow" and flow_gate,
+                    "deficit_active": deficit_active_state,
                 },
             )
 

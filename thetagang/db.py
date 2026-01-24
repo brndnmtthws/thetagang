@@ -262,6 +262,7 @@ class DataStore:
         if not db_url.startswith("sqlite"):
             raise ValueError("Only sqlite database URLs are supported.")
         self.db_url = db_url
+        self.config_path = config_path
         connect_args: Dict[str, Any] = {}
         if db_url.startswith("sqlite"):
             connect_args = {"check_same_thread": False}
@@ -326,6 +327,26 @@ class DataStore:
                 )
         except Exception as exc:
             log.warning(f"Failed to record event {event_type}: {exc}")
+
+    def get_last_event_payload(self, event_type: str) -> Optional[Dict[str, Any]]:
+        try:
+            with self.session_scope() as session:
+                event = (
+                    session.query(Event)
+                    .join(Run, Event.run_id == Run.id)
+                    .filter(Event.event_type == event_type)
+                    .filter(Run.config_path == self.config_path)
+                    .filter(Run.dry_run.is_(False))
+                    .order_by(Event.created_at.desc())
+                    .first()
+                )
+                payload = event.payload if event else None
+            if not payload:
+                return None
+            return json.loads(payload)
+        except Exception as exc:
+            log.warning(f"Failed to read event {event_type}: {exc}")
+            return None
 
     def record_account_snapshot(self, summary: Dict[str, Any]) -> None:
         try:

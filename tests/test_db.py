@@ -228,3 +228,28 @@ def test_record_order_intent_links_orders(tmp_path) -> None:
     assert intent_row.id == intent_id
     assert intent_row.dry_run is True
     assert record_intent_id == intent_id
+
+
+def test_get_last_event_payload_ignores_dry_run(tmp_path) -> None:
+    db_path = tmp_path / "state.db"
+    config_path = str(tmp_path / "thetagang.toml")
+
+    dry_run_store = DataStore(
+        f"sqlite:///{db_path}",
+        config_path,
+        dry_run=True,
+        config_text="test",
+    )
+    live_store = DataStore(
+        f"sqlite:///{db_path}",
+        config_path,
+        dry_run=False,
+        config_text="test",
+    )
+
+    dry_run_store.record_event("regime_rebalance_state", {"flow_active": True})
+    live_store.record_event("regime_rebalance_state", {"flow_active": False})
+
+    payload = live_store.get_last_event_payload("regime_rebalance_state")
+
+    assert payload == {"flow_active": False}
