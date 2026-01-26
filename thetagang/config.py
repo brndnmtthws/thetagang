@@ -536,6 +536,19 @@ class SymbolConfig(BaseModel):
     )
 
 
+class RatioGateConfig(BaseModel, DisplayMixin):
+    enabled: bool = Field(default=False)
+    anchor: str = Field(default="")
+    drift_max: float = Field(default=1.25, ge=0.0)
+    var_min: float = Field(default=0.0, ge=0.0)
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_row("", "Ratio gate enabled", "=", f"{self.enabled}")
+        table.add_row("", "Ratio gate anchor", "=", self.anchor or "-")
+        table.add_row("", "Ratio gate drift max", "=", f"{ffmt(self.drift_max)}")
+        table.add_row("", "Ratio gate var min", "=", f"{ffmt(self.var_min)}")
+
+
 class RegimeRebalanceConfig(BaseModel, DisplayMixin):
     enabled: bool = Field(default=False)
     symbols: List[str] = Field(default_factory=list)
@@ -554,6 +567,7 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
     eps: float = Field(default=1e-8, gt=0.0)
     order_history_lookback_days: int = Field(default=30, ge=1)
     shares_only: bool = Field(default=False)
+    ratio_gate: Optional[RatioGateConfig] = None
 
     @model_validator(mode="after")
     def validate_bands(self) -> Self:
@@ -567,6 +581,18 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
             raise ValueError(
                 "regime_rebalance.deficit_rail_start must be >= deficit_rail_stop"
             )
+        if self.ratio_gate is not None:
+            if not self.ratio_gate.anchor:
+                raise ValueError("regime_rebalance.ratio_gate.anchor must be set")
+            if self.ratio_gate.anchor not in self.symbols:
+                raise ValueError(
+                    "regime_rebalance.ratio_gate.anchor must be in regime_rebalance.symbols"
+                )
+            rest_symbols = [s for s in self.symbols if s != self.ratio_gate.anchor]
+            if not rest_symbols:
+                raise ValueError(
+                    "regime_rebalance.ratio_gate.anchor must leave at least one non-anchor symbol"
+                )
         return self
 
     def add_to_table(self, table: Table, section: str = "") -> None:
@@ -592,6 +618,8 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
         table.add_row("", "Deficit rail start", "=", f"{dfmt(self.deficit_rail_start)}")
         table.add_row("", "Deficit rail stop", "=", f"{dfmt(self.deficit_rail_stop)}")
         table.add_row("", "Shares only", "=", f"{self.shares_only}")
+        if self.ratio_gate is not None:
+            self.ratio_gate.add_to_table(table, section)
 
 
 class ActionWhenClosedEnum(str, Enum):

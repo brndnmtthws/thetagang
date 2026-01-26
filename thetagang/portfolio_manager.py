@@ -1603,9 +1603,46 @@ class PortfolioManager:
         lookback_days: int,
         cooldown_days: int,
         weights_override: Optional[Dict[str, float]] = None,
-    ) -> Tuple[List[date], List[float]]:
+    ) -> Tuple[List[date], List[float], Dict[str, List[float]]]:
         if weights_override:
             symbols = list(weights_override.keys())
+        sorted_dates, aligned_closes = await self._get_regime_aligned_closes(
+            symbols,
+            lookback_days,
+            cooldown_days,
+        )
+
+        if weights_override:
+            weights = weights_override
+        else:
+            weights = {symbol: self.config.symbols[symbol].weight for symbol in symbols}
+        total_weight = sum(weights.values())
+        if total_weight <= 0:
+            log.error("Regime-aware rebalancing weights sum to zero, skipping.")
+            raise ValueError(
+                "Regime-aware rebalancing weights must sum to a positive value."
+            )
+        normalized_weights = {
+            symbol: weight / total_weight for symbol, weight in weights.items()
+        }
+
+        normalized_series = [1.0]
+        for idx in range(1, len(sorted_dates)):
+            daily_factor = 0.0
+            for symbol in symbols:
+                prev_close = aligned_closes[symbol][idx - 1]
+                curr_close = aligned_closes[symbol][idx]
+                daily_factor += normalized_weights[symbol] * (curr_close / prev_close)
+            normalized_series.append(normalized_series[-1] * daily_factor)
+
+        return (sorted_dates, normalized_series, aligned_closes)
+
+    async def _get_regime_aligned_closes(
+        self,
+        symbols: List[str],
+        lookback_days: int,
+        cooldown_days: int,
+    ) -> Tuple[List[date], Dict[str, List[float]]]:
         if not symbols:
             log.error("Regime-aware rebalancing has no symbols to build a proxy.")
             raise ValueError("Regime-aware rebalancing requires proxy symbols.")
@@ -1656,45 +1693,22 @@ class PortfolioManager:
                 "Regime-aware rebalancing requires at least 2 history points."
             )
 
-        if weights_override:
-            weights = weights_override
-        else:
-            weights = {symbol: self.config.symbols[symbol].weight for symbol in symbols}
-        total_weight = sum(weights.values())
-        if total_weight <= 0:
-            log.error("Regime-aware rebalancing weights sum to zero, skipping.")
-            raise ValueError(
-                "Regime-aware rebalancing weights must sum to a positive value."
-            )
-        normalized_weights = {
-            symbol: weight / total_weight for symbol, weight in weights.items()
-        }
-
-        normalized_series = [1.0]
-        for prev_date, curr_date in zip(sorted_dates[:-1], sorted_dates[1:]):
-            daily_factor = 0.0
-            for symbol in symbols:
-                prev_close = closes_by_symbol[symbol].get(prev_date)
-                curr_close = closes_by_symbol[symbol].get(curr_date)
-                if (
-                    prev_close is None
-                    or curr_close is None
-                    or math.isnan(prev_close)
-                    or math.isnan(curr_close)
-                    or math.isclose(prev_close, 0)
-                    or math.isclose(curr_close, 0)
-                ):
+        aligned_closes: Dict[str, List[float]] = {}
+        for symbol in symbols:
+            aligned: List[float] = []
+            for date_point in sorted_dates:
+                close = closes_by_symbol[symbol].get(date_point)
+                if close is None or math.isnan(close) or math.isclose(close, 0):
                     log.error(
-                        f"Invalid close for {symbol} on {prev_date} or {curr_date} "
-                        f"(prev={prev_close}, curr={curr_close})."
+                        f"Invalid close for {symbol} on {date_point} (close={close})."
                     )
                     raise ValueError(
                         "Regime-aware rebalancing found invalid historical closes."
                     )
-                daily_factor += normalized_weights[symbol] * (curr_close / prev_close)
-            normalized_series.append(normalized_series[-1] * daily_factor)
+                aligned.append(close)
+            aligned_closes[symbol] = aligned
 
-        return (sorted_dates, normalized_series)
+        return (sorted_dates, aligned_closes)
 
     async def _get_last_regime_rebalance_time(
         self, symbols: List[str]
@@ -1904,7 +1918,7 @@ class PortfolioManager:
                 symbol: self.config.symbols[symbol].weight for symbol in symbols
             }
 
-        dates, values = await self._get_regime_proxy_series(
+        dates, values, aligned_closes = await self._get_regime_proxy_series(
             symbols,
             regime_rebalance.lookback_days,
             regime_rebalance.cooldown_days,
@@ -1930,6 +1944,87 @@ class PortfolioManager:
         er_ok = efficiency <= regime_rebalance.efficiency_max
         regime_ok = chop_ok and er_ok
 
+        ratio_gate = getattr(regime_rebalance, "ratio_gate", None)
+        ratio_ok: Optional[bool] = None
+        ratio_var: Optional[float] = None
+        ratio_tstat: Optional[float] = None
+        ratio_var_threshold: Optional[float] = None
+        ratio_drift_max: Optional[float] = None
+        ratio_anchor: Optional[str] = None
+        ratio_rest: List[str] = []
+        if ratio_gate is not None:
+            ratio_anchor = getattr(ratio_gate, "anchor", "")
+            ratio_rest = [s for s in symbols if s != ratio_anchor]
+            if not ratio_anchor or ratio_anchor not in symbols or not ratio_rest:
+                log.error("Regime-aware ratio gate has invalid anchor configuration.")
+                raise ValueError(
+                    "Regime-aware ratio gate requires a valid anchor and rest basket."
+                )
+
+            rest_weights = {
+                symbol: self.config.symbols[symbol].weight for symbol in ratio_rest
+            }
+            total_rest_weight = sum(rest_weights.values())
+            if total_rest_weight <= 0:
+                log.error("Ratio gate rest weights sum to zero, skipping.")
+                raise ValueError("Regime-aware ratio gate requires positive weights.")
+            normalized_rest_weights = {
+                symbol: weight / total_rest_weight
+                for symbol, weight in rest_weights.items()
+            }
+
+            rest_index = []
+            anchor_series = aligned_closes[ratio_anchor]
+            for idx in range(len(dates)):
+                basket_value = 0.0
+                for symbol in ratio_rest:
+                    basket_value += (
+                        normalized_rest_weights[symbol] * aligned_closes[symbol][idx]
+                    )
+                rest_index.append(max(basket_value, regime_rebalance.eps))
+
+            anchor_prices = [
+                max(price, regime_rebalance.eps) for price in anchor_series
+            ]
+            ratio_series = np.log(np.array(rest_index) / np.array(anchor_prices))
+            ratio_returns = pd.Series(ratio_series).diff()
+            ratio_var = float(
+                ratio_returns.rolling(regime_rebalance.lookback_days)
+                .var(ddof=1)
+                .iloc[-1]
+            )
+            ratio_mean = float(
+                ratio_returns.rolling(regime_rebalance.lookback_days).mean().iloc[-1]
+            )
+            ratio_std = float(
+                ratio_returns.rolling(regime_rebalance.lookback_days)
+                .std(ddof=1)
+                .iloc[-1]
+            )
+            if math.isnan(ratio_var) or math.isnan(ratio_mean) or math.isnan(ratio_std):
+                ratio_ok = False
+                ratio_tstat = float("inf")
+                ratio_var_threshold = max(
+                    float(getattr(ratio_gate, "var_min", 0.0)), 0.0
+                )
+                ratio_drift_max = float(getattr(ratio_gate, "drift_max", 0.0))
+            else:
+                if ratio_std <= 0:
+                    ratio_tstat = float("inf")
+                else:
+                    ratio_tstat = abs(
+                        ratio_mean
+                        / (ratio_std / math.sqrt(regime_rebalance.lookback_days))
+                    )
+
+                ratio_var_threshold = max(
+                    float(getattr(ratio_gate, "var_min", 0.0)), 0.0
+                )
+                ratio_drift_max = float(getattr(ratio_gate, "drift_max", 0.0))
+                ratio_ok = (
+                    ratio_var >= ratio_var_threshold and ratio_tstat <= ratio_drift_max
+                )
+
         last_rebalance = await self._get_last_regime_rebalance_time(symbols)
         cooldown_ok = True
         if last_rebalance and regime_rebalance.cooldown_days > 0:
@@ -1948,7 +2043,13 @@ class PortfolioManager:
 
         max_relative_drift = max(relative_drifts.values()) if relative_drifts else 0.0
         hard_rebalance = hard_breach
-        soft_rebalance = soft_breach and regime_ok and cooldown_ok
+        ratio_enabled = (
+            bool(getattr(ratio_gate, "enabled", False)) if ratio_gate else False
+        )
+        ratio_gate_ok = (
+            True if ratio_gate is None or not ratio_enabled else bool(ratio_ok)
+        )
+        soft_rebalance = soft_breach and regime_ok and cooldown_ok and ratio_gate_ok
         rebalance_fraction = 1.0
         if hard_rebalance:
             rebalance_fraction = regime_rebalance.hard_band_rebalance_fraction
@@ -2288,8 +2389,33 @@ class PortfolioManager:
             f"deficit_start={dfmt(regime_rebalance.deficit_rail_start)} "
             f"deficit_stop={dfmt(regime_rebalance.deficit_rail_stop)} "
             f"excess_cash={dfmt(excess_cash)}"
+            + (
+                " "
+                + "ratio_gate="
+                + ("on" if ratio_enabled else "shadow")
+                + f" ratio_ok={ratio_ok} "
+                + f"ratio_var={ffmt(ratio_var) if ratio_var is not None else '-'} "
+                + f"ratio_var_min={ffmt(ratio_var_threshold) if ratio_var_threshold is not None else '-'} "
+                + f"ratio_tstat={ffmt(ratio_tstat) if ratio_tstat is not None else '-'} "
+                + f"ratio_drift_max={ffmt(ratio_drift_max) if ratio_drift_max is not None else '-'} "
+                + f"anchor={ratio_anchor} rest={','.join(ratio_rest)}"
+                if ratio_gate is not None
+                else ""
+            )
         )
         if self.data_store:
+            ratio_payload = None
+            if ratio_gate is not None:
+                ratio_payload = {
+                    "enabled": ratio_enabled,
+                    "anchor": ratio_anchor,
+                    "rest": ratio_rest,
+                    "var": ratio_var,
+                    "var_min": ratio_var_threshold,
+                    "tstat": ratio_tstat,
+                    "drift_max": ratio_drift_max,
+                    "ok": ratio_ok,
+                }
             deficit_active_state = (
                 deficit_gate_after
                 if (hard_rebalance or soft_rebalance)
@@ -2312,6 +2438,7 @@ class PortfolioManager:
                     "excess_cash": excess_cash,
                     "mode": rebalance_mode,
                     "orders": to_trade,
+                    "ratio_gate": ratio_payload,
                 },
             )
             self.data_store.record_event(
@@ -2328,6 +2455,7 @@ class PortfolioManager:
                     "excess_cash": excess_cash,
                     "mode": rebalance_mode,
                     "summary": regime_summary,
+                    "ratio_gate": ratio_payload,
                 },
             )
             self.data_store.record_event(

@@ -5,7 +5,7 @@ import pytest
 from ib_async import IB, Stock
 
 import thetagang.portfolio_manager as pm_module
-from thetagang.config import RegimeRebalanceConfig, normalize_config
+from thetagang.config import RatioGateConfig, RegimeRebalanceConfig, normalize_config
 from thetagang.db import DataStore
 from thetagang.portfolio_manager import PortfolioManager
 
@@ -207,6 +207,100 @@ async def test_regime_rebalance_respects_regime_gate(portfolio_manager, mocker):
     )
 
     assert orders == []
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_ratio_gate_shadow_metrics_emitted(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager_with_db.config.regime_rebalance.ratio_gate = SimpleNamespace(
+        enabled=False,
+        anchor="BBB",
+        drift_max=1.25,
+        var_min=0.0,
+    )
+    account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
+    portfolio_positions = {
+        "AAA": [SimpleNamespace(contract=Stock("AAA", "SMART", "USD"), position=3)],
+        "BBB": [SimpleNamespace(contract=Stock("BBB", "SMART", "USD"), position=1)],
+    }
+
+    _mock_regime_tickers(portfolio_manager_with_db, mocker)
+    _mock_regime_history(
+        portfolio_manager_with_db, mocker, [100.0, 110.0, 100.0, 110.0]
+    )
+    portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
+        return_value=[]
+    )
+
+    await portfolio_manager_with_db.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    payload = portfolio_manager_with_db.data_store.get_last_event_payload(
+        "regime_rebalance_gate"
+    )
+    assert payload["ratio_gate"]["enabled"] is False
+    assert payload["ratio_gate"]["anchor"] == "BBB"
+    assert payload["ratio_gate"]["rest"] == ["AAA"]
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_ratio_gate_blocks_soft_rebalance(
+    portfolio_manager, mocker
+):
+    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.regime_rebalance.ratio_gate = SimpleNamespace(
+        enabled=True,
+        anchor="BBB",
+        drift_max=1.25,
+        var_min=0.0,
+    )
+    account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
+    portfolio_positions = {
+        "AAA": [SimpleNamespace(contract=Stock("AAA", "SMART", "USD"), position=3)],
+        "BBB": [SimpleNamespace(contract=Stock("BBB", "SMART", "USD"), position=1)],
+    }
+
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 100.0, 100.0, 100.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    assert orders == []
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_hard_band_ignores_ratio_gate(portfolio_manager, mocker):
+    portfolio_manager.config.regime_rebalance.soft_band = 0.30
+    portfolio_manager.config.regime_rebalance.hard_band = 0.10
+    portfolio_manager.config.regime_rebalance.choppiness_min = 10.0
+    portfolio_manager.config.regime_rebalance.efficiency_max = 0.01
+    portfolio_manager.config.regime_rebalance.ratio_gate = SimpleNamespace(
+        enabled=True,
+        anchor="BBB",
+        drift_max=1.25,
+        var_min=0.0,
+    )
+    account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
+    portfolio_positions = {
+        "AAA": [SimpleNamespace(contract=Stock("AAA", "SMART", "USD"), position=3)],
+        "BBB": [SimpleNamespace(contract=Stock("BBB", "SMART", "USD"), position=1)],
+    }
+
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 100.0, 100.0, 100.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    assert orders == [("AAA", "NYSE", -1), ("BBB", "NYSE", 1)]
 
 
 @pytest.mark.asyncio
@@ -599,6 +693,30 @@ def test_regime_rebalance_config_rejects_flow_hysteresis_inversion():
 def test_regime_rebalance_config_rejects_deficit_hysteresis_inversion():
     with pytest.raises(ValueError, match="deficit_rail_start"):
         RegimeRebalanceConfig(deficit_rail_start=100.0, deficit_rail_stop=200.0)
+
+
+def test_regime_rebalance_config_rejects_ratio_gate_missing_anchor():
+    with pytest.raises(ValueError, match="ratio_gate.anchor must be set"):
+        RegimeRebalanceConfig(
+            symbols=["AAA", "BBB"],
+            ratio_gate=RatioGateConfig(enabled=True, anchor=""),
+        )
+
+
+def test_regime_rebalance_config_rejects_ratio_gate_anchor_not_in_symbols():
+    with pytest.raises(ValueError, match="ratio_gate.anchor must be in"):
+        RegimeRebalanceConfig(
+            symbols=["AAA", "BBB"],
+            ratio_gate=RatioGateConfig(enabled=True, anchor="CCC"),
+        )
+
+
+def test_regime_rebalance_config_rejects_ratio_gate_only_anchor_symbol():
+    with pytest.raises(ValueError, match="ratio_gate.anchor must leave"):
+        RegimeRebalanceConfig(
+            symbols=["AAA"],
+            ratio_gate=RatioGateConfig(enabled=True, anchor="AAA"),
+        )
 
 
 @pytest.mark.asyncio
