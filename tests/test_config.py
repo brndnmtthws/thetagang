@@ -46,6 +46,7 @@ class RegimeRebalanceConfigFactory(ModelFactory[RegimeRebalanceConfig]):
     flow_imbalance_tau = 0.70
     deficit_rail_start = 5000.0
     deficit_rail_stop = 2500.0
+    ratio_gate = None
 
 
 class ConfigFactory(ModelFactory[Config]):

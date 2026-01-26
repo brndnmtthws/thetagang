@@ -524,6 +524,14 @@ minimum_open_interest = 10
 # deficit_rail_stop = 2500  # hysteresis stop once within this band
 # order_history_lookback_days = 30  # look back this many calendar days for fills
 # shares_only = false  # when true, disables all option writes/rolls
+#
+# # Optional ratio gate (shadow mode when enabled=false):
+# # Uses log((rest basket) / anchor) to measure variance vs drift.
+# [regime_rebalance.ratio_gate]
+# enabled = false  # when true, gates soft rebalances only
+# anchor = "BTAL"  # hedge sleeve anchor; rest is symbols minus anchor
+# drift_max = 1.25  # t-stat threshold for mean drift of ratio returns
+# var_min = 0.0  # minimum variance of ratio returns
 
   [symbols.TLT]
   weight = 0.2
