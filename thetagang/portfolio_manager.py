@@ -103,6 +103,7 @@ class PortfolioManager:
         self.qualified_contracts: Dict[int, Contract] = {}
         self.dry_run = dry_run
         self.regime_rebalance_order_ref_prefix = "tg:regime-rebalance"
+        self.last_untracked_positions: Dict[str, List[PortfolioItem]] = {}
 
     def get_short_calls(
         self, portfolio_positions: Dict[str, List[PortfolioItem]]
@@ -361,22 +362,32 @@ class PortfolioManager:
     def filter_positions(
         self, portfolio_positions: List[PortfolioItem]
     ) -> List[PortfolioItem]:
+        filtered_positions, _ = self.partition_positions(portfolio_positions)
+        return filtered_positions
+
+    def partition_positions(
+        self, portfolio_positions: List[PortfolioItem]
+    ) -> Tuple[List[PortfolioItem], List[PortfolioItem]]:
         symbols = self.get_symbols()
-        return [
-            item
-            for item in portfolio_positions
-            if item.account == self.account_number
-            and (
+        tracked_positions: List[PortfolioItem] = []
+        untracked_positions: List[PortfolioItem] = []
+        for item in portfolio_positions:
+            if item.account != self.account_number or item.position == 0:
+                continue
+            if (
                 item.contract.symbol in symbols
                 or item.contract.symbol == "VIX"
                 or item.contract.symbol == self.config.cash_management.cash_fund
-            )
-            and item.position != 0
-        ]
+            ):
+                tracked_positions.append(item)
+            else:
+                untracked_positions.append(item)
+        return (tracked_positions, untracked_positions)
 
     async def get_portfolio_positions(self) -> Dict[str, List[PortfolioItem]]:
         attempts = 3
         symbols = set(self.get_symbols())
+        self.last_untracked_positions = {}
 
         for attempt in range(1, attempts + 1):
             try:
@@ -397,8 +408,13 @@ class PortfolioManager:
                     continue
 
             portfolio_positions = self.ibkr.portfolio(account=self.account_number)
-            filtered_positions = self.filter_positions(portfolio_positions)
+            filtered_positions, untracked_positions = self.partition_positions(
+                portfolio_positions
+            )
             portfolio_by_symbol = portfolio_positions_to_dict(filtered_positions)
+            self.last_untracked_positions = portfolio_positions_to_dict(
+                untracked_positions
+            )
             filtered_conids = {item.contract.conId for item in filtered_positions}
 
             if portfolio_by_symbol:
@@ -549,9 +565,18 @@ class PortfolioManager:
         log.print(Panel(table))
 
         portfolio_positions = await self.get_portfolio_positions()
+        untracked_positions = self.last_untracked_positions
         if self.data_store:
             self.data_store.record_account_snapshot(account_summary)
-            self.data_store.record_positions_snapshot(portfolio_positions)
+            combined_positions: Dict[str, List[PortfolioItem]] = dict(
+                portfolio_positions
+            )
+            for symbol, positions in untracked_positions.items():
+                if symbol in combined_positions:
+                    combined_positions[symbol].extend(positions)
+                else:
+                    combined_positions[symbol] = positions
+            self.data_store.record_positions_snapshot(combined_positions)
 
         position_values: Dict[int, Dict[str, str]] = {}
 
@@ -597,11 +622,13 @@ class PortfolioManager:
                     pos.contract.lastTradeDateOrContractMonth
                 )
 
-        tasks: List[Coroutine[Any, Any, None]] = [
-            load_position_task(position)
-            for _, positions in portfolio_positions.items()
-            for position in positions
-        ]
+        tasks: List[Coroutine[Any, Any, None]] = []
+        for _, positions in portfolio_positions.items():
+            for position in positions:
+                tasks.append(load_position_task(position))
+        for _, positions in untracked_positions.items():
+            for position in positions:
+                tasks.append(load_position_task(position))
         await log.track_async(tasks, "Loading portfolio positions...")
 
         table = Table(
@@ -621,23 +648,20 @@ class PortfolioManager:
         table.add_column("Exp", justify="right")
         table.add_column("DTE", justify="right")
         table.add_column("ITM?")
-        first = True
-        for symbol, position in portfolio_positions.items():
-            if not first:
-                table.add_section()
-            first = False
+
+        def getval(col: str, conId: int) -> str:
+            return position_values[conId][col]
+
+        def add_symbol_positions(symbol: str, positions: List[PortfolioItem]) -> None:
             table.add_row(symbol)
             sorted_positions = sorted(
-                position,
+                positions,
                 key=lambda p: (
                     option_dte(p.contract.lastTradeDateOrContractMonth)
                     if isinstance(p.contract, Option)
                     else -1
                 ),  # Keep stonks on top
             )
-
-            def getval(col: str, conId: int) -> str:
-                return position_values[conId][col]
 
             for pos in sorted_positions:
                 conId = pos.contract.conId
@@ -669,6 +693,24 @@ class PortfolioManager:
                         getval("dte", conId),
                         getval("itm?", conId),
                     )
+
+        first = True
+        for symbol, position in portfolio_positions.items():
+            if not first:
+                table.add_section()
+            first = False
+            add_symbol_positions(symbol, position)
+
+        if untracked_positions:
+            table.add_section()
+            table.add_row("Not tracked")
+            table.add_section()
+            first_untracked = True
+            for symbol, position in untracked_positions.items():
+                if not first_untracked:
+                    table.add_section()
+                first_untracked = False
+                add_symbol_positions(symbol, position)
 
         log.print(table)
 
