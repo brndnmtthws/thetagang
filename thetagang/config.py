@@ -134,6 +134,40 @@ class DatabaseConfig(BaseModel, DisplayMixin):
         return f"sqlite:///{db_path}"
 
 
+class FlexConfig(BaseModel, DisplayMixin):
+    enabled: bool = Field(default=False)
+    token: Optional[str] = None
+    query_id: Optional[str] = None
+    account_id: Optional[str] = None
+    polling_interval_seconds: int = Field(default=5, ge=1)
+    timeout_seconds: int = Field(default=120, ge=1)
+    sections: List[str] = Field(
+        default_factory=lambda: [
+            "CashTransactions",
+            "Dividends",
+            "Interest",
+            "InterestAccruals",
+            "Fees",
+            "OtherFees",
+            "WithholdingTax",
+            "DepositsWithdrawals",
+            "Transfers",
+        ]
+    )
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_section()
+        table.add_row("[spring_green1]Flex cashflows")
+        table.add_row("", "Enabled", "=", f"{self.enabled}")
+        if self.query_id:
+            table.add_row("", "Query ID", "=", self.query_id)
+        if self.account_id:
+            table.add_row("", "Account", "=", self.account_id)
+        table.add_row("", "Poll interval", "=", f"{self.polling_interval_seconds}s")
+        table.add_row("", "Timeout", "=", f"{self.timeout_seconds}s")
+        table.add_row("", "Sections", "=", ", ".join(self.sections) or "-")
+
+
 class IBCConfig(BaseModel):
     tradingMode: Literal["live", "paper"] = Field(default="paper")
     password: Optional[str] = None
@@ -653,6 +687,7 @@ class Config(BaseModel, DisplayMixin):
 
     orders: OrdersConfig = Field(default_factory=OrdersConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    flex: FlexConfig = Field(default_factory=FlexConfig)
     ib_async: IBAsyncConfig = Field(default_factory=IBAsyncConfig)
     ibc: IBCConfig = Field(default_factory=IBCConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
@@ -836,6 +871,7 @@ class Config(BaseModel, DisplayMixin):
             self.constants.add_to_table(config_table)
         self.orders.add_to_table(config_table)
         self.database.add_to_table(config_table)
+        self.flex.add_to_table(config_table)
         self.roll_when.add_to_table(config_table)
         self.write_when.add_to_table(config_table)
         self.target.add_to_table(config_table)

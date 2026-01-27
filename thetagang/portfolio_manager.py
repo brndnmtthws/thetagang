@@ -4,7 +4,7 @@ import math
 import random
 import sys
 from asyncio import Future
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
 import exchange_calendars as xcals
@@ -28,6 +28,8 @@ from rich.table import Table
 from thetagang import log
 from thetagang.config import Config
 from thetagang.db import DataStore
+from thetagang.flex import FlexConfig as FlexRequestConfig
+from thetagang.flex import fetch_cash_transactions
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import (
     IBKR,
@@ -716,6 +718,58 @@ class PortfolioManager:
 
         return (account_summary, portfolio_positions)
 
+    async def ingest_cash_transactions(self) -> None:
+        flex_config = getattr(self.config, "flex", None)
+        if not flex_config or not flex_config.enabled:
+            return
+        if not self.data_store:
+            log.warning("Flex cashflow ingestion enabled but database is disabled.")
+            return
+        if not flex_config.token or not flex_config.query_id:
+            log.warning("Flex cashflow ingestion missing token or query_id; skipping.")
+            return
+
+        last_payload = self.data_store.get_last_event_payload("cash_transactions_fetch")
+        if last_payload and "fetched_at" in last_payload:
+            try:
+                last_ts = datetime.fromisoformat(last_payload["fetched_at"])
+                if last_ts.date() == datetime.now(timezone.utc).date():
+                    log.info("Cash transactions already ingested today; skipping.")
+                    return
+            except ValueError:
+                pass
+
+        request_config = FlexRequestConfig(
+            token=flex_config.token,
+            query_id=flex_config.query_id,
+            account_id=flex_config.account_id,
+            polling_interval_seconds=flex_config.polling_interval_seconds,
+            timeout_seconds=flex_config.timeout_seconds,
+            sections=flex_config.sections,
+        )
+
+        try:
+            transactions, statement_info = await asyncio.to_thread(
+                fetch_cash_transactions, request_config
+            )
+        except Exception as exc:
+            log.warning(f"Flex cashflow ingestion failed: {exc}")
+            return
+
+        count = 0
+        if not transactions:
+            log.info("Flex cashflow ingestion returned no transactions.")
+        else:
+            count = self.data_store.record_cash_transactions(transactions)
+        payload = {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "statement_from": statement_info.get("from_date"),
+            "statement_to": statement_info.get("to_date"),
+            "statement_account": statement_info.get("account_id"),
+            "transaction_count": count,
+        }
+        self.data_store.record_event("cash_transactions_fetch", payload)
+
     async def manage(self) -> None:
         had_error = False
         try:
@@ -723,6 +777,7 @@ class PortfolioManager:
                 self.data_store.record_event("run_start", {"dry_run": self.dry_run})
             self.initialize_account()
             (account_summary, portfolio_positions) = await self.summarize_account()
+            await self.ingest_cash_transactions()
 
             options_enabled = self.options_trading_enabled()
             if options_enabled:

@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 import thetagang.db as db_module
 from thetagang.db import (
+    CashTransaction,
     DataStore,
     HistoricalBar,
     OrderIntent,
@@ -228,6 +229,44 @@ def test_record_order_intent_links_orders(tmp_path) -> None:
     assert intent_row.id == intent_id
     assert intent_row.dry_run is True
     assert record_intent_id == intent_id
+
+
+def test_record_cash_transactions_upserts(tmp_path) -> None:
+    db_path = tmp_path / "state.db"
+    data_store = DataStore(
+        f"sqlite:///{db_path}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=False,
+        config_text="test",
+    )
+
+    tx = {
+        "source": "ibkr_flex",
+        "unique_hash": "hash-1",
+        "account_id": "U123",
+        "currency": "USD",
+        "amount": 10.0,
+        "description": "Dividend",
+    }
+    data_store.record_cash_transactions([tx])
+
+    updated = {
+        "source": "ibkr_flex",
+        "unique_hash": "hash-1",
+        "account_id": "U123",
+        "currency": "USD",
+        "amount": 25.0,
+        "description": "Dividend updated",
+    }
+    data_store.record_cash_transactions([updated])
+
+    with data_store.session_scope() as session:
+        amount, description = session.execute(
+            select(CashTransaction.amount, CashTransaction.description).limit(1)
+        ).one()
+
+    assert amount == 25.0
+    assert description == "Dividend updated"
 
 
 def test_get_last_event_payload_ignores_dry_run(tmp_path) -> None:
