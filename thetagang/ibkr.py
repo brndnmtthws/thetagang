@@ -10,6 +10,7 @@ from ib_async import (
     Contract,
     ExecutionFilter,
     Fill,
+    Index,
     OptionChain,
     Order,
     PortfolioItem,
@@ -187,8 +188,19 @@ class IBKR:
             currency="USD",
             primaryExchange=primary_exchange,
         )
+        qualified = await self.qualify_contracts(stock)
+        contract: Contract = qualified[0] if qualified else stock
+
+        if not contract.conId:
+            # Some underlyings (e.g. SPX) are indices, not stocks.
+            index_exchange = primary_exchange or "CBOE"
+            index_contract = Index(symbol, index_exchange, "USD")
+            qualified_index = await self.qualify_contracts(index_contract)
+            if qualified_index:
+                contract = qualified_index[0]
+
         return await self.get_ticker_for_contract(
-            stock, generic_tick_list, required_fields, optional_fields
+            contract, generic_tick_list, required_fields, optional_fields
         )
 
     async def get_tickers_for_contracts(
@@ -385,7 +397,14 @@ class IBKR:
         Returns:
             Ticker: The market data ticker for the given contract.
         """
-        await self.ib.qualifyContractsAsync(contract)
+        if not contract.conId:
+            qualified = await self.qualify_contracts(contract)
+            if qualified:
+                contract = qualified[0]
+        if not contract.conId:
+            raise ValueError(
+                f"Contract {contract} can't be qualified because no 'conId' value exists."
+            )
         ticker = self.ib.reqMktData(contract, genericTickList=generic_tick_list)
         await handler(ticker)
         return ticker
