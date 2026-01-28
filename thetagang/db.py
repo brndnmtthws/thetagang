@@ -187,34 +187,6 @@ class HistoricalBar(Base):
     average: Mapped[Optional[float]] = mapped_column(Float)
 
 
-class CashTransaction(Base):
-    __tablename__ = "cash_transactions"
-    __table_args__ = (
-        UniqueConstraint("source", "unique_hash", name="uniq_cash_transaction"),
-        {"sqlite_autoincrement": True},
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    source: Mapped[str] = mapped_column(String, nullable=False)
-    unique_hash: Mapped[str] = mapped_column(String, nullable=False)
-    external_id: Mapped[Optional[str]] = mapped_column(String)
-    account_id: Mapped[Optional[str]] = mapped_column(String)
-    section: Mapped[Optional[str]] = mapped_column(String)
-    row_type: Mapped[Optional[str]] = mapped_column(String)
-    currency: Mapped[Optional[str]] = mapped_column(String)
-    amount: Mapped[Optional[float]] = mapped_column(Float)
-    trade_date: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    settle_date: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    description: Mapped[Optional[str]] = mapped_column(String)
-    symbol: Mapped[Optional[str]] = mapped_column(String)
-    con_id: Mapped[Optional[int]] = mapped_column(Integer)
-    asset_category: Mapped[Optional[str]] = mapped_column(String)
-    transaction_type: Mapped[Optional[str]] = mapped_column(String)
-    raw_json: Mapped[Optional[str]] = mapped_column(Text)
-
-
 def sqlite_db_path(db_url: str) -> Optional[Path]:
     url = make_url(db_url)
     if not url.drivername.startswith("sqlite"):
@@ -586,63 +558,6 @@ class DataStore:
                     session.execute(stmt)
         except Exception as exc:
             log.warning(f"Failed to record historical bars: {exc}")
-
-    def record_cash_transactions(
-        self, transactions: Iterable[Mapping[str, Any]]
-    ) -> int:
-        try:
-            now = datetime.now(timezone.utc).replace(tzinfo=None)
-            rows = []
-            for tx in transactions:
-                rows.append(
-                    dict(
-                        run_id=self.run_id,
-                        created_at=now,
-                        source=tx.get("source"),
-                        unique_hash=tx.get("unique_hash"),
-                        external_id=tx.get("external_id"),
-                        account_id=tx.get("account_id"),
-                        section=tx.get("section"),
-                        row_type=tx.get("row_type"),
-                        currency=tx.get("currency"),
-                        amount=tx.get("amount"),
-                        trade_date=tx.get("trade_date"),
-                        settle_date=tx.get("settle_date"),
-                        description=tx.get("description"),
-                        symbol=tx.get("symbol"),
-                        con_id=tx.get("con_id"),
-                        asset_category=tx.get("asset_category"),
-                        transaction_type=tx.get("transaction_type"),
-                        raw_json=tx.get("raw_json"),
-                    )
-                )
-            if rows:
-                with self.session_scope() as session:
-                    stmt = sqlite_insert(CashTransaction).values(rows)
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["source", "unique_hash"],
-                        set_={
-                            "external_id": stmt.excluded.external_id,
-                            "account_id": stmt.excluded.account_id,
-                            "section": stmt.excluded.section,
-                            "row_type": stmt.excluded.row_type,
-                            "currency": stmt.excluded.currency,
-                            "amount": stmt.excluded.amount,
-                            "trade_date": stmt.excluded.trade_date,
-                            "settle_date": stmt.excluded.settle_date,
-                            "description": stmt.excluded.description,
-                            "symbol": stmt.excluded.symbol,
-                            "con_id": stmt.excluded.con_id,
-                            "asset_category": stmt.excluded.asset_category,
-                            "transaction_type": stmt.excluded.transaction_type,
-                            "raw_json": stmt.excluded.raw_json,
-                        },
-                    )
-                    session.execute(stmt)
-            return len(rows)
-        except Exception as exc:
-            log.warning(f"Failed to record cash transactions: {exc}")
-            return 0
 
     def get_last_regime_rebalance_time(
         self,

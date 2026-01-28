@@ -1,5 +1,4 @@
 import asyncio
-from datetime import datetime
 from enum import Enum
 from typing import Any, Awaitable, Callable, Coroutine, List, Optional, TypeVar, cast
 
@@ -79,14 +78,10 @@ class IBKR:
         self,
         contract: Contract,
         duration: str,
-        end_datetime: Optional[datetime] = None,
     ) -> BarDataList:
-        end_str = ""
-        if end_datetime is not None:
-            end_str = end_datetime.strftime("%Y%m%d %H:%M:%S")
         bars = await self.ib.reqHistoricalDataAsync(
             contract,
-            end_str,
+            "",
             duration,
             "1 day",
             "TRADES",
