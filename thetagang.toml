@@ -101,36 +101,6 @@ path = "data/thetagang.db"
 # Optional SQLAlchemy URL override, e.g. "sqlite:////abs/path/thetagang.db".
 # url = "sqlite:////path/to/thetagang.db"
 
-[flex]
-# Optional: ingest cash transactions via the IBKR Flex Web Service.
-# This is a cash ledger only (deposits, withdrawals, dividends, interest, fees).
-# Raw prices remain unadjusted; no corporate-action logic is applied.
-enabled = false
-
-# Flex Web Service token and query ID (configure in IBKR Client Portal).
-# token = "REDACTED"
-# query_id = "123456"
-
-# Optional account ID override (defaults to the Flex statement's accountId).
-# account_id = "U1234567"
-
-# Polling controls for Flex report generation.
-polling_interval_seconds = 5
-timeout_seconds = 120
-
-# Sections to parse for cash-flow rows.
-sections = [
-  "CashTransactions",
-  "Dividends",
-  "Interest",
-  "InterestAccruals",
-  "Fees",
-  "OtherFees",
-  "WithholdingTax",
-  "DepositsWithdrawals",
-  "Transfers",
-]
-
 [option_chains]
 # The option chains are lazy loaded, and before you can determine the greeks
 # (delta) or prices, you need to scan the chains. The settings here tell
