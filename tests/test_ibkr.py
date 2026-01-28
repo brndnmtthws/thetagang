@@ -6,6 +6,7 @@ from ib_async import (
     IB,
     AccountValue,
     Contract,
+    Index,
     Order,
     OrderStatus,
     Stock,
@@ -119,6 +120,10 @@ async def test_get_ticker_for_contract_required_timeout(
     )
 
     contract = Stock("TEST", "SMART", "USD")
+    contract.conId = 1
+    mocker.patch.object(
+        ibkr, "qualify_contracts", new=mocker.AsyncMock(return_value=[contract])
+    )
     with pytest.raises(RequiredFieldValidationError) as excinfo:
         await ibkr.get_ticker_for_contract(
             contract,
@@ -161,6 +166,10 @@ async def test_get_ticker_for_contract_optional_timeout(
     )
 
     contract = Stock("TEST", "SMART", "USD")
+    contract.conId = 1
+    mocker.patch.object(
+        ibkr, "qualify_contracts", new=mocker.AsyncMock(return_value=[contract])
+    )
     result = await ibkr.get_ticker_for_contract(
         contract,
         required_fields=[TickerField.MARKET_PRICE],
@@ -173,6 +182,47 @@ async def test_get_ticker_for_contract_optional_timeout(
     mock_log_warning.assert_called_once()
     assert "Optional fields timed out" in mock_log_warning.call_args[0][0]
     assert "MIDPOINT" in mock_log_warning.call_args[0][0]
+
+
+async def test_get_ticker_for_stock_falls_back_to_index(ibkr, mock_ticker, mocker):
+    """Fallback to an index contract when stock qualification fails."""
+    index_contract = Index("SPX", "CBOE", "USD")
+    index_contract.conId = 123
+
+    qualify_contracts = mocker.AsyncMock(side_effect=[[], [index_contract]])
+    mocker.patch.object(ibkr, "qualify_contracts", new=qualify_contracts)
+    get_ticker = mocker.patch.object(
+        ibkr, "get_ticker_for_contract", new=mocker.AsyncMock(return_value=mock_ticker)
+    )
+
+    result = await ibkr.get_ticker_for_stock("SPX", "CBOE")
+
+    assert result == mock_ticker
+    assert get_ticker.await_count == 1
+    called_contract = get_ticker.await_args.args[0]
+    assert isinstance(called_contract, Index)
+    assert called_contract.symbol == "SPX"
+    assert called_contract.conId == 123
+
+
+async def test_market_data_streaming_handler_requires_conid(ibkr, mock_ib, mocker):
+    """Raise when contract can't be qualified to a conId."""
+    mocker.patch.object(
+        ibkr, "qualify_contracts", new=mocker.AsyncMock(return_value=[])
+    )
+    mock_ib.reqMktData = mocker.Mock()
+
+    contract = Stock("TEST", "SMART", "USD")
+    contract.conId = 0
+
+    async def handler(_ticker):
+        return None
+
+    with pytest.raises(ValueError) as excinfo:
+        await ibkr.__market_data_streaming_handler__(contract, "", handler)
+
+    assert "no 'conId' value exists" in str(excinfo.value)
+    mock_ib.reqMktData.assert_not_called()
 
 
 async def test_wait_for_submitting_orders_success(ibkr, mock_trade, mocker):
