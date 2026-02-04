@@ -2,10 +2,15 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from ib_async import IB, Stock
+from ib_async import IB, Option, Stock
 
 import thetagang.portfolio_manager as pm_module
-from thetagang.config import RatioGateConfig, RegimeRebalanceConfig, normalize_config
+from thetagang.config import (
+    RatioGateConfig,
+    RegimeRebalanceBaseEnum,
+    RegimeRebalanceConfig,
+    normalize_config,
+)
 from thetagang.db import DataStore
 from thetagang.portfolio_manager import PortfolioManager
 
@@ -31,6 +36,8 @@ def portfolio_manager(mock_ib, mocker):
     config.orders.algo = mocker.Mock()
     config.orders.algo.strategy = "Adaptive"
     config.orders.algo.params = []
+    config.cash_management = mocker.Mock()
+    config.cash_management.cash_fund = "SHV"
     config.exchange_hours = mocker.Mock()
     config.exchange_hours.exchange = "XNYS"
     config.trading_is_allowed = mocker.Mock(return_value=True)
@@ -57,6 +64,7 @@ def portfolio_manager(mock_ib, mocker):
         eps=1e-8,
         order_history_lookback_days=30,
         shares_only=False,
+        weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund,
     )
 
     completion_future = mocker.Mock()
@@ -76,6 +84,8 @@ def portfolio_manager_with_db(mock_ib, mocker, tmp_path):
     config.orders.algo = mocker.Mock()
     config.orders.algo.strategy = "Adaptive"
     config.orders.algo.params = []
+    config.cash_management = mocker.Mock()
+    config.cash_management.cash_fund = "SHV"
     config.exchange_hours = mocker.Mock()
     config.exchange_hours.exchange = "XNYS"
     config.trading_is_allowed = mocker.Mock(return_value=True)
@@ -102,6 +112,7 @@ def portfolio_manager_with_db(mock_ib, mocker, tmp_path):
         eps=1e-8,
         order_history_lookback_days=30,
         shares_only=False,
+        weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund,
     )
 
     data_store = DataStore(
@@ -167,6 +178,36 @@ def _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=1
     )
 
 
+def _stock_position(symbol: str, position: int, market_value: float | None = None):
+    return SimpleNamespace(
+        contract=Stock(symbol, "SMART", "USD"),
+        position=position,
+        marketValue=market_value,
+    )
+
+
+def _option_position(
+    symbol: str,
+    position: int,
+    market_value: float,
+    strike: float = 100.0,
+    right: str = "C",
+    expiry: str = "20270115",
+):
+    return SimpleNamespace(
+        contract=Option(
+            symbol=symbol,
+            lastTradeDateOrContractMonth=expiry,
+            strike=strike,
+            right=right,
+            exchange="SMART",
+            currency="USD",
+        ),
+        position=position,
+        marketValue=market_value,
+    )
+
+
 @pytest.mark.asyncio
 async def test_regime_rebalance_generates_orders(portfolio_manager, mocker):
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
@@ -185,6 +226,85 @@ async def test_regime_rebalance_generates_orders(portfolio_manager, mocker):
     )
 
     assert orders == [("AAA", "NYSE", -1), ("BBB", "NYSE", 1)]
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_excludes_options_and_cash_fund_from_base(
+    portfolio_manager, mocker
+):
+    portfolio_manager.config.account.margin_usage = 1.2
+    portfolio_manager.config.regime_rebalance.weight_base = (
+        RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund
+    )
+    portfolio_manager.config.regime_rebalance.soft_band = 0.0
+    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="100000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 500)],
+        "BBB": [_stock_position("BBB", 300)],
+        "SHV": [_stock_position("SHV", 100, market_value=15000.0)],
+        "AAA_OPT": [_option_position("AAA", 1, market_value=10000.0)],
+    }
+
+    _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=100.0)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    assert orders == [("AAA", "NYSE", -50), ("BBB", "NYSE", 150)]
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_box_spread_borrowing_excluded_from_base(
+    portfolio_manager, mocker
+):
+    portfolio_manager.config.account.margin_usage = 1.2
+    portfolio_manager.config.regime_rebalance.weight_base = (
+        RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund
+    )
+    portfolio_manager.config.regime_rebalance.soft_band = 0.0
+    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="100000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 400)],
+        "BBB": [_stock_position("BBB", 400)],
+        "SHV": [_stock_position("SHV", 200, market_value=20000.0)],
+        "SPX": [
+            _option_position(
+                "SPX",
+                -1,
+                market_value=-12000.0,
+                strike=5000.0,
+                right="C",
+                expiry="20260716",
+            ),
+            _option_position(
+                "SPX",
+                1,
+                market_value=8000.0,
+                strike=5000.0,
+                right="P",
+                expiry="20260716",
+            ),
+        ],
+    }
+
+    _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=100.0)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    assert orders == [("AAA", "NYSE", 104), ("BBB", "NYSE", 104)]
 
 
 @pytest.mark.asyncio

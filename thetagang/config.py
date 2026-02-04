@@ -549,6 +549,12 @@ class RatioGateConfig(BaseModel, DisplayMixin):
         table.add_row("", "Ratio gate var min", "=", f"{ffmt(self.var_min)}")
 
 
+class RegimeRebalanceBaseEnum(str, Enum):
+    net_liq = "net_liq"
+    managed_stocks = "managed_stocks"
+    net_liq_ex_options_cash_fund = "net_liq_ex_options_cash_fund"
+
+
 class RegimeRebalanceConfig(BaseModel, DisplayMixin):
     enabled: bool = Field(default=False)
     symbols: List[str] = Field(default_factory=list)
@@ -567,6 +573,9 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
     eps: float = Field(default=1e-8, gt=0.0)
     order_history_lookback_days: int = Field(default=30, ge=1)
     shares_only: bool = Field(default=False)
+    weight_base: RegimeRebalanceBaseEnum = Field(
+        default=RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund
+    )
     ratio_gate: Optional[RatioGateConfig] = None
 
     @model_validator(mode="after")
@@ -618,6 +627,7 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
         table.add_row("", "Deficit rail start", "=", f"{dfmt(self.deficit_rail_start)}")
         table.add_row("", "Deficit rail stop", "=", f"{dfmt(self.deficit_rail_stop)}")
         table.add_row("", "Shares only", "=", f"{self.shares_only}")
+        table.add_row("", "Weight base", "=", f"{self.weight_base.value}")
         if self.ratio_gate is not None:
             self.ratio_gate.add_to_table(table, section)
 

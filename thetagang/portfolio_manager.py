@@ -26,7 +26,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from thetagang import log
-from thetagang.config import Config
+from thetagang.config import Config, RegimeRebalanceBaseEnum
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import (
@@ -1874,11 +1874,6 @@ class PortfolioManager:
                 "Regime-aware rebalancing requires positive target weights."
             )
 
-        total_value = self.get_buying_power(account_summary)
-        if total_value <= 0:
-            log.error("Buying power is not positive, skipping rebalancing.")
-            raise ValueError("Regime-aware rebalancing requires positive buying power.")
-
         stock_positions = [
             position
             for symbol in portfolio_positions
@@ -1903,7 +1898,6 @@ class PortfolioManager:
         )
         tickers = {symbol: ticker for symbol, ticker in ticker_results}
 
-        current_weights: Dict[str, float] = {}
         current_positions: Dict[str, int] = {}
         current_values: Dict[str, float] = {}
         market_prices: Dict[str, float] = {}
@@ -1934,6 +1928,45 @@ class PortfolioManager:
             current_positions[symbol] = current_position
             current_value = current_position * market_price
             current_values[symbol] = current_value
+
+        weight_base = regime_rebalance.weight_base
+        if weight_base == RegimeRebalanceBaseEnum.managed_stocks:
+            total_value = sum(current_values.values())
+        elif weight_base == RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund:
+            excluded_value = 0.0
+            cash_fund = self.config.cash_management.cash_fund
+            for positions in portfolio_positions.values():
+                for position in positions:
+                    if isinstance(position.contract, Option):
+                        excluded_value += float(position.marketValue or 0.0)
+                        continue
+                    if (
+                        isinstance(position.contract, Stock)
+                        and position.contract.symbol == cash_fund
+                    ):
+                        excluded_value += float(position.marketValue or 0.0)
+            net_liq = float(account_summary["NetLiquidation"].value)
+            adjusted_net_liq = net_liq - excluded_value
+            total_value = math.floor(
+                adjusted_net_liq * self.config.account.margin_usage
+            )
+            log.notice(
+                "Regime rebalancing base: mode=net_liq_ex_options_cash_fund "
+                f"net_liq={dfmt(net_liq)} excluded={dfmt(excluded_value)} "
+                f"margin_usage={ffmt(self.config.account.margin_usage)} "
+                f"base={dfmt(total_value)}"
+            )
+        else:
+            total_value = self.get_buying_power(account_summary)
+        if total_value <= 0:
+            log.error("Rebalance base value is not positive, skipping rebalancing.")
+            raise ValueError("Regime-aware rebalancing requires a positive base value.")
+
+        current_weights: Dict[str, float] = {}
+        for symbol in symbols:
+            market_price = market_prices[symbol]
+            current_position = current_positions[symbol]
+            current_value = current_values[symbol]
             current_weights[symbol] = current_value / total_value
             target_weight = self.config.symbols[symbol].weight
             target_values[symbol] = target_weight * total_value

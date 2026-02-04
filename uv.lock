@@ -1213,7 +1213,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "pre-commit", specifier = ">=4.0.1" },
-    { name = "pytest", specifier = ">=8.0.0,<10" },
+    { name = "pytest", specifier = ">=9.0.0,<10" },
     { name = "pytest-asyncio", specifier = ">=0.23.0,<1.4" },
     { name = "pytest-mock", specifier = ">=3.14.0,<4" },
     { name = "pytest-watch", specifier = ">=4.2.0,<5" },
