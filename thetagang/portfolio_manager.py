@@ -1932,18 +1932,11 @@ class PortfolioManager:
         weight_base = regime_rebalance.weight_base
         if weight_base == RegimeRebalanceBaseEnum.managed_stocks:
             total_value = sum(current_values.values())
-        elif weight_base == RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund:
+        elif weight_base == RegimeRebalanceBaseEnum.net_liq_ex_options:
             excluded_value = 0.0
-            cash_fund = self.config.cash_management.cash_fund
             for positions in portfolio_positions.values():
                 for position in positions:
                     if isinstance(position.contract, Option):
-                        excluded_value += float(position.marketValue or 0.0)
-                        continue
-                    if (
-                        isinstance(position.contract, Stock)
-                        and position.contract.symbol == cash_fund
-                    ):
                         excluded_value += float(position.marketValue or 0.0)
             net_liq = float(account_summary["NetLiquidation"].value)
             adjusted_net_liq = net_liq - excluded_value
@@ -1951,8 +1944,8 @@ class PortfolioManager:
                 adjusted_net_liq * self.config.account.margin_usage
             )
             log.notice(
-                "Regime rebalancing base: mode=net_liq_ex_options_cash_fund "
-                f"net_liq={dfmt(net_liq)} excluded={dfmt(excluded_value)} "
+                "Regime rebalancing base: mode=net_liq_ex_options "
+                f"net_liq={dfmt(net_liq)} excluded_options={dfmt(excluded_value)} "
                 f"margin_usage={ffmt(self.config.account.margin_usage)} "
                 f"base={dfmt(total_value)}"
             )

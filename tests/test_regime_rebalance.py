@@ -64,7 +64,7 @@ def portfolio_manager(mock_ib, mocker):
         eps=1e-8,
         order_history_lookback_days=30,
         shares_only=False,
-        weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund,
+        weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options,
     )
 
     completion_future = mocker.Mock()
@@ -112,7 +112,7 @@ def portfolio_manager_with_db(mock_ib, mocker, tmp_path):
         eps=1e-8,
         order_history_lookback_days=30,
         shares_only=False,
-        weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund,
+        weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options,
     )
 
     data_store = DataStore(
@@ -234,7 +234,7 @@ async def test_regime_rebalance_excludes_options_and_cash_fund_from_base(
 ):
     portfolio_manager.config.account.margin_usage = 1.2
     portfolio_manager.config.regime_rebalance.weight_base = (
-        RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund
+        RegimeRebalanceBaseEnum.net_liq_ex_options
     )
     portfolio_manager.config.regime_rebalance.soft_band = 0.0
     portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
@@ -256,7 +256,7 @@ async def test_regime_rebalance_excludes_options_and_cash_fund_from_base(
         account_summary, portfolio_positions
     )
 
-    assert orders == [("AAA", "NYSE", -50), ("BBB", "NYSE", 150)]
+    assert orders == [("AAA", "NYSE", 40), ("BBB", "NYSE", 240)]
 
 
 @pytest.mark.asyncio
@@ -265,7 +265,7 @@ async def test_regime_rebalance_box_spread_borrowing_excluded_from_base(
 ):
     portfolio_manager.config.account.margin_usage = 1.2
     portfolio_manager.config.regime_rebalance.weight_base = (
-        RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund
+        RegimeRebalanceBaseEnum.net_liq_ex_options
     )
     portfolio_manager.config.regime_rebalance.soft_band = 0.0
     portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
@@ -304,7 +304,7 @@ async def test_regime_rebalance_box_spread_borrowing_excluded_from_base(
         account_summary, portfolio_positions
     )
 
-    assert orders == [("AAA", "NYSE", 104), ("BBB", "NYSE", 104)]
+    assert orders == [("AAA", "NYSE", 224), ("BBB", "NYSE", 224)]
 
 
 @pytest.mark.asyncio

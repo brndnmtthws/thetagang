@@ -1,5 +1,6 @@
 import asyncio
 from asyncio import Future
+from typing import Any, Awaitable, Protocol, cast
 
 import toml
 from ib_async import IB, IBC, Contract, Watchdog, util
@@ -10,6 +11,11 @@ from thetagang.config import Config, normalize_config
 from thetagang.db import DataStore, sqlite_db_path
 from thetagang.exchange_hours import need_to_exit
 from thetagang.portfolio_manager import PortfolioManager
+
+
+class _IBRunner(Protocol):
+    def run(self, awaitable: Awaitable[Any]) -> Any: ...
+
 
 try:
     asyncio.get_running_loop()
@@ -86,7 +92,7 @@ def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) ->
                 watchdog.stop()
                 await ibc.terminateAsync()
 
-        ib.run(run_with_watchdog())
+        cast(_IBRunner, ib).run(run_with_watchdog())
     else:
         ib.connect(
             watchdog_config.host,
@@ -95,5 +101,5 @@ def start(config_path: str, without_ibc: bool = False, dry_run: bool = False) ->
             timeout=watchdog_config.probeTimeout,
             account=config.account.number,
         )
-        ib.run(completion_future)
+        cast(_IBRunner, ib).run(completion_future)
         ib.disconnect()
