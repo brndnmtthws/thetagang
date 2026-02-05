@@ -552,7 +552,7 @@ class RatioGateConfig(BaseModel, DisplayMixin):
 class RegimeRebalanceBaseEnum(str, Enum):
     net_liq = "net_liq"
     managed_stocks = "managed_stocks"
-    net_liq_ex_options_cash_fund = "net_liq_ex_options_cash_fund"
+    net_liq_ex_options = "net_liq_ex_options"
 
 
 class RegimeRebalanceConfig(BaseModel, DisplayMixin):
@@ -574,7 +574,7 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
     order_history_lookback_days: int = Field(default=30, ge=1)
     shares_only: bool = Field(default=False)
     weight_base: RegimeRebalanceBaseEnum = Field(
-        default=RegimeRebalanceBaseEnum.net_liq_ex_options_cash_fund
+        default=RegimeRebalanceBaseEnum.net_liq_ex_options
     )
     ratio_gate: Optional[RatioGateConfig] = None
 
