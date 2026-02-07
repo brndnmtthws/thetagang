@@ -41,11 +41,11 @@ class SymbolConfigCallsFactory(ModelFactory[SymbolConfig.Calls]): ...
 class RegimeRebalanceConfigFactory(ModelFactory[RegimeRebalanceConfig]):
     soft_band = 0.10
     hard_band = 0.50
-    flow_trade_min = 2000.0
-    flow_trade_stop = 1000.0
+    flow_trade_min = 0.025
+    flow_trade_stop = 0.0125
     flow_imbalance_tau = 0.70
-    deficit_rail_start = 5000.0
-    deficit_rail_stop = 2500.0
+    deficit_rail_start = 0.06
+    deficit_rail_stop = 0.03
     ratio_gate = None
 
 

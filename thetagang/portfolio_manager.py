@@ -2132,20 +2132,24 @@ class PortfolioManager:
                 deficit_active = bool(state.get("deficit_active", False))
 
         excess_cash = total_value - invested_value
+        flow_trade_min_amount = total_value * regime_rebalance.flow_trade_min
+        flow_trade_stop_amount = total_value * regime_rebalance.flow_trade_stop
+        deficit_rail_start_amount = total_value * regime_rebalance.deficit_rail_start
+        deficit_rail_stop_amount = total_value * regime_rebalance.deficit_rail_stop
         flow_gate = False
         deficit_gate = False
         if excess_cash < 0:
             deficit_amount = -excess_cash
-            deficit_gate = deficit_amount >= regime_rebalance.deficit_rail_start or (
-                deficit_active and deficit_amount >= regime_rebalance.deficit_rail_stop
+            deficit_gate = deficit_amount >= deficit_rail_start_amount or (
+                deficit_active and deficit_amount >= deficit_rail_stop_amount
             )
             if not deficit_gate:
-                flow_gate = deficit_amount >= regime_rebalance.flow_trade_min or (
-                    flow_active and deficit_amount >= regime_rebalance.flow_trade_stop
+                flow_gate = deficit_amount >= flow_trade_min_amount or (
+                    flow_active and deficit_amount >= flow_trade_stop_amount
                 )
         else:
-            flow_gate = excess_cash >= regime_rebalance.flow_trade_min or (
-                flow_active and excess_cash >= regime_rebalance.flow_trade_stop
+            flow_gate = excess_cash >= flow_trade_min_amount or (
+                flow_active and excess_cash >= flow_trade_stop_amount
             )
 
         allowed_symbols = {
@@ -2333,12 +2337,10 @@ class PortfolioManager:
             )
             excess_after = total_value - invested_after
             deficit_amount_after = max(0.0, -excess_after)
-            deficit_gate_after = (
-                deficit_amount_after >= regime_rebalance.deficit_rail_stop
-            )
+            deficit_gate_after = deficit_amount_after >= deficit_rail_stop_amount
             if deficit_gate_after:
                 deficit_needed = max(
-                    0.0, deficit_amount_after - regime_rebalance.deficit_rail_stop
+                    0.0, deficit_amount_after - deficit_rail_stop_amount
                 )
                 deficit_orders = build_deficit_orders(
                     shares_after,
@@ -2356,7 +2358,7 @@ class PortfolioManager:
                         )
         elif deficit_gate:
             rebalance_mode = "deficit"
-            deficit_needed = max(0.0, -excess_cash - regime_rebalance.deficit_rail_stop)
+            deficit_needed = max(0.0, -excess_cash - deficit_rail_stop_amount)
             deficit_orders = build_deficit_orders(
                 current_positions,
                 deficit_needed,
@@ -2452,10 +2454,10 @@ class PortfolioManager:
             f"cooldown_ok={cooldown_ok} mode={rebalance_mode} "
             f"flow_gate={flow_gate} deficit_gate={deficit_gate} "
             f"flow_active={flow_active} deficit_active={deficit_active} "
-            f"flow_min={dfmt(regime_rebalance.flow_trade_min)} "
-            f"flow_stop={dfmt(regime_rebalance.flow_trade_stop)} "
-            f"deficit_start={dfmt(regime_rebalance.deficit_rail_start)} "
-            f"deficit_stop={dfmt(regime_rebalance.deficit_rail_stop)} "
+            f"flow_min={pfmt(regime_rebalance.flow_trade_min)}({dfmt(flow_trade_min_amount)}) "
+            f"flow_stop={pfmt(regime_rebalance.flow_trade_stop)}({dfmt(flow_trade_stop_amount)}) "
+            f"deficit_start={pfmt(regime_rebalance.deficit_rail_start)}({dfmt(deficit_rail_start_amount)}) "
+            f"deficit_stop={pfmt(regime_rebalance.deficit_rail_stop)}({dfmt(deficit_rail_stop_amount)}) "
             f"excess_cash={dfmt(excess_cash)}"
             + (
                 " "
