@@ -56,11 +56,11 @@ def portfolio_manager(mock_ib, mocker):
         cooldown_days=2,
         choppiness_min=0.1,
         efficiency_max=0.9,
-        flow_trade_min=2000.0,
-        flow_trade_stop=1000.0,
+        flow_trade_min=0.025,
+        flow_trade_stop=0.0125,
         flow_imbalance_tau=0.7,
-        deficit_rail_start=5000.0,
-        deficit_rail_stop=2500.0,
+        deficit_rail_start=0.06,
+        deficit_rail_stop=0.03,
         eps=1e-8,
         order_history_lookback_days=30,
         shares_only=False,
@@ -104,11 +104,11 @@ def portfolio_manager_with_db(mock_ib, mocker, tmp_path):
         cooldown_days=2,
         choppiness_min=0.1,
         efficiency_max=0.9,
-        flow_trade_min=2000.0,
-        flow_trade_stop=1000.0,
+        flow_trade_min=0.025,
+        flow_trade_stop=0.0125,
         flow_imbalance_tau=0.7,
-        deficit_rail_start=5000.0,
-        deficit_rail_stop=2500.0,
+        deficit_rail_start=0.06,
+        deficit_rail_stop=0.03,
         eps=1e-8,
         order_history_lookback_days=30,
         shares_only=False,
@@ -754,8 +754,8 @@ async def test_regime_rebalance_flow_trades_ignore_regime_gate(
     portfolio_manager.config.regime_rebalance.hard_band = 0.80
     portfolio_manager.config.regime_rebalance.choppiness_min = 10.0
     portfolio_manager.config.regime_rebalance.efficiency_max = 0.01
-    portfolio_manager.config.regime_rebalance.flow_trade_min = 200.0
-    portfolio_manager.config.regime_rebalance.flow_trade_stop = 100.0
+    portfolio_manager.config.regime_rebalance.flow_trade_min = 0.10
+    portfolio_manager.config.regime_rebalance.flow_trade_stop = 0.05
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
     portfolio_positions = {
@@ -807,12 +807,12 @@ def test_regime_rebalance_config_rejects_inverted_bands():
 
 def test_regime_rebalance_config_rejects_flow_hysteresis_inversion():
     with pytest.raises(ValueError, match="flow_trade_min"):
-        RegimeRebalanceConfig(flow_trade_min=100.0, flow_trade_stop=200.0)
+        RegimeRebalanceConfig(flow_trade_min=0.10, flow_trade_stop=0.20)
 
 
 def test_regime_rebalance_config_rejects_deficit_hysteresis_inversion():
     with pytest.raises(ValueError, match="deficit_rail_start"):
-        RegimeRebalanceConfig(deficit_rail_start=100.0, deficit_rail_stop=200.0)
+        RegimeRebalanceConfig(deficit_rail_start=0.10, deficit_rail_stop=0.20)
 
 
 def test_regime_rebalance_config_rejects_ratio_gate_missing_anchor():
@@ -859,7 +859,7 @@ async def test_regime_rebalance_respects_no_trading(portfolio_manager, mocker):
         account_summary, portfolio_positions
     )
 
-    assert orders == [("BBB", "NYSE", 1)]
+    assert orders == []
 
 
 @pytest.mark.asyncio
@@ -868,8 +868,8 @@ async def test_regime_rebalance_cash_added_triggers_buys(portfolio_manager, mock
     portfolio_manager.config.regime_rebalance.hard_band = 0.8
     portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
     portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.flow_trade_min = 200.0
-    portfolio_manager.config.regime_rebalance.flow_trade_stop = 100.0
+    portfolio_manager.config.regime_rebalance.flow_trade_min = 0.10
+    portfolio_manager.config.regime_rebalance.flow_trade_stop = 0.05
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
     portfolio_positions = {
@@ -896,8 +896,8 @@ async def test_regime_rebalance_cash_withdrawn_triggers_sells(
     portfolio_manager.config.regime_rebalance.hard_band = 0.8
     portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
     portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.flow_trade_min = 200.0
-    portfolio_manager.config.regime_rebalance.flow_trade_stop = 100.0
+    portfolio_manager.config.regime_rebalance.flow_trade_min = 0.10
+    portfolio_manager.config.regime_rebalance.flow_trade_stop = 0.05
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
     portfolio_positions = {
@@ -924,8 +924,8 @@ async def test_regime_rebalance_flow_hysteresis_uses_db_state(
     portfolio_manager_with_db.config.regime_rebalance.hard_band = 0.8
     portfolio_manager_with_db.config.regime_rebalance.choppiness_min = 0.0
     portfolio_manager_with_db.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager_with_db.config.regime_rebalance.flow_trade_min = 500.0
-    portfolio_manager_with_db.config.regime_rebalance.flow_trade_stop = 100.0
+    portfolio_manager_with_db.config.regime_rebalance.flow_trade_min = 0.25
+    portfolio_manager_with_db.config.regime_rebalance.flow_trade_stop = 0.05
 
     portfolio_manager_with_db.data_store.record_event(
         "regime_rebalance_state", {"flow_active": True, "deficit_active": False}
@@ -962,8 +962,8 @@ async def test_regime_rebalance_deficit_rail_sells_overweights(
     portfolio_manager.config.regime_rebalance.hard_band = 1.5
     portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
     portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_start = 300.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 100.0
+    portfolio_manager.config.regime_rebalance.deficit_rail_start = 0.30
+    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 0.10
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
@@ -988,8 +988,8 @@ async def test_regime_rebalance_deficit_rail_sells_pro_rata(portfolio_manager, m
     portfolio_manager.config.regime_rebalance.hard_band = 0.8
     portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
     portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_start = 100.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 50.0
+    portfolio_manager.config.regime_rebalance.deficit_rail_start = 0.10
+    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 0.05
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
@@ -1016,7 +1016,7 @@ async def test_regime_rebalance_deficit_rail_sells_from_initial_amount(
     portfolio_manager.config.regime_rebalance.hard_band = 1.5
     portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
     portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_start = 100.0
+    portfolio_manager.config.regime_rebalance.deficit_rail_start = 0.10
     portfolio_manager.config.regime_rebalance.deficit_rail_stop = 0.0
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
@@ -1045,8 +1045,8 @@ async def test_regime_rebalance_deficit_cleanup_uses_stop_band(
     portfolio_manager.config.regime_rebalance.hard_band_rebalance_fraction = 0.5
     portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
     portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_start = 500.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 200.0
+    portfolio_manager.config.regime_rebalance.deficit_rail_start = 0.50
+    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 0.20
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
@@ -1074,8 +1074,8 @@ async def test_regime_rebalance_no_trading_blocks_deficit_and_hard(
     portfolio_manager.config.regime_rebalance.hard_band = 0.20
     portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
     portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_start = 100.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 50.0
+    portfolio_manager.config.regime_rebalance.deficit_rail_start = 0.10
+    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 0.05
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
