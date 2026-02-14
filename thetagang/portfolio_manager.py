@@ -836,6 +836,39 @@ class PortfolioManager:
                 await self.adjust_prices()
 
                 await self.ibkr.wait_for_submitting_orders(self.trades.records())
+                incomplete_trades = await self.ibkr.wait_for_orders_complete(
+                    self.trades.records()
+                )
+                if incomplete_trades:
+                    working_statuses = {"PendingSubmit", "PreSubmitted", "Submitted"}
+                    still_working = [
+                        trade
+                        for trade in incomplete_trades
+                        if getattr(trade.orderStatus, "status", "") in working_statuses
+                    ]
+                    unexpected_state = [
+                        trade
+                        for trade in incomplete_trades
+                        if trade not in still_working
+                    ]
+                    open_orders = ", ".join(
+                        f"{trade.contract.symbol} (OrderId: {trade.order.orderId}, status={getattr(trade.orderStatus, 'status', 'UNKNOWN')})"
+                        for trade in still_working
+                    )
+                    if open_orders:
+                        log.info(
+                            "Run completed with working submitted orders still open at broker: "
+                            f"{open_orders}"
+                        )
+                    if unexpected_state:
+                        unexpected_orders = ", ".join(
+                            f"{trade.contract.symbol} (OrderId: {trade.order.orderId}, status={getattr(trade.orderStatus, 'status', 'UNKNOWN')})"
+                            for trade in unexpected_state
+                        )
+                        log.warning(
+                            "Run completed with non-working incomplete orders at broker: "
+                            f"{unexpected_orders}"
+                        )
 
             log.info("ThetaGang is done, shutting down! Cya next time. :sparkles:")
         except:
