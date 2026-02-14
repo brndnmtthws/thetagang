@@ -228,12 +228,15 @@ async def test_market_data_streaming_handler_requires_conid(ibkr, mock_ib, mocke
 async def test_wait_for_submitting_orders_success(ibkr, mock_trade, mocker):
     """Test wait_for_submitting_orders when all waits succeed."""
     mocker.patch.object(
-        ibkr, "__trade_wait_for_condition__", return_value=asyncio.Future()
+        ibkr,
+        "__trade_wait_for_condition__",
+        new=mocker.AsyncMock(side_effect=[True, True]),
     )
-    ibkr.__trade_wait_for_condition__.return_value.set_result(True)
-    mocker.patch.object(
-        log, "track_async", return_value=[True, True]
-    )  # Simulate track_async returning results
+
+    async def track_async_passthrough(tasks, *args, **kwargs):
+        return await asyncio.gather(*tasks)
+
+    mocker.patch.object(log, "track_async", side_effect=track_async_passthrough)
 
     trades = [mock_trade, mock_trade]
     await ibkr.wait_for_submitting_orders(trades)
@@ -243,19 +246,16 @@ async def test_wait_for_submitting_orders_success(ibkr, mock_trade, mocker):
 
 async def test_wait_for_submitting_orders_timeout(ibkr, mock_trade, mocker):
     """Test wait_for_submitting_orders when a wait times out."""
+    mocker.patch.object(
+        ibkr,
+        "__trade_wait_for_condition__",
+        new=mocker.AsyncMock(side_effect=[True, False]),
+    )
 
-    # Mock the wait to return False for the second trade
-    async def mock_wait(*args, **kwargs):
-        # Simulate different results based on call order or trade details if needed
-        # Simple case: first succeeds, second fails
-        if ibkr.__trade_wait_for_condition__.call_count == 1:
-            return True
-        else:
-            return False
+    async def track_async_passthrough(tasks, *args, **kwargs):
+        return await asyncio.gather(*tasks)
 
-    mocker.patch.object(ibkr, "__trade_wait_for_condition__", side_effect=mock_wait)
-    # Mock track_async to return the results from our side_effect
-    mocker.patch.object(log, "track_async", return_value=[True, False])
+    mocker.patch.object(log, "track_async", side_effect=track_async_passthrough)
 
     trades = [mocker.Mock(spec=Trade), mocker.Mock(spec=Trade)]
     trades[0].contract = mocker.Mock(spec=Contract)
@@ -279,50 +279,64 @@ async def test_wait_for_submitting_orders_timeout(ibkr, mock_trade, mocker):
 async def test_wait_for_orders_complete_success(ibkr, mock_trade, mocker):
     """Test wait_for_orders_complete when all waits succeed."""
     mocker.patch.object(
-        ibkr, "__trade_wait_for_condition__", return_value=asyncio.Future()
+        ibkr,
+        "__trade_wait_for_condition__",
+        new=mocker.AsyncMock(side_effect=[True, True]),
     )
-    ibkr.__trade_wait_for_condition__.return_value.set_result(True)
-    mocker.patch.object(log, "track_async", return_value=[True, True])
-    mock_log_warning = mocker.patch.object(log, "warning")
+
+    async def track_async_passthrough(tasks, *args, **kwargs):
+        return await asyncio.gather(*tasks)
+
+    mocker.patch.object(log, "track_async", side_effect=track_async_passthrough)
+    mock_log_info = mocker.patch.object(log, "info")
 
     trades = [mock_trade, mock_trade]
-    await ibkr.wait_for_orders_complete(trades)
+    incomplete = await ibkr.wait_for_orders_complete(trades)
 
     assert ibkr.__trade_wait_for_condition__.call_count == 2
-    mock_log_warning.assert_not_called()
+    assert incomplete == []
+    mock_log_info.assert_not_called()
 
 
 async def test_wait_for_orders_complete_timeout(ibkr, mock_trade, mocker):
     """Test wait_for_orders_complete when a wait times out."""
+    mocker.patch.object(
+        ibkr,
+        "__trade_wait_for_condition__",
+        new=mocker.AsyncMock(side_effect=[True, False]),
+    )
 
-    # Mock the wait to return False for the second trade
-    async def mock_wait(*args, **kwargs):
-        if ibkr.__trade_wait_for_condition__.call_count == 1:
-            return True
-        else:
-            return False
+    async def track_async_passthrough(tasks, *args, **kwargs):
+        return await asyncio.gather(*tasks)
 
-    mocker.patch.object(ibkr, "__trade_wait_for_condition__", side_effect=mock_wait)
-    mocker.patch.object(log, "track_async", return_value=[True, False])
-    mock_log_warning = mocker.patch.object(log, "warning")
+    mocker.patch.object(log, "track_async", side_effect=track_async_passthrough)
+    mock_log_info = mocker.patch.object(log, "info")
 
     trades = [mocker.Mock(spec=Trade), mocker.Mock(spec=Trade)]
     trades[0].contract = mocker.Mock(spec=Contract)
     trades[0].contract.symbol = "PASS"
     trades[0].order = mocker.Mock(spec=Order)
     trades[0].order.orderId = 1
+    trades[0].orderStatus = SimpleNamespace(status="Filled", filled=10.0, remaining=0.0)
     trades[1].contract = mocker.Mock(spec=Contract)
     trades[1].contract.symbol = "FAIL"
     trades[1].order = mocker.Mock(spec=Order)
     trades[1].order.orderId = 2
+    trades[1].orderStatus = SimpleNamespace(
+        status="Submitted", filled=5.0, remaining=3.0
+    )
 
-    await ibkr.wait_for_orders_complete(trades)
+    incomplete = await ibkr.wait_for_orders_complete(trades)
 
     assert ibkr.__trade_wait_for_condition__.call_count == 2
-    mock_log_warning.assert_called_once()
-    assert "Timeout waiting for orders to complete" in mock_log_warning.call_args[0][0]
-    assert "FAIL (OrderId: 2)" in mock_log_warning.call_args[0][0]
-    assert "PASS (OrderId: 1)" not in mock_log_warning.call_args[0][0]
+    assert incomplete == [trades[1]]
+    mock_log_info.assert_called_once()
+    assert "Timeout waiting for orders to complete" in mock_log_info.call_args[0][0]
+    assert (
+        "FAIL (OrderId: 2, status=Submitted, filled=5.0, remaining=3.0)"
+        in (mock_log_info.call_args[0][0])
+    )
+    assert "PASS (OrderId: 1)" not in mock_log_info.call_args[0][0]
 
 
 async def test_refresh_account_updates_uses_timeout_wrapper(ibkr, mocker):

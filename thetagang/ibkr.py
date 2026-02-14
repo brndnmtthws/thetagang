@@ -447,7 +447,7 @@ class IBKR:
 
     async def wait_for_orders_complete(
         self, trades: List[Trade], timetout: int = 60
-    ) -> None:
+    ) -> List[Trade]:
         tasks: List[Coroutine[Any, Any, bool]] = [
             self.__trade_wait_for_condition__(
                 trade,
@@ -461,13 +461,27 @@ class IBKR:
         )
         if not all(results):
             incomplete_trades = [
-                f"{trade.contract.symbol} (OrderId: {trade.order.orderId})"
-                for i, trade in enumerate(trades)
-                if not results[i]
+                trade for i, trade in enumerate(trades) if not results[i]
             ]
-            log.warning(
-                f"Timeout waiting for orders to complete: {', '.join(incomplete_trades)}"
+            incomplete_order_status = ", ".join(
+                self._trade_progress_snapshot(trade) for trade in incomplete_trades
             )
+            log.info(
+                "Timeout waiting for orders to complete; "
+                f"orders still working at broker: {incomplete_order_status}"
+            )
+            return incomplete_trades
+
+        return []
+
+    @staticmethod
+    def _trade_progress_snapshot(trade: Trade) -> str:
+        return (
+            f"{trade.contract.symbol} (OrderId: {trade.order.orderId}, "
+            f"status={getattr(trade.orderStatus, 'status', 'UNKNOWN')}, "
+            f"filled={getattr(trade.orderStatus, 'filled', '?')}, "
+            f"remaining={getattr(trade.orderStatus, 'remaining', '?')})"
+        )
 
     async def __trade_wait_for_condition__(
         self, trade: Trade, condition: Callable[[Trade], bool], timeout: float
