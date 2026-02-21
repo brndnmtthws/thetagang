@@ -369,13 +369,14 @@ def normalize_config(config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, A
             config["ib_async"] = config["ib_insync"]
         del config["ib_insync"]
 
-    if "twsVersion" in config["ibc"]:
+    ibc_config = config.get("ibc")
+    if isinstance(ibc_config, dict) and "twsVersion" in ibc_config:
         error_console.print(
             "WARNING: config param ibc.twsVersion is deprecated, please remove it from your config.",
         )
 
         # TWS version is pinned to latest stable, delete any existing config if it's present
-        del config["ibc"]["twsVersion"]
+        del ibc_config["twsVersion"]
 
     if "maximum_new_contracts" in config["target"]:
         error_console.print(

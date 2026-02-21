@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rich import box
@@ -89,6 +89,11 @@ WHEEL_SYMBOL_OVERRIDE_KEYS = [
     "write_calls_only_min_threshold_percent",
     "write_calls_only_min_threshold_percent_relative",
 ]
+
+EXPLICIT_STAGE_PREREQUISITES: dict[str, set[str]] = {
+    # Call writing relies on target share quantities computed in put-write planning.
+    "options_write_calls": {"options_write_puts"},
+}
 
 
 class ConfigMeta(BaseModel):
@@ -196,6 +201,15 @@ class RunConfig(BaseModel):
             dfs(stage_id)
 
         enabled_stage_ids = {stage.id for stage in self.stages if stage.enabled}
+        for stage_id, required_ids in EXPLICIT_STAGE_PREREQUISITES.items():
+            if stage_id not in enabled_stage_ids:
+                continue
+            missing = sorted(required_ids - enabled_stage_ids)
+            if missing:
+                missing_text = ", ".join(missing)
+                raise ValueError(
+                    f"run.stages.{stage_id} requires enabled stage(s): {missing_text}"
+                )
         if "equity_regime_rebalance" in enabled_stage_ids and (
             enabled_stage_ids & WHEEL_OPTION_STAGE_IDS
         ):
@@ -354,9 +368,20 @@ class WheelDefaultsConfig(BaseModel):
     )
 
 
+class WheelSymbolOverrideConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    write_calls_only_min_threshold_percent: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    write_calls_only_min_threshold_percent_relative: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
+
+
 class WheelStrategyConfig(BaseModel):
     defaults: WheelDefaultsConfig
-    symbol_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    symbol_overrides: Dict[str, WheelSymbolOverrideConfig] = Field(default_factory=dict)
     risk: StrategyRiskConfig = Field(default_factory=StrategyRiskConfig)
     equity_rebalance: RebalanceExecutionConfig = Field(
         default_factory=RebalanceExecutionConfig
@@ -395,15 +420,16 @@ class Config(BaseModel, DisplayMixin):
         symbols = self.portfolio.symbols
 
         def apply_wheel_symbol_overrides(
-            strategy_overrides: Dict[str, Dict[str, Any]], keys: List[str]
+            strategy_overrides: Dict[str, WheelSymbolOverrideConfig], keys: List[str]
         ) -> None:
             for symbol, overrides in strategy_overrides.items():
                 symbol_cfg = symbols.get(symbol)
                 if symbol_cfg is None:
                     continue
                 for key in keys:
-                    if key in overrides:
-                        setattr(symbol_cfg, key, overrides[key])
+                    value = getattr(overrides, key)
+                    if value is not None:
+                        setattr(symbol_cfg, key, value)
 
         wheel_defaults = self.strategies.wheel.defaults
         if (

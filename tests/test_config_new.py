@@ -127,6 +127,25 @@ def test_explicit_run_config_rejects_enabled_stage_with_disabled_dependency() ->
         )
 
 
+def test_explicit_run_config_rejects_calls_stage_without_puts_stage() -> None:
+    with pytest.raises(
+        ValueError, match="options_write_calls requires enabled stage\\(s\\)"
+    ):
+        Config(
+            **_base_config(
+                {
+                    "stages": [
+                        {
+                            "id": "options_write_calls",
+                            "kind": "options.write_calls",
+                            "enabled": True,
+                        }
+                    ]
+                }
+            )
+        )
+
+
 def test_explicit_run_config_rejects_unknown_stage_id() -> None:
     with pytest.raises(ValueError, match="unknown stage id"):
         Config(
@@ -395,6 +414,58 @@ def test_wheel_defaults_and_symbol_overrides_map_consistently() -> None:
     assert config.symbols[
         "AAA"
     ].write_calls_only_min_threshold_percent == pytest.approx(0.03)
+
+
+def test_wheel_symbol_overrides_reject_invalid_types() -> None:
+    with pytest.raises(ValueError):
+        Config.model_validate(
+            {
+                "meta": {"schema_version": 2},
+                "run": {"strategies": ["wheel"]},
+                "runtime": {
+                    "account": {"number": "DUX", "margin_usage": 0.5},
+                    "option_chains": {"expirations": 4, "strikes": 10},
+                },
+                "portfolio": {"symbols": {"AAA": {"weight": 1.0}}},
+                "strategies": {
+                    "wheel": {
+                        "defaults": {
+                            "target": {"dte": 30, "minimum_open_interest": 5},
+                            "roll_when": {"dte": 7},
+                        },
+                        "symbol_overrides": {
+                            "AAA": {
+                                "write_calls_only_min_threshold_percent": "not-a-float"
+                            }
+                        },
+                    }
+                },
+            }
+        )
+
+
+def test_wheel_symbol_overrides_reject_unknown_keys() -> None:
+    with pytest.raises(ValueError):
+        Config.model_validate(
+            {
+                "meta": {"schema_version": 2},
+                "run": {"strategies": ["wheel"]},
+                "runtime": {
+                    "account": {"number": "DUX", "margin_usage": 0.5},
+                    "option_chains": {"expirations": 4, "strikes": 10},
+                },
+                "portfolio": {"symbols": {"AAA": {"weight": 1.0}}},
+                "strategies": {
+                    "wheel": {
+                        "defaults": {
+                            "target": {"dte": 30, "minimum_open_interest": 5},
+                            "roll_when": {"dte": 7},
+                        },
+                        "symbol_overrides": {"AAA": {"unexpected_field": 1}},
+                    }
+                },
+            }
+        )
 
 
 def test_v2_rejects_transitional_infrastructure_key() -> None:

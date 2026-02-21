@@ -182,8 +182,14 @@ class OptionsStrategyEngine:
                 )
             )
 
+            target_quantity = self.target_quantities.get(symbol)
+            if target_quantity is None:
+                log.warning(
+                    f"{symbol}: Missing target share quantity before call-write planning; defaulting to current stock count."
+                )
+                target_quantity = stock_count
             target_short_calls = get_target_calls(
-                self.config, symbol, stock_count, self.target_quantities[symbol]
+                self.config, symbol, stock_count, target_quantity
             )
             new_contracts_needed = target_short_calls - short_call_count
             excess_calls = short_call_count - target_short_calls
