@@ -170,6 +170,67 @@ class TestPortfolioManager:
         pm.do_cashman.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_manage_executes_stages_in_explicit_run_order(
+        self, mock_ib, mock_config, mocker
+    ):
+        completion_future = mocker.Mock()
+        pm = PortfolioManager(
+            mock_config,
+            mock_ib,
+            completion_future,
+            dry_run=True,
+            run_stage_order=[
+                "equity_buy_rebalance",
+                "options_write_puts",
+                "post_cash_management",
+            ],
+        )
+
+        pm.options_trading_enabled = mocker.Mock(return_value=True)
+        pm.initialize_account = mocker.Mock()
+        pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
+        pm.get_portfolio_positions = mocker.AsyncMock(return_value={})
+        pm.orders.print_summary = mocker.Mock()
+
+        calls: list[tuple[str, set[str]]] = []
+
+        async def fake_run_option_write_stages(
+            deps, _account_summary, _portfolio_positions, _options_enabled
+        ):
+            calls.append(("write", set(deps.enabled_stages)))
+
+        async def fake_run_equity_rebalance_stages(
+            deps, _account_summary, _portfolio_positions
+        ):
+            calls.append(("equity", set(deps.enabled_stages)))
+
+        async def fake_run_post_stages(deps, _account_summary, _portfolio_positions):
+            calls.append(("post", set(deps.enabled_stages)))
+
+        mocker.patch(
+            "thetagang.portfolio_manager.run_option_write_stages",
+            side_effect=fake_run_option_write_stages,
+        )
+        mocker.patch(
+            "thetagang.portfolio_manager.run_equity_rebalance_stages",
+            side_effect=fake_run_equity_rebalance_stages,
+        )
+        mocker.patch(
+            "thetagang.portfolio_manager.run_post_stages",
+            side_effect=fake_run_post_stages,
+        )
+        mocker.patch("thetagang.portfolio_manager.run_option_management_stages")
+
+        await pm.manage()
+
+        assert calls == [
+            ("equity", {"equity_buy_rebalance"}),
+            ("write", {"options_write_puts"}),
+            ("post", {"post_cash_management"}),
+        ]
+        pm.get_portfolio_positions.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_write_calls_respects_can_write_when_green_with_nan_close(
         self, portfolio_manager, mocker
     ):

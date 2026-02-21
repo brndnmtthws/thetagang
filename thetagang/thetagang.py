@@ -8,7 +8,7 @@ from ib_async import IB, IBC, Contract, Watchdog, util
 from rich.console import Console
 
 from thetagang import log
-from thetagang.config import Config, stage_enabled_map
+from thetagang.config import Config, enabled_stage_ids_from_run, stage_enabled_map
 from thetagang.config_migration.startup_migration import (
     run_startup_migration,
 )
@@ -75,6 +75,7 @@ def start(
     config_doc = tomlkit.parse(raw_config).unwrap()
     config = Config(**config_doc)
     run_stage_flags = stage_enabled_map(config)
+    run_stage_order = enabled_stage_ids_from_run(config.run)
 
     config.display(config_path)
 
@@ -107,6 +108,7 @@ def start(
         dry_run,
         data_store=data_store,
         run_stage_flags=run_stage_flags,
+        run_stage_order=run_stage_order,
     )
 
     probe_contract_config = config.runtime.watchdog.probeContract

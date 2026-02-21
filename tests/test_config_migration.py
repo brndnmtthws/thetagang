@@ -628,6 +628,94 @@ def test_migration_report_contains_mapping_and_warnings_sections(
     assert "`symbols` -> `portfolio.symbols`" in report
 
 
+def test_migration_regime_enabled_non_shares_only_uses_explicit_stage_plan() -> None:
+    raw = """
+[account]
+number = "DUX"
+margin_usage = 0.5
+
+[option_chains]
+expirations = 4
+strikes = 10
+
+[target]
+dte = 30
+minimum_open_interest = 5
+
+[roll_when]
+dte = 7
+
+[ibc]
+
+[regime_rebalance]
+enabled = true
+shares_only = false
+symbols = ["AAA"]
+
+[symbols.AAA]
+weight = 1.0
+"""
+    migrated = migrate_v1_to_v2(raw)
+    parsed = tomlkit.parse(migrated.migrated_text).unwrap()
+    run = parsed["run"]
+    assert "stages" in run
+    assert "strategies" not in run
+    stage_ids = [stage["id"] for stage in run["stages"]]
+    assert stage_ids == [
+        "options_write_puts",
+        "options_write_calls",
+        "equity_regime_rebalance",
+        "equity_buy_rebalance",
+        "equity_sell_rebalance",
+        "options_roll_positions",
+        "options_close_positions",
+    ]
+    assert any("explicit run.stages" in warning for warning in migrated.warnings), (
+        migrated.warnings
+    )
+
+
+def test_migration_regime_shares_only_excludes_option_stages() -> None:
+    raw = """
+[account]
+number = "DUX"
+margin_usage = 0.5
+
+[option_chains]
+expirations = 4
+strikes = 10
+
+[target]
+dte = 30
+minimum_open_interest = 5
+
+[roll_when]
+dte = 7
+
+[ibc]
+
+[regime_rebalance]
+enabled = true
+shares_only = true
+symbols = ["AAA"]
+
+[symbols.AAA]
+weight = 1.0
+"""
+    migrated = migrate_v1_to_v2(raw)
+    parsed = tomlkit.parse(migrated.migrated_text).unwrap()
+    stage_ids = [stage["id"] for stage in parsed["run"]["stages"]]
+    assert "options_write_puts" not in stage_ids
+    assert "options_write_calls" not in stage_ids
+    assert "options_roll_positions" not in stage_ids
+    assert "options_close_positions" not in stage_ids
+    assert stage_ids == [
+        "equity_regime_rebalance",
+        "equity_buy_rebalance",
+        "equity_sell_rebalance",
+    ]
+
+
 def test_golden_migration_output_subset_for_stable_shape() -> None:
     raw = """
 [account]

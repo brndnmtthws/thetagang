@@ -22,9 +22,11 @@ from rich.table import Table
 
 from thetagang import log
 from thetagang.config import (
+    CANONICAL_STAGE_ORDER,
     DEFAULT_RUN_STRATEGIES,
     Config,
     RunConfig,
+    enabled_stage_ids_from_run,
     stage_enabled_map_from_run,
 )
 from thetagang.db import DataStore
@@ -94,6 +96,7 @@ class PortfolioManager:
         dry_run: bool,
         data_store: Optional[DataStore] = None,
         run_stage_flags: Optional[Dict[str, bool]] = None,
+        run_stage_order: Optional[List[str]] = None,
     ) -> None:
         self.account_number = config.runtime.account.number
         self.config = config
@@ -187,8 +190,21 @@ class PortfolioManager:
         if run_stage_flags is None:
             default_run = RunConfig(strategies=DEFAULT_RUN_STRATEGIES)
             self.run_stage_flags = stage_enabled_map_from_run(default_run)
+            self.run_stage_order = enabled_stage_ids_from_run(default_run)
         else:
             self.run_stage_flags = dict(run_stage_flags)
+            self.run_stage_order = [
+                stage_id
+                for stage_id in CANONICAL_STAGE_ORDER
+                if self.run_stage_flags.get(stage_id, False)
+            ]
+        if run_stage_order is not None:
+            self.run_stage_order = list(run_stage_order)
+            enabled_set = set(self.run_stage_order)
+            self.run_stage_flags = {
+                stage_id: (stage_id in enabled_set)
+                for stage_id in CANONICAL_STAGE_ORDER
+            }
 
     def stage_enabled(self, stage_id: str) -> bool:
         return bool(self.run_stage_flags.get(stage_id, False))
@@ -642,27 +658,97 @@ class PortfolioManager:
             (account_summary, portfolio_positions) = await self.summarize_account()
 
             options_enabled = self.options_trading_enabled()
-            enabled_stages = {
-                stage_id
-                for stage_id, enabled in self.run_stage_flags.items()
-                if enabled
+            enabled_stages = set(self.run_stage_order)
+            stage_index = {
+                stage_id: idx for idx, stage_id in enumerate(self.run_stage_order)
             }
-            options_deps = self._options_strategy_deps(enabled_stages)
-            equity_deps = self._equity_strategy_deps(enabled_stages)
-            post_deps = self._post_strategy_deps(enabled_stages)
-            await run_option_write_stages(
-                options_deps, account_summary, portfolio_positions, options_enabled
-            )
-            await run_equity_rebalance_stages(
-                equity_deps, account_summary, portfolio_positions
-            )
+            close_stage_handled = False
+            options_disabled_notice_logged = False
+            positions_might_be_stale = False
 
-            # Refresh positions, in case anything changed from the orders above
-            portfolio_positions = await self.get_portfolio_positions()
-            await run_option_management_stages(
-                options_deps, account_summary, portfolio_positions, options_enabled
-            )
-            await run_post_stages(post_deps, account_summary, portfolio_positions)
+            write_stage_ids = {"options_write_puts", "options_write_calls"}
+            management_stage_ids = {"options_roll_positions", "options_close_positions"}
+            post_stage_ids = {"post_vix_call_hedge", "post_cash_management"}
+            option_stage_ids = write_stage_ids | management_stage_ids
+            refresh_before_stage_ids = management_stage_ids | post_stage_ids
+            pre_management_trade_stage_ids = {
+                "options_write_puts",
+                "options_write_calls",
+                "equity_regime_rebalance",
+                "equity_buy_rebalance",
+                "equity_sell_rebalance",
+            }
+
+            for stage_id in self.run_stage_order:
+                if stage_id in option_stage_ids and not options_enabled:
+                    if not options_disabled_notice_logged:
+                        log.notice(
+                            "Regime rebalancing shares-only enabled; skipping option writes and rolls."
+                        )
+                        options_disabled_notice_logged = True
+                    continue
+
+                if stage_id in refresh_before_stage_ids and positions_might_be_stale:
+                    portfolio_positions = await self.get_portfolio_positions()
+                    positions_might_be_stale = False
+
+                if stage_id in write_stage_ids:
+                    await run_option_write_stages(
+                        self._options_strategy_deps({stage_id}),
+                        account_summary,
+                        portfolio_positions,
+                        options_enabled,
+                    )
+                elif stage_id == "options_roll_positions":
+                    if (
+                        "options_close_positions" in enabled_stages
+                        and stage_index[stage_id]
+                        < stage_index["options_close_positions"]
+                    ):
+                        await run_option_management_stages(
+                            self._options_strategy_deps(
+                                {"options_roll_positions", "options_close_positions"}
+                            ),
+                            account_summary,
+                            portfolio_positions,
+                            options_enabled,
+                        )
+                        close_stage_handled = True
+                    else:
+                        await run_option_management_stages(
+                            self._options_strategy_deps({"options_roll_positions"}),
+                            account_summary,
+                            portfolio_positions,
+                            options_enabled,
+                        )
+                elif stage_id == "options_close_positions":
+                    if close_stage_handled:
+                        continue
+                    await run_option_management_stages(
+                        self._options_strategy_deps({"options_close_positions"}),
+                        account_summary,
+                        portfolio_positions,
+                        options_enabled,
+                    )
+                elif stage_id in {
+                    "equity_regime_rebalance",
+                    "equity_buy_rebalance",
+                    "equity_sell_rebalance",
+                }:
+                    await run_equity_rebalance_stages(
+                        self._equity_strategy_deps({stage_id}),
+                        account_summary,
+                        portfolio_positions,
+                    )
+                elif stage_id in post_stage_ids:
+                    await run_post_stages(
+                        self._post_strategy_deps({stage_id}),
+                        account_summary,
+                        portfolio_positions,
+                    )
+
+                if stage_id in pre_management_trade_stage_ids:
+                    positions_might_be_stale = True
 
             if self.dry_run:
                 log.warning("Dry run enabled, no trades will be executed.")

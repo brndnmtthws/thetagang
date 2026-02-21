@@ -6,7 +6,11 @@ from typing import Any, Dict, List
 
 import tomlkit
 
-from thetagang.config import DEFAULT_RUN_STRATEGIES
+from thetagang.config import (
+    CANONICAL_STAGE_ORDER,
+    DEFAULT_RUN_STRATEGIES,
+    STAGE_KIND_BY_ID,
+)
 from thetagang.legacy_config import LegacyConfig, normalize_config
 
 RUNTIME_KEYS = [
@@ -191,10 +195,10 @@ def migrate_v1_to_v2(raw_text: str) -> MigrationResult:
         strategies.setdefault("wheel", {})
         strategies["wheel"]["symbol_overrides"] = wheel_symbol_overrides
 
-    run_strategies = _infer_run_strategies(validated_legacy)
+    run_plan = _infer_run_plan(validated_legacy, warnings)
     v2_doc = tomlkit.document()
     v2_doc.add("meta", tomlkit.item({"schema_version": 2}))
-    v2_doc.add("run", tomlkit.item({"strategies": run_strategies}))
+    v2_doc.add("run", tomlkit.item(run_plan))
 
     infra_doc = tomlkit.table()
     for key in RUNTIME_KEYS:
@@ -331,6 +335,29 @@ def _strip_legacy_symbol_strategy_keys(symbols_doc: Any) -> None:
                 del symbol_cfg[key]
 
 
+def _infer_run_plan(
+    validated_legacy: Dict[str, Any], warnings: List[str]
+) -> Dict[str, Any]:
+    regime = validated_legacy.get("regime_rebalance", {})
+    regime_enabled = (
+        bool(regime.get("enabled", False)) if isinstance(regime, dict) else False
+    )
+    shares_only = (
+        bool(regime.get("shares_only", False)) if isinstance(regime, dict) else False
+    )
+
+    if regime_enabled:
+        stage_ids = _legacy_stage_ids(
+            regime_shares_only=shares_only, config=validated_legacy
+        )
+        warnings.append(
+            "regime_rebalance.enabled=true migrated to explicit run.stages to preserve legacy execution order."
+        )
+        return {"stages": _build_stage_plan(stage_ids)}
+
+    return {"strategies": _infer_run_strategies(validated_legacy)}
+
+
 def _infer_run_strategies(validated_legacy: Dict[str, Any]) -> List[str]:
     out: List[str] = []
     regime = validated_legacy.get("regime_rebalance", {})
@@ -353,3 +380,48 @@ def _infer_run_strategies(validated_legacy: Dict[str, Any]) -> List[str]:
     if not out:
         return list(DEFAULT_RUN_STRATEGIES)
     return out
+
+
+def _legacy_stage_ids(*, regime_shares_only: bool, config: Dict[str, Any]) -> List[str]:
+    enabled = set()
+    if not regime_shares_only:
+        enabled.update(
+            {
+                "options_write_puts",
+                "options_write_calls",
+                "options_roll_positions",
+                "options_close_positions",
+            }
+        )
+    enabled.update(
+        {
+            "equity_regime_rebalance",
+            "equity_buy_rebalance",
+            "equity_sell_rebalance",
+        }
+    )
+    vix = config.get("vix_call_hedge", {})
+    if isinstance(vix, dict) and bool(vix.get("enabled", False)):
+        enabled.add("post_vix_call_hedge")
+
+    cash = config.get("cash_management", {})
+    if isinstance(cash, dict) and bool(cash.get("enabled", False)):
+        enabled.add("post_cash_management")
+
+    return [stage_id for stage_id in CANONICAL_STAGE_ORDER if stage_id in enabled]
+
+
+def _build_stage_plan(stage_ids: List[str]) -> List[Dict[str, Any]]:
+    plan: List[Dict[str, Any]] = []
+    previous_id: str | None = None
+    for stage_id in stage_ids:
+        stage = {
+            "id": stage_id,
+            "kind": STAGE_KIND_BY_ID[stage_id],
+            "enabled": True,
+        }
+        if previous_id is not None:
+            stage["depends_on"] = [previous_id]
+        plan.append(stage)
+        previous_id = stage_id
+    return plan
