@@ -362,6 +362,32 @@ weight = 0.6
         migrate_v1_to_v2(raw)
 
 
+def test_migration_handles_missing_ibc_section() -> None:
+    raw = """
+[account]
+number = "DUX"
+margin_usage = 0.5
+
+[option_chains]
+expirations = 4
+strikes = 10
+
+[target]
+dte = 30
+minimum_open_interest = 5
+
+[roll_when]
+dte = 7
+
+[symbols.AAA]
+weight = 1.0
+"""
+    migrated = migrate_v1_to_v2(raw)
+    parsed = tomlkit.parse(migrated.migrated_text).unwrap()
+    assert parsed["runtime"]["account"]["number"] == "DUX"
+    assert parsed["portfolio"]["symbols"]["AAA"]["weight"] == pytest.approx(1.0)
+
+
 def test_migration_preserves_comments_for_moved_sections() -> None:
     raw = """
 # top
