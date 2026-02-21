@@ -1,711 +1,536 @@
-import math
-from enum import Enum
-from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from __future__ import annotations
 
-from pydantic import BaseModel, Field, model_validator
+import math
+from collections import defaultdict
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rich import box
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
-from typing_extensions import Self
 
+from thetagang.config_models import (
+    AccountConfig,
+    CashManagementConfig,
+    ConstantsConfig,
+    DatabaseConfig,
+    DisplayMixin,
+    ExchangeHoursConfig,
+    IBAsyncConfig,
+    IBCConfig,
+    OptionChainsConfig,
+    OrdersConfig,
+    RegimeRebalanceConfig,
+    RollWhenConfig,
+    SymbolConfig,
+    TargetConfig,
+    VIXCallHedgeConfig,
+    WatchdogConfig,
+    WriteWhenConfig,
+)
 from thetagang.fmt import dfmt, ffmt, pfmt
 
-error_console = Console(stderr=True, style="bold red")
+STAGE_KIND_BY_ID: dict[str, str] = {
+    "options_write_puts": "options.write_puts",
+    "options_write_calls": "options.write_calls",
+    "equity_regime_rebalance": "equity.regime_rebalance",
+    "equity_buy_rebalance": "equity.buy_rebalance",
+    "equity_sell_rebalance": "equity.sell_rebalance",
+    "options_roll_positions": "options.roll_positions",
+    "options_close_positions": "options.close_positions",
+    "post_vix_call_hedge": "post.vix_call_hedge",
+    "post_cash_management": "post.cash_management",
+}
+
+CANONICAL_STAGE_ORDER: list[str] = [
+    "options_write_puts",
+    "options_write_calls",
+    "equity_regime_rebalance",
+    "equity_buy_rebalance",
+    "equity_sell_rebalance",
+    "options_roll_positions",
+    "options_close_positions",
+    "post_vix_call_hedge",
+    "post_cash_management",
+]
+
+WHEEL_OPTION_STAGE_IDS = {
+    "options_write_puts",
+    "options_write_calls",
+    "options_roll_positions",
+    "options_close_positions",
+}
+
+RUN_STRATEGY_IDS = {
+    "wheel",
+    "regime_rebalance",
+    "vix_call_hedge",
+    "cash_management",
+}
+
+STRATEGY_STAGE_IDS: dict[str, set[str]] = {
+    "wheel": {
+        "options_write_puts",
+        "options_write_calls",
+        "equity_buy_rebalance",
+        "equity_sell_rebalance",
+        "options_roll_positions",
+        "options_close_positions",
+    },
+    "regime_rebalance": {"equity_regime_rebalance"},
+    "vix_call_hedge": {"post_vix_call_hedge"},
+    "cash_management": {"post_cash_management"},
+}
+
+WHEEL_SYMBOL_OVERRIDE_KEYS = [
+    "write_calls_only_min_threshold_percent",
+    "write_calls_only_min_threshold_percent_relative",
+]
 
 
-class DisplayMixin:
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        raise NotImplementedError
+class ConfigMeta(BaseModel):
+    schema_version: int = Field(2)
+
+    @model_validator(mode="after")
+    def validate_schema_version(self) -> "ConfigMeta":
+        if self.schema_version != 2:
+            raise ValueError("meta.schema_version must be 2")
+        return self
 
 
-class AccountConfig(BaseModel, DisplayMixin):
-    number: str = Field(...)
-    margin_usage: float = Field(..., ge=0.0)
-    cancel_orders: bool = Field(default=True)
-    market_data_type: int = Field(default=1, ge=1, le=4)
+class RunStageConfig(BaseModel):
+    id: str
+    kind: str
+    enabled: bool = True
+    depends_on: List[str] = Field(default_factory=list)
 
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_row("[spring_green1]Account details")
-        table.add_row("", "Account number", "=", self.number)
-        table.add_row("", "Cancel existing orders", "=", f"{self.cancel_orders}")
-        table.add_row(
-            "",
-            "Margin usage",
-            "=",
-            f"{self.margin_usage} ({pfmt(self.margin_usage, 0)})",
-        )
-        table.add_row("", "Market data type", "=", f"{self.market_data_type}")
-
-
-class ConstantsConfig(BaseModel, DisplayMixin):
-    class WriteThreshold(BaseModel):
-        write_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-        write_threshold_sigma: Optional[float] = Field(default=None, ge=0.0)
-
-    write_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    write_threshold_sigma: Optional[float] = Field(default=None, ge=0.0)
-    daily_stddev_window: str = Field(default="30 D")
-    calls: Optional["ConstantsConfig.WriteThreshold"] = None
-    puts: Optional["ConstantsConfig.WriteThreshold"] = None
-
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_section()
-        table.add_row("[spring_green1]Constants")
-        table.add_row("", "Daily stddev window", "=", self.daily_stddev_window)
-
-        c_write_thresh = (
-            f"{ffmt(self.calls.write_threshold_sigma)}σ"
-            if self.calls and self.calls.write_threshold_sigma
-            else pfmt(self.calls.write_threshold if self.calls else None)
-        )
-        p_write_thresh = (
-            f"{ffmt(self.puts.write_threshold_sigma)}σ"
-            if self.puts and self.puts.write_threshold_sigma
-            else pfmt(self.puts.write_threshold if self.puts else None)
-        )
-
-        table.add_row("", "Write threshold for puts", "=", p_write_thresh)
-        table.add_row("", "Write threshold for calls", "=", c_write_thresh)
+    @model_validator(mode="after")
+    def validate_stage_identity(self) -> "RunStageConfig":
+        expected_kind = STAGE_KIND_BY_ID.get(self.id)
+        if expected_kind is None:
+            raise ValueError(f"run.stages contains unknown stage id: {self.id}")
+        if self.kind != expected_kind:
+            raise ValueError(
+                f"run.stages.{self.id}.kind must be {expected_kind}, got {self.kind}"
+            )
+        return self
 
 
-class OptionChainsConfig(BaseModel):
-    expirations: int = Field(..., ge=1)
-    strikes: int = Field(..., ge=1)
+class RunConfig(BaseModel):
+    stages: List[RunStageConfig] = Field(default_factory=list)
+    strategies: List[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def validate_unique_stage_ids(self) -> "RunConfig":
+        if not self.stages and not self.strategies:
+            raise ValueError(
+                "run must define at least one of run.strategies or run.stages"
+            )
+        if self.stages and self.strategies:
+            raise ValueError(
+                "run must define exactly one of run.strategies or run.stages, not both"
+            )
 
-class AlgoSettingsConfig(BaseModel):
-    strategy: str = Field("Adaptive")
-    params: List[List[str]] = Field(
-        default_factory=lambda: [["adaptivePriority", "Patient"]],
-        min_length=0,
-        max_length=1,
-    )
+        if self.strategies:
+            unknown = [s for s in self.strategies if s not in RUN_STRATEGY_IDS]
+            if unknown:
+                raise ValueError(
+                    f"run.strategies contains unknown strategy id(s): {', '.join(unknown)}"
+                )
+            if len(set(self.strategies)) != len(self.strategies):
+                raise ValueError("run.strategies must not contain duplicates")
+            if "wheel" in self.strategies and "regime_rebalance" in self.strategies:
+                raise ValueError(
+                    "run.strategies cannot enable wheel and regime_rebalance together"
+                )
+            return self
 
+        stage_ids = [s.id for s in self.stages]
+        if len(set(stage_ids)) != len(stage_ids):
+            raise ValueError("run.stages ids must be unique")
+        seen = set(stage_ids)
+        index_by_id = {stage.id: idx for idx, stage in enumerate(self.stages)}
+        for stage in self.stages:
+            for dep in stage.depends_on:
+                if dep not in seen:
+                    raise ValueError(
+                        f"run.stages.{stage.id} depends_on unknown stage {dep}"
+                    )
+                if index_by_id[dep] >= index_by_id[stage.id]:
+                    raise ValueError(
+                        f"run.stages.{stage.id} depends_on {dep} must appear earlier in run.stages order"
+                    )
 
-class OrdersConfig(BaseModel, DisplayMixin):
-    minimum_credit: float = Field(default=0.0, ge=0.0)
-    exchange: str = Field(default="SMART")
-    algo: AlgoSettingsConfig = Field(
-        default=AlgoSettingsConfig(
-            strategy="Adaptive", params=[["adaptivePriority", "Patient"]]
-        )
-    )
-    price_update_delay: List[int] = Field(
-        default_factory=lambda: [30, 60], min_length=2, max_length=2
-    )
+        enabled_by_id = {stage.id: stage.enabled for stage in self.stages}
+        for stage in self.stages:
+            if stage.enabled and any(
+                not enabled_by_id[dep] for dep in stage.depends_on
+            ):
+                raise ValueError(
+                    f"run.stages.{stage.id} is enabled but depends on a disabled stage"
+                )
 
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_section()
-        table.add_row("[spring_green1]Order settings")
-        table.add_row("", "Exchange", "=", self.exchange)
-        table.add_row("", "Params", "=", f"{self.algo.params}")
-        table.add_row("", "Price update delay", "=", f"{self.price_update_delay}")
-        table.add_row("", "Minimum credit", "=", f"{dfmt(self.minimum_credit)}")
+        graph: dict[str, list[str]] = defaultdict(list)
+        for stage in self.stages:
+            graph[stage.id].extend(stage.depends_on)
+        visiting: set[str] = set()
+        visited: set[str] = set()
 
+        def dfs(node: str) -> None:
+            if node in visiting:
+                raise ValueError(
+                    f"run.stages contains a dependency cycle involving {node}"
+                )
+            if node in visited:
+                return
+            visiting.add(node)
+            for dep in graph[node]:
+                dfs(dep)
+            visiting.remove(node)
+            visited.add(node)
 
-class IBAsyncConfig(BaseModel):
-    api_response_wait_time: int = Field(default=60, ge=0)
-    logfile: Optional[str] = None
+        for stage_id in graph:
+            dfs(stage_id)
 
+        enabled_stage_ids = {stage.id for stage in self.stages if stage.enabled}
+        if "equity_regime_rebalance" in enabled_stage_ids and (
+            enabled_stage_ids & WHEEL_OPTION_STAGE_IDS
+        ):
+            raise ValueError(
+                "run.stages cannot enable equity_regime_rebalance together with "
+                "wheel options stages (options_write_*/options_roll_positions/options_close_positions)"
+            )
+        return self
 
-class DatabaseConfig(BaseModel, DisplayMixin):
-    enabled: bool = Field(default=True)
-    path: str = Field(default="data/thetagang.db")
-    url: Optional[str] = None
+    def resolved_stages(self) -> List[RunStageConfig]:
+        if self.stages:
+            return list(self.stages)
 
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_section()
-        table.add_row("[spring_green1]Database")
-        table.add_row("", "Enabled", "=", f"{self.enabled}")
-        table.add_row("", "Path", "=", self.path)
-        if self.url:
-            table.add_row("", "URL", "=", self.url)
+        enabled: set[str] = set()
+        for strategy_id in self.strategies:
+            enabled.update(STRATEGY_STAGE_IDS[strategy_id])
 
-    def resolve_url(self, config_path: str) -> str:
-        if self.url:
-            return self.url
-        base_dir = Path(config_path).resolve().parent
-        db_path = Path(self.path)
-        if not db_path.is_absolute():
-            db_path = base_dir / db_path
-        return f"sqlite:///{db_path}"
-
-
-class IBCConfig(BaseModel):
-    tradingMode: Literal["live", "paper"] = Field(default="paper")
-    password: Optional[str] = None
-    userid: Optional[str] = None
-    gateway: bool = Field(default=True)
-    RaiseRequestErrors: bool = Field(default=False)
-    ibcPath: str = Field(default="/opt/ibc")
-    ibcIni: str = Field(default="/etc/thetagang/config.ini")
-    twsPath: Optional[str] = None
-    twsSettingsPath: Optional[str] = None
-    javaPath: str = Field(default="/opt/java/openjdk/bin")
-    fixuserid: Optional[str] = None
-    fixpassword: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "tradingMode": self.tradingMode,
-            "password": self.password,
-            "userid": self.userid,
-            "gateway": self.gateway,
-            "ibcPath": self.ibcPath,
-            "ibcIni": self.ibcIni,
-            "twsPath": self.twsPath,
-            "twsSettingsPath": self.twsSettingsPath,
-            "javaPath": self.javaPath,
-            "fixuserid": self.fixuserid,
-            "fixpassword": self.fixpassword,
-        }
-
-
-class WatchdogConfig(BaseModel):
-    class ProbeContract(BaseModel):
-        currency: str = Field(default="USD")
-        exchange: str = Field(default="SMART")
-        secType: str = Field(default="STK")
-        symbol: str = Field(default="SPY")
-
-    appStartupTime: int = Field(default=30)
-    appTimeout: int = Field(default=20)
-    clientId: int = Field(default=1)
-    connectTimeout: int = Field(default=2)
-    host: str = Field(default="127.0.0.1")
-    port: int = Field(default=7497)
-    probeTimeout: int = Field(default=4)
-    readonly: bool = Field(default=False)
-    retryDelay: int = Field(default=2)
-    probeContract: "WatchdogConfig.ProbeContract" = Field(
-        default_factory=lambda: WatchdogConfig.ProbeContract()
-    )
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "appStartupTime": self.appStartupTime,
-            "appTimeout": self.appTimeout,
-            "clientId": self.clientId,
-            "connectTimeout": self.connectTimeout,
-            "host": self.host,
-            "port": self.port,
-            "probeTimeout": self.probeTimeout,
-            "readonly": self.readonly,
-            "retryDelay": self.retryDelay,
-        }
-
-
-class CashManagementConfig(BaseModel, DisplayMixin):
-    class Orders(BaseModel):
-        exchange: str = Field(default="SMART")
-        algo: AlgoSettingsConfig = Field(
-            default_factory=lambda: AlgoSettingsConfig(strategy="Vwap", params=[])
-        )
-
-    enabled: bool = Field(default=False)
-    cash_fund: str = Field(default="SGOV")
-    target_cash_balance: int = Field(default=0, ge=0)
-    buy_threshold: int = Field(default=10000, ge=0)
-    sell_threshold: int = Field(default=10000, ge=0)
-    primary_exchange: str = Field(default="")
-    orders: "CashManagementConfig.Orders" = Field(
-        default_factory=lambda: CashManagementConfig.Orders()
-    )
-
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_section()
-        table.add_row("[spring_green1]Cash management")
-        table.add_row("", "Enabled", "=", f"{self.enabled}")
-        table.add_row("", "Cash fund", "=", f"{self.cash_fund}")
-        table.add_row("", "Target cash", "=", f"{dfmt(self.target_cash_balance)}")
-        table.add_row("", "Buy threshold", "=", f"{dfmt(self.buy_threshold)}")
-        table.add_row("", "Sell threshold", "=", f"{dfmt(self.sell_threshold)}")
-
-
-class VIXCallHedgeConfig(BaseModel, DisplayMixin):
-    class Allocation(BaseModel):
-        weight: float = Field(..., ge=0.0)
-        lower_bound: Optional[float] = Field(default=None, ge=0.0)
-        upper_bound: Optional[float] = Field(default=None, ge=0.0)
-
-    enabled: bool = Field(default=False)
-    delta: float = Field(default=0.3, ge=0.0, le=1.0)
-    target_dte: int = Field(default=30, gt=0)
-    ignore_dte: int = Field(default=0, ge=0)
-    max_dte: Optional[int] = Field(default=None, ge=1)
-    close_hedges_when_vix_exceeds: Optional[float] = None
-    allocation: List["VIXCallHedgeConfig.Allocation"] = Field(
-        default_factory=lambda: [
-            VIXCallHedgeConfig.Allocation(
-                lower_bound=None, upper_bound=15.0, weight=0.0
-            ),
-            VIXCallHedgeConfig.Allocation(
-                lower_bound=15.0, upper_bound=30.0, weight=0.01
-            ),
-            VIXCallHedgeConfig.Allocation(
-                lower_bound=30.0, upper_bound=50.0, weight=0.005
-            ),
-            VIXCallHedgeConfig.Allocation(
-                lower_bound=50.0, upper_bound=None, weight=0.0
-            ),
+        ordered_ids = [
+            stage_id for stage_id in CANONICAL_STAGE_ORDER if stage_id in enabled
         ]
-    )
-
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_section()
-        table.add_row("[spring_green1]Hedging with VIX calls")
-        table.add_row("", "Enabled", "=", f"{self.enabled}")
-        table.add_row("", "Target delta", "<=", f"{self.delta}")
-        table.add_row("", "Target DTE", ">=", f"{self.target_dte}")
-        table.add_row("", "Ignore DTE", "<=", f"{self.ignore_dte}")
-        if self.close_hedges_when_vix_exceeds:
-            table.add_row(
-                "",
-                "Close hedges when VIX",
-                ">=",
-                f"{self.close_hedges_when_vix_exceeds}",
+        resolved: List[RunStageConfig] = []
+        prev: Optional[str] = None
+        for stage_id in ordered_ids:
+            deps: List[str] = [prev] if prev else []
+            resolved.append(
+                RunStageConfig(
+                    id=stage_id,
+                    kind=STAGE_KIND_BY_ID[stage_id],
+                    enabled=True,
+                    depends_on=deps,
+                )
             )
-
-        for alloc in self.allocation:
-            if alloc.lower_bound or alloc.upper_bound:
-                table.add_row()
-                if alloc.lower_bound:
-                    table.add_row(
-                        "",
-                        f"Allocate {pfmt(alloc.weight)} when VIXMO",
-                        ">=",
-                        f"{alloc.lower_bound}",
-                    )
-                if alloc.upper_bound:
-                    table.add_row(
-                        "",
-                        f"Allocate {pfmt(alloc.weight)} when VIXMO",
-                        "<=",
-                        f"{alloc.upper_bound}",
-                    )
+            prev = stage_id
+        return resolved
 
 
-class WriteWhenConfig(BaseModel, DisplayMixin):
-    class Puts(BaseModel):
-        green: bool = Field(default=False)
-        red: bool = Field(default=True)
-
-    class Calls(BaseModel):
-        green: bool = Field(default=True)
-        red: bool = Field(default=False)
-        cap_factor: float = Field(default=1.0, ge=0.0, le=1.0)
-        cap_target_floor: float = Field(default=0.0, ge=0.0, le=1.0)
-        excess_only: bool = Field(default=False)
-        min_threshold_percent: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-        min_threshold_percent_relative: Optional[float] = Field(
-            default=None, ge=0.0, le=1.0
-        )
-
-    calculate_net_contracts: bool = Field(default=False)
-    calls: "WriteWhenConfig.Calls" = Field(
-        default_factory=lambda: WriteWhenConfig.Calls()
-    )
-    puts: "WriteWhenConfig.Puts" = Field(default_factory=lambda: WriteWhenConfig.Puts())
-
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_section()
-        table.add_row("[spring_green1]When writing new contracts")
-        table.add_row(
-            "",
-            "Calculate net contract positions",
-            "=",
-            f"{self.calculate_net_contracts}",
-        )
-        table.add_row("", "Puts, write when red", "=", f"{self.puts.red}")
-        table.add_row("", "Puts, write when green", "=", f"{self.puts.green}")
-        table.add_row("", "Calls, write when green", "=", f"{self.calls.green}")
-        table.add_row("", "Calls, write when red", "=", f"{self.calls.red}")
-        table.add_row("", "Call cap factor", "=", f"{pfmt(self.calls.cap_factor)}")
-        table.add_row(
-            "", "Call cap target floor", "=", f"{pfmt(self.calls.cap_target_floor)}"
-        )
-        table.add_row("", "Excess only", "=", f"{self.calls.excess_only}")
-        if self.calls.min_threshold_percent is not None:
-            table.add_row(
-                "",
-                "Calls min threshold %",
-                "=",
-                f"{pfmt(self.calls.min_threshold_percent)}",
-            )
-        if self.calls.min_threshold_percent_relative is not None:
-            table.add_row(
-                "",
-                "Calls min threshold % relative",
-                "=",
-                f"{pfmt(self.calls.min_threshold_percent_relative)}",
-            )
+class RuntimeConfig(BaseModel):
+    account: AccountConfig
+    option_chains: OptionChainsConfig
+    exchange_hours: ExchangeHoursConfig = Field(default_factory=ExchangeHoursConfig)
+    orders: OrdersConfig = Field(default_factory=OrdersConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    ib_async: IBAsyncConfig = Field(default_factory=IBAsyncConfig)
+    ibc: IBCConfig = Field(default_factory=IBCConfig)
+    watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
 
 
-class RollWhenConfig(BaseModel, DisplayMixin):
-    class Calls(BaseModel):
-        itm: bool = Field(default=True)
-        always_when_itm: bool = Field(default=False)
-        credit_only: bool = Field(default=False)
-        has_excess: bool = Field(default=True)
-        maintain_high_water_mark: bool = Field(default=False)
+class PortfolioConfig(BaseModel):
+    symbols: Dict[str, SymbolConfig] = Field(default_factory=dict)
 
-    class Puts(BaseModel):
-        itm: bool = Field(default=False)
-        always_when_itm: bool = Field(default=False)
-        credit_only: bool = Field(default=False)
-        has_excess: bool = Field(default=True)
+    @model_validator(mode="after")
+    def check_symbols(self) -> "PortfolioConfig":
+        if not self.symbols:
+            raise ValueError("At least one symbol must be specified")
+        return self
 
-    dte: int = Field(..., ge=0)
-    pnl: float = Field(default=0.0, ge=0.0, le=1.0)
-    min_pnl: float = Field(default=0.0)
-    close_at_pnl: float = Field(default=1.0)
-    close_if_unable_to_roll: bool = Field(default=False)
-    max_dte: Optional[int] = Field(default=None, ge=1)
-    calls: "RollWhenConfig.Calls" = Field(
-        default_factory=lambda: RollWhenConfig.Calls()
-    )
-    puts: "RollWhenConfig.Puts" = Field(default_factory=lambda: RollWhenConfig.Puts())
-
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_section()
-        table.add_row("[spring_green1]Close option positions")
-        table.add_row("", "When P&L", ">=", f"{pfmt(self.close_at_pnl, 0)}")
-        table.add_row(
-            "", "Close if unable to roll", "=", f"{self.close_if_unable_to_roll}"
-        )
-
-        table.add_section()
-        table.add_row("[spring_green1]Roll options when either condition is true")
-        table.add_row(
-            "",
-            "Days to expiry",
-            "<=",
-            f"{self.dte} and P&L >= {self.min_pnl} ({pfmt(self.min_pnl, 0)})",
-        )
-
-        if self.max_dte:
-            table.add_row(
-                "",
-                "P&L",
-                ">=",
-                f"{self.pnl} ({pfmt(self.pnl, 0)}) and DTE <= {self.max_dte}",
-            )
-        else:
-            table.add_row("", "P&L", ">=", f"{self.pnl} ({pfmt(self.pnl, 0)})")
-
-        table.add_row("", "Puts: credit only", "=", f"{self.puts.credit_only}")
-        table.add_row("", "Puts: roll excess", "=", f"{self.puts.has_excess}")
-        table.add_row("", "Calls: credit only", "=", f"{self.calls.credit_only}")
-        table.add_row("", "Calls: roll excess", "=", f"{self.calls.has_excess}")
-        table.add_row(
-            "",
-            "Calls: maintain high water mark",
-            "=",
-            f"{self.calls.maintain_high_water_mark}",
-        )
-
-        table.add_section()
-        table.add_row("[spring_green1]When contracts are ITM")
-        table.add_row(
-            "",
-            "Roll puts",
-            "=",
-            f"{self.puts.itm}",
-        )
-        table.add_row(
-            "",
-            "Roll puts always",
-            "=",
-            f"{self.puts.always_when_itm}",
-        )
-        table.add_row(
-            "",
-            "Roll calls",
-            "=",
-            f"{self.calls.itm}",
-        )
-        table.add_row(
-            "",
-            "Roll calls always",
-            "=",
-            f"{self.calls.always_when_itm}",
-        )
+    @model_validator(mode="after")
+    def check_symbol_weights(self) -> "PortfolioConfig":
+        if not math.isclose(
+            1, sum([s.weight or 0.0 for s in self.symbols.values()]), rel_tol=1e-5
+        ):
+            raise ValueError("Symbol weights must sum to 1.0")
+        return self
 
 
-class TargetConfig(BaseModel, DisplayMixin):
-    class Puts(BaseModel):
-        delta: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-
-    class Calls(BaseModel):
-        delta: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-
-    dte: int = Field(..., ge=0)
-    minimum_open_interest: int = Field(..., ge=0)
-    maximum_new_contracts_percent: float = Field(0.05, ge=0.0, le=1.0)
-    delta: float = Field(default=0.3, ge=0.0, le=1.0)
-    max_dte: Optional[int] = Field(default=None, ge=1)
-    maximum_new_contracts: Optional[int] = Field(default=None, ge=1)
-    calls: Optional["TargetConfig.Calls"] = None
-    puts: Optional["TargetConfig.Puts"] = None
-
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_section()
-        table.add_row("[spring_green1]Write options with targets of")
-        table.add_row("", "Days to expiry", ">=", f"{self.dte}")
-        if self.max_dte:
-            table.add_row("", "Days to expiry", "<=", f"{self.max_dte}")
-        table.add_row("", "Default delta", "<=", f"{self.delta}")
-        if self.puts and self.puts.delta:
-            table.add_row("", "Delta for puts", "<=", f"{self.puts.delta}")
-        if self.calls and self.calls.delta:
-            table.add_row("", "Delta for calls", "<=", f"{self.calls.delta}")
-        table.add_row(
-            "",
-            "Maximum new contracts",
-            "=",
-            f"{pfmt(self.maximum_new_contracts_percent, 0)} of buying power",
-        )
-        table.add_row("", "Minimum open interest", "=", f"{self.minimum_open_interest}")
+class RebalanceMode(str, Enum):
+    off = "off"
+    buy_only = "buy_only"
+    sell_only = "sell_only"
+    both = "both"
 
 
-class SymbolConfig(BaseModel):
-    class WriteWhen(BaseModel):
-        green: Optional[bool] = None
-        red: Optional[bool] = None
-
-    class Calls(BaseModel):
-        cap_factor: Optional[float] = Field(default=None, ge=0, le=1)
-        cap_target_floor: Optional[float] = Field(default=None, ge=0, le=1)
-        excess_only: Optional[bool] = None
-        delta: Optional[float] = Field(default=None, ge=0, le=1)
-        write_threshold: Optional[float] = Field(default=None, ge=0, le=1)
-        write_threshold_sigma: Optional[float] = Field(default=None, gt=0)
-        strike_limit: Optional[float] = Field(default=None, gt=0)
-        maintain_high_water_mark: Optional[bool] = None
-        write_when: Optional["SymbolConfig.WriteWhen"] = Field(
-            default_factory=lambda: SymbolConfig.WriteWhen()
-        )
-
-    class Puts(BaseModel):
-        delta: Optional[float] = Field(default=None, ge=0, le=1)
-        write_threshold: Optional[float] = Field(default=None, ge=0, le=1)
-        write_threshold_sigma: Optional[float] = Field(default=None, gt=0)
-        strike_limit: Optional[float] = Field(default=None, gt=0)
-        write_when: Optional["SymbolConfig.WriteWhen"] = Field(
-            default_factory=lambda: SymbolConfig.WriteWhen()
-        )
-
-    weight: float = Field(..., ge=0, le=1)
-    primary_exchange: str = Field(default="", min_length=1)
-    delta: Optional[float] = Field(default=None, ge=0, le=1)
-    write_threshold: Optional[float] = Field(default=None, ge=0, le=1)
-    write_threshold_sigma: Optional[float] = Field(default=None, gt=0)
-    max_dte: Optional[int] = Field(default=None, ge=1)
-    dte: Optional[int] = Field(default=None, ge=0)
-    close_if_unable_to_roll: Optional[bool] = None
-    calls: Optional["SymbolConfig.Calls"] = None
-    puts: Optional["SymbolConfig.Puts"] = None
-    adjust_price_after_delay: bool = Field(default=False)
-    no_trading: Optional[bool] = None
-    buy_only_rebalancing: Optional[bool] = None
-    buy_only_min_threshold_shares: Optional[int] = Field(default=None, ge=1)
-    buy_only_min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
-    buy_only_min_threshold_percent: Optional[float] = Field(
+class RebalanceExecutionPolicy(BaseModel):
+    mode: RebalanceMode = RebalanceMode.off
+    min_threshold_shares: Optional[int] = Field(default=None, ge=1)
+    min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
+    min_threshold_percent: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    min_threshold_percent_relative: Optional[float] = Field(
         default=None, ge=0.0, le=1.0
     )
-    buy_only_min_threshold_percent_relative: Optional[float] = Field(
+
+    def allows_buy(self) -> bool:
+        return self.mode in {RebalanceMode.buy_only, RebalanceMode.both}
+
+    def allows_sell(self) -> bool:
+        return self.mode in {RebalanceMode.sell_only, RebalanceMode.both}
+
+
+class RebalanceExecutionPolicyOverride(BaseModel):
+    mode: Optional[RebalanceMode] = None
+    min_threshold_shares: Optional[int] = Field(default=None, ge=1)
+    min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
+    min_threshold_percent: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    min_threshold_percent_relative: Optional[float] = Field(
         default=None, ge=0.0, le=1.0
     )
+
+    def apply_to(self, base: RebalanceExecutionPolicy) -> RebalanceExecutionPolicy:
+        return RebalanceExecutionPolicy(
+            mode=self.mode if self.mode is not None else base.mode,
+            min_threshold_shares=(
+                self.min_threshold_shares
+                if self.min_threshold_shares is not None
+                else base.min_threshold_shares
+            ),
+            min_threshold_amount=(
+                self.min_threshold_amount
+                if self.min_threshold_amount is not None
+                else base.min_threshold_amount
+            ),
+            min_threshold_percent=(
+                self.min_threshold_percent
+                if self.min_threshold_percent is not None
+                else base.min_threshold_percent
+            ),
+            min_threshold_percent_relative=(
+                self.min_threshold_percent_relative
+                if self.min_threshold_percent_relative is not None
+                else base.min_threshold_percent_relative
+            ),
+        )
+
+
+class RebalanceExecutionConfig(BaseModel):
+    defaults: RebalanceExecutionPolicyOverride = Field(
+        default_factory=RebalanceExecutionPolicyOverride
+    )
+    symbol_overrides: Dict[str, RebalanceExecutionPolicyOverride] = Field(
+        default_factory=dict
+    )
+
+    def resolve(
+        self, symbol: str, *, fallback_mode: RebalanceMode
+    ) -> RebalanceExecutionPolicy:
+        base = self.defaults.apply_to(RebalanceExecutionPolicy(mode=fallback_mode))
+        symbol_override = self.symbol_overrides.get(symbol)
+        if symbol_override is None:
+            return base
+        return symbol_override.apply_to(base)
+
+
+class StrategyRiskConfig(BaseModel):
+    margin_usage: Optional[float] = Field(default=None, ge=0.0)
+
+
+class WheelDefaultsConfig(BaseModel):
+    target: TargetConfig
+    write_when: WriteWhenConfig = Field(default_factory=WriteWhenConfig)
+    roll_when: RollWhenConfig
+    constants: ConstantsConfig = Field(default_factory=ConstantsConfig)
     write_calls_only_min_threshold_percent: Optional[float] = Field(
         default=None, ge=0.0, le=1.0
     )
     write_calls_only_min_threshold_percent_relative: Optional[float] = Field(
         default=None, ge=0.0, le=1.0
     )
-    sell_only_rebalancing: Optional[bool] = None
-    sell_only_min_threshold_shares: Optional[int] = Field(default=None, ge=1)
-    sell_only_min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
-    sell_only_min_threshold_percent: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0
+
+
+class WheelStrategyConfig(BaseModel):
+    defaults: WheelDefaultsConfig
+    symbol_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    risk: StrategyRiskConfig = Field(default_factory=StrategyRiskConfig)
+    equity_rebalance: RebalanceExecutionConfig = Field(
+        default_factory=RebalanceExecutionConfig
     )
-    sell_only_min_threshold_percent_relative: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0
-    )
 
 
-class RatioGateConfig(BaseModel, DisplayMixin):
-    enabled: bool = Field(default=False)
-    anchor: str = Field(default="")
-    drift_max: float = Field(default=1.25, ge=0.0)
-    var_min: float = Field(default=0.0, ge=0.0)
-
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_row("", "Ratio gate enabled", "=", f"{self.enabled}")
-        table.add_row("", "Ratio gate anchor", "=", self.anchor or "-")
-        table.add_row("", "Ratio gate drift max", "=", f"{ffmt(self.drift_max)}")
-        table.add_row("", "Ratio gate var min", "=", f"{ffmt(self.var_min)}")
-
-
-class RegimeRebalanceBaseEnum(str, Enum):
-    net_liq = "net_liq"
-    managed_stocks = "managed_stocks"
-    net_liq_ex_options = "net_liq_ex_options"
-
-
-class RegimeRebalanceConfig(BaseModel, DisplayMixin):
-    enabled: bool = Field(default=False)
-    symbols: List[str] = Field(default_factory=list)
-    lookback_days: int = Field(default=40, ge=1)
-    soft_band: float = Field(default=0.10, ge=0.0, le=1.0)
-    hard_band: float = Field(default=0.50, ge=0.0, le=1.0)
-    hard_band_rebalance_fraction: float = Field(default=1.0, gt=0.0, le=1.0)
-    cooldown_days: int = Field(default=5, ge=0)
-    choppiness_min: float = Field(default=3.0, ge=0.0)
-    efficiency_max: float = Field(default=0.30, ge=0.0, le=1.0)
-    flow_trade_min: float = Field(default=0.025, ge=0.0, le=1.0)
-    flow_trade_stop: float = Field(default=0.0125, ge=0.0, le=1.0)
-    flow_imbalance_tau: float = Field(default=0.70, ge=0.0, le=1.0)
-    deficit_rail_start: float = Field(default=0.06, ge=0.0, le=1.0)
-    deficit_rail_stop: float = Field(default=0.03, ge=0.0, le=1.0)
-    eps: float = Field(default=1e-8, gt=0.0)
-    order_history_lookback_days: int = Field(default=30, ge=1)
-    shares_only: bool = Field(default=False)
-    weight_base: RegimeRebalanceBaseEnum = Field(
-        default=RegimeRebalanceBaseEnum.net_liq_ex_options
-    )
-    ratio_gate: Optional[RatioGateConfig] = None
-
-    @model_validator(mode="after")
-    def validate_bands(self) -> Self:
-        if self.hard_band < self.soft_band:
-            raise ValueError("regime_rebalance.hard_band must be >= soft_band")
-        if self.flow_trade_min < self.flow_trade_stop:
-            raise ValueError(
-                "regime_rebalance.flow_trade_min must be >= flow_trade_stop"
-            )
-        if self.deficit_rail_start < self.deficit_rail_stop:
-            raise ValueError(
-                "regime_rebalance.deficit_rail_start must be >= deficit_rail_stop"
-            )
-        if self.ratio_gate is not None:
-            if not self.ratio_gate.anchor:
-                raise ValueError("regime_rebalance.ratio_gate.anchor must be set")
-            if self.ratio_gate.anchor not in self.symbols:
-                raise ValueError(
-                    "regime_rebalance.ratio_gate.anchor must be in regime_rebalance.symbols"
-                )
-            rest_symbols = [s for s in self.symbols if s != self.ratio_gate.anchor]
-            if not rest_symbols:
-                raise ValueError(
-                    "regime_rebalance.ratio_gate.anchor must leave at least one non-anchor symbol"
-                )
-        return self
-
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_section()
-        table.add_row("[spring_green1]Regime-aware rebalancing")
-        table.add_row("", "Enabled", "=", f"{self.enabled}")
-        table.add_row("", "Symbols", "=", ", ".join(self.symbols) or "-")
-        table.add_row("", "Lookback days", "=", f"{self.lookback_days}")
-        table.add_row("", "Soft band (relative)", "=", f"{pfmt(self.soft_band, 0)}")
-        table.add_row("", "Hard band (relative)", "=", f"{pfmt(self.hard_band, 0)}")
-        table.add_row(
-            "",
-            "Hard band rebalance fraction",
-            "=",
-            f"{pfmt(self.hard_band_rebalance_fraction, 0)}",
+class RegimeRebalanceStrategyConfig(RegimeRebalanceConfig):
+    risk: StrategyRiskConfig = Field(default_factory=StrategyRiskConfig)
+    equity_rebalance: RebalanceExecutionConfig = Field(
+        default_factory=lambda: RebalanceExecutionConfig(
+            defaults=RebalanceExecutionPolicyOverride(mode=RebalanceMode.both)
         )
-        table.add_row("", "Cooldown days", "=", f"{self.cooldown_days}")
-        table.add_row("", "Choppiness min", "=", f"{ffmt(self.choppiness_min)}")
-        table.add_row("", "Efficiency max", "=", f"{pfmt(self.efficiency_max)}")
-        table.add_row("", "Flow trade min", "=", f"{pfmt(self.flow_trade_min)}")
-        table.add_row("", "Flow trade stop", "=", f"{pfmt(self.flow_trade_stop)}")
-        table.add_row("", "Flow imbalance tau", "=", f"{ffmt(self.flow_imbalance_tau)}")
-        table.add_row("", "Deficit rail start", "=", f"{pfmt(self.deficit_rail_start)}")
-        table.add_row("", "Deficit rail stop", "=", f"{pfmt(self.deficit_rail_stop)}")
-        table.add_row("", "Shares only", "=", f"{self.shares_only}")
-        table.add_row("", "Weight base", "=", f"{self.weight_base.value}")
-        if self.ratio_gate is not None:
-            self.ratio_gate.add_to_table(table, section)
+    )
 
 
-class ActionWhenClosedEnum(str, Enum):
-    wait = "wait"
-    exit = "exit"
-    continue_ = "continue"
-
-
-class ExchangeHoursConfig(BaseModel, DisplayMixin):
-    exchange: str = Field(default="XNYS")
-    action_when_closed: ActionWhenClosedEnum = Field(default=ActionWhenClosedEnum.exit)
-    delay_after_open: int = Field(default=1800, ge=0)
-    delay_before_close: int = Field(default=1800, ge=0)
-    max_wait_until_open: int = Field(default=3600, ge=0)
-
-    def add_to_table(self, table: Table, section: str = "") -> None:
-        table.add_row("[spring_green1]Exchange hours")
-        table.add_row("", "Exchange", "=", self.exchange)
-        table.add_row("", "Action when closed", "=", self.action_when_closed)
-        table.add_row("", "Delay after open", "=", f"{self.delay_after_open}s")
-        table.add_row("", "Delay before close", "=", f"{self.delay_before_close}s")
-        table.add_row("", "Max wait until open", "=", f"{self.max_wait_until_open}s")
+class StrategiesConfig(BaseModel):
+    wheel: WheelStrategyConfig
+    regime_rebalance: RegimeRebalanceStrategyConfig = Field(
+        default_factory=RegimeRebalanceStrategyConfig
+    )
+    vix_call_hedge: VIXCallHedgeConfig = Field(default_factory=VIXCallHedgeConfig)
+    cash_management: CashManagementConfig = Field(default_factory=CashManagementConfig)
 
 
 class Config(BaseModel, DisplayMixin):
-    account: AccountConfig
-    option_chains: OptionChainsConfig
-    roll_when: RollWhenConfig
-    target: TargetConfig
-    exchange_hours: ExchangeHoursConfig = Field(default_factory=ExchangeHoursConfig)
+    model_config = ConfigDict(extra="forbid")
 
-    orders: OrdersConfig = Field(default_factory=OrdersConfig)
-    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
-    ib_async: IBAsyncConfig = Field(default_factory=IBAsyncConfig)
-    ibc: IBCConfig = Field(default_factory=IBCConfig)
-    watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
-    cash_management: CashManagementConfig = Field(default_factory=CashManagementConfig)
-    vix_call_hedge: VIXCallHedgeConfig = Field(default_factory=VIXCallHedgeConfig)
-    write_when: WriteWhenConfig = Field(default_factory=WriteWhenConfig)
-    symbols: Dict[str, SymbolConfig] = Field(default_factory=dict)
-    constants: ConstantsConfig = Field(default_factory=ConstantsConfig)
-    regime_rebalance: RegimeRebalanceConfig = Field(
-        default_factory=RegimeRebalanceConfig
-    )
+    meta: ConfigMeta = Field(default_factory=ConfigMeta)
+    run: RunConfig
+    runtime: RuntimeConfig
+    portfolio: PortfolioConfig
+    strategies: StrategiesConfig
+
+    @model_validator(mode="after")
+    def apply_strategy_overrides(self) -> "Config":
+        symbols = self.portfolio.symbols
+
+        def apply_wheel_symbol_overrides(
+            strategy_overrides: Dict[str, Dict[str, Any]], keys: List[str]
+        ) -> None:
+            for symbol, overrides in strategy_overrides.items():
+                symbol_cfg = symbols.get(symbol)
+                if symbol_cfg is None:
+                    continue
+                for key in keys:
+                    if key in overrides:
+                        setattr(symbol_cfg, key, overrides[key])
+
+        wheel_defaults = self.strategies.wheel.defaults
+        if (
+            wheel_defaults.write_calls_only_min_threshold_percent is not None
+            and self.strategies.wheel.defaults.write_when.calls.min_threshold_percent
+            is None
+        ):
+            self.strategies.wheel.defaults.write_when.calls.min_threshold_percent = (
+                wheel_defaults.write_calls_only_min_threshold_percent
+            )
+        if (
+            wheel_defaults.write_calls_only_min_threshold_percent_relative is not None
+            and self.strategies.wheel.defaults.write_when.calls.min_threshold_percent_relative
+            is None
+        ):
+            self.strategies.wheel.defaults.write_when.calls.min_threshold_percent_relative = wheel_defaults.write_calls_only_min_threshold_percent_relative
+
+        apply_wheel_symbol_overrides(
+            self.strategies.wheel.symbol_overrides,
+            WHEEL_SYMBOL_OVERRIDE_KEYS,
+        )
+
+        return self
+
+    @property
+    def account(self) -> AccountConfig:
+        return self.runtime.account
+
+    @property
+    def option_chains(self) -> OptionChainsConfig:
+        return self.runtime.option_chains
+
+    @property
+    def exchange_hours(self) -> ExchangeHoursConfig:
+        return self.runtime.exchange_hours
+
+    @property
+    def orders(self) -> OrdersConfig:
+        return self.runtime.orders
+
+    @property
+    def database(self) -> DatabaseConfig:
+        return self.runtime.database
+
+    @property
+    def ib_async(self) -> IBAsyncConfig:
+        return self.runtime.ib_async
+
+    @property
+    def ibc(self) -> IBCConfig:
+        return self.runtime.ibc
+
+    @property
+    def watchdog(self) -> WatchdogConfig:
+        return self.runtime.watchdog
+
+    @property
+    def symbols(self) -> Dict[str, SymbolConfig]:
+        return self.portfolio.symbols
+
+    @property
+    def target(self) -> TargetConfig:
+        return self.strategies.wheel.defaults.target
+
+    @property
+    def write_when(self) -> WriteWhenConfig:
+        return self.strategies.wheel.defaults.write_when
+
+    @property
+    def roll_when(self) -> RollWhenConfig:
+        return self.strategies.wheel.defaults.roll_when
+
+    @property
+    def constants(self) -> ConstantsConfig:
+        return self.strategies.wheel.defaults.constants
+
+    @property
+    def cash_management(self) -> CashManagementConfig:
+        return self.strategies.cash_management
+
+    @property
+    def vix_call_hedge(self) -> VIXCallHedgeConfig:
+        return self.strategies.vix_call_hedge
+
+    @property
+    def regime_rebalance(self) -> RegimeRebalanceStrategyConfig:
+        return self.strategies.regime_rebalance
+
+    def wheel_rebalance_policy(self, symbol: str) -> RebalanceExecutionPolicy:
+        return self.strategies.wheel.equity_rebalance.resolve(
+            symbol, fallback_mode=RebalanceMode.off
+        )
+
+    def regime_rebalance_policy(self, symbol: str) -> RebalanceExecutionPolicy:
+        return self.strategies.regime_rebalance.equity_rebalance.resolve(
+            symbol, fallback_mode=RebalanceMode.both
+        )
+
+    def wheel_margin_usage(self) -> float:
+        strategy_value = self.strategies.wheel.risk.margin_usage
+        if strategy_value is not None:
+            return strategy_value
+        return self.runtime.account.margin_usage
+
+    def regime_margin_usage(self) -> float:
+        strategy_value = self.strategies.regime_rebalance.risk.margin_usage
+        if strategy_value is not None:
+            return strategy_value
+        return self.runtime.account.margin_usage
 
     def trading_is_allowed(self, symbol: str) -> bool:
         symbol_config = self.symbols.get(symbol)
         return not symbol_config or not symbol_config.no_trading
 
     def is_buy_only_rebalancing(self, symbol: str) -> bool:
-        symbol_config = self.symbols.get(symbol)
-        return symbol_config is not None and symbol_config.buy_only_rebalancing is True
+        policy = self.wheel_rebalance_policy(symbol)
+        return policy.mode in {RebalanceMode.buy_only, RebalanceMode.both}
 
     def is_sell_only_rebalancing(self, symbol: str) -> bool:
-        symbol_config = self.symbols.get(symbol)
-        return symbol_config is not None and symbol_config.sell_only_rebalancing is True
+        policy = self.wheel_rebalance_policy(symbol)
+        return policy.mode in {RebalanceMode.sell_only, RebalanceMode.both}
 
     def is_regime_rebalance_symbol(self, symbol: str) -> bool:
         return self.regime_rebalance.enabled and symbol in self.regime_rebalance.symbols
 
     def symbol_config(self, symbol: str) -> Optional[SymbolConfig]:
         return self.symbols.get(symbol)
-
-    @model_validator(mode="after")
-    def check_symbols(self) -> Self:
-        if not self.symbols:
-            raise ValueError("At least one symbol must be specified")
-        return self
-
-    @model_validator(mode="after")
-    def check_symbol_weights(self) -> Self:
-        if not math.isclose(
-            1, sum([s.weight or 0.0 for s in self.symbols.values()]), rel_tol=1e-5
-        ):
-            raise ValueError("Symbol weights must sum to 1.0")
-        return self
 
     def get_target_delta(self, symbol: str, right: str) -> float:
         p_or_c = "calls" if right.upper().startswith("C") else "puts"
@@ -734,11 +559,7 @@ class Config(BaseModel, DisplayMixin):
             return symbol_config.calls.maintain_high_water_mark
         return self.roll_when.calls.maintain_high_water_mark
 
-    def get_write_threshold_sigma(
-        self,
-        symbol: str,
-        right: str,
-    ) -> Optional[float]:
+    def get_write_threshold_sigma(self, symbol: str, right: str) -> Optional[float]:
         p_or_c = "calls" if right.upper().startswith("C") else "puts"
         symbol_config = self.symbols.get(symbol)
 
@@ -763,11 +584,7 @@ class Config(BaseModel, DisplayMixin):
 
         return None
 
-    def get_write_threshold_perc(
-        self,
-        symbol: str,
-        right: str,
-    ) -> float:
+    def get_write_threshold_perc(self, symbol: str, right: str) -> float:
         p_or_c = "calls" if right.upper().startswith("C") else "puts"
         symbol_config = self.symbols.get(symbol)
 
@@ -819,8 +636,8 @@ class Config(BaseModel, DisplayMixin):
             table.add_row(
                 symbol,
                 pfmt(sconfig.weight or 0.0),
-                "✓" if sconfig.buy_only_rebalancing else "",
-                "✓" if sconfig.sell_only_rebalancing else "",
+                "✓" if self.wheel_rebalance_policy(symbol).allows_buy() else "",
+                "✓" if self.wheel_rebalance_policy(symbol).allows_sell() else "",
                 ffmt(self.get_target_delta(symbol, "C")),
                 dfmt(sconfig.calls.strike_limit if sconfig.calls else None),
                 call_thresh,
@@ -839,7 +656,6 @@ class Config(BaseModel, DisplayMixin):
         config_table.add_column("")
         config_table.add_column("Value")
 
-        # Add all component tables
         self.account.add_to_table(config_table)
         self.exchange_hours.add_to_table(config_table)
         if self.constants:
@@ -853,7 +669,6 @@ class Config(BaseModel, DisplayMixin):
         self.vix_call_hedge.add_to_table(config_table)
         self.regime_rebalance.add_to_table(config_table)
 
-        # Create tree and add tables
         tree = Tree(":control_knobs:")
         tree.add(Group(f":file_cabinet: Loaded from {config_path}", config_table))
         tree.add(Group(":yin_yang: Symbology", self.create_symbols_table()))
@@ -945,62 +760,13 @@ class Config(BaseModel, DisplayMixin):
         )
 
 
-def normalize_config(config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    # Do any pre-processing necessary to the config here, such as handling
-    # defaults, deprecated values, config changes, etc.
-    if "minimum_cushion" in config["account"]:
-        raise RuntimeError(
-            "Config error: minimum_cushion is deprecated and replaced with margin_usage. See sample config for details."
-        )
+DEFAULT_RUN_STRATEGIES: list[str] = ["wheel", "vix_call_hedge", "cash_management"]
 
-    if "ib_insync" in config:
-        error_console.print(
-            "WARNING: config param `ib_insync` is deprecated, please rename it to the equivalent `ib_async`.",
-        )
 
-        if "ib_async" not in config:
-            # swap the old ib_insync key to the new ib_async key
-            config["ib_async"] = config["ib_insync"]
-        del config["ib_insync"]
+def stage_enabled_map(config: Config) -> Dict[str, bool]:
+    return stage_enabled_map_from_run(config.run)
 
-    if "twsVersion" in config["ibc"]:
-        error_console.print(
-            "WARNING: config param ibc.twsVersion is deprecated, please remove it from your config.",
-        )
 
-        # TWS version is pinned to latest stable, delete any existing config if it's present
-        del config["ibc"]["twsVersion"]
-
-    if "maximum_new_contracts" in config["target"]:
-        error_console.print(
-            "WARNING: config param target.maximum_new_contracts is deprecated, please remove it from your config.",
-        )
-
-        del config["target"]["maximum_new_contracts"]
-
-    # xor: should have weight OR parts, but not both
-    if any(["weight" in s for s in config["symbols"].values()]) == any(
-        ["parts" in s for s in config["symbols"].values()]
-    ):
-        raise RuntimeError(
-            "ERROR: all symbols should have either a weight or parts specified, but parts and weights cannot be mixed."
-        )
-
-    if "parts" in list(config["symbols"].values())[0]:
-        # If using "parts" instead of "weight", convert parts into weights
-        total_parts = float(sum([s["parts"] for s in config["symbols"].values()]))
-        for k in config["symbols"].keys():
-            config["symbols"][k]["weight"] = config["symbols"][k]["parts"] / total_parts
-        for s in config["symbols"].values():
-            del s["parts"]
-
-    if (
-        "close_at_pnl" in config["roll_when"]
-        and config["roll_when"]["close_at_pnl"]
-        and config["roll_when"]["close_at_pnl"] <= config["roll_when"]["min_pnl"]
-    ):
-        raise RuntimeError(
-            "ERROR: roll_when.close_at_pnl needs to be greater than roll_when.min_pnl."
-        )
-
-    return config
+def stage_enabled_map_from_run(run: RunConfig) -> Dict[str, bool]:
+    resolved_ids = {stage.id for stage in run.resolved_stages() if stage.enabled}
+    return {stage_id: (stage_id in resolved_ids) for stage_id in STAGE_KIND_BY_ID}
