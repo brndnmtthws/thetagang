@@ -1,17 +1,19 @@
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from ib_async import IB, Option, Stock
 
 import thetagang.portfolio_manager as pm_module
-from thetagang.config import (
+from thetagang.config import Config
+from thetagang.db import DataStore
+from thetagang.legacy_config import (
     RatioGateConfig,
     RegimeRebalanceBaseEnum,
     RegimeRebalanceConfig,
     normalize_config,
 )
-from thetagang.db import DataStore
 from thetagang.portfolio_manager import PortfolioManager
 
 
@@ -25,94 +27,96 @@ def mock_ib(mocker):
 
 @pytest.fixture
 def portfolio_manager(mock_ib, mocker):
-    config = mocker.Mock()
-    config.account = mocker.Mock()
-    config.account.number = "TEST123"
-    config.account.margin_usage = 1.0
-    config.ib_async = mocker.Mock()
-    config.ib_async.api_response_wait_time = 1
-    config.orders = mocker.Mock()
-    config.orders.exchange = "SMART"
-    config.orders.algo = mocker.Mock()
-    config.orders.algo.strategy = "Adaptive"
-    config.orders.algo.params = []
-    config.cash_management = mocker.Mock()
-    config.cash_management.cash_fund = "SHV"
-    config.exchange_hours = mocker.Mock()
-    config.exchange_hours.exchange = "XNYS"
-    config.trading_is_allowed = mocker.Mock(return_value=True)
-
-    config.symbols = {
-        "AAA": SimpleNamespace(weight=0.5, primary_exchange="NYSE"),
-        "BBB": SimpleNamespace(weight=0.5, primary_exchange="NYSE"),
-    }
-    config.regime_rebalance = SimpleNamespace(
-        enabled=True,
-        symbols=["AAA", "BBB"],
-        lookback_days=3,
-        soft_band=0.10,
-        hard_band=0.80,
-        hard_band_rebalance_fraction=1.0,
-        cooldown_days=2,
-        choppiness_min=0.1,
-        efficiency_max=0.9,
-        flow_trade_min=0.025,
-        flow_trade_stop=0.0125,
-        flow_imbalance_tau=0.7,
-        deficit_rail_start=0.06,
-        deficit_rail_stop=0.03,
-        eps=1e-8,
-        order_history_lookback_days=30,
-        shares_only=False,
-        weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options,
+    config = SimpleNamespace(
+        runtime=SimpleNamespace(
+            account=SimpleNamespace(number="TEST123", margin_usage=1.0),
+            ib_async=SimpleNamespace(api_response_wait_time=1),
+            orders=SimpleNamespace(
+                exchange="SMART",
+                algo=SimpleNamespace(strategy="Adaptive", params=[]),
+            ),
+            exchange_hours=SimpleNamespace(exchange="XNYS"),
+        ),
+        trading_is_allowed=mocker.Mock(return_value=True),
+        portfolio=SimpleNamespace(
+            symbols={
+                "AAA": SimpleNamespace(weight=0.5, primary_exchange="NYSE"),
+                "BBB": SimpleNamespace(weight=0.5, primary_exchange="NYSE"),
+            }
+        ),
+        strategies=SimpleNamespace(
+            cash_management=SimpleNamespace(cash_fund="SHV"),
+            regime_rebalance=SimpleNamespace(
+                enabled=True,
+                symbols=["AAA", "BBB"],
+                lookback_days=3,
+                soft_band=0.10,
+                hard_band=0.80,
+                hard_band_rebalance_fraction=1.0,
+                cooldown_days=2,
+                choppiness_min=0.1,
+                efficiency_max=0.9,
+                flow_trade_min=0.025,
+                flow_trade_stop=0.0125,
+                flow_imbalance_tau=0.7,
+                deficit_rail_start=0.06,
+                deficit_rail_stop=0.03,
+                eps=1e-8,
+                order_history_lookback_days=30,
+                shares_only=False,
+                weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options,
+            ),
+        ),
     )
 
     completion_future = mocker.Mock()
-    return PortfolioManager(config, mock_ib, completion_future, dry_run=False)
+    return PortfolioManager(
+        cast(Config, config), mock_ib, completion_future, dry_run=False
+    )
 
 
 @pytest.fixture
 def portfolio_manager_with_db(mock_ib, mocker, tmp_path):
-    config = mocker.Mock()
-    config.account = mocker.Mock()
-    config.account.number = "TEST123"
-    config.account.margin_usage = 1.0
-    config.ib_async = mocker.Mock()
-    config.ib_async.api_response_wait_time = 1
-    config.orders = mocker.Mock()
-    config.orders.exchange = "SMART"
-    config.orders.algo = mocker.Mock()
-    config.orders.algo.strategy = "Adaptive"
-    config.orders.algo.params = []
-    config.cash_management = mocker.Mock()
-    config.cash_management.cash_fund = "SHV"
-    config.exchange_hours = mocker.Mock()
-    config.exchange_hours.exchange = "XNYS"
-    config.trading_is_allowed = mocker.Mock(return_value=True)
-
-    config.symbols = {
-        "AAA": SimpleNamespace(weight=0.5, primary_exchange="NYSE"),
-        "BBB": SimpleNamespace(weight=0.5, primary_exchange="NYSE"),
-    }
-    config.regime_rebalance = SimpleNamespace(
-        enabled=True,
-        symbols=["AAA", "BBB"],
-        lookback_days=3,
-        soft_band=0.10,
-        hard_band=0.80,
-        hard_band_rebalance_fraction=1.0,
-        cooldown_days=2,
-        choppiness_min=0.1,
-        efficiency_max=0.9,
-        flow_trade_min=0.025,
-        flow_trade_stop=0.0125,
-        flow_imbalance_tau=0.7,
-        deficit_rail_start=0.06,
-        deficit_rail_stop=0.03,
-        eps=1e-8,
-        order_history_lookback_days=30,
-        shares_only=False,
-        weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options,
+    config = SimpleNamespace(
+        runtime=SimpleNamespace(
+            account=SimpleNamespace(number="TEST123", margin_usage=1.0),
+            ib_async=SimpleNamespace(api_response_wait_time=1),
+            orders=SimpleNamespace(
+                exchange="SMART",
+                algo=SimpleNamespace(strategy="Adaptive", params=[]),
+            ),
+            exchange_hours=SimpleNamespace(exchange="XNYS"),
+        ),
+        trading_is_allowed=mocker.Mock(return_value=True),
+        portfolio=SimpleNamespace(
+            symbols={
+                "AAA": SimpleNamespace(weight=0.5, primary_exchange="NYSE"),
+                "BBB": SimpleNamespace(weight=0.5, primary_exchange="NYSE"),
+            }
+        ),
+        strategies=SimpleNamespace(
+            cash_management=SimpleNamespace(cash_fund="SHV"),
+            regime_rebalance=SimpleNamespace(
+                enabled=True,
+                symbols=["AAA", "BBB"],
+                lookback_days=3,
+                soft_band=0.10,
+                hard_band=0.80,
+                hard_band_rebalance_fraction=1.0,
+                cooldown_days=2,
+                choppiness_min=0.1,
+                efficiency_max=0.9,
+                flow_trade_min=0.025,
+                flow_trade_stop=0.0125,
+                flow_imbalance_tau=0.7,
+                deficit_rail_start=0.06,
+                deficit_rail_stop=0.03,
+                eps=1e-8,
+                order_history_lookback_days=30,
+                shares_only=False,
+                weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options,
+            ),
+        ),
     )
 
     data_store = DataStore(
@@ -124,7 +128,11 @@ def portfolio_manager_with_db(mock_ib, mocker, tmp_path):
 
     completion_future = mocker.Mock()
     return PortfolioManager(
-        config, mock_ib, completion_future, dry_run=False, data_store=data_store
+        cast(Config, config),
+        mock_ib,
+        completion_future,
+        dry_run=False,
+        data_store=data_store,
     )
 
 
@@ -232,13 +240,13 @@ async def test_regime_rebalance_generates_orders(portfolio_manager, mocker):
 async def test_regime_rebalance_excludes_options_and_cash_fund_from_base(
     portfolio_manager, mocker
 ):
-    portfolio_manager.config.account.margin_usage = 1.2
-    portfolio_manager.config.regime_rebalance.weight_base = (
+    portfolio_manager.config.runtime.account.margin_usage = 1.2
+    portfolio_manager.config.strategies.regime_rebalance.weight_base = (
         RegimeRebalanceBaseEnum.net_liq_ex_options
     )
-    portfolio_manager.config.regime_rebalance.soft_band = 0.0
-    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="100000")}
     portfolio_positions = {
@@ -263,13 +271,13 @@ async def test_regime_rebalance_excludes_options_and_cash_fund_from_base(
 async def test_regime_rebalance_box_spread_borrowing_excluded_from_base(
     portfolio_manager, mocker
 ):
-    portfolio_manager.config.account.margin_usage = 1.2
-    portfolio_manager.config.regime_rebalance.weight_base = (
+    portfolio_manager.config.runtime.account.margin_usage = 1.2
+    portfolio_manager.config.strategies.regime_rebalance.weight_base = (
         RegimeRebalanceBaseEnum.net_liq_ex_options
     )
-    portfolio_manager.config.regime_rebalance.soft_band = 0.0
-    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="100000")}
     portfolio_positions = {
@@ -309,7 +317,7 @@ async def test_regime_rebalance_box_spread_borrowing_excluded_from_base(
 
 @pytest.mark.asyncio
 async def test_regime_rebalance_respects_regime_gate(portfolio_manager, mocker):
-    portfolio_manager.config.regime_rebalance.choppiness_min = 10.0
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 10.0
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
 
@@ -333,11 +341,13 @@ async def test_regime_rebalance_respects_regime_gate(portfolio_manager, mocker):
 async def test_regime_rebalance_ratio_gate_shadow_metrics_emitted(
     portfolio_manager_with_db, mocker
 ):
-    portfolio_manager_with_db.config.regime_rebalance.ratio_gate = SimpleNamespace(
-        enabled=False,
-        anchor="BBB",
-        drift_max=1.25,
-        var_min=0.0,
+    portfolio_manager_with_db.config.strategies.regime_rebalance.ratio_gate = (
+        SimpleNamespace(
+            enabled=False,
+            anchor="BBB",
+            drift_max=1.25,
+            var_min=0.0,
+        )
     )
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
     portfolio_positions = {
@@ -369,9 +379,9 @@ async def test_regime_rebalance_ratio_gate_shadow_metrics_emitted(
 async def test_regime_rebalance_ratio_gate_blocks_soft_rebalance(
     portfolio_manager, mocker
 ):
-    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.ratio_gate = SimpleNamespace(
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = SimpleNamespace(
         enabled=True,
         anchor="BBB",
         drift_max=1.25,
@@ -396,11 +406,11 @@ async def test_regime_rebalance_ratio_gate_blocks_soft_rebalance(
 
 @pytest.mark.asyncio
 async def test_regime_rebalance_hard_band_ignores_ratio_gate(portfolio_manager, mocker):
-    portfolio_manager.config.regime_rebalance.soft_band = 0.30
-    portfolio_manager.config.regime_rebalance.hard_band = 0.10
-    portfolio_manager.config.regime_rebalance.choppiness_min = 10.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 0.01
-    portfolio_manager.config.regime_rebalance.ratio_gate = SimpleNamespace(
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.30
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 10.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 0.01
+    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = SimpleNamespace(
         enabled=True,
         anchor="BBB",
         drift_max=1.25,
@@ -625,10 +635,10 @@ async def test_regime_rebalance_insufficient_history(portfolio_manager, mocker):
 
 @pytest.mark.asyncio
 async def test_regime_rebalance_band_thresholds(portfolio_manager, mocker):
-    portfolio_manager.config.regime_rebalance.soft_band = 0.10
-    portfolio_manager.config.regime_rebalance.hard_band = 0.50
-    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.50
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
 
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
@@ -663,11 +673,11 @@ async def test_regime_rebalance_hard_band_ignores_regime_and_cooldown(
     now = datetime(2024, 1, 5, 12, 0, 0)
     _freeze_now(monkeypatch, now)
 
-    portfolio_manager.config.regime_rebalance.soft_band = 0.30
-    portfolio_manager.config.regime_rebalance.hard_band = 0.10
-    portfolio_manager.config.regime_rebalance.cooldown_days = 10
-    portfolio_manager.config.regime_rebalance.choppiness_min = 10.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 0.01
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.30
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.cooldown_days = 10
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 10.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 0.01
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
     portfolio_positions = {
@@ -699,11 +709,11 @@ async def test_regime_rebalance_hard_band_ignores_regime_and_cooldown(
 
 @pytest.mark.asyncio
 async def test_regime_rebalance_hard_band_partial_rebalance(portfolio_manager, mocker):
-    portfolio_manager.config.regime_rebalance.soft_band = 0.30
-    portfolio_manager.config.regime_rebalance.hard_band = 0.10
-    portfolio_manager.config.regime_rebalance.hard_band_rebalance_fraction = 0.5
-    portfolio_manager.config.regime_rebalance.choppiness_min = 10.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 0.01
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.30
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.hard_band_rebalance_fraction = 0.5
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 10.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 0.01
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
     portfolio_positions = {
@@ -724,10 +734,10 @@ async def test_regime_rebalance_hard_band_partial_rebalance(portfolio_manager, m
 
 @pytest.mark.asyncio
 async def test_regime_rebalance_soft_band_blocked_by_regime(portfolio_manager, mocker):
-    portfolio_manager.config.regime_rebalance.soft_band = 0.10
-    portfolio_manager.config.regime_rebalance.hard_band = 0.80
-    portfolio_manager.config.regime_rebalance.choppiness_min = 10.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 0.01
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.80
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 10.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 0.01
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
     portfolio_positions = {
@@ -750,12 +760,12 @@ async def test_regime_rebalance_soft_band_blocked_by_regime(portfolio_manager, m
 async def test_regime_rebalance_flow_trades_ignore_regime_gate(
     portfolio_manager, mocker
 ):
-    portfolio_manager.config.regime_rebalance.soft_band = 0.50
-    portfolio_manager.config.regime_rebalance.hard_band = 0.80
-    portfolio_manager.config.regime_rebalance.choppiness_min = 10.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 0.01
-    portfolio_manager.config.regime_rebalance.flow_trade_min = 0.10
-    portfolio_manager.config.regime_rebalance.flow_trade_stop = 0.05
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.50
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.80
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 10.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 0.01
+    portfolio_manager.config.strategies.regime_rebalance.flow_trade_min = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.flow_trade_stop = 0.05
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
     portfolio_positions = {
@@ -796,7 +806,7 @@ def test_normalize_config_converts_parts_to_weights():
 
 
 def test_regime_rebalance_shares_only_disables_options(portfolio_manager):
-    portfolio_manager.config.regime_rebalance.shares_only = True
+    portfolio_manager.config.strategies.regime_rebalance.shares_only = True
     assert portfolio_manager.options_trading_enabled() is False
 
 
@@ -864,12 +874,12 @@ async def test_regime_rebalance_respects_no_trading(portfolio_manager, mocker):
 
 @pytest.mark.asyncio
 async def test_regime_rebalance_cash_added_triggers_buys(portfolio_manager, mocker):
-    portfolio_manager.config.regime_rebalance.soft_band = 0.5
-    portfolio_manager.config.regime_rebalance.hard_band = 0.8
-    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.flow_trade_min = 0.10
-    portfolio_manager.config.regime_rebalance.flow_trade_stop = 0.05
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.5
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.8
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.flow_trade_min = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.flow_trade_stop = 0.05
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
     portfolio_positions = {
@@ -892,12 +902,12 @@ async def test_regime_rebalance_cash_added_triggers_buys(portfolio_manager, mock
 async def test_regime_rebalance_cash_withdrawn_triggers_sells(
     portfolio_manager, mocker
 ):
-    portfolio_manager.config.regime_rebalance.soft_band = 0.5
-    portfolio_manager.config.regime_rebalance.hard_band = 0.8
-    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.flow_trade_min = 0.10
-    portfolio_manager.config.regime_rebalance.flow_trade_stop = 0.05
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.5
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.8
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.flow_trade_min = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.flow_trade_stop = 0.05
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
     portfolio_positions = {
@@ -920,12 +930,12 @@ async def test_regime_rebalance_cash_withdrawn_triggers_sells(
 async def test_regime_rebalance_flow_hysteresis_uses_db_state(
     portfolio_manager_with_db, mocker
 ):
-    portfolio_manager_with_db.config.regime_rebalance.soft_band = 0.5
-    portfolio_manager_with_db.config.regime_rebalance.hard_band = 0.8
-    portfolio_manager_with_db.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager_with_db.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager_with_db.config.regime_rebalance.flow_trade_min = 0.25
-    portfolio_manager_with_db.config.regime_rebalance.flow_trade_stop = 0.05
+    portfolio_manager_with_db.config.strategies.regime_rebalance.soft_band = 0.5
+    portfolio_manager_with_db.config.strategies.regime_rebalance.hard_band = 0.8
+    portfolio_manager_with_db.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager_with_db.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager_with_db.config.strategies.regime_rebalance.flow_trade_min = 0.25
+    portfolio_manager_with_db.config.strategies.regime_rebalance.flow_trade_stop = 0.05
 
     portfolio_manager_with_db.data_store.record_event(
         "regime_rebalance_state", {"flow_active": True, "deficit_active": False}
@@ -958,12 +968,12 @@ async def test_regime_rebalance_flow_hysteresis_uses_db_state(
 async def test_regime_rebalance_deficit_rail_sells_overweights(
     portfolio_manager, mocker
 ):
-    portfolio_manager.config.regime_rebalance.soft_band = 1.2
-    portfolio_manager.config.regime_rebalance.hard_band = 1.5
-    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_start = 0.30
-    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 1.2
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 1.5
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_start = 0.30
+    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_stop = 0.10
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
@@ -984,12 +994,12 @@ async def test_regime_rebalance_deficit_rail_sells_overweights(
 
 @pytest.mark.asyncio
 async def test_regime_rebalance_deficit_rail_sells_pro_rata(portfolio_manager, mocker):
-    portfolio_manager.config.regime_rebalance.soft_band = 0.3
-    portfolio_manager.config.regime_rebalance.hard_band = 0.8
-    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_start = 0.10
-    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 0.05
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.3
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.8
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_start = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_stop = 0.05
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
@@ -1012,12 +1022,12 @@ async def test_regime_rebalance_deficit_rail_sells_pro_rata(portfolio_manager, m
 async def test_regime_rebalance_deficit_rail_sells_from_initial_amount(
     portfolio_manager, mocker
 ):
-    portfolio_manager.config.regime_rebalance.soft_band = 1.2
-    portfolio_manager.config.regime_rebalance.hard_band = 1.5
-    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_start = 0.10
-    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 1.2
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 1.5
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_start = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_stop = 0.0
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
@@ -1040,13 +1050,13 @@ async def test_regime_rebalance_deficit_rail_sells_from_initial_amount(
 async def test_regime_rebalance_deficit_cleanup_uses_stop_band(
     portfolio_manager, mocker
 ):
-    portfolio_manager.config.regime_rebalance.soft_band = 0.10
-    portfolio_manager.config.regime_rebalance.hard_band = 0.20
-    portfolio_manager.config.regime_rebalance.hard_band_rebalance_fraction = 0.5
-    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_start = 0.50
-    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 0.20
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.20
+    portfolio_manager.config.strategies.regime_rebalance.hard_band_rebalance_fraction = 0.5
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_start = 0.50
+    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_stop = 0.20
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
@@ -1070,12 +1080,12 @@ async def test_regime_rebalance_no_trading_blocks_deficit_and_hard(
     portfolio_manager, mocker
 ):
     portfolio_manager.config.trading_is_allowed = mocker.Mock(return_value=False)
-    portfolio_manager.config.regime_rebalance.soft_band = 0.10
-    portfolio_manager.config.regime_rebalance.hard_band = 0.20
-    portfolio_manager.config.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.regime_rebalance.deficit_rail_start = 0.10
-    portfolio_manager.config.regime_rebalance.deficit_rail_stop = 0.05
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.20
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_start = 0.10
+    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_stop = 0.05
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
@@ -1173,8 +1183,8 @@ async def test_regime_rebalance_zero_weights_raises(portfolio_manager, mocker):
         "AAA": [SimpleNamespace(contract=Stock("AAA", "SMART", "USD"), position=3)],
         "BBB": [SimpleNamespace(contract=Stock("BBB", "SMART", "USD"), position=1)],
     }
-    portfolio_manager.config.symbols["AAA"].weight = 0.0
-    portfolio_manager.config.symbols["BBB"].weight = 0.0
+    portfolio_manager.config.portfolio.symbols["AAA"].weight = 0.0
+    portfolio_manager.config.portfolio.symbols["BBB"].weight = 0.0
 
     _mock_regime_tickers(portfolio_manager, mocker)
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])

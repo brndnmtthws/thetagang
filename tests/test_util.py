@@ -4,14 +4,7 @@ from datetime import date, timedelta
 from ib_async import Option, Order, PortfolioItem
 from ib_async.contract import Stock
 
-from tests.test_config import (
-    ConfigFactory,
-    SymbolConfigFactory,
-    SymbolConfigPutsFactory,
-    TargetConfigCallsFactory,
-    TargetConfigFactory,
-    TargetConfigPutsFactory,
-)
+from thetagang.config import Config
 from thetagang.util import (
     calculate_net_short_positions,
     position_pnl,
@@ -19,6 +12,28 @@ from thetagang.util import (
     weighted_avg_short_strike,
     would_increase_spread,
 )
+
+
+def build_config(*, target: dict, symbol: dict) -> Config:
+    return Config.model_validate(
+        {
+            "meta": {"schema_version": 2},
+            "run": {"strategies": ["wheel"]},
+            "runtime": {
+                "account": {"number": "DUX", "margin_usage": 0.5},
+                "option_chains": {"expirations": 4, "strikes": 10},
+            },
+            "portfolio": {"symbols": {"SPY": {"weight": 1.0, **symbol}}},
+            "strategies": {
+                "wheel": {
+                    "defaults": {
+                        "target": target,
+                        "roll_when": {"dte": 7},
+                    }
+                }
+            },
+        }
+    )
 
 
 def test_position_pnl() -> None:
@@ -153,66 +168,77 @@ def test_position_pnl() -> None:
 
 
 def test_get_delta() -> None:
-    target_config = TargetConfigFactory.build(delta=0.5, puts=None, calls=None)
-    symbol_config = SymbolConfigFactory.build(
-        weight=1.0, delta=None, puts=None, calls=None
+    config = build_config(
+        target={"dte": 30, "minimum_open_interest": 5, "delta": 0.5},
+        symbol={"delta": None, "puts": None, "calls": None},
     )
-    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
     assert 0.5 == config.get_target_delta("SPY", "P")
     assert 0.5 == config.get_target_delta("SPY", "C")
 
-    target_config = TargetConfigFactory.build(
-        delta=0.5, puts=TargetConfigPutsFactory.build(delta=0.4), calls=None
+    config = build_config(
+        target={
+            "dte": 30,
+            "minimum_open_interest": 5,
+            "delta": 0.5,
+            "puts": {"delta": 0.4},
+        },
+        symbol={"delta": None, "puts": None, "calls": None},
     )
-    symbol_config = SymbolConfigFactory.build(
-        weight=1.0, delta=None, puts=None, calls=None
-    )
-    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
     assert 0.4 == config.get_target_delta("SPY", "P")
 
-    target_config = TargetConfigFactory.build(
-        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
+    config = build_config(
+        target={
+            "dte": 30,
+            "minimum_open_interest": 5,
+            "delta": 0.5,
+            "calls": {"delta": 0.4},
+        },
+        symbol={"delta": None, "puts": None, "calls": None},
     )
-    symbol_config = SymbolConfigFactory.build(
-        weight=1.0, delta=None, puts=None, calls=None
-    )
-    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
     assert 0.5 == config.get_target_delta("SPY", "P")
 
-    target_config = TargetConfigFactory.build(
-        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
+    config = build_config(
+        target={
+            "dte": 30,
+            "minimum_open_interest": 5,
+            "delta": 0.5,
+            "calls": {"delta": 0.4},
+        },
+        symbol={"delta": None, "puts": None, "calls": None},
     )
-    symbol_config = SymbolConfigFactory.build(
-        weight=1.0, delta=None, puts=None, calls=None
-    )
-    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
     assert 0.4 == config.get_target_delta("SPY", "C")
 
-    target_config = TargetConfigFactory.build(
-        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
+    config = build_config(
+        target={
+            "dte": 30,
+            "minimum_open_interest": 5,
+            "delta": 0.5,
+            "calls": {"delta": 0.4},
+        },
+        symbol={"delta": 0.3, "puts": None, "calls": None},
     )
-    symbol_config = SymbolConfigFactory.build(
-        weight=1.0, delta=0.3, puts=None, calls=None
-    )
-    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
     assert 0.3 == config.get_target_delta("SPY", "C")
 
-    target_config = TargetConfigFactory.build(
-        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
+    config = build_config(
+        target={
+            "dte": 30,
+            "minimum_open_interest": 5,
+            "delta": 0.5,
+            "calls": {"delta": 0.4},
+        },
+        symbol={"delta": 0.3, "puts": {"delta": 0.2}, "calls": None},
     )
-    symbol_config = SymbolConfigFactory.build(
-        weight=1.0, delta=0.3, puts=SymbolConfigPutsFactory.build(delta=0.2), calls=None
-    )
-    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
     assert 0.3 == config.get_target_delta("SPY", "C")
 
-    target_config = TargetConfigFactory.build(
-        delta=0.5, calls=TargetConfigCallsFactory.build(delta=0.4), puts=None
+    config = build_config(
+        target={
+            "dte": 30,
+            "minimum_open_interest": 5,
+            "delta": 0.5,
+            "calls": {"delta": 0.4},
+        },
+        symbol={"delta": 0.3, "puts": {"delta": 0.2}, "calls": None},
     )
-    symbol_config = SymbolConfigFactory.build(
-        weight=1.0, delta=0.3, puts=SymbolConfigPutsFactory.build(delta=0.2), calls=None
-    )
-    config = ConfigFactory.build(target=target_config, symbols={"SPY": symbol_config})
     assert 0.2 == config.get_target_delta("SPY", "P")
 
 
