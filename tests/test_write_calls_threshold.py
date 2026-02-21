@@ -20,20 +20,22 @@ def mock_ib(mocker):
 def mock_config(mocker):
     """Fixture to create a mock Config object."""
     config = mocker.Mock()
-    config.account = mocker.Mock()
-    config.account.number = "TEST123"
-    config.account.margin_usage = 1.0
-    config.orders = mocker.Mock()
-    config.orders.exchange = "SMART"
+    config.runtime.account = mocker.Mock()
+    config.runtime.account.number = "TEST123"
+    config.runtime.account.margin_usage = 1.0
+    config.runtime.orders = mocker.Mock()
+    config.runtime.orders.exchange = "SMART"
     config.trading_is_allowed = mocker.Mock(return_value=True)
     config.write_excess_calls_only = mocker.Mock(return_value=False)
     config.get_cap_factor = mocker.Mock(return_value=1.0)
     config.get_cap_target_floor = mocker.Mock(return_value=0.0)
-    config.write_when = mocker.Mock()
-    config.write_when.calculate_net_contracts = False
-    config.write_when.calls = mocker.Mock()
-    config.write_when.calls.min_threshold_percent = None
-    config.write_when.calls.min_threshold_percent_relative = None
+    config.strategies.wheel.defaults.write_when = mocker.Mock()
+    config.strategies.wheel.defaults.write_when.calculate_net_contracts = False
+    config.strategies.wheel.defaults.write_when.calls = mocker.Mock()
+    config.strategies.wheel.defaults.write_when.calls.min_threshold_percent = None
+    config.strategies.wheel.defaults.write_when.calls.min_threshold_percent_relative = (
+        None
+    )
     config.can_write_when = mocker.Mock(return_value=(True, True))
     config.get_symbols = mocker.Mock(return_value=[])
     config.get_strike_limit = mocker.Mock(return_value=None)
@@ -109,7 +111,7 @@ def create_call_position(symbol: str, position: int, strike: float) -> Portfolio
 async def test_write_calls_absolute_threshold_blocks(portfolio_manager, mocker):
     """Test that absolute threshold blocks call writing when position is too small."""
     # Configure for 2% allocation with 5% threshold
-    portfolio_manager.config.symbols = {
+    portfolio_manager.config.portfolio.symbols = {
         "SPY": mocker.Mock(
             weight=0.02,  # 2% allocation
             write_calls_only_min_threshold_percent=0.05,  # 5% threshold
@@ -121,10 +123,10 @@ async def test_write_calls_absolute_threshold_blocks(portfolio_manager, mocker):
     portfolio_manager.config.trading_is_allowed = mocker.Mock(return_value=True)
     portfolio_manager.config.can_write_when = mocker.Mock(return_value=(True, True))
     portfolio_manager.config.is_sell_only_rebalancing = mocker.Mock(return_value=False)
-    portfolio_manager.config.write_when = mocker.Mock()
-    portfolio_manager.config.write_when.calls = mocker.Mock()
-    portfolio_manager.config.write_when.calls.min_threshold_percent = None
-    portfolio_manager.config.write_when.calls.min_threshold_percent_relative = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent_relative = None
 
     account_summary = create_account_summary(100000)  # $100k NLV
 
@@ -157,7 +159,7 @@ async def test_write_calls_absolute_threshold_blocks(portfolio_manager, mocker):
 async def test_write_calls_absolute_threshold_allows(portfolio_manager, mocker):
     """Test that absolute threshold allows call writing when position is large enough."""
     # Configure for 6% allocation with 5% threshold
-    portfolio_manager.config.symbols = {
+    portfolio_manager.config.portfolio.symbols = {
         "SPY": mocker.Mock(
             weight=0.06,  # 6% allocation
             write_calls_only_min_threshold_percent=0.05,  # 5% threshold
@@ -169,10 +171,10 @@ async def test_write_calls_absolute_threshold_allows(portfolio_manager, mocker):
     portfolio_manager.config.trading_is_allowed = mocker.Mock(return_value=True)
     portfolio_manager.config.can_write_when = mocker.Mock(return_value=(True, True))
     portfolio_manager.config.is_sell_only_rebalancing = mocker.Mock(return_value=False)
-    portfolio_manager.config.write_when = mocker.Mock()
-    portfolio_manager.config.write_when.calls = mocker.Mock()
-    portfolio_manager.config.write_when.calls.min_threshold_percent = None
-    portfolio_manager.config.write_when.calls.min_threshold_percent_relative = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent_relative = None
 
     account_summary = create_account_summary(100000)  # $100k NLV
 
@@ -207,7 +209,7 @@ async def test_write_calls_absolute_threshold_allows(portfolio_manager, mocker):
 async def test_write_calls_relative_threshold_blocks(portfolio_manager, mocker):
     """Test that relative threshold blocks call writing when position is not sufficiently above target."""
     # Configure for 10% target with 20% relative threshold
-    portfolio_manager.config.symbols = {
+    portfolio_manager.config.portfolio.symbols = {
         "SPY": mocker.Mock(
             weight=0.10,  # 10% target allocation
             write_calls_only_min_threshold_percent=None,
@@ -219,10 +221,10 @@ async def test_write_calls_relative_threshold_blocks(portfolio_manager, mocker):
     portfolio_manager.config.trading_is_allowed = mocker.Mock(return_value=True)
     portfolio_manager.config.can_write_when = mocker.Mock(return_value=(True, True))
     portfolio_manager.config.is_sell_only_rebalancing = mocker.Mock(return_value=False)
-    portfolio_manager.config.write_when = mocker.Mock()
-    portfolio_manager.config.write_when.calls = mocker.Mock()
-    portfolio_manager.config.write_when.calls.min_threshold_percent = None
-    portfolio_manager.config.write_when.calls.min_threshold_percent_relative = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent_relative = None
 
     account_summary = create_account_summary(100000)  # $100k NLV
 
@@ -255,7 +257,7 @@ async def test_write_calls_relative_threshold_blocks(portfolio_manager, mocker):
 async def test_write_calls_relative_threshold_allows(portfolio_manager, mocker):
     """Test that relative threshold allows call writing when position is sufficiently above target."""
     # Configure for 10% target with 20% relative threshold
-    portfolio_manager.config.symbols = {
+    portfolio_manager.config.portfolio.symbols = {
         "SPY": mocker.Mock(
             weight=0.10,  # 10% target allocation
             write_calls_only_min_threshold_percent=None,
@@ -267,10 +269,10 @@ async def test_write_calls_relative_threshold_allows(portfolio_manager, mocker):
     portfolio_manager.config.trading_is_allowed = mocker.Mock(return_value=True)
     portfolio_manager.config.can_write_when = mocker.Mock(return_value=(True, True))
     portfolio_manager.config.is_sell_only_rebalancing = mocker.Mock(return_value=False)
-    portfolio_manager.config.write_when = mocker.Mock()
-    portfolio_manager.config.write_when.calls = mocker.Mock()
-    portfolio_manager.config.write_when.calls.min_threshold_percent = None
-    portfolio_manager.config.write_when.calls.min_threshold_percent_relative = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent_relative = None
 
     account_summary = create_account_summary(100000)  # $100k NLV
 
@@ -305,7 +307,7 @@ async def test_write_calls_relative_threshold_allows(portfolio_manager, mocker):
 async def test_write_calls_both_thresholds(portfolio_manager, mocker):
     """Test that both thresholds must be satisfied when both are configured."""
     # Configure with both thresholds
-    portfolio_manager.config.symbols = {
+    portfolio_manager.config.portfolio.symbols = {
         "SPY": mocker.Mock(
             weight=0.04,  # 4% target allocation
             write_calls_only_min_threshold_percent=0.05,  # 5% of NLV threshold
@@ -317,10 +319,10 @@ async def test_write_calls_both_thresholds(portfolio_manager, mocker):
     portfolio_manager.config.trading_is_allowed = mocker.Mock(return_value=True)
     portfolio_manager.config.can_write_when = mocker.Mock(return_value=(True, True))
     portfolio_manager.config.is_sell_only_rebalancing = mocker.Mock(return_value=False)
-    portfolio_manager.config.write_when = mocker.Mock()
-    portfolio_manager.config.write_when.calls = mocker.Mock()
-    portfolio_manager.config.write_when.calls.min_threshold_percent = None
-    portfolio_manager.config.write_when.calls.min_threshold_percent_relative = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent_relative = None
 
     account_summary = create_account_summary(100000)  # $100k NLV
 
@@ -354,7 +356,7 @@ async def test_write_calls_both_thresholds(portfolio_manager, mocker):
 async def test_write_calls_no_thresholds(portfolio_manager, mocker):
     """Test that calls are written normally when no thresholds are configured."""
     # Configure with no thresholds
-    portfolio_manager.config.symbols = {
+    portfolio_manager.config.portfolio.symbols = {
         "SPY": mocker.Mock(
             weight=0.01,  # 1% allocation (small position)
             write_calls_only_min_threshold_percent=None,
@@ -366,10 +368,10 @@ async def test_write_calls_no_thresholds(portfolio_manager, mocker):
     portfolio_manager.config.trading_is_allowed = mocker.Mock(return_value=True)
     portfolio_manager.config.can_write_when = mocker.Mock(return_value=(True, True))
     portfolio_manager.config.is_sell_only_rebalancing = mocker.Mock(return_value=False)
-    portfolio_manager.config.write_when = mocker.Mock()
-    portfolio_manager.config.write_when.calls = mocker.Mock()
-    portfolio_manager.config.write_when.calls.min_threshold_percent = None
-    portfolio_manager.config.write_when.calls.min_threshold_percent_relative = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent_relative = None
 
     account_summary = create_account_summary(100000)  # $100k NLV
 
@@ -404,16 +406,12 @@ async def test_write_calls_no_thresholds(portfolio_manager, mocker):
 async def test_write_calls_global_defaults(portfolio_manager, mocker):
     """Test that global defaults are used when symbol-specific values are not set."""
     # Configure with global defaults but no symbol-specific values
-    portfolio_manager.config.write_when = mocker.Mock()
-    portfolio_manager.config.write_when.calls = mocker.Mock()
-    portfolio_manager.config.write_when.calls.min_threshold_percent = (
-        0.05  # Global 5% threshold
-    )
-    portfolio_manager.config.write_when.calls.min_threshold_percent_relative = (
-        0.2  # Global 20% relative
-    )
+    portfolio_manager.config.strategies.wheel.defaults.write_when = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent = 0.05  # Global 5% threshold
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent_relative = 0.2  # Global 20% relative
 
-    portfolio_manager.config.symbols = {
+    portfolio_manager.config.portfolio.symbols = {
         "SPY": mocker.Mock(
             weight=0.04,  # 4% allocation
             write_calls_only_min_threshold_percent=None,  # No symbol-specific value
@@ -455,14 +453,12 @@ async def test_write_calls_global_defaults(portfolio_manager, mocker):
 async def test_write_calls_symbol_overrides_global(portfolio_manager, mocker):
     """Test that symbol-specific values override global defaults."""
     # Configure with global defaults that would block, but symbol-specific that allows
-    portfolio_manager.config.write_when = mocker.Mock()
-    portfolio_manager.config.write_when.calls = mocker.Mock()
-    portfolio_manager.config.write_when.calls.min_threshold_percent = (
-        0.10  # Global 10% threshold
-    )
-    portfolio_manager.config.write_when.calls.min_threshold_percent_relative = None
+    portfolio_manager.config.strategies.wheel.defaults.write_when = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls = mocker.Mock()
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent = 0.10  # Global 10% threshold
+    portfolio_manager.config.strategies.wheel.defaults.write_when.calls.min_threshold_percent_relative = None
 
-    portfolio_manager.config.symbols = {
+    portfolio_manager.config.portfolio.symbols = {
         "SPY": mocker.Mock(
             weight=0.06,  # 6% allocation
             write_calls_only_min_threshold_percent=0.05,  # Symbol-specific 5% (overrides global)

@@ -20,14 +20,14 @@ def mock_ib(mocker):
 def mock_config(mocker):
     """Fixture to create a mock Config object."""
     config = mocker.Mock()
-    config.account = mocker.Mock()
-    config.account.number = "TEST123"
-    config.ib_async = mocker.Mock()
-    config.ib_async.api_response_wait_time = 1
-    config.orders = mocker.Mock()
-    config.orders.exchange = "SMART"
-    config.cash_management = mocker.Mock()
-    config.cash_management.cash_fund = "MMDA1"
+    config.runtime.account = mocker.Mock()
+    config.runtime.account.number = "TEST123"
+    config.runtime.ib_async = mocker.Mock()
+    config.runtime.ib_async.api_response_wait_time = 1
+    config.runtime.orders = mocker.Mock()
+    config.runtime.orders.exchange = "SMART"
+    config.strategies.cash_management = mocker.Mock()
+    config.strategies.cash_management.cash_fund = "MMDA1"
     return config
 
 
@@ -53,6 +53,20 @@ class TestPortfolioManager:
         result = PortfolioManager.get_close_price(ticker)
         assert result == 100.50
         ticker.marketPrice.assert_not_called()
+
+    def test_stage_enabled_defaults_to_known_stages_when_flags_missing(
+        self, mock_ib, mock_config, mocker
+    ):
+        completion_future = mocker.Mock()
+        pm = PortfolioManager(mock_config, mock_ib, completion_future, dry_run=True)
+        assert pm.stage_enabled("options_write_puts") is True
+
+    def test_stage_enabled_is_false_for_unknown_stage(
+        self, mock_ib, mock_config, mocker
+    ):
+        completion_future = mocker.Mock()
+        pm = PortfolioManager(mock_config, mock_ib, completion_future, dry_run=True)
+        assert pm.stage_enabled("nonexistent_stage") is False
 
     def test_get_close_price_with_nan_close(self, mocker):
         """Test get_close_price returns market price when close is NaN."""
@@ -118,6 +132,44 @@ class TestPortfolioManager:
         assert daily_change == pytest.approx(0.0)  # abs(102.0 - 102.0)
 
     @pytest.mark.asyncio
+    async def test_manage_respects_disabled_run_stages(
+        self, mock_ib, mock_config, mocker
+    ):
+        completion_future = mocker.Mock()
+        pm = PortfolioManager(
+            mock_config,
+            mock_ib,
+            completion_future,
+            dry_run=True,
+            run_stage_flags={
+                "equity_regime_rebalance": False,
+                "equity_buy_rebalance": False,
+                "equity_sell_rebalance": False,
+                "post_vix_call_hedge": False,
+                "post_cash_management": False,
+            },
+        )
+
+        pm.options_trading_enabled = mocker.Mock(return_value=False)
+        pm.initialize_account = mocker.Mock()
+        pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
+        pm.get_portfolio_positions = mocker.AsyncMock(return_value={})
+        pm.check_regime_rebalance_positions = mocker.AsyncMock(return_value=(None, []))
+        pm.check_buy_only_positions = mocker.AsyncMock(return_value=(None, []))
+        pm.check_sell_only_positions = mocker.AsyncMock(return_value=(None, []))
+        pm.do_vix_hedging = mocker.AsyncMock()
+        pm.do_cashman = mocker.AsyncMock()
+        pm.orders.print_summary = mocker.Mock()
+
+        await pm.manage()
+
+        pm.check_regime_rebalance_positions.assert_not_called()
+        pm.check_buy_only_positions.assert_not_called()
+        pm.check_sell_only_positions.assert_not_called()
+        pm.do_vix_hedging.assert_not_called()
+        pm.do_cashman.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_write_calls_respects_can_write_when_green_with_nan_close(
         self, portfolio_manager, mocker
     ):
@@ -141,10 +193,10 @@ class TestPortfolioManager:
         # This means the stock won't be considered "green" or "red" when close is NaN
 
         # Setup portfolio manager mocks
-        portfolio_manager.config.write_when.calls.green = (
+        portfolio_manager.config.strategies.wheel.defaults.write_when.calls.green = (
             False  # Don't write when green
         )
-        portfolio_manager.config.write_when.calls.red = True
+        portfolio_manager.config.strategies.wheel.defaults.write_when.calls.red = True
 
         # The logic should proceed since marketPrice > marketPrice is False
         # (not considered green when close is NaN)
@@ -172,7 +224,7 @@ class TestPortfolioManager:
     ):
         """Test that check_if_can_write_puts skips buy-only rebalancing symbols."""
         # Mock config
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(weight=0.5, buy_only_rebalancing=True),
             "MSFT": mocker.Mock(weight=0.5, buy_only_rebalancing=False),
         }
@@ -181,8 +233,8 @@ class TestPortfolioManager:
         )
         portfolio_manager.config.trading_is_allowed = mocker.Mock(return_value=True)
         portfolio_manager.config.can_write_when = mocker.Mock(return_value=(True, True))
-        portfolio_manager.config.write_when = mocker.Mock()
-        portfolio_manager.config.write_when.calculate_net_contracts = False
+        portfolio_manager.config.strategies.wheel.defaults.write_when = mocker.Mock()
+        portfolio_manager.config.strategies.wheel.defaults.write_when.calculate_net_contracts = False
 
         # Mock account summary
         account_summary = {"NetLiquidation": mocker.Mock(value=100000)}
@@ -246,7 +298,7 @@ class TestPortfolioManager:
     @pytest.mark.asyncio
     async def test_get_portfolio_positions_success(self, portfolio_manager, mocker):
         """Returns filtered positions when both portfolio and snapshot succeed."""
-        portfolio_manager.config.symbols = {"AAPL": mocker.Mock()}
+        portfolio_manager.config.portfolio.symbols = {"AAPL": mocker.Mock()}
 
         portfolio_item = SimpleNamespace(
             account="TEST123",
@@ -282,7 +334,7 @@ class TestPortfolioManager:
         self, portfolio_manager, mocker
     ):
         """Retries when account update snapshot times out, then returns data."""
-        portfolio_manager.config.symbols = {}
+        portfolio_manager.config.portfolio.symbols = {}
 
         sleep_mock = mocker.patch(
             "thetagang.portfolio_manager.asyncio.sleep", new=mocker.AsyncMock()
@@ -308,7 +360,7 @@ class TestPortfolioManager:
         self, portfolio_manager, mocker
     ):
         """Continues with cached portfolio data after repeated account timeouts."""
-        portfolio_manager.config.symbols = {"AAPL": mocker.Mock()}
+        portfolio_manager.config.portfolio.symbols = {"AAPL": mocker.Mock()}
 
         portfolio_item = SimpleNamespace(
             account="TEST123",
@@ -343,7 +395,7 @@ class TestPortfolioManager:
         self, portfolio_manager, mocker
     ):
         """Raises when portfolio snapshot never includes tracked positions."""
-        portfolio_manager.config.symbols = {"AAPL": mocker.Mock()}
+        portfolio_manager.config.portfolio.symbols = {"AAPL": mocker.Mock()}
 
         sleep_mock = mocker.patch(
             "thetagang.portfolio_manager.asyncio.sleep", new=mocker.AsyncMock()
@@ -371,7 +423,7 @@ class TestPortfolioManager:
     async def test_check_buy_only_positions(self, portfolio_manager, mocker):
         """Test check_buy_only_positions method."""
         # Mock config
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.5,
                 buy_only_min_threshold_shares=None,
@@ -456,10 +508,14 @@ class TestPortfolioManager:
     async def test_execute_buy_orders(self, portfolio_manager, mocker):
         """Test execute_buy_orders method."""
         # Mock dependencies
-        portfolio_manager.get_order_exchange = mocker.Mock(return_value="SMART")
-        portfolio_manager.get_algo_strategy = mocker.Mock(return_value="Adaptive")
-        portfolio_manager.get_algo_params = mocker.Mock(return_value=[])
-        portfolio_manager.enqueue_order = mocker.AsyncMock()
+        portfolio_manager.order_ops.get_order_exchange = mocker.Mock(
+            return_value="SMART"
+        )
+        portfolio_manager.order_ops.get_algo_strategy = mocker.Mock(
+            return_value="Adaptive"
+        )
+        portfolio_manager.order_ops.get_algo_params = mocker.Mock(return_value=[])
+        portfolio_manager.order_ops.enqueue_order = mocker.Mock()
         portfolio_manager.trades = mocker.Mock()
 
         # Mock ticker
@@ -477,18 +533,17 @@ class TestPortfolioManager:
         # Mock Stock class
         mock_stock = mocker.Mock(spec=Stock)
         mocker.patch("thetagang.portfolio_manager.Stock", return_value=mock_stock)
-
-        # Mock LimitOrder class
-        mock_limit_order = mocker.patch("thetagang.portfolio_manager.LimitOrder")
+        mocker.patch(
+            "thetagang.strategies.equity_engine.Stock", return_value=mock_stock
+        )
         mock_order = mocker.Mock()
-        mock_limit_order.return_value = mock_order
+        portfolio_manager.order_ops.create_limit_order = mocker.Mock(
+            return_value=mock_order
+        )
 
         # Mock log.notice and log.error
         mocker.patch("thetagang.log.notice")
         mocker.patch("thetagang.log.error")
-
-        # Mock enqueue_order (returns None)
-        portfolio_manager.enqueue_order = mocker.Mock()
 
         # Test data
         buy_orders = [
@@ -500,26 +555,20 @@ class TestPortfolioManager:
         await portfolio_manager.execute_buy_orders(buy_orders)
 
         # Verify orders were created
-        assert portfolio_manager.enqueue_order.call_count == 2
+        assert portfolio_manager.order_ops.enqueue_order.call_count == 2
 
         # Verify order parameters
-        mock_limit_order.assert_any_call(
-            "BUY",
-            50,
-            150.0,
-            algoStrategy="Adaptive",
-            algoParams=[],
-            tif="DAY",
-            account=portfolio_manager.account_number,
+        portfolio_manager.order_ops.create_limit_order.assert_any_call(
+            action="BUY",
+            quantity=50,
+            limit_price=150.0,
+            transmit=True,
         )
-        mock_limit_order.assert_any_call(
-            "BUY",
-            30,
-            150.0,
-            algoStrategy="Adaptive",
-            algoParams=[],
-            tif="DAY",
-            account=portfolio_manager.account_number,
+        portfolio_manager.order_ops.create_limit_order.assert_any_call(
+            action="BUY",
+            quantity=30,
+            limit_price=150.0,
+            transmit=True,
         )
 
     @pytest.mark.asyncio
@@ -528,7 +577,7 @@ class TestPortfolioManager:
     ):
         """Test check_buy_only_positions when there's insufficient buying power."""
         # Mock config
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=1.0,  # 100% allocation
                 buy_only_min_threshold_shares=None,
@@ -623,7 +672,7 @@ class TestPortfolioManager:
     async def test_buy_only_minimum_shares_threshold(self, portfolio_manager, mocker):
         """Test that buy-only rebalancing respects minimum shares threshold."""
         # Mock config with minimum shares threshold
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.1,
                 buy_only_min_threshold_shares=10,
@@ -675,7 +724,7 @@ class TestPortfolioManager:
     async def test_buy_only_minimum_amount_threshold(self, portfolio_manager, mocker):
         """Test that buy-only rebalancing respects minimum dollar amount threshold."""
         # Mock config with minimum amount threshold
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.05,
                 buy_only_min_threshold_shares=None,
@@ -729,7 +778,7 @@ class TestPortfolioManager:
     ):
         """Test that when min amount is less than 1 share price, it rounds up to 1 share."""
         # Mock config with small minimum amount threshold
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.01,  # Small allocation
                 buy_only_min_threshold_shares=None,
@@ -786,7 +835,7 @@ class TestPortfolioManager:
     ):
         """Test that dollar amount threshold takes precedence over shares threshold."""
         # Mock config with both thresholds
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.1,
                 buy_only_min_threshold_shares=1,  # Would allow purchase

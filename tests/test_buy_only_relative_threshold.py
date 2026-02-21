@@ -17,12 +17,12 @@ def mock_ib(mocker):
 def mock_config(mocker):
     """Fixture to create a mock Config object."""
     config = mocker.Mock()
-    config.account = mocker.Mock()
-    config.account.number = "TEST123"
-    config.ib_async = mocker.Mock()
-    config.ib_async.api_response_wait_time = 1
-    config.orders = mocker.Mock()
-    config.orders.exchange = "SMART"
+    config.runtime.account = mocker.Mock()
+    config.runtime.account.number = "TEST123"
+    config.runtime.ib_async = mocker.Mock()
+    config.runtime.ib_async.api_response_wait_time = 1
+    config.runtime.orders = mocker.Mock()
+    config.runtime.orders.exchange = "SMART"
     return config
 
 
@@ -42,7 +42,7 @@ class TestBuyOnlyRelativeThreshold:
     ):
         """Test that relative threshold blocks purchases when difference is too small."""
         # Mock config with relative threshold
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.5,  # 50% allocation
                 buy_only_min_threshold_shares=None,
@@ -101,7 +101,7 @@ class TestBuyOnlyRelativeThreshold:
     ):
         """Test that purchases are allowed when relative difference exceeds threshold."""
         # Mock config with relative threshold
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.5,  # 50% allocation
                 buy_only_min_threshold_shares=None,
@@ -157,7 +157,7 @@ class TestBuyOnlyRelativeThreshold:
     ):
         """Test relative threshold with a partial position."""
         # Mock config with relative threshold
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.4,  # 40% allocation
                 buy_only_min_threshold_shares=None,
@@ -218,7 +218,7 @@ class TestBuyOnlyRelativeThreshold:
     ):
         """Test that relative threshold takes priority over absolute threshold."""
         # Mock config with both relative and absolute thresholds
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.2,  # 20% allocation
                 buy_only_min_threshold_shares=None,
@@ -278,7 +278,7 @@ class TestBuyOnlyRelativeThreshold:
     ):
         """Test that relative threshold is ignored when target value is zero."""
         # Mock config with relative threshold
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.0,  # 0% allocation
                 buy_only_min_threshold_shares=None,

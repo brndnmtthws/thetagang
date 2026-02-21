@@ -17,12 +17,12 @@ def mock_ib(mocker):
 def mock_config(mocker):
     """Fixture to create a mock Config object."""
     config = mocker.Mock()
-    config.account = mocker.Mock()
-    config.account.number = "TEST123"
-    config.ib_async = mocker.Mock()
-    config.ib_async.api_response_wait_time = 1
-    config.orders = mocker.Mock()
-    config.orders.exchange = "SMART"
+    config.runtime.account = mocker.Mock()
+    config.runtime.account.number = "TEST123"
+    config.runtime.ib_async = mocker.Mock()
+    config.runtime.ib_async.api_response_wait_time = 1
+    config.runtime.orders = mocker.Mock()
+    config.runtime.orders.exchange = "SMART"
     return config
 
 
@@ -40,7 +40,7 @@ class TestSellOnlyRebalancing:
     async def test_sell_only_basic_functionality(self, portfolio_manager, mocker):
         """Test basic sell-only rebalancing when position is above target."""
         # Mock config with sell-only rebalancing
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.3,  # 30% allocation
                 sell_only_min_threshold_shares=None,
@@ -97,7 +97,7 @@ class TestSellOnlyRebalancing:
     async def test_sell_only_below_target_no_action(self, portfolio_manager, mocker):
         """Test that no selling occurs when position is below target."""
         # Mock config with sell-only rebalancing
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.5,  # 50% allocation
                 sell_only_min_threshold_shares=None,
@@ -153,7 +153,7 @@ class TestSellOnlyRebalancing:
     async def test_sell_only_min_shares_threshold(self, portfolio_manager, mocker):
         """Test that minimum shares threshold is respected."""
         # Mock config with minimum shares threshold
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.4,  # 40% allocation
                 sell_only_min_threshold_shares=50,  # Min 50 shares to sell
@@ -211,7 +211,7 @@ class TestSellOnlyRebalancing:
     async def test_sell_only_min_amount_threshold(self, portfolio_manager, mocker):
         """Test that minimum dollar amount threshold is respected."""
         # Mock config with minimum amount threshold
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.3,  # 30% allocation
                 sell_only_min_threshold_shares=None,
@@ -270,7 +270,7 @@ class TestSellOnlyRebalancing:
     async def test_sell_only_relative_threshold(self, portfolio_manager, mocker):
         """Test that relative percentage threshold works correctly."""
         # Mock config with relative threshold
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.4,  # 40% allocation
                 sell_only_min_threshold_shares=None,
@@ -345,7 +345,7 @@ class TestSellOnlyRebalancing:
     async def test_both_buy_and_sell_rebalancing(self, portfolio_manager, mocker):
         """Test that symbols can have both buy-only and sell-only rebalancing."""
         # Mock config with both buy and sell rebalancing
-        portfolio_manager.config.symbols = {
+        portfolio_manager.config.portfolio.symbols = {
             "AAPL": mocker.Mock(
                 weight=0.4,  # 40% allocation
                 buy_only_rebalancing=True,

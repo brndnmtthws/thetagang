@@ -2,23 +2,18 @@ import asyncio
 import logging
 import math
 import random
-import sys
 from asyncio import Future
-from datetime import date, datetime, timedelta
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
+from datetime import date, datetime
+from typing import Any, Coroutine, Dict, List, Optional, Tuple, cast
 
-import exchange_calendars as xcals
 import numpy as np
-import pandas as pd
 from ib_async import (
     AccountValue,
-    ExecutionFilter,
     PortfolioItem,
-    TagValue,
     Ticker,
     util,
 )
-from ib_async.contract import ComboLeg, Contract, Index, Option, Stock
+from ib_async.contract import Contract, Option, Stock
 from ib_async.ib import IB
 from ib_async.order import LimitOrder
 from rich.console import Group
@@ -26,7 +21,12 @@ from rich.panel import Panel
 from rich.table import Table
 
 from thetagang import log
-from thetagang.config import Config, RegimeRebalanceBaseEnum
+from thetagang.config import (
+    DEFAULT_RUN_STRATEGIES,
+    Config,
+    RunConfig,
+    stage_enabled_map_from_run,
+)
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import (
@@ -36,22 +36,37 @@ from thetagang.ibkr import (
     TickerField,
 )
 from thetagang.orders import Orders
+from thetagang.strategies import (
+    EquityStrategyDeps,
+    OptionsStrategyDeps,
+    PostStrategyDeps,
+    run_equity_rebalance_stages,
+    run_option_management_stages,
+    run_option_write_stages,
+    run_post_stages,
+)
+from thetagang.strategies.equity import EquityRebalanceService, RegimeRebalanceService
+from thetagang.strategies.equity_engine import EquityRebalanceEngine
+from thetagang.strategies.options import OptionsManageService, OptionsWriteService
+from thetagang.strategies.options_engine import OptionsStrategyEngine
+from thetagang.strategies.post_engine import PostStrategyEngine
+from thetagang.strategies.regime_engine import RegimeRebalanceEngine
+from thetagang.strategies.runtime_services import (
+    EquityRuntimeServiceAdapter,
+    OptionsRuntimeServiceAdapter,
+    resolve_symbol_configs,
+)
 from thetagang.trades import Trades
+from thetagang.trading_operations import (
+    OptionChainScanner,
+    OrderOperations,
+)
 from thetagang.util import (
     account_summary_to_dict,
-    calculate_net_short_positions,
-    count_long_option_positions,
-    count_short_option_positions,
-    get_higher_price,
-    get_lower_price,
     get_short_positions,
-    get_target_calls,
     midpoint_or_market_price,
-    net_option_positions,
     portfolio_positions_to_dict,
     position_pnl,
-    weighted_avg_long_strike,
-    weighted_avg_short_strike,
     would_increase_spread,
 )
 
@@ -60,12 +75,6 @@ from .options import option_dte
 # Turn off some of the more annoying logging output from ib_async
 logging.getLogger("ib_async.ib").setLevel(logging.ERROR)
 logging.getLogger("ib_async.wrapper").setLevel(logging.CRITICAL)
-
-
-class NoValidContractsError(Exception):
-    def __init__(self, message: str) -> None:
-        self.message = message
-        super().__init__(self.message)
 
 
 class PortfolioManager:
@@ -84,14 +93,15 @@ class PortfolioManager:
         completion_future: Future[bool],
         dry_run: bool,
         data_store: Optional[DataStore] = None,
+        run_stage_flags: Optional[Dict[str, bool]] = None,
     ) -> None:
-        self.account_number = config.account.number
+        self.account_number = config.runtime.account.number
         self.config = config
         self.data_store = data_store
         self.ibkr = IBKR(
             ib,
-            config.ib_async.api_response_wait_time,
-            config.orders.exchange,
+            config.runtime.ib_async.api_response_wait_time,
+            config.runtime.orders.exchange,
             data_store=data_store,
         )
         self.completion_future = completion_future
@@ -102,8 +112,114 @@ class PortfolioManager:
         self.target_quantities: Dict[str, int] = {}
         self.qualified_contracts: Dict[int, Contract] = {}
         self.dry_run = dry_run
-        self.regime_rebalance_order_ref_prefix = "tg:regime-rebalance"
         self.last_untracked_positions: Dict[str, List[PortfolioItem]] = {}
+        self.order_ops = OrderOperations(
+            config=self.config,
+            account_number=self.account_number,
+            orders=self.orders,
+            data_store=self.data_store,
+        )
+        self.options_runtime_services = OptionsRuntimeServiceAdapter(
+            get_symbols_fn=lambda: self.get_symbols(),
+            get_primary_exchange_fn=lambda symbol: self.get_primary_exchange(symbol),
+            get_buying_power_fn=lambda account_summary: self.get_buying_power(
+                account_summary
+            ),
+            get_maximum_new_contracts_for_fn=(
+                lambda symbol, primary_exchange, account_summary: (
+                    self.get_maximum_new_contracts_for(
+                        symbol, primary_exchange, account_summary
+                    )
+                )
+            ),
+            get_write_threshold_fn=lambda ticker, right: self.get_write_threshold(
+                ticker, right
+            ),
+            get_close_price_fn=lambda ticker: self.get_close_price(ticker),
+        )
+        self.equity_runtime_services = EquityRuntimeServiceAdapter(
+            get_primary_exchange_fn=lambda symbol: self.get_primary_exchange(symbol),
+            get_buying_power_fn=lambda account_summary: self.get_buying_power(
+                account_summary
+            ),
+            midpoint_or_market_price_fn=lambda ticker: self.midpoint_or_market_price(
+                ticker
+            ),
+        )
+        self.option_scanner = OptionChainScanner(
+            config=self.config, ibkr=self.ibkr, order_ops=self.order_ops
+        )
+        self.options_engine = OptionsStrategyEngine(
+            config=self.config,
+            ibkr=self.ibkr,
+            option_scanner=self.option_scanner,
+            order_ops=self.order_ops,
+            services=self.options_runtime_services,
+            target_quantities=self.target_quantities,
+            has_excess_puts=self.has_excess_puts,
+            has_excess_calls=self.has_excess_calls,
+            qualified_contracts=self.qualified_contracts,
+        )
+        self.regime_engine = RegimeRebalanceEngine(
+            config=self.config,
+            ibkr=self.ibkr,
+            order_ops=self.order_ops,
+            data_store=self.data_store,
+            get_primary_exchange=self.get_primary_exchange,
+            get_buying_power=self.get_regime_buying_power,
+            now_provider=lambda: datetime.now(),
+        )
+        self.equity_engine = EquityRebalanceEngine(
+            config=self.config,
+            ibkr=self.ibkr,
+            order_ops=self.order_ops,
+            services=self.equity_runtime_services,
+            regime_engine=self.regime_engine,
+        )
+        self.post_engine = PostStrategyEngine(
+            config=self.config,
+            ibkr=self.ibkr,
+            order_ops=self.order_ops,
+            option_scanner=self.option_scanner,
+            orders=self.orders,
+            qualified_contracts=self.qualified_contracts,
+        )
+        if run_stage_flags is None:
+            default_run = RunConfig(strategies=DEFAULT_RUN_STRATEGIES)
+            self.run_stage_flags = stage_enabled_map_from_run(default_run)
+        else:
+            self.run_stage_flags = dict(run_stage_flags)
+
+    def stage_enabled(self, stage_id: str) -> bool:
+        return bool(self.run_stage_flags.get(stage_id, False))
+
+    def _options_strategy_deps(self, enabled_stages: set[str]) -> OptionsStrategyDeps:
+        return OptionsStrategyDeps(
+            enabled_stages=enabled_stages,
+            write_service=cast(OptionsWriteService, self.options_engine),
+            manage_service=cast(OptionsManageService, self.options_engine),
+        )
+
+    def _sync_options_engine_state(self) -> None:
+        self.options_engine.target_quantities = self.target_quantities
+        self.options_engine.has_excess_puts = self.has_excess_puts
+        self.options_engine.has_excess_calls = self.has_excess_calls
+
+    def _equity_strategy_deps(self, enabled_stages: set[str]) -> EquityStrategyDeps:
+        return EquityStrategyDeps(
+            enabled_stages=enabled_stages,
+            regime_rebalance_enabled=bool(
+                self.config.strategies.regime_rebalance.enabled
+            ),
+            regime_service=cast(RegimeRebalanceService, self.equity_engine),
+            rebalance_service=cast(EquityRebalanceService, self.equity_engine),
+        )
+
+    def _post_strategy_deps(self, enabled_stages: set[str]) -> PostStrategyDeps:
+        return PostStrategyDeps(
+            enabled_stages=enabled_stages,
+            service=self.post_engine,
+        )
 
     def get_short_calls(
         self, portfolio_positions: Dict[str, List[PortfolioItem]]
@@ -116,22 +232,14 @@ class PortfolioManager:
         return self.get_short_contracts(portfolio_positions, "P")
 
     def _regime_rebalance_symbols(self) -> set[str]:
-        regime_rebalance = getattr(self.config, "regime_rebalance", None)
-        if not regime_rebalance or not getattr(regime_rebalance, "enabled", False):
+        regime_rebalance = self.config.strategies.regime_rebalance
+        if not regime_rebalance.enabled:
             return set()
-        symbols = getattr(regime_rebalance, "symbols", [])
-        if not isinstance(symbols, (list, tuple, set)):
-            return set()
-        return set(symbols)
+        return set(regime_rebalance.symbols)
 
     def options_trading_enabled(self) -> bool:
-        regime_rebalance = getattr(self.config, "regime_rebalance", None)
-        if not regime_rebalance:
-            return True
-        return not (
-            getattr(regime_rebalance, "enabled", False)
-            and getattr(regime_rebalance, "shares_only", False)
-        )
+        regime_rebalance = self.config.strategies.regime_rebalance
+        return not (regime_rebalance.enabled and regime_rebalance.shares_only)
 
     def get_short_contracts(
         self, portfolio_positions: Dict[str, List[PortfolioItem]], right: str
@@ -142,222 +250,28 @@ class PortfolioManager:
         return ret
 
     async def put_is_itm(self, contract: Contract) -> bool:
-        ticker = await self.ibkr.get_ticker_for_stock(
-            contract.symbol, contract.primaryExchange
-        )
-        return contract.strike >= ticker.marketPrice()
+        return await self.options_engine.put_is_itm(contract)
 
     def position_can_be_closed(self, position: PortfolioItem, table: Table) -> bool:
-        if not self.config.trading_is_allowed(position.contract.symbol):
-            return False
-
-        close_at_pnl = self.config.roll_when.close_at_pnl
-        if close_at_pnl:
-            pnl = position_pnl(position)
-
-            if pnl > close_at_pnl:
-                table.add_row(
-                    f"{position.contract.localSymbol}",
-                    "[deep_sky_blue1]Close",
-                    f"[deep_sky_blue1]Will be closed because P&L of {pfmt(pnl, 1)} is > {pfmt(close_at_pnl, 1)}",
-                )
-                return True
-
-        return False
+        return self.options_engine.position_can_be_closed(position, table)
 
     def put_can_be_closed(self, put: PortfolioItem, table: Table) -> bool:
-        return self.position_can_be_closed(put, table)
+        return self.options_engine.put_can_be_closed(put, table)
 
     async def put_can_be_rolled(self, put: PortfolioItem, table: Table) -> bool:
-        # Ignore long positions, we only roll shorts
-        if put.position > 0:
-            return False
-
-        if not self.config.trading_is_allowed(put.contract.symbol):
-            return False
-
-        try:
-            itm = await self.put_is_itm(put.contract)
-        except RequiredFieldValidationError:
-            log.error(
-                f"Checking rollable puts failed for #{put.contract.symbol}. Continuing anyway..."
-            )
-            return False
-
-        if (
-            isinstance(put.contract, Option)
-            and itm
-            and self.config.roll_when.puts.always_when_itm
-        ):
-            table.add_row(
-                f"{put.contract.localSymbol}",
-                "[blue]Roll",
-                f"[blue]Will be rolled because put is ITM "
-                f"and always_when_itm={self.config.roll_when.puts.always_when_itm}",
-            )
-            return True
-
-        # Check if this put is ITM, and if it's o.k. to roll
-        if (
-            not self.config.roll_when.puts.itm
-            and isinstance(put.contract, Option)
-            and itm
-        ):
-            return False
-
-        # Don't roll if there are excess puts and we're configured not to roll
-        if (
-            put.contract.symbol in self.has_excess_puts
-            and not self.config.roll_when.puts.has_excess
-        ):
-            table.add_row(
-                f"{put.contract.localSymbol}",
-                "[cyan1]None",
-                "[cyan1]Won't be rolled because there are excess puts",
-            )
-            return False
-
-        dte = option_dte(put.contract.lastTradeDateOrContractMonth)
-        pnl = position_pnl(put)
-
-        roll_when_dte = self.config.roll_when.dte
-        roll_when_pnl = self.config.roll_when.pnl
-        roll_when_min_pnl = self.config.roll_when.min_pnl
-
-        if self.config.roll_when.max_dte and dte > self.config.roll_when.max_dte:
-            return False
-
-        if dte <= roll_when_dte:
-            if pnl >= roll_when_min_pnl:
-                table.add_row(
-                    f"{put.contract.localSymbol}",
-                    "[blue]Roll",
-                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config.roll_when.dte} and P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_min_pnl, 1)}",
-                )
-                return True
-            table.add_row(
-                f"{put.contract.localSymbol}",
-                "[cyan1]None",
-                f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl, 1)}",
-            )
-
-        if pnl >= roll_when_pnl:
-            if self.config.roll_when.max_dte is not None:
-                table.add_row(
-                    f"{put.contract.localSymbol}",
-                    "[blue]Roll",
-                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config.roll_when.max_dte} and P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
-                )
-            else:
-                table.add_row(
-                    f"{put.contract.localSymbol}",
-                    "[blue]Roll",
-                    f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
-                )
-            return True
-
-        return False
+        return await self.options_engine.put_can_be_rolled(put, table)
 
     async def call_is_itm(self, contract: Contract) -> bool:
-        # Special case for handling VIX
-        if contract.symbol == "VIX":
-            vix_contract = Index("VIX", "CBOE", "USD")
-            ticker = await self.ibkr.get_ticker_for_contract(vix_contract)
-        else:
-            ticker = await self.ibkr.get_ticker_for_stock(
-                contract.symbol, contract.primaryExchange
-            )
-        return contract.strike <= ticker.marketPrice()
+        return await self.options_engine.call_is_itm(contract)
 
     def call_can_be_closed(self, call: PortfolioItem, table: Table) -> bool:
-        return self.position_can_be_closed(call, table)
+        return self.options_engine.call_can_be_closed(call, table)
 
     async def call_can_be_rolled(self, call: PortfolioItem, table: Table) -> bool:
-        # Ignore long positions, we only roll shorts
-        if call.position > 0:
-            return False
-
-        if not self.config.trading_is_allowed(call.contract.symbol):
-            return False
-
-        if (
-            isinstance(call.contract, Option)
-            and await self.call_is_itm(call.contract)
-            and self.config.roll_when.calls.always_when_itm
-        ):
-            table.add_row(
-                f"{call.contract.localSymbol}",
-                "[blue]Roll",
-                f"[blue]Will be rolled because call is ITM "
-                f"and always_when_itm={self.config.roll_when.calls.always_when_itm}",
-            )
-            return True
-
-        # Check if this call is ITM, and it's o.k. to roll
-        if (
-            not self.config.roll_when.calls.itm
-            and isinstance(call.contract, Option)
-            and await self.call_is_itm(call.contract)
-        ):
-            return False
-
-        # Don't roll if there are excess CCs and we're configured not to roll
-        if (
-            call.contract.symbol in self.has_excess_calls
-            and not self.config.roll_when.calls.has_excess
-        ):
-            table.add_row(
-                f"{call.contract.localSymbol}",
-                "[cyan1]None",
-                f"[cyan1]Won't be rolled because there are excess calls for {call.contract.symbol}",
-            )
-            return False
-
-        dte = option_dte(call.contract.lastTradeDateOrContractMonth)
-        pnl = position_pnl(call)
-
-        roll_when_dte = self.config.roll_when.dte
-        roll_when_pnl = self.config.roll_when.pnl
-        roll_when_min_pnl = self.config.roll_when.min_pnl
-
-        if self.config.roll_when.max_dte and dte > self.config.roll_when.max_dte:
-            return False
-
-        if dte <= roll_when_dte:
-            if pnl >= roll_when_min_pnl:
-                table.add_row(
-                    f"{call.contract.localSymbol}",
-                    "[blue]Roll",
-                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config.roll_when.dte}"
-                    f" and P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_min_pnl, 1)}",
-                )
-                return True
-            table.add_row(
-                f"{call.contract.localSymbol}",
-                "[cyan1]None",
-                f"[cyan1]Can't be rolled because P&L of {pfmt(pnl, 1)} is < {pfmt(roll_when_min_pnl, 1)}",
-            )
-
-        if pnl >= roll_when_pnl:
-            if self.config.roll_when.max_dte:
-                table.add_row(
-                    f"{call.contract.localSymbol}",
-                    "[blue]Roll",
-                    f"[blue]Can be rolled because DTE of {dte} is <= {self.config.roll_when.max_dte}"
-                    f" and P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
-                )
-            else:
-                table.add_row(
-                    f"{call.contract.localSymbol}",
-                    "[blue]Roll",
-                    f"[blue]Can be rolled because P&L of {pfmt(pnl, 1)} is >= {pfmt(roll_when_pnl, 1)}",
-                )
-            return True
-
-        return False
+        return await self.options_engine.call_can_be_rolled(call, table)
 
     def get_symbols(self) -> List[str]:
-        return list(self.config.symbols.keys())
+        return list(self.config.portfolio.symbols.keys())
 
     def filter_positions(
         self, portfolio_positions: List[PortfolioItem]
@@ -377,7 +291,8 @@ class PortfolioManager:
             if (
                 item.contract.symbol in symbols
                 or item.contract.symbol == "VIX"
-                or item.contract.symbol == self.config.cash_management.cash_fund
+                or item.contract.symbol
+                == self.config.strategies.cash_management.cash_fund
             ):
                 tracked_positions.append(item)
             else:
@@ -438,7 +353,8 @@ class PortfolioManager:
                     and (
                         pos.contract.symbol in symbols
                         or pos.contract.symbol == "VIX"
-                        or pos.contract.symbol == self.config.cash_management.cash_fund
+                        or pos.contract.symbol
+                        == self.config.strategies.cash_management.cash_fund
                     )
                     and pos.position != 0
                 ]
@@ -482,7 +398,8 @@ class PortfolioManager:
                 and (
                     pos.contract.symbol in symbols
                     or pos.contract.symbol == "VIX"
-                    or pos.contract.symbol == self.config.cash_management.cash_fund
+                    or pos.contract.symbol
+                    == self.config.strategies.cash_management.cash_fund
                 )
                 and pos.position != 0
             ]
@@ -505,22 +422,22 @@ class PortfolioManager:
         )
 
     def initialize_account(self) -> None:
-        self.ibkr.set_market_data_type(self.config.account.market_data_type)
+        self.ibkr.set_market_data_type(self.config.runtime.account.market_data_type)
 
-        if self.config.account.cancel_orders:
+        if self.config.runtime.account.cancel_orders:
             # Cancel any existing orders
             open_trades = self.ibkr.open_trades()
             for trade in open_trades:
                 if not trade.isDone() and (
                     trade.contract.symbol in self.get_symbols()
                     or (
-                        self.config.vix_call_hedge.enabled
+                        self.config.strategies.vix_call_hedge.enabled
                         and trade.contract.symbol == "VIX"
                     )
                     or (
-                        self.config.cash_management.enabled
+                        self.config.strategies.cash_management.enabled
                         and trade.contract.symbol
-                        == self.config.cash_management.cash_fund
+                        == self.config.strategies.cash_management.cash_fund
                     )
                 ):
                     log.warning(
@@ -539,7 +456,7 @@ class PortfolioManager:
 
         if "NetLiquidation" not in account_summary:
             raise RuntimeError(
-                f"Account number {self.config.account.number} appears invalid (no account data returned)"
+                f"Account number {self.config.runtime.account.number} appears invalid (no account data returned)"
             )
 
         table = Table(title="Account summary")
@@ -725,100 +642,27 @@ class PortfolioManager:
             (account_summary, portfolio_positions) = await self.summarize_account()
 
             options_enabled = self.options_trading_enabled()
-            if options_enabled:
-                # Check if we have enough buying power to write some puts
-                (
-                    positions_table,
-                    put_actions_table,
-                    puts_to_write,
-                ) = await self.check_if_can_write_puts(
-                    account_summary, portfolio_positions
-                )
-                log.print(positions_table)
-
-                # Look for lots of stock that don't have covered calls
-                (
-                    call_actions_table,
-                    calls_to_write,
-                ) = await self.check_for_uncovered_positions(
-                    account_summary, portfolio_positions
-                )
-
-                log.print(put_actions_table)
-                await self.write_puts(puts_to_write)
-
-                log.print(call_actions_table)
-                await self.write_calls(calls_to_write)
-            else:
-                log.notice(
-                    "Regime rebalancing shares-only enabled; skipping option writes and rolls."
-                )
-
-            # Check for regime-aware rebalancing positions
-            (
-                regime_actions_table,
-                regime_orders,
-            ) = await self.check_regime_rebalance_positions(
-                account_summary, portfolio_positions
+            enabled_stages = {
+                stage_id
+                for stage_id, enabled in self.run_stage_flags.items()
+                if enabled
+            }
+            options_deps = self._options_strategy_deps(enabled_stages)
+            equity_deps = self._equity_strategy_deps(enabled_stages)
+            post_deps = self._post_strategy_deps(enabled_stages)
+            await run_option_write_stages(
+                options_deps, account_summary, portfolio_positions, options_enabled
             )
-            if getattr(self.config, "regime_rebalance", None) and getattr(
-                self.config.regime_rebalance, "enabled", False
-            ):
-                log.print(regime_actions_table)
-            if regime_orders:
-                await self.execute_regime_rebalance_orders(regime_orders)
-
-            # Check for buy-only rebalancing positions
-            (
-                buy_actions_table,
-                stocks_to_buy,
-            ) = await self.check_buy_only_positions(
-                account_summary, portfolio_positions
+            await run_equity_rebalance_stages(
+                equity_deps, account_summary, portfolio_positions
             )
-
-            if stocks_to_buy:
-                log.print(buy_actions_table)
-                await self.execute_buy_orders(stocks_to_buy)
-
-            # Check for sell-only rebalancing positions
-            (
-                sell_actions_table,
-                stocks_to_sell,
-            ) = await self.check_sell_only_positions(
-                account_summary, portfolio_positions
-            )
-            if stocks_to_sell:
-                log.print(sell_actions_table)
-                await self.execute_sell_orders(stocks_to_sell)
 
             # Refresh positions, in case anything changed from the orders above
             portfolio_positions = await self.get_portfolio_positions()
-
-            if options_enabled:
-                (rollable_puts, closeable_puts, group1) = await self.check_puts(
-                    portfolio_positions
-                )
-                (rollable_calls, closeable_calls, group2) = await self.check_calls(
-                    portfolio_positions
-                )
-                log.print(Panel(Group(group1, group2)))
-
-                await self.close_puts(
-                    closeable_puts
-                    + await self.roll_puts(rollable_puts, account_summary)
-                )
-                await self.close_calls(
-                    closeable_calls
-                    + await self.roll_calls(
-                        rollable_calls, account_summary, portfolio_positions
-                    )
-                )
-
-            # check if we should do VIX call hedging
-            await self.do_vix_hedging(account_summary, portfolio_positions)
-
-            # manage dat cash
-            await self.do_cashman(account_summary, portfolio_positions)
+            await run_option_management_stages(
+                options_deps, account_summary, portfolio_positions, options_enabled
+            )
+            await run_post_stages(post_deps, account_summary, portfolio_positions)
 
             if self.dry_run:
                 log.warning("Dry run enabled, no trades will be executed.")
@@ -885,94 +729,12 @@ class PortfolioManager:
     async def check_puts(
         self, portfolio_positions: Dict[str, List[PortfolioItem]]
     ) -> Tuple[List[Any], List[Any], Group]:
-        # Check for puts which may be rolled to the next expiration or a better price
-        puts = self.get_short_puts(portfolio_positions)
-        # Filter out an VIX positions
-        puts = [put for put in puts if put.contract.symbol != "VIX"]
-
-        # find puts eligible to be rolled or closed
-        rollable_puts: List[PortfolioItem] = []
-        closeable_puts: List[PortfolioItem] = []
-
-        table = Table(title="Rollable & closeable puts")
-        table.add_column("Contract")
-        table.add_column("Action")
-        table.add_column("Detail")
-
-        async def check_put_can_be_rolled_task(
-            put: PortfolioItem, table: Table
-        ) -> None:
-            if await self.put_can_be_rolled(put, table):
-                rollable_puts.append(put)
-            elif self.put_can_be_closed(put, table):
-                closeable_puts.append(put)
-
-        tasks: List[Coroutine[Any, Any, None]] = [
-            check_put_can_be_rolled_task(put, table) for put in puts
-        ]
-        await log.track_async(tasks, "Checking rollable/closeable puts...")
-
-        total_rollable_puts = math.floor(sum([abs(p.position) for p in rollable_puts]))
-        total_closeable_puts = math.floor(
-            sum([abs(p.position) for p in closeable_puts])
-        )
-
-        text1 = f"[magenta]{total_rollable_puts} puts can be rolled"
-        text2 = f"[magenta]{total_closeable_puts} puts can be closed"
-
-        if total_closeable_puts + total_rollable_puts > 0:
-            group = Group(text1, text2, table)
-        else:
-            group = Group(text1, text2)
-
-        return (rollable_puts, closeable_puts, group)
+        return await self.options_engine.check_puts(portfolio_positions)
 
     async def check_calls(
         self, portfolio_positions: Dict[str, List[PortfolioItem]]
     ) -> Tuple[List[Any], List[Any], Group]:
-        # Check for calls which may be rolled to the next expiration or a better price
-        calls = self.get_short_calls(portfolio_positions)
-        # Filter out an VIX positions
-        calls = [call for call in calls if call.contract.symbol != "VIX"]
-
-        # find calls eligible to be rolled
-        rollable_calls: List[PortfolioItem] = []
-        closeable_calls: List[PortfolioItem] = []
-
-        table = Table(title="Rollable & closeable calls")
-        table.add_column("Contract")
-        table.add_column("Action")
-        table.add_column("Detail")
-
-        async def check_call_can_be_rolled_task(
-            call: PortfolioItem, table: Table
-        ) -> None:
-            if await self.call_can_be_rolled(call, table):
-                rollable_calls.append(call)
-            elif self.call_can_be_closed(call, table):
-                closeable_calls.append(call)
-
-        tasks: List[Coroutine[Any, Any, None]] = [
-            check_call_can_be_rolled_task(call, table) for call in calls
-        ]
-        await log.track_async(tasks, "Checking rollable/closeable calls...")
-
-        total_rollable_calls = math.floor(
-            sum([abs(p.position) for p in rollable_calls])
-        )
-        total_closeable_calls = math.floor(
-            sum([abs(p.position) for p in closeable_calls])
-        )
-
-        text1 = f"[magenta]{total_rollable_calls} calls can be rolled"
-        text2 = f"[magenta]{total_closeable_calls} calls can be closed"
-
-        if total_closeable_calls + total_rollable_calls > 0:
-            group = Group(text1, text2, table)
-        else:
-            group = Group(text1, text2)
-
-        return (rollable_calls, closeable_calls, group)
+        return await self.options_engine.check_calls(portfolio_positions)
 
     async def get_maximum_new_contracts_for(
         self,
@@ -982,14 +744,14 @@ class PortfolioManager:
     ) -> int:
         total_buying_power = self.get_buying_power(account_summary)
         max_buying_power = (
-            self.config.target.maximum_new_contracts_percent * total_buying_power
+            self.config.strategies.wheel.defaults.target.maximum_new_contracts_percent
+            * total_buying_power
         )
         ticker = await self.ibkr.get_ticker_for_stock(
             symbol,
             primary_exchange,
         )
         price = midpoint_or_market_price(ticker)
-
         return max([1, round((max_buying_power / price) // 100)])
 
     async def check_for_uncovered_positions(
@@ -997,299 +759,61 @@ class PortfolioManager:
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> Tuple[Table, List[Tuple[str, str, int, int]]]:
-        call_actions_table = Table(title="Call writing summary")
-        call_actions_table.add_column("Symbol")
-        call_actions_table.add_column("Action")
-        call_actions_table.add_column("Detail")
-        calculate_net_contracts = self.config.write_when.calculate_net_contracts
-
-        to_write: List[Tuple[str, str, int, int]] = []
-        symbols = set(self.get_symbols())
-
-        async def update_to_write_task(symbol: str) -> None:
-            if symbol not in symbols:
-                # skip positions we don't care about
-                return
-            short_call_count = (
-                calculate_net_short_positions(portfolio_positions[symbol], "C")
-                if calculate_net_contracts
-                else count_short_option_positions(portfolio_positions[symbol], "C")
-            )
-            stock_count = math.floor(
-                sum(
-                    [
-                        p.position
-                        for p in portfolio_positions[symbol]
-                        if isinstance(p.contract, Stock)
-                    ]
-                )
-            )
-            strike_limit = math.ceil(
-                max(
-                    [
-                        self.config.get_strike_limit(symbol, "C") or 0,
-                    ]
-                    + [
-                        p.averageCost or 0
-                        for p in portfolio_positions[symbol]
-                        if isinstance(p.contract, Stock)
-                    ]
-                )
-            )
-
-            target_short_calls = get_target_calls(
-                self.config, symbol, stock_count, self.target_quantities[symbol]
-            )
-            new_contracts_needed = target_short_calls - short_call_count
-            excess_calls = short_call_count - target_short_calls
-
-            if excess_calls > 0:
-                self.has_excess_calls.add(symbol)
-                call_actions_table.add_row(
-                    symbol,
-                    "[yellow]None",
-                    f"[yellow]Warning: excess_calls={excess_calls} stock_count={stock_count},"
-                    f" short_call_count={short_call_count}, target_short_calls={target_short_calls}",
-                )
-
-            maximum_new_contracts = await self.get_maximum_new_contracts_for(
-                symbol,
-                self.get_primary_exchange(symbol),
-                account_summary,
-            )
-            calls_to_write = max(
-                [0, min([new_contracts_needed, maximum_new_contracts])]
-            )
-
-            ticker = await self.ibkr.get_ticker_for_stock(
-                symbol, self.get_primary_exchange(symbol)
-            )
-
-            (write_threshold, absolute_daily_change) = (None, None)
-
-            async def is_ok_to_write_calls(
-                symbol: str,
-                ticker: Optional[Ticker],
-                calls_to_write: int,
-                stock_count: int,
-            ) -> bool:
-                nonlocal write_threshold, absolute_daily_change
-                if (
-                    not ticker
-                    or calls_to_write <= 0
-                    or not self.config.trading_is_allowed(symbol)
-                ):
-                    return False
-
-                # Skip call writing for sell-only rebalancing symbols
-                if self.config.is_sell_only_rebalancing(symbol):
-                    return False
-
-                (can_write_when_green, can_write_when_red) = self.config.can_write_when(
-                    symbol, "C"
-                )
-
-                close_price = self.get_close_price(ticker)
-                if not can_write_when_green and ticker.marketPrice() > close_price:
-                    call_actions_table.add_row(
-                        symbol,
-                        "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice():.2f} > close={close_price}",
-                    )
-                    return False
-                if not can_write_when_red and ticker.marketPrice() < close_price:
-                    call_actions_table.add_row(
-                        symbol,
-                        "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice():.2f} < close={close_price}",
-                    )
-                    return False
-
-                (
-                    write_threshold,
-                    absolute_daily_change,
-                ) = await self.get_write_threshold(ticker, "C")
-                if absolute_daily_change < write_threshold:
-                    call_actions_table.add_row(
-                        symbol,
-                        "[cyan1]None",
-                        f"[cyan1]Need to write {calls_to_write} calls, "
-                        f"but skipping because absolute_daily_change={absolute_daily_change:.2f}"
-                        f" less than write_threshold={write_threshold:.2f}",
-                    )
-                    return False
-
-                # Check call writing thresholds
-                symbol_config = self.config.symbols[symbol]
-                # Use symbol-specific value if set, otherwise use global default
-                min_percent = symbol_config.write_calls_only_min_threshold_percent
-                if min_percent is None:
-                    min_percent = self.config.write_when.calls.min_threshold_percent
-
-                min_percent_relative = (
-                    symbol_config.write_calls_only_min_threshold_percent_relative
-                )
-                if min_percent_relative is None:
-                    min_percent_relative = (
-                        self.config.write_when.calls.min_threshold_percent_relative
-                    )
-
-                if min_percent is not None or min_percent_relative is not None:
-                    # Get current stock value
-                    current_stock_value = stock_count * ticker.marketPrice()
-
-                    # Check absolute threshold
-                    if min_percent is not None:
-                        net_liquidation_value = float(
-                            account_summary["NetLiquidation"].value
-                        )
-                        position_percent = current_stock_value / net_liquidation_value
-
-                        if position_percent < min_percent:
-                            call_actions_table.add_row(
-                                symbol,
-                                "[yellow]None",
-                                f"[yellow]Position {position_percent:.1%} of NLV below threshold {min_percent:.1%}",
-                            )
-                            return False
-
-                    # Check relative threshold
-                    if (
-                        min_percent_relative is not None
-                        and self.target_quantities.get(symbol, 0) > 0
-                    ):
-                        target_value = (
-                            self.target_quantities[symbol] * ticker.marketPrice()
-                        )
-                        if target_value > 0:
-                            relative_excess = (
-                                current_stock_value - target_value
-                            ) / target_value
-
-                            if relative_excess < min_percent_relative:
-                                call_actions_table.add_row(
-                                    symbol,
-                                    "[yellow]None",
-                                    f"[yellow]Position excess {relative_excess:.1%} below threshold {min_percent_relative:.1%}",
-                                )
-                                return False
-
-                return True
-
-            ok_to_write = await is_ok_to_write_calls(
-                symbol, ticker, calls_to_write, stock_count
-            )
-            strike_limit = math.ceil(max([strike_limit, ticker.marketPrice()]))
-
-            if calls_to_write > 0 and ok_to_write:
-                call_actions_table.add_row(
-                    symbol,
-                    "[green]Write",
-                    f"[green]Will write {calls_to_write} calls, {new_contracts_needed} needed, "
-                    f"limited to {maximum_new_contracts} new contracts, at or above strike {dfmt(strike_limit)}"
-                    f" (target_short_calls={target_short_calls} short_call_count={short_call_count} "
-                    f"absolute_daily_change={absolute_daily_change:.2f} write_threshold={write_threshold:.2f})",
-                )
-                to_write.append(
-                    (
-                        symbol,
-                        self.get_primary_exchange(symbol),
-                        calls_to_write,
-                        strike_limit,
-                    )
-                )
-            elif calls_to_write > 0 and self.config.is_sell_only_rebalancing(symbol):
-                call_actions_table.add_row(
-                    symbol,
-                    "[cyan1]None",
-                    "[cyan1]Skipping call writing for sell-only rebalancing symbol",
-                )
-
-        tasks: List[Coroutine[Any, Any, None]] = [
-            update_to_write_task(symbol) for symbol in portfolio_positions
-        ]
-        await log.track_async(tasks, description="Checking for uncovered positions...")
-
-        return (call_actions_table, to_write)
+        self._sync_options_engine_state()
+        return await self.options_engine.check_for_uncovered_positions(
+            account_summary, portfolio_positions
+        )
 
     async def write_calls(self, calls: List[Any]) -> None:
-        for symbol, primary_exchange, quantity, strike_limit in calls:
-            try:
-                sell_ticker = await self.find_eligible_contracts(
-                    Stock(
-                        symbol,
-                        self.get_order_exchange(),
-                        currency="USD",
-                        primaryExchange=primary_exchange,
-                    ),
-                    "C",
-                    strike_limit,
-                    minimum_price=lambda: self.config.orders.minimum_credit,
-                )
-            except (RuntimeError, NoValidContractsError):
-                log.error(
-                    f"{symbol}: Finding eligible contracts failed. Continuing anyway..."
-                )
-                continue
-
-            # Create order
-            order = LimitOrder(
-                "SELL",
-                quantity,
-                round(get_higher_price(sell_ticker), 2),
-                algoStrategy=self.get_algo_strategy(),
-                algoParams=self.get_algo_params(),
-                tif="DAY",
-                account=self.account_number,
-            )
-
-            # Enqueue order
-            self.enqueue_order(sell_ticker.contract, order)
+        self._sync_options_engine_state()
+        await self.options_engine.write_calls(calls)
 
     async def write_puts(
         self, puts: List[Tuple[str, str, int, Optional[float]]]
     ) -> None:
-        for symbol, primary_exchange, quantity, strike_limit in puts:
-            try:
-                sell_ticker = await self.find_eligible_contracts(
-                    Stock(
-                        symbol,
-                        self.get_order_exchange(),
-                        currency="USD",
-                        primaryExchange=primary_exchange,
-                    ),
-                    "P",
-                    strike_limit,
-                    minimum_price=lambda: self.config.orders.minimum_credit,
-                )
-            except (RuntimeError, NoValidContractsError):
-                log.error(
-                    f"{symbol}: Finding eligible contracts failed. Continuing anyway..."
-                )
-                continue
-
-            # Create order
-            order = LimitOrder(
-                "SELL",
-                quantity,
-                round(get_higher_price(sell_ticker), 2),
-                algoStrategy=self.get_algo_strategy(),
-                algoParams=self.get_algo_params(),
-                tif="DAY",
-                account=self.account_number,
-            )
-
-            # Enqueue order
-            self.enqueue_order(sell_ticker.contract, order)
+        self._sync_options_engine_state()
+        await self.options_engine.write_puts(puts)
 
     def get_primary_exchange(self, symbol: str) -> str:
-        return self.config.symbols[symbol].primary_exchange
+        return self.config.portfolio.symbols[symbol].primary_exchange
+
+    def _buying_power_with_margin(
+        self, account_summary: Dict[str, AccountValue], margin_usage: float
+    ) -> int:
+        return math.floor(float(account_summary["NetLiquidation"].value) * margin_usage)
+
+    def _resolve_margin_usage(self, resolver_name: str) -> float:
+        fallback_raw = self.config.runtime.account.margin_usage
+        fallback = (
+            float(fallback_raw)
+            if isinstance(fallback_raw, (int, float))
+            and not isinstance(fallback_raw, bool)
+            else 1.0
+        )
+        resolver = getattr(self.config, resolver_name, None)
+        if not callable(resolver):
+            return fallback
+        try:
+            resolved = resolver()
+        except Exception:
+            return fallback
+        if isinstance(resolved, bool) or not isinstance(resolved, (int, float)):
+            return fallback
+        return float(resolved)
+
+    def get_wheel_buying_power(self, account_summary: Dict[str, AccountValue]) -> int:
+        margin_usage = self._resolve_margin_usage("wheel_margin_usage")
+        return self._buying_power_with_margin(account_summary, margin_usage)
+
+    def get_regime_buying_power(self, account_summary: Dict[str, AccountValue]) -> int:
+        margin_usage = self._resolve_margin_usage("regime_margin_usage")
+        return self._buying_power_with_margin(account_summary, margin_usage)
 
     def get_buying_power(self, account_summary: Dict[str, AccountValue]) -> int:
-        return math.floor(
-            float(account_summary["NetLiquidation"].value)
-            * self.config.account.margin_usage
-        )
+        return self.get_wheel_buying_power(account_summary)
+
+    def midpoint_or_market_price(self, ticker: Ticker) -> float:
+        return float(midpoint_or_market_price(ticker))
 
     def format_weight_info(
         self,
@@ -1297,380 +821,22 @@ class PortfolioManager:
         position_values: Dict[str, float],
         weight_base_value: float,
     ) -> Tuple[str, str]:
-        """Format weight information for a position using the configured weight base.
-
-        Returns:
-            Tuple of (weight_info_string, diff_info_string)
-        """
-        if weight_base_value <= 0:
-            return "", ""
-
-        current_value = position_values.get(symbol, 0)
-        current_weight = current_value / weight_base_value
-        target_weight = self.config.symbols[symbol].weight
-        abs_diff = current_weight - target_weight
-        rel_diff = (abs_diff / target_weight) if target_weight > 0 else 0
-
-        # Format the weight information
-        weight_info = f"Weight: {current_weight:.1%} (target: {target_weight:.1%})"
-        diff_info = f"Diff: {abs_diff:+.1%} (rel: {rel_diff:+.1%})"
-
-        # Add color coding based on relative difference
-        if abs(rel_diff) < 0.1:  # Within 10% relative
-            color = "[green]"
-        elif abs(rel_diff) < 0.25:  # Within 25% relative
-            color = "[yellow]"
-        else:
-            color = "[red]"
-
-        formatted_weight = f"{color}{weight_info}[/]"
-        formatted_diff = f"{color}{diff_info}[/]"
-        return formatted_weight, formatted_diff
+        symbol_configs = resolve_symbol_configs(
+            self.config, context="portfolio weight formatting"
+        )
+        return self.options_engine.format_weight_info(
+            symbol, position_values, weight_base_value, symbol_configs
+        )
 
     async def check_if_can_write_puts(
         self,
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> Tuple[Table, Table, List[Tuple[str, str, int, Optional[float]]]]:
-        # Get stock positions
-        stock_positions = [
-            position
-            for symbol in portfolio_positions
-            for position in portfolio_positions[symbol]
-            if isinstance(position.contract, Stock)
-        ]
-
-        total_buying_power = self.get_buying_power(account_summary)
-
-        stock_symbols: Dict[str, PortfolioItem] = dict()
-        for stock in stock_positions:
-            symbol = stock.contract.symbol
-            stock_symbols[symbol] = stock
-
-        # Track position market values (excluding VIX and cash fund) for reporting
-        position_values: Dict[str, float] = dict()
-        for stock in stock_positions:
-            symbol = stock.contract.symbol
-            # Exclude VIX and cash fund from portfolio value calculation
-            if symbol != "VIX" and symbol != self.config.cash_management.cash_fund:
-                value = stock.marketValue
-                position_values[symbol] = value
-
-        targets: Dict[str, float] = dict()
-        target_additional_quantity: Dict[str, Dict[str, int | bool]] = dict()
-
-        calculate_net_contracts = self.config.write_when.calculate_net_contracts
-
-        positions_summary_table = Table(
-            title="Positions summary",
-            show_edge=False,
+        self._sync_options_engine_state()
+        return await self.options_engine.check_if_can_write_puts(
+            account_summary, portfolio_positions
         )
-        positions_summary_table.add_column("Symbol")
-        positions_summary_table.add_column("Shares", justify="right")
-        positions_summary_table.add_column("Short puts", justify="right")
-        positions_summary_table.add_column("Long puts", justify="right")
-        if calculate_net_contracts:
-            positions_summary_table.add_column("Net short puts", justify="right")
-        positions_summary_table.add_column("Short calls", justify="right")
-        positions_summary_table.add_column("Long calls", justify="right")
-        if calculate_net_contracts:
-            positions_summary_table.add_column("Net short calls", justify="right")
-        positions_summary_table.add_column("Target value", justify="right")
-        positions_summary_table.add_column("Target share qty", justify="right")
-        positions_summary_table.add_column("Net target shares", justify="right")
-        positions_summary_table.add_column("Net target contracts", justify="right")
-
-        put_actions_table = Table(title="Put writing summary")
-        put_actions_table.add_column("Symbol")
-        put_actions_table.add_column("Action")
-        put_actions_table.add_column("Detail")
-
-        async def calculate_target_position_task(symbol: str) -> None:
-            ticker = await self.ibkr.get_ticker_for_stock(
-                symbol, self.get_primary_exchange(symbol)
-            )
-
-            current_position = math.floor(
-                stock_symbols[symbol].position if symbol in stock_symbols else 0
-            )
-
-            targets[symbol] = round(
-                self.config.symbols[symbol].weight * total_buying_power, 2
-            )
-            market_price = ticker.marketPrice()
-            if (
-                not market_price
-                or math.isnan(market_price)
-                or math.isclose(market_price, 0)
-            ):
-                log.error(
-                    f"Invalid market price for {symbol} (market_price={market_price}), skipping for now"
-                )
-                return
-            self.target_quantities[symbol] = math.floor(targets[symbol] / market_price)
-
-            # Track current position value if not already calculated
-            if symbol not in position_values:
-                position_values[symbol] = current_position * market_price
-
-            if symbol in portfolio_positions:
-                # Current number of puts
-                net_short_put_count = short_put_count = count_short_option_positions(
-                    portfolio_positions[symbol], "P"
-                )
-                short_put_avg_strike = weighted_avg_short_strike(
-                    portfolio_positions[symbol], "P"
-                )
-                long_put_count = count_long_option_positions(
-                    portfolio_positions[symbol], "P"
-                )
-                long_put_avg_strike = weighted_avg_long_strike(
-                    portfolio_positions[symbol], "P"
-                )
-                # Current number of calls
-                net_short_call_count = short_call_count = count_short_option_positions(
-                    portfolio_positions[symbol], "C"
-                )
-                short_call_avg_strike = weighted_avg_short_strike(
-                    portfolio_positions[symbol], "C"
-                )
-                long_call_count = count_long_option_positions(
-                    portfolio_positions[symbol], "C"
-                )
-                long_call_avg_strike = weighted_avg_long_strike(
-                    portfolio_positions[symbol], "C"
-                )
-
-                if calculate_net_contracts:
-                    net_short_put_count = calculate_net_short_positions(
-                        portfolio_positions[symbol], "P"
-                    )
-                    net_short_call_count = calculate_net_short_positions(
-                        portfolio_positions[symbol], "C"
-                    )
-            else:
-                net_short_put_count = short_put_count = long_put_count = 0
-                short_put_avg_strike = long_put_avg_strike = None
-                net_short_call_count = short_call_count = long_call_count = 0
-                short_call_avg_strike = long_call_avg_strike = None
-
-            # Check if this symbol is in buy-only rebalancing mode
-            if self.config.is_buy_only_rebalancing(symbol):
-                # For buy-only symbols, we don't subtract puts from target
-                qty_to_write = 0  # No puts to write
-                net_target_shares = self.target_quantities[symbol] - current_position
-                net_target_puts = 0
-            else:
-                qty_to_write = math.floor(
-                    self.target_quantities[symbol]
-                    - current_position
-                    - 100 * net_short_put_count
-                )
-                net_target_shares = qty_to_write
-                net_target_puts = net_target_shares // 100
-
-            if calculate_net_contracts:
-                positions_summary_table.add_row(
-                    symbol,
-                    ifmt(current_position),
-                    ifmt(short_put_count),
-                    ifmt(long_put_count),
-                    ifmt(net_short_put_count),
-                    ifmt(short_call_count),
-                    ifmt(long_call_count),
-                    ifmt(net_short_call_count),
-                    dfmt(targets[symbol]),
-                    ifmt(self.target_quantities[symbol]),
-                    ifmt(net_target_shares),
-                    ifmt(net_target_puts),
-                )
-                positions_summary_table.add_row(
-                    "",
-                    "",
-                    dfmt(short_put_avg_strike),
-                    dfmt(long_put_avg_strike),
-                    "",
-                    dfmt(short_call_avg_strike),
-                    dfmt(long_call_avg_strike),
-                )
-
-                # Add weight information row
-                weight_info, diff_info = self.format_weight_info(
-                    symbol, position_values, total_buying_power
-                )
-                if weight_info:
-                    # For calculate_net_contracts=True, we need 12 columns
-                    positions_summary_table.add_row(
-                        "",  # Symbol
-                        "",  # Shares
-                        "",  # Short puts
-                        "",  # Long puts
-                        "",  # Net short puts
-                        "",  # Short calls
-                        "",  # Long calls
-                        "",  # Net short calls
-                        weight_info,  # Target value (weight info here)
-                        "",  # Target share qty
-                        diff_info,  # Net target shares (diff info here)
-                        "",  # Net target contracts
-                    )
-            else:
-                positions_summary_table.add_row(
-                    symbol,
-                    ifmt(current_position),
-                    ifmt(short_put_count),
-                    ifmt(long_put_count),
-                    ifmt(short_call_count),
-                    ifmt(long_call_count),
-                    dfmt(targets[symbol]),
-                    ifmt(self.target_quantities[symbol]),
-                    ifmt(net_target_shares),
-                    ifmt(net_target_puts),
-                )
-                positions_summary_table.add_row(
-                    "",
-                    "",
-                    dfmt(short_put_avg_strike),
-                    dfmt(long_put_avg_strike),
-                    dfmt(short_call_avg_strike),
-                    dfmt(long_call_avg_strike),
-                )
-
-                # Add weight information row
-                weight_info, diff_info = self.format_weight_info(
-                    symbol, position_values, total_buying_power
-                )
-                if weight_info:
-                    # For calculate_net_contracts=False, we need 10 columns
-                    positions_summary_table.add_row(
-                        "",  # Symbol
-                        "",  # Shares
-                        "",  # Short puts
-                        "",  # Long puts
-                        "",  # Short calls
-                        "",  # Long calls
-                        weight_info,  # Target value (weight info here)
-                        "",  # Target share qty
-                        diff_info,  # Net target shares (diff info here)
-                        "",  # Net target contracts
-                    )
-            positions_summary_table.add_section()
-
-            async def is_ok_to_write_puts(
-                symbol: str,
-                ticker: Ticker,
-                puts_to_write: int,
-            ) -> bool:
-                if puts_to_write <= 0 or not self.config.trading_is_allowed(symbol):
-                    return False
-
-                # Skip put writing for buy-only rebalancing symbols
-                if self.config.is_buy_only_rebalancing(symbol):
-                    return False
-
-                (can_write_when_green, can_write_when_red) = self.config.can_write_when(
-                    symbol, "P"
-                )
-
-                close_price = self.get_close_price(ticker)
-                if not can_write_when_green and ticker.marketPrice() > close_price:
-                    put_actions_table.add_row(
-                        symbol,
-                        "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_green={can_write_when_green} and marketPrice={ticker.marketPrice():.2f} > close={close_price}",
-                    )
-                    return False
-                if not can_write_when_red and ticker.marketPrice() < close_price:
-                    put_actions_table.add_row(
-                        symbol,
-                        "[cyan1]None",
-                        f"[cyan1]Skipping because can_write_when_red={can_write_when_red} and marketPrice={ticker.marketPrice():.2f} < close={close_price}",
-                    )
-                    return False
-
-                (
-                    write_threshold,
-                    absolute_daily_change,
-                ) = await self.get_write_threshold(ticker, "P")
-                if absolute_daily_change < write_threshold:
-                    put_actions_table.add_row(
-                        symbol,
-                        "[cyan1]None",
-                        f"[cyan1]Need to write {puts_to_write} puts, but skipping because absolute_daily_change={absolute_daily_change:.2f} less than write_threshold={write_threshold:.2f}[/cyan1]",
-                    )
-                    return False
-                return True
-
-            ok_to_write = await is_ok_to_write_puts(symbol, ticker, net_target_puts)
-
-            target_additional_quantity[symbol] = {
-                "qty": net_target_puts,
-                "ok_to_write": ok_to_write,
-            }
-
-        tasks: List[Coroutine[Any, Any, None]] = [
-            calculate_target_position_task(symbol)
-            for symbol in self.config.symbols.keys()
-        ]
-        await log.track_async(tasks, description="Calculating target positions...")
-
-        to_write: List[Tuple[str, str, int, Optional[float]]] = []
-
-        async def update_to_write_task(
-            symbol: str, target: Dict[str, int | bool]
-        ) -> None:
-            ok_to_write = target["ok_to_write"]
-            additional_quantity = target["qty"]
-            # NOTE: it's possible there are non-standard option contract sizes,
-            # like with futures, but we don't bother handling those cases.
-            # Please don't use this code with futures.
-            if additional_quantity >= 1 and ok_to_write:
-                maximum_new_contracts = await self.get_maximum_new_contracts_for(
-                    symbol,
-                    self.get_primary_exchange(symbol),
-                    account_summary,
-                )
-                puts_to_write = min([additional_quantity, maximum_new_contracts])
-                if puts_to_write > 0:
-                    strike_limit = self.config.get_strike_limit(symbol, "P")
-                    if strike_limit:
-                        put_actions_table.add_row(
-                            symbol,
-                            "[green]Write",
-                            f"[green]Will write {puts_to_write} puts, {additional_quantity}"
-                            f" needed, capped at {maximum_new_contracts}, at or below strike ${strike_limit}",
-                        )
-                    else:
-                        put_actions_table.add_row(
-                            symbol,
-                            "[green]Write",
-                            f"[green]Will write {puts_to_write} puts, {additional_quantity}"
-                            f" needed, capped at {maximum_new_contracts}",
-                        )
-                    to_write.append(
-                        (
-                            symbol,
-                            self.get_primary_exchange(symbol),
-                            puts_to_write,
-                            strike_limit,
-                        )
-                    )
-            elif additional_quantity < 0:
-                self.has_excess_puts.add(symbol)
-                put_actions_table.add_row(
-                    symbol,
-                    "[yellow]None",
-                    "[yellow]Warning: excess positions based "
-                    "on net liquidation and target margin usage",
-                )
-
-        tasks: List[Coroutine[Any, Any, None]] = [
-            update_to_write_task(symbol, target)
-            for symbol, target in target_additional_quantity.items()
-        ]
-        await log.track_async(tasks, description="Generating positions summary...")
-
-        return (positions_summary_table, put_actions_table, to_write)
 
     async def _get_regime_proxy_series(
         self,
@@ -1679,38 +845,9 @@ class PortfolioManager:
         cooldown_days: int,
         weights_override: Optional[Dict[str, float]] = None,
     ) -> Tuple[List[date], List[float], Dict[str, List[float]]]:
-        if weights_override:
-            symbols = list(weights_override.keys())
-        sorted_dates, aligned_closes = await self._get_regime_aligned_closes(
-            symbols,
-            lookback_days,
-            cooldown_days,
+        return await self.regime_engine._get_regime_proxy_series(
+            symbols, lookback_days, cooldown_days, weights_override
         )
-
-        if weights_override:
-            weights = weights_override
-        else:
-            weights = {symbol: self.config.symbols[symbol].weight for symbol in symbols}
-        total_weight = sum(weights.values())
-        if total_weight <= 0:
-            log.error("Regime-aware rebalancing weights sum to zero, skipping.")
-            raise ValueError(
-                "Regime-aware rebalancing weights must sum to a positive value."
-            )
-        normalized_weights = {
-            symbol: weight / total_weight for symbol, weight in weights.items()
-        }
-
-        normalized_series = [1.0]
-        for idx in range(1, len(sorted_dates)):
-            daily_factor = 0.0
-            for symbol in symbols:
-                prev_close = aligned_closes[symbol][idx - 1]
-                curr_close = aligned_closes[symbol][idx]
-                daily_factor += normalized_weights[symbol] * (curr_close / prev_close)
-            normalized_series.append(normalized_series[-1] * daily_factor)
-
-        return (sorted_dates, normalized_series, aligned_closes)
 
     async def _get_regime_aligned_closes(
         self,
@@ -1718,1386 +855,70 @@ class PortfolioManager:
         lookback_days: int,
         cooldown_days: int,
     ) -> Tuple[List[date], Dict[str, List[float]]]:
-        if not symbols:
-            log.error("Regime-aware rebalancing has no symbols to build a proxy.")
-            raise ValueError("Regime-aware rebalancing requires proxy symbols.")
-        trading_days_needed = lookback_days + 1 + max(cooldown_days, 0)
-        calendar_days = math.ceil(trading_days_needed * 7 / 5) + 5
-        duration = f"{calendar_days} D"
-
-        async def fetch_history_task(symbol: str) -> Tuple[str, List[Any]]:
-            contract = Stock(
-                symbol,
-                self.get_order_exchange(),
-                currency="USD",
-                primaryExchange=self.get_primary_exchange(symbol),
-            )
-            bars = await self.ibkr.request_historical_data(contract, duration)
-            return symbol, list(bars)
-
-        tasks: List[Coroutine[Any, Any, Tuple[str, List[Any]]]] = [
-            fetch_history_task(symbol) for symbol in symbols
-        ]
-        histories = await log.track_async(
-            tasks, description="Fetching regime rebalancing history..."
+        return await self.regime_engine._get_regime_aligned_closes(
+            symbols, lookback_days, cooldown_days
         )
-
-        closes_by_symbol: Dict[str, Dict[date, float]] = {}
-        for symbol, bars in histories:
-            closes: Dict[date, float] = {}
-            for bar in bars:
-                bar_date = bar.date.date() if hasattr(bar.date, "date") else bar.date
-                closes[bar_date] = float(bar.close)
-            closes_by_symbol[symbol] = closes
-
-        common_dates = set.intersection(
-            *(set(closes.keys()) for closes in closes_by_symbol.values())
-        )
-        if not common_dates:
-            log.error(
-                "Regime-aware rebalancing history has no common dates across symbols."
-            )
-            raise ValueError(
-                "Regime-aware rebalancing requires aligned history for all symbols."
-            )
-
-        sorted_dates = sorted(common_dates)
-        if len(sorted_dates) < 2:
-            log.error("Regime-aware rebalancing history has fewer than 2 points.")
-            raise ValueError(
-                "Regime-aware rebalancing requires at least 2 history points."
-            )
-
-        aligned_closes: Dict[str, List[float]] = {}
-        for symbol in symbols:
-            aligned: List[float] = []
-            for date_point in sorted_dates:
-                close = closes_by_symbol[symbol].get(date_point)
-                if close is None or math.isnan(close) or math.isclose(close, 0):
-                    log.error(
-                        f"Invalid close for {symbol} on {date_point} (close={close})."
-                    )
-                    raise ValueError(
-                        "Regime-aware rebalancing found invalid historical closes."
-                    )
-                aligned.append(close)
-            aligned_closes[symbol] = aligned
-
-        return (sorted_dates, aligned_closes)
 
     async def _get_last_regime_rebalance_time(
         self, symbols: List[str]
     ) -> Optional[datetime]:
-        regime_rebalance = getattr(self.config, "regime_rebalance", None)
-        if not regime_rebalance or not getattr(regime_rebalance, "enabled", False):
-            return None
-
-        lookback_days = max(regime_rebalance.order_history_lookback_days, 1)
-        start_time = datetime.now() - timedelta(days=lookback_days)
-        exec_filter = ExecutionFilter(time=start_time.strftime("%Y%m%d %H:%M:%S"))
-
-        if self.data_store:
-            fills = await self.ibkr.request_executions(exec_filter)
-            return self.data_store.get_last_regime_rebalance_time(
-                symbols,
-                self.regime_rebalance_order_ref_prefix,
-                start_time,
-            )
-
-        fills = await self.ibkr.request_executions(exec_filter)
-        last_rebalance: Optional[datetime] = None
-        for fill in fills:
-            execution = fill.execution
-            if not execution.orderRef:
-                continue
-            if not execution.orderRef.startswith(
-                self.regime_rebalance_order_ref_prefix
-            ):
-                continue
-            if fill.contract.symbol not in symbols:
-                continue
-            fill_time = fill.time or execution.time
-            if last_rebalance is None or fill_time > last_rebalance:
-                last_rebalance = fill_time
-
-        return last_rebalance
+        return await self.regime_engine._get_last_regime_rebalance_time(symbols)
 
     def _cooldown_elapsed(self, last_rebalance: datetime, cooldown_days: int) -> bool:
-        if cooldown_days <= 0:
-            return True
-
-        now = datetime.now()
-        if last_rebalance >= now:
-            return False
-
-        start_date = last_rebalance.date()
-        end_date = now.date()
-        if end_date < start_date:
-            return False
-
-        try:
-            exchange = self.config.exchange_hours.exchange
-            calendar = xcals.get_calendar(exchange)
-            start_ts = pd.Timestamp(start_date)
-            end_ts = pd.Timestamp(end_date)
-            sessions = calendar.sessions
-            sessions = sessions[(sessions >= start_ts) & (sessions <= end_ts)]
-            if sessions.empty:
-                raise ValueError("No exchange sessions found in cooldown window.")
-            session_dates = [session.date() for session in sessions]
-            sessions_after = [d for d in session_dates if d > start_date]
-            return len(sessions_after) >= cooldown_days
-        except Exception as exc:
-            log.warning(
-                "Regime rebalancing cooldown calculation failed "
-                f"({type(exc).__name__}); using calendar days."
-            )
-            return (end_date - start_date).days >= cooldown_days
+        return self.regime_engine._cooldown_elapsed(last_rebalance, cooldown_days)
 
     async def check_regime_rebalance_positions(
         self,
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> Tuple[Table, List[Tuple[str, str, int]]]:
-        table = Table(title="Regime-aware rebalancing summary")
-        table.add_column("Symbol")
-        table.add_column("Weights", justify="right")
-        table.add_column("Value", justify="right")
-        table.add_column("Shares", justify="right")
-        table.add_column("Gate", justify="center")
-        table.add_column("Action")
-
-        to_trade: List[Tuple[str, str, int]] = []
-        regime_rebalance = getattr(self.config, "regime_rebalance", None)
-        if not regime_rebalance or not getattr(regime_rebalance, "enabled", False):
-            return (table, to_trade)
-
-        symbols = list(getattr(regime_rebalance, "symbols", []))
-        if not symbols:
-            log.warning(
-                "Regime-aware rebalancing enabled but no symbols are configured."
-            )
-            return (table, to_trade)
-
-        missing_symbols = [
-            symbol for symbol in symbols if symbol not in self.config.symbols
-        ]
-        if missing_symbols:
-            log.error(
-                f"Regime-aware rebalancing symbols missing from config: {', '.join(missing_symbols)}"
-            )
-            raise ValueError(
-                "Regime-aware rebalancing requires symbols present in config."
-            )
-
-        zero_weight_symbols = [
-            symbol for symbol in symbols if self.config.symbols[symbol].weight <= 0
-        ]
-        if zero_weight_symbols:
-            log.warning(
-                "Regime-aware rebalancing ignoring zero-weight symbols: "
-                f"{', '.join(zero_weight_symbols)}"
-            )
-        symbols = [
-            symbol for symbol in symbols if self.config.symbols[symbol].weight > 0
-        ]
-        if not symbols:
-            log.error("Regime-aware rebalancing has no positive-weight symbols.")
-            raise ValueError(
-                "Regime-aware rebalancing requires positive target weights."
-            )
-
-        stock_positions = [
-            position
-            for symbol in portfolio_positions
-            for position in portfolio_positions[symbol]
-            if isinstance(position.contract, Stock)
-        ]
-        stock_symbols: Dict[str, PortfolioItem] = {
-            position.contract.symbol: position for position in stock_positions
-        }
-
-        async def get_ticker_task(symbol: str) -> Tuple[str, Ticker]:
-            ticker = await self.ibkr.get_ticker_for_stock(
-                symbol, self.get_primary_exchange(symbol)
-            )
-            return symbol, ticker
-
-        ticker_tasks: List[Coroutine[Any, Any, Tuple[str, Ticker]]] = [
-            get_ticker_task(symbol) for symbol in symbols
-        ]
-        ticker_results = await log.track_async(
-            ticker_tasks, description="Fetching regime rebalancing prices..."
+        return await self.regime_engine.check_regime_rebalance_positions(
+            account_summary, portfolio_positions
         )
-        tickers = {symbol: ticker for symbol, ticker in ticker_results}
-
-        current_positions: Dict[str, int] = {}
-        current_values: Dict[str, float] = {}
-        market_prices: Dict[str, float] = {}
-        target_shares: Dict[str, int] = {}
-        target_values: Dict[str, float] = {}
-        relative_ratios: Dict[str, float] = {}
-        relative_drifts: Dict[str, float] = {}
-        share_gaps: Dict[str, int] = {}
-        for symbol in symbols:
-            ticker = tickers[symbol]
-            market_price = ticker.marketPrice()
-            if (
-                not market_price
-                or math.isnan(market_price)
-                or math.isclose(market_price, 0)
-            ):
-                log.error(
-                    f"Invalid market price for {symbol} (market_price={market_price}), skipping for now"
-                )
-                raise ValueError(
-                    "Regime-aware rebalancing requires valid market prices."
-                )
-            market_prices[symbol] = market_price
-
-            current_position = math.floor(
-                stock_symbols[symbol].position if symbol in stock_symbols else 0
-            )
-            current_positions[symbol] = current_position
-            current_value = current_position * market_price
-            current_values[symbol] = current_value
-
-        weight_base = regime_rebalance.weight_base
-        if weight_base == RegimeRebalanceBaseEnum.managed_stocks:
-            total_value = sum(current_values.values())
-        elif weight_base == RegimeRebalanceBaseEnum.net_liq_ex_options:
-            excluded_value = 0.0
-            for positions in portfolio_positions.values():
-                for position in positions:
-                    if isinstance(position.contract, Option):
-                        excluded_value += float(position.marketValue or 0.0)
-            net_liq = float(account_summary["NetLiquidation"].value)
-            adjusted_net_liq = net_liq - excluded_value
-            total_value = math.floor(
-                adjusted_net_liq * self.config.account.margin_usage
-            )
-            log.notice(
-                "Regime rebalancing base: mode=net_liq_ex_options "
-                f"net_liq={dfmt(net_liq)} excluded_options={dfmt(excluded_value)} "
-                f"margin_usage={ffmt(self.config.account.margin_usage)} "
-                f"base={dfmt(total_value)}"
-            )
-        else:
-            total_value = self.get_buying_power(account_summary)
-        if total_value <= 0:
-            log.error("Rebalance base value is not positive, skipping rebalancing.")
-            raise ValueError("Regime-aware rebalancing requires a positive base value.")
-
-        current_weights: Dict[str, float] = {}
-        for symbol in symbols:
-            market_price = market_prices[symbol]
-            current_position = current_positions[symbol]
-            current_value = current_values[symbol]
-            current_weights[symbol] = current_value / total_value
-            target_weight = self.config.symbols[symbol].weight
-            target_values[symbol] = target_weight * total_value
-            target_shares[symbol] = math.floor(target_values[symbol] / market_price)
-            share_gaps[symbol] = target_shares[symbol] - current_position
-            relative_ratio = current_weights[symbol] / target_weight
-            relative_ratios[symbol] = relative_ratio
-            relative_drifts[symbol] = abs(relative_ratio - 1.0)
-
-        invested_value = sum(current_values.values())
-        proxy_symbols = [symbol for symbol in symbols if current_values[symbol] > 0]
-        proxy_weights: Dict[str, float] = {}
-        if proxy_symbols:
-            proxy_invested = sum(current_values[symbol] for symbol in proxy_symbols)
-            proxy_weights = {
-                symbol: current_values[symbol] / proxy_invested
-                for symbol in proxy_symbols
-            }
-        else:
-            log.warning(
-                "Regime proxy has no invested symbols; falling back to target weights."
-            )
-            proxy_weights = {
-                symbol: self.config.symbols[symbol].weight for symbol in symbols
-            }
-
-        dates, values, aligned_closes = await self._get_regime_proxy_series(
-            symbols,
-            regime_rebalance.lookback_days,
-            regime_rebalance.cooldown_days,
-            weights_override=proxy_weights,
-        )
-        if len(values) < regime_rebalance.lookback_days + 1:
-            log.error("Insufficient historical data for regime rebalancing, aborting.")
-            raise ValueError("Regime-aware rebalancing requires full lookback history.")
-
-        window = np.array(values[-(regime_rebalance.lookback_days + 1) :])
-        safe_prev = np.maximum(window[:-1], regime_rebalance.eps)
-        safe_curr = np.maximum(window[1:], regime_rebalance.eps)
-        r = np.log(safe_curr / safe_prev)
-        sigma = math.sqrt(float(np.sum(r * r)))
-        disp = abs(float(np.sum(r)))
-        choppiness = sigma / max(disp, regime_rebalance.eps)
-        chop_ok = choppiness >= regime_rebalance.choppiness_min
-
-        diffs = np.abs(np.diff(window))
-        efficiency = abs(float(window[-1] - window[0])) / max(
-            float(np.sum(diffs)), regime_rebalance.eps
-        )
-        er_ok = efficiency <= regime_rebalance.efficiency_max
-        regime_ok = chop_ok and er_ok
-
-        ratio_gate = getattr(regime_rebalance, "ratio_gate", None)
-        ratio_ok: Optional[bool] = None
-        ratio_var: Optional[float] = None
-        ratio_tstat: Optional[float] = None
-        ratio_var_threshold: Optional[float] = None
-        ratio_drift_max: Optional[float] = None
-        ratio_anchor: Optional[str] = None
-        ratio_rest: List[str] = []
-        if ratio_gate is not None:
-            ratio_anchor = getattr(ratio_gate, "anchor", "")
-            ratio_rest = [s for s in symbols if s != ratio_anchor]
-            if not ratio_anchor or ratio_anchor not in symbols or not ratio_rest:
-                log.error("Regime-aware ratio gate has invalid anchor configuration.")
-                raise ValueError(
-                    "Regime-aware ratio gate requires a valid anchor and rest basket."
-                )
-
-            rest_weights = {
-                symbol: self.config.symbols[symbol].weight for symbol in ratio_rest
-            }
-            total_rest_weight = sum(rest_weights.values())
-            if total_rest_weight <= 0:
-                log.error("Ratio gate rest weights sum to zero, skipping.")
-                raise ValueError("Regime-aware ratio gate requires positive weights.")
-            normalized_rest_weights = {
-                symbol: weight / total_rest_weight
-                for symbol, weight in rest_weights.items()
-            }
-
-            rest_index = []
-            anchor_series = aligned_closes[ratio_anchor]
-            for idx in range(len(dates)):
-                basket_value = 0.0
-                for symbol in ratio_rest:
-                    basket_value += (
-                        normalized_rest_weights[symbol] * aligned_closes[symbol][idx]
-                    )
-                rest_index.append(max(basket_value, regime_rebalance.eps))
-
-            anchor_prices = [
-                max(price, regime_rebalance.eps) for price in anchor_series
-            ]
-            ratio_series = np.log(np.array(rest_index) / np.array(anchor_prices))
-            ratio_returns = pd.Series(ratio_series).diff()
-            ratio_var = float(
-                ratio_returns.rolling(regime_rebalance.lookback_days)
-                .var(ddof=1)
-                .iloc[-1]
-            )
-            ratio_mean = float(
-                ratio_returns.rolling(regime_rebalance.lookback_days).mean().iloc[-1]
-            )
-            ratio_std = float(
-                ratio_returns.rolling(regime_rebalance.lookback_days)
-                .std(ddof=1)
-                .iloc[-1]
-            )
-            if math.isnan(ratio_var) or math.isnan(ratio_mean) or math.isnan(ratio_std):
-                ratio_ok = False
-                ratio_tstat = float("inf")
-                ratio_var_threshold = max(
-                    float(getattr(ratio_gate, "var_min", 0.0)), 0.0
-                )
-                ratio_drift_max = float(getattr(ratio_gate, "drift_max", 0.0))
-            else:
-                if ratio_std <= 0:
-                    ratio_tstat = float("inf")
-                else:
-                    ratio_tstat = abs(
-                        ratio_mean
-                        / (ratio_std / math.sqrt(regime_rebalance.lookback_days))
-                    )
-
-                ratio_var_threshold = max(
-                    float(getattr(ratio_gate, "var_min", 0.0)), 0.0
-                )
-                ratio_drift_max = float(getattr(ratio_gate, "drift_max", 0.0))
-                ratio_ok = (
-                    ratio_var >= ratio_var_threshold and ratio_tstat <= ratio_drift_max
-                )
-
-        last_rebalance = await self._get_last_regime_rebalance_time(symbols)
-        cooldown_ok = True
-        if last_rebalance and regime_rebalance.cooldown_days > 0:
-            cooldown_ok = self._cooldown_elapsed(
-                last_rebalance, regime_rebalance.cooldown_days
-            )
-
-        soft_breach = any(
-            drift + regime_rebalance.eps >= regime_rebalance.soft_band
-            for drift in relative_drifts.values()
-        )
-        hard_breach = any(
-            drift + regime_rebalance.eps >= regime_rebalance.hard_band
-            for drift in relative_drifts.values()
-        )
-
-        max_relative_drift = max(relative_drifts.values()) if relative_drifts else 0.0
-        hard_rebalance = hard_breach
-        ratio_enabled = (
-            bool(getattr(ratio_gate, "enabled", False)) if ratio_gate else False
-        )
-        ratio_gate_ok = (
-            True if ratio_gate is None or not ratio_enabled else bool(ratio_ok)
-        )
-        soft_rebalance = soft_breach and regime_ok and cooldown_ok and ratio_gate_ok
-        rebalance_fraction = 1.0
-        if hard_rebalance:
-            rebalance_fraction = regime_rebalance.hard_band_rebalance_fraction
-
-        share_tolerance = 1
-        flow_active = False
-        deficit_active = False
-        if self.data_store:
-            state = self.data_store.get_last_event_payload("regime_rebalance_state")
-            if state:
-                flow_active = bool(state.get("flow_active", False))
-                deficit_active = bool(state.get("deficit_active", False))
-
-        excess_cash = total_value - invested_value
-        flow_trade_min_amount = total_value * regime_rebalance.flow_trade_min
-        flow_trade_stop_amount = total_value * regime_rebalance.flow_trade_stop
-        deficit_rail_start_amount = total_value * regime_rebalance.deficit_rail_start
-        deficit_rail_stop_amount = total_value * regime_rebalance.deficit_rail_stop
-        flow_gate = False
-        deficit_gate = False
-        if excess_cash < 0:
-            deficit_amount = -excess_cash
-            deficit_gate = deficit_amount >= deficit_rail_start_amount or (
-                deficit_active and deficit_amount >= deficit_rail_stop_amount
-            )
-            if not deficit_gate:
-                flow_gate = deficit_amount >= flow_trade_min_amount or (
-                    flow_active and deficit_amount >= flow_trade_stop_amount
-                )
-        else:
-            flow_gate = excess_cash >= flow_trade_min_amount or (
-                flow_active and excess_cash >= flow_trade_stop_amount
-            )
-
-        allowed_symbols = {
-            symbol for symbol in symbols if self.config.trading_is_allowed(symbol)
-        }
-
-        def build_flow_orders(amount: float) -> Dict[str, int]:
-            if amount == 0:
-                return {}
-            active_symbols = [
-                symbol
-                for symbol in symbols
-                if symbol in allowed_symbols
-                and abs(share_gaps[symbol]) > share_tolerance
-            ]
-            if not active_symbols:
-                return {}
-            net_gap = sum(share_gaps[symbol] for symbol in active_symbols)
-            tot_gap = sum(abs(share_gaps[symbol]) for symbol in active_symbols)
-            if tot_gap <= 0:
-                return {}
-
-            ok_buy = net_gap > regime_rebalance.flow_imbalance_tau * tot_gap
-            ok_sell = net_gap < -regime_rebalance.flow_imbalance_tau * tot_gap
-            if amount > 0 and not ok_buy:
-                return {}
-            if amount < 0 and not ok_sell:
-                return {}
-
-            orders: Dict[str, int] = {}
-            if amount > 0:
-                deficits = {
-                    symbol: max(share_gaps[symbol], 0) for symbol in active_symbols
-                }
-                total_deficit = sum(deficits.values())
-                if total_deficit <= 0:
-                    return {}
-                for symbol in active_symbols:
-                    deficit = deficits[symbol]
-                    if deficit <= 0:
-                        continue
-                    if not self.config.trading_is_allowed(symbol):
-                        continue
-                    max_buy = max(
-                        (target_shares[symbol] + share_tolerance)
-                        - current_positions[symbol],
-                        0,
-                    )
-                    if max_buy <= 0:
-                        continue
-                    alloc = amount * (deficit / total_deficit)
-                    buy_shares = min(int(alloc // market_prices[symbol]), max_buy)
-                    if buy_shares > 0:
-                        orders[symbol] = buy_shares
-            else:
-                need = -amount
-                excesses = {
-                    symbol: max(-share_gaps[symbol], 0) for symbol in active_symbols
-                }
-                total_excess = sum(excesses.values())
-                if total_excess <= 0:
-                    return {}
-                for symbol in active_symbols:
-                    excess = excesses[symbol]
-                    if excess <= 0:
-                        continue
-                    if not self.config.trading_is_allowed(symbol):
-                        continue
-                    max_sell = max(
-                        current_positions[symbol]
-                        - max(target_shares[symbol] - share_tolerance, 0),
-                        0,
-                    )
-                    if max_sell <= 0:
-                        continue
-                    alloc = need * (excess / total_excess)
-                    sell_shares = min(
-                        math.ceil(alloc / market_prices[symbol]), max_sell
-                    )
-                    if sell_shares > 0:
-                        orders[symbol] = -sell_shares
-            return orders
-
-        def build_deficit_orders(
-            shares_state: Dict[str, int],
-            amount: float,
-            allow_below_target: bool,
-            allowed_symbols: set[str],
-        ) -> Dict[str, int]:
-            if amount <= 0:
-                return {}
-            orders: Dict[str, int] = {}
-            initial_amount = amount
-
-            overweight_symbols = [
-                symbol
-                for symbol in symbols
-                if shares_state[symbol] > target_shares[symbol] + share_tolerance
-                and symbol in allowed_symbols
-            ]
-            if overweight_symbols:
-                overages = {
-                    symbol: max(
-                        shares_state[symbol]
-                        - (target_shares[symbol] + share_tolerance),
-                        0,
-                    )
-                    for symbol in overweight_symbols
-                }
-                total_over = sum(overages.values())
-                for symbol in overweight_symbols:
-                    over = overages[symbol]
-                    if over <= 0:
-                        continue
-                    max_sell = max(
-                        shares_state[symbol]
-                        - max(target_shares[symbol] - share_tolerance, 0),
-                        0,
-                    )
-                    if max_sell <= 0:
-                        continue
-                    alloc = (
-                        initial_amount * (over / total_over)
-                        if total_over > 0
-                        else amount
-                    )
-                    alloc = min(alloc, amount)
-                    sell_shares = min(
-                        math.ceil(alloc / market_prices[symbol]), max_sell
-                    )
-                    if sell_shares > 0:
-                        orders[symbol] = orders.get(symbol, 0) - sell_shares
-                        amount -= sell_shares * market_prices[symbol]
-                        if amount <= 0:
-                            return orders
-
-            if not allow_below_target:
-                return orders
-
-            while amount > 0:
-                any_sold = False
-                for symbol in symbols:
-                    if self.config.symbols[symbol].weight <= 0:
-                        continue
-                    if symbol not in allowed_symbols:
-                        continue
-                    max_sell = shares_state[symbol] + orders.get(symbol, 0)
-                    if max_sell <= 0:
-                        continue
-                    alloc = amount * self.config.symbols[symbol].weight
-                    sell_shares = min(
-                        math.ceil(alloc / market_prices[symbol]), max_sell
-                    )
-                    if sell_shares <= 0:
-                        continue
-                    orders[symbol] = orders.get(symbol, 0) - sell_shares
-                    amount -= sell_shares * market_prices[symbol]
-                    any_sold = True
-                    if amount <= 0:
-                        break
-                if not any_sold:
-                    break
-            return orders
-
-        orders_by_symbol: Dict[str, int] = {}
-        rebalance_mode = "no"
-        deficit_gate_after = False
-        if hard_rebalance or soft_rebalance:
-            rebalance_mode = "hard" if hard_rebalance else "soft"
-            for symbol in symbols:
-                desired = target_shares[symbol] - current_positions[symbol]
-                if hard_rebalance and not math.isclose(rebalance_fraction, 1.0):
-                    desired = int(round(desired * rebalance_fraction))
-                if desired == 0:
-                    continue
-                if symbol in allowed_symbols:
-                    orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + desired
-
-            shares_after = {
-                symbol: current_positions[symbol] + orders_by_symbol.get(symbol, 0)
-                for symbol in symbols
-            }
-            invested_after = sum(
-                shares_after[symbol] * market_prices[symbol] for symbol in symbols
-            )
-            excess_after = total_value - invested_after
-            deficit_amount_after = max(0.0, -excess_after)
-            deficit_gate_after = deficit_amount_after >= deficit_rail_stop_amount
-            if deficit_gate_after:
-                deficit_needed = max(
-                    0.0, deficit_amount_after - deficit_rail_stop_amount
-                )
-                deficit_orders = build_deficit_orders(
-                    shares_after,
-                    deficit_needed,
-                    allow_below_target=True,
-                    allowed_symbols=allowed_symbols,
-                )
-                if deficit_orders:
-                    rebalance_mode = f"{rebalance_mode}+deficit"
-                    for symbol, delta in deficit_orders.items():
-                        if delta == 0:
-                            continue
-                        orders_by_symbol[symbol] = (
-                            orders_by_symbol.get(symbol, 0) + delta
-                        )
-        elif deficit_gate:
-            rebalance_mode = "deficit"
-            deficit_needed = max(0.0, -excess_cash - deficit_rail_stop_amount)
-            deficit_orders = build_deficit_orders(
-                current_positions,
-                deficit_needed,
-                allow_below_target=True,
-                allowed_symbols=allowed_symbols,
-            )
-            if deficit_orders:
-                for symbol, delta in deficit_orders.items():
-                    if delta == 0:
-                        continue
-                    orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + delta
-        elif flow_gate:
-            rebalance_mode = "flow"
-            flow_orders = build_flow_orders(excess_cash)
-            for symbol, delta in flow_orders.items():
-                if delta == 0:
-                    continue
-                orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + delta
-        regime_summary: List[Dict[str, Any]] = []
-        for symbol in symbols:
-            target_weight = self.config.symbols[symbol].weight
-            target_value = target_values[symbol]
-            target_share = target_shares[symbol]
-            trade_shares = orders_by_symbol.get(symbol, 0)
-            trading_allowed = self.config.trading_is_allowed(symbol)
-            if trade_shares != 0:
-                to_trade.append(
-                    (
-                        symbol,
-                        self.get_primary_exchange(symbol),
-                        trade_shares,
-                    )
-                )
-                action = (
-                    f"[green]Buy {trade_shares}"
-                    if trade_shares > 0
-                    else f"[green]Sell {abs(trade_shares)}"
-                )
-            elif not trading_allowed:
-                action = "[cyan]Skip (no_trading)"
-            else:
-                action = "[cyan]Hold"
-
-            weight_delta = current_weights[symbol] - target_weight
-            value_delta = current_values[symbol] - target_value
-            shares_delta = current_positions[symbol] - target_share
-            band_status = "hard" if hard_breach else "soft" if soft_breach else "no"
-            gate_status = (
-                f"mode={rebalance_mode} "
-                f"band={band_status} "
-                f"regime={'ok' if regime_ok else 'no'} "
-                f"cooldown={'ok' if cooldown_ok else 'no'} "
-                f"flow={'on' if flow_gate else 'off'} "
-                f"deficit={'on' if deficit_gate else 'off'}"
-            )
-
-            table.add_row(
-                symbol,
-                f"{pfmt(current_weights[symbol])}->{pfmt(target_weight)} "
-                f"({pfmt(weight_delta)})",
-                f"{dfmt(current_values[symbol])}->{dfmt(target_value)} "
-                f"({dfmt(value_delta)})",
-                f"{ifmt(current_positions[symbol])}->{ifmt(target_share)} "
-                f"({ifmt(shares_delta)})",
-                gate_status,
-                action,
-            )
-            regime_summary.append(
-                {
-                    "symbol": symbol,
-                    "market_price": market_prices[symbol],
-                    "current_weight": current_weights[symbol],
-                    "target_weight": target_weight,
-                    "current_value": current_values[symbol],
-                    "target_value": target_value,
-                    "current_shares": current_positions[symbol],
-                    "target_shares": target_share,
-                    "shares_to_trade": trade_shares,
-                    "weight_delta": weight_delta,
-                    "value_delta": value_delta,
-                    "shares_delta": shares_delta,
-                    "trading_allowed": trading_allowed,
-                    "action": action,
-                }
-            )
-
-        log.info(
-            f"Regime rebalancing gates: max_relative_drift={pfmt(max_relative_drift)} "
-            f"soft_band={pfmt(regime_rebalance.soft_band, 0)} "
-            f"hard_band={pfmt(regime_rebalance.hard_band, 0)} "
-            f"hard_breach={hard_breach} soft_breach={soft_breach} "
-            f"chop={ffmt(choppiness)} er={pfmt(efficiency)} "
-            f"cooldown_ok={cooldown_ok} mode={rebalance_mode} "
-            f"flow_gate={flow_gate} deficit_gate={deficit_gate} "
-            f"flow_active={flow_active} deficit_active={deficit_active} "
-            f"flow_min={pfmt(regime_rebalance.flow_trade_min)}({dfmt(flow_trade_min_amount)}) "
-            f"flow_stop={pfmt(regime_rebalance.flow_trade_stop)}({dfmt(flow_trade_stop_amount)}) "
-            f"deficit_start={pfmt(regime_rebalance.deficit_rail_start)}({dfmt(deficit_rail_start_amount)}) "
-            f"deficit_stop={pfmt(regime_rebalance.deficit_rail_stop)}({dfmt(deficit_rail_stop_amount)}) "
-            f"excess_cash={dfmt(excess_cash)}"
-            + (
-                " "
-                + "ratio_gate="
-                + ("on" if ratio_enabled else "shadow")
-                + f" ratio_ok={ratio_ok} "
-                + f"ratio_var={ffmt(ratio_var) if ratio_var is not None else '-'} "
-                + f"ratio_var_min={ffmt(ratio_var_threshold) if ratio_var_threshold is not None else '-'} "
-                + f"ratio_tstat={ffmt(ratio_tstat) if ratio_tstat is not None else '-'} "
-                + f"ratio_drift_max={ffmt(ratio_drift_max) if ratio_drift_max is not None else '-'} "
-                + f"anchor={ratio_anchor} rest={','.join(ratio_rest)}"
-                if ratio_gate is not None
-                else ""
-            )
-        )
-        if self.data_store:
-            ratio_payload = None
-            if ratio_gate is not None:
-                ratio_payload = {
-                    "enabled": ratio_enabled,
-                    "anchor": ratio_anchor,
-                    "rest": ratio_rest,
-                    "var": ratio_var,
-                    "var_min": ratio_var_threshold,
-                    "tstat": ratio_tstat,
-                    "drift_max": ratio_drift_max,
-                    "ok": ratio_ok,
-                }
-            deficit_active_state = (
-                deficit_gate_after
-                if (hard_rebalance or soft_rebalance)
-                else deficit_gate
-            )
-            self.data_store.record_event(
-                "regime_rebalance_gate",
-                {
-                    "symbols": symbols,
-                    "max_relative_drift": max_relative_drift,
-                    "soft_band": regime_rebalance.soft_band,
-                    "hard_band": regime_rebalance.hard_band,
-                    "hard_breach": hard_breach,
-                    "soft_breach": soft_breach,
-                    "choppiness": choppiness,
-                    "efficiency": efficiency,
-                    "cooldown_ok": cooldown_ok,
-                    "flow_gate": flow_gate,
-                    "deficit_gate": deficit_gate,
-                    "excess_cash": excess_cash,
-                    "mode": rebalance_mode,
-                    "orders": to_trade,
-                    "ratio_gate": ratio_payload,
-                },
-            )
-            self.data_store.record_event(
-                "regime_rebalance_summary",
-                {
-                    "symbols": symbols,
-                    "total_value": total_value,
-                    "hard_breach": hard_breach,
-                    "soft_breach": soft_breach,
-                    "regime_ok": regime_ok,
-                    "cooldown_ok": cooldown_ok,
-                    "flow_gate": flow_gate,
-                    "deficit_gate": deficit_gate,
-                    "excess_cash": excess_cash,
-                    "mode": rebalance_mode,
-                    "summary": regime_summary,
-                    "ratio_gate": ratio_payload,
-                },
-            )
-            self.data_store.record_event(
-                "regime_rebalance_state",
-                {
-                    "flow_active": rebalance_mode == "flow" and flow_gate,
-                    "deficit_active": deficit_active_state,
-                },
-            )
-
-        return (table, to_trade)
 
     async def execute_regime_rebalance_orders(
         self, orders: List[Tuple[str, str, int]]
     ) -> None:
-        """Execute direct stock orders for regime-aware rebalancing."""
-        for symbol, primary_exchange, quantity in orders:
-            try:
-                action = "BUY" if quantity > 0 else "SELL"
-                stock_contract = Stock(
-                    symbol,
-                    self.get_order_exchange(),
-                    currency="USD",
-                    primaryExchange=primary_exchange,
-                )
-
-                ticker = await self.ibkr.get_ticker_for_contract(
-                    stock_contract,
-                    required_fields=[],
-                    optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
-                )
-                limit_price = round(midpoint_or_market_price(ticker), 2)
-
-                order = LimitOrder(
-                    action,
-                    abs(quantity),
-                    limit_price,
-                    algoStrategy=self.get_algo_strategy(),
-                    algoParams=self.get_algo_params(),
-                    tif="DAY",
-                    account=self.account_number,
-                    orderRef=f"{self.regime_rebalance_order_ref_prefix}:{symbol}",
-                )
-
-                log.notice(
-                    f"Regime rebalancing: {action.lower()} {abs(quantity)} shares of {symbol} @ ${limit_price}"
-                )
-
-                self.enqueue_order(stock_contract, order)
-            except Exception as e:
-                log.error(
-                    f"{symbol}: Failed to execute regime rebalance order. Error: {e}"
-                )
-                continue
+        await self.equity_engine.execute_regime_rebalance_orders(orders)
 
     async def check_buy_only_positions(
         self,
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> Tuple[Table, List[Tuple[str, str, int]]]:
-        """Check which buy-only rebalancing symbols need direct stock purchases."""
-        # Get stock positions
-        stock_positions = [
-            position
-            for symbol in portfolio_positions
-            for position in portfolio_positions[symbol]
-            if isinstance(position.contract, Stock)
-        ]
-
-        total_buying_power = self.get_buying_power(account_summary)
-
-        stock_symbols: Dict[str, PortfolioItem] = dict()
-        for stock in stock_positions:
-            symbol = stock.contract.symbol
-            stock_symbols[symbol] = stock
-
-        buy_actions_table = Table(title="Buy-only rebalancing summary")
-        buy_actions_table.add_column("Symbol")
-        buy_actions_table.add_column("Current shares", justify="right")
-        buy_actions_table.add_column("Target shares", justify="right")
-        buy_actions_table.add_column("Shares to buy", justify="right")
-        buy_actions_table.add_column("Action")
-
-        to_buy: List[Tuple[str, str, int]] = []
-
-        # Only check symbols configured for buy-only rebalancing
-        regime_symbols = self._regime_rebalance_symbols()
-        buy_only_symbols = [
-            symbol
-            for symbol in self.config.symbols.keys()
-            if self.config.is_buy_only_rebalancing(symbol)
-            and symbol not in regime_symbols
-        ]
-
-        if not buy_only_symbols:
-            return (buy_actions_table, to_buy)
-
-        async def check_buy_position_task(symbol: str) -> None:
-            ticker = await self.ibkr.get_ticker_for_stock(
-                symbol, self.get_primary_exchange(symbol)
-            )
-
-            current_position = math.floor(
-                stock_symbols[symbol].position if symbol in stock_symbols else 0
-            )
-
-            target_value = round(
-                self.config.symbols[symbol].weight * total_buying_power, 2
-            )
-            market_price = ticker.marketPrice()
-            if (
-                not market_price
-                or math.isnan(market_price)
-                or math.isclose(market_price, 0)
-            ):
-                log.error(
-                    f"Invalid market price for {symbol} (market_price={market_price}), skipping for now"
-                )
-                return
-
-            target_shares = math.floor(target_value / market_price)
-            shares_to_buy = target_shares - current_position
-
-            # Check minimum thresholds
-            symbol_config = self.config.symbols[symbol]
-            min_shares = symbol_config.buy_only_min_threshold_shares or 1
-            min_amount = symbol_config.buy_only_min_threshold_amount
-            min_percent = symbol_config.buy_only_min_threshold_percent
-            min_percent_relative = symbol_config.buy_only_min_threshold_percent_relative
-
-            # Calculate minimum amount from percentage if specified
-            if min_percent is not None:
-                # Get net liquidation value from account summary
-                net_liquidation_value = float(account_summary["NetLiquidation"].value)
-                percent_min_amount = net_liquidation_value * min_percent
-                # If both percent and amount are specified, use the larger one
-                if min_amount is not None:
-                    min_amount = max(min_amount, percent_min_amount)
-                else:
-                    min_amount = percent_min_amount
-
-            # Check relative percentage threshold (only when we're below target)
-            if (
-                min_percent_relative is not None
-                and target_value > 0
-                and shares_to_buy > 0
-            ):
-                current_value = current_position * market_price
-                relative_diff = (target_value - current_value) / target_value
-
-                # If relative difference is below threshold, skip this symbol
-                if relative_diff < min_percent_relative:
-                    buy_actions_table.add_row(
-                        symbol,
-                        ifmt(current_position),
-                        ifmt(target_shares),
-                        ifmt(0),
-                        f"[yellow]Below relative threshold {min_percent_relative:.1%} (diff: {relative_diff:.1%})",
-                    )
-                    return
-
-            # If we're below target but target is less than minimum shares,
-            # check if we should still buy to meet minimum threshold
-            if shares_to_buy <= 0 and current_position == 0 and target_value > 0:
-                # Check if min_amount is less than 1 share and we should buy 1 share
-                if min_amount and min_amount < market_price:
-                    shares_to_buy = 1 - current_position
-                elif not min_amount and min_shares == 1:
-                    # Default behavior: buy at least 1 share if we have any allocation
-                    shares_to_buy = 1 - current_position
-
-            # Only buy if we need more shares (never sell in buy-only mode)
-            if shares_to_buy > 0:
-                # Check if we meet the minimum thresholds
-                order_amount = shares_to_buy * market_price
-
-                # Dollar amount threshold takes precedence
-                if min_amount and order_amount < min_amount:
-                    # If dollar amount is less than 1 share worth, round up to 1 share
-                    if min_amount < market_price:
-                        shares_to_buy = 1
-                        order_amount = market_price
-                    else:
-                        buy_actions_table.add_row(
-                            symbol,
-                            ifmt(current_position),
-                            ifmt(target_shares),
-                            ifmt(shares_to_buy),
-                            f"[yellow]Below min amount ${min_amount:.2f} (would be ${order_amount:.2f})",
-                        )
-                        return
-
-                # Check minimum shares threshold
-                if shares_to_buy < min_shares:
-                    buy_actions_table.add_row(
-                        symbol,
-                        ifmt(current_position),
-                        ifmt(target_shares),
-                        ifmt(shares_to_buy),
-                        f"[yellow]Below min shares {min_shares}",
-                    )
-                    return
-
-                # Check if we have enough buying power
-                cost = shares_to_buy * market_price
-                available_buying_power = self.get_buying_power(account_summary)
-
-                if cost > available_buying_power:
-                    # Adjust shares to what we can afford
-                    shares_to_buy = math.floor(available_buying_power / market_price)
-
-                    # Re-check thresholds after adjustment
-                    order_amount = shares_to_buy * market_price
-                    if min_amount and order_amount < min_amount:
-                        # If we can afford at least 1 share and min amount is less than 1 share, buy 1
-                        if (
-                            available_buying_power >= market_price
-                            and min_amount < market_price
-                        ):
-                            shares_to_buy = 1
-                        else:
-                            buy_actions_table.add_row(
-                                symbol,
-                                ifmt(current_position),
-                                ifmt(target_shares),
-                                ifmt(0),
-                                f"[yellow]Insufficient buying power to meet min amount ${min_amount:.2f}",
-                            )
-                            return
-                    if shares_to_buy < min_shares:
-                        buy_actions_table.add_row(
-                            symbol,
-                            ifmt(current_position),
-                            ifmt(target_shares),
-                            ifmt(0),
-                            f"[yellow]Insufficient buying power to meet min shares {min_shares}",
-                        )
-                        return
-
-                if shares_to_buy > 0:
-                    buy_actions_table.add_row(
-                        symbol,
-                        ifmt(current_position),
-                        ifmt(target_shares),
-                        ifmt(shares_to_buy),
-                        f"[green]Buy {shares_to_buy} shares",
-                    )
-                    to_buy.append(
-                        (symbol, self.get_primary_exchange(symbol), shares_to_buy)
-                    )
-                else:
-                    buy_actions_table.add_row(
-                        symbol,
-                        ifmt(current_position),
-                        ifmt(target_shares),
-                        ifmt(0),
-                        "[yellow]Insufficient buying power",
-                    )
-            else:
-                buy_actions_table.add_row(
-                    symbol,
-                    ifmt(current_position),
-                    ifmt(target_shares),
-                    ifmt(0),
-                    "[cyan]At or above target",
-                )
-
-        tasks: List[Coroutine[Any, Any, None]] = [
-            check_buy_position_task(symbol) for symbol in buy_only_symbols
-        ]
-        await log.track_async(tasks, description="Checking buy-only positions...")
-
-        return (buy_actions_table, to_buy)
+        return await self.equity_engine.check_buy_only_positions(
+            account_summary, portfolio_positions
+        )
 
     async def execute_buy_orders(self, buy_orders: List[Tuple[str, str, int]]) -> None:
-        """Execute direct stock buy orders for buy-only rebalancing symbols."""
-        for symbol, primary_exchange, quantity in buy_orders:
-            try:
-                stock_contract = Stock(
-                    symbol,
-                    self.get_order_exchange(),
-                    currency="USD",
-                    primaryExchange=primary_exchange,
-                )
-
-                # Get current market price
-                ticker = await self.ibkr.get_ticker_for_contract(
-                    stock_contract,
-                    required_fields=[],
-                    optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
-                )
-
-                # Use limit order at midpoint or slightly above ask
-                limit_price = round(midpoint_or_market_price(ticker), 2)
-
-                # Create buy order
-                order = LimitOrder(
-                    "BUY",
-                    quantity,
-                    limit_price,
-                    algoStrategy=self.get_algo_strategy(),
-                    algoParams=self.get_algo_params(),
-                    tif="DAY",
-                    account=self.account_number,
-                )
-
-                log.notice(
-                    f"Buy-only rebalancing: buying {quantity} shares of {symbol} @ ${limit_price}"
-                )
-
-                # Enqueue order for later submission
-                self.enqueue_order(stock_contract, order)
-
-            except Exception as e:
-                log.error(
-                    f"{symbol}: Failed to execute buy order for {quantity} shares. Error: {e}"
-                )
-                continue
+        await self.equity_engine.execute_buy_orders(buy_orders)
 
     async def check_sell_only_positions(
         self,
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> Tuple[Table, List[Tuple[str, str, int]]]:
-        """Check which sell-only rebalancing symbols need direct stock sales."""
-        # Get stock positions
-        stock_positions = [
-            position
-            for symbol in portfolio_positions
-            for position in portfolio_positions[symbol]
-            if isinstance(position.contract, Stock)
-        ]
-
-        total_buying_power = self.get_buying_power(account_summary)
-
-        stock_symbols: Dict[str, PortfolioItem] = dict()
-        for stock in stock_positions:
-            symbol = stock.contract.symbol
-            stock_symbols[symbol] = stock
-
-        sell_actions_table = Table(title="Sell-only rebalancing summary")
-        sell_actions_table.add_column("Symbol")
-        sell_actions_table.add_column("Current shares", justify="right")
-        sell_actions_table.add_column("Target shares", justify="right")
-        sell_actions_table.add_column("Shares to sell", justify="right")
-        sell_actions_table.add_column("Action")
-
-        to_sell: List[Tuple[str, str, int]] = []
-
-        # Only check symbols configured for sell-only rebalancing
-        regime_symbols = self._regime_rebalance_symbols()
-        sell_only_symbols = [
-            symbol
-            for symbol in self.config.symbols.keys()
-            if self.config.is_sell_only_rebalancing(symbol)
-            and symbol not in regime_symbols
-        ]
-
-        if not sell_only_symbols:
-            return (sell_actions_table, to_sell)
-
-        async def check_sell_position_task(symbol: str) -> None:
-            ticker = await self.ibkr.get_ticker_for_stock(
-                symbol, self.get_primary_exchange(symbol)
-            )
-
-            current_position = math.floor(
-                stock_symbols[symbol].position if symbol in stock_symbols else 0
-            )
-
-            target_value = round(
-                self.config.symbols[symbol].weight * total_buying_power, 2
-            )
-            market_price = ticker.marketPrice()
-            if (
-                not market_price
-                or math.isnan(market_price)
-                or math.isclose(market_price, 0)
-            ):
-                log.error(
-                    f"Invalid market price for {symbol} (market_price={market_price}), skipping for now"
-                )
-                return
-
-            target_shares = math.floor(target_value / market_price)
-            shares_to_sell = current_position - target_shares
-
-            # Check minimum thresholds
-            symbol_config = self.config.symbols[symbol]
-            min_shares = symbol_config.sell_only_min_threshold_shares or 1
-            min_amount = symbol_config.sell_only_min_threshold_amount
-            min_percent = symbol_config.sell_only_min_threshold_percent
-            min_percent_relative = (
-                symbol_config.sell_only_min_threshold_percent_relative
-            )
-
-            # Calculate minimum amount from percentage if specified
-            if min_percent is not None:
-                # Get net liquidation value from account summary
-                net_liquidation_value = float(account_summary["NetLiquidation"].value)
-                percent_min_amount = net_liquidation_value * min_percent
-                # If both percent and amount are specified, use the larger one
-                if min_amount is not None:
-                    min_amount = max(min_amount, percent_min_amount)
-                else:
-                    min_amount = percent_min_amount
-
-            # Check relative percentage threshold (only when we're above target)
-            if (
-                min_percent_relative is not None
-                and target_value > 0
-                and shares_to_sell > 0
-            ):
-                current_value = current_position * market_price
-                relative_diff = (current_value - target_value) / target_value
-
-                # If relative difference is below threshold, skip this symbol
-                if relative_diff < min_percent_relative:
-                    sell_actions_table.add_row(
-                        symbol,
-                        ifmt(current_position),
-                        ifmt(target_shares),
-                        ifmt(0),
-                        f"[yellow]Below relative threshold {min_percent_relative:.1%} (diff: {relative_diff:.1%})",
-                    )
-                    return
-
-            # Only sell if we have excess shares (never buy in sell-only mode)
-            if shares_to_sell > 0:
-                # Check if we meet the minimum thresholds
-                order_amount = shares_to_sell * market_price
-
-                # Dollar amount threshold takes precedence
-                if min_amount and order_amount < min_amount:
-                    sell_actions_table.add_row(
-                        symbol,
-                        ifmt(current_position),
-                        ifmt(target_shares),
-                        ifmt(shares_to_sell),
-                        f"[yellow]Below min amount ${min_amount:.2f} (would be ${order_amount:.2f})",
-                    )
-                    return
-
-                # Check minimum shares threshold
-                if shares_to_sell < min_shares:
-                    sell_actions_table.add_row(
-                        symbol,
-                        ifmt(current_position),
-                        ifmt(target_shares),
-                        ifmt(shares_to_sell),
-                        f"[yellow]Below min shares {min_shares}",
-                    )
-                    return
-
-                sell_actions_table.add_row(
-                    symbol,
-                    ifmt(current_position),
-                    ifmt(target_shares),
-                    ifmt(shares_to_sell),
-                    f"[green]Sell {shares_to_sell} shares",
-                )
-                to_sell.append(
-                    (symbol, self.get_primary_exchange(symbol), shares_to_sell)
-                )
-            else:
-                sell_actions_table.add_row(
-                    symbol,
-                    ifmt(current_position),
-                    ifmt(target_shares),
-                    ifmt(0),
-                    "[cyan]At or below target",
-                )
-
-        tasks: List[Coroutine[Any, Any, None]] = [
-            check_sell_position_task(symbol) for symbol in sell_only_symbols
-        ]
-        await log.track_async(tasks, description="Checking sell-only positions...")
-
-        return (sell_actions_table, to_sell)
+        return await self.equity_engine.check_sell_only_positions(
+            account_summary, portfolio_positions
+        )
 
     async def execute_sell_orders(
         self, sell_orders: List[Tuple[str, str, int]]
     ) -> None:
-        """Execute direct stock sell orders for sell-only rebalancing symbols."""
-        for symbol, primary_exchange, quantity in sell_orders:
-            try:
-                stock_contract = Stock(
-                    symbol,
-                    self.get_order_exchange(),
-                    currency="USD",
-                    primaryExchange=primary_exchange,
-                )
-
-                # Get current market price
-                ticker = await self.ibkr.get_ticker_for_contract(
-                    stock_contract,
-                    required_fields=[],
-                    optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
-                )
-
-                # Place sell order near the tape using midpoint with market fallback
-                limit_price = round(midpoint_or_market_price(ticker), 2)
-
-                # Create sell order
-                order = LimitOrder(
-                    "SELL",
-                    quantity,
-                    limit_price,
-                    algoStrategy=self.get_algo_strategy(),
-                    algoParams=self.get_algo_params(),
-                    tif="DAY",
-                    account=self.account_number,
-                )
-
-                log.notice(
-                    f"Sell-only rebalancing: selling {quantity} shares of {symbol} @ ${limit_price}"
-                )
-
-                # Enqueue order for later submission
-                self.enqueue_order(stock_contract, order)
-
-            except Exception as e:
-                log.error(
-                    f"{symbol}: Failed to execute sell order for {quantity} shares. Error: {e}"
-                )
-                continue
+        await self.equity_engine.execute_sell_orders(sell_orders)
 
     async def close_puts(self, puts: List[PortfolioItem]) -> None:
-        return await self.close_positions("P", puts)
+        await self.options_engine.close_puts(puts)
 
     async def roll_puts(
         self,
         puts: List[PortfolioItem],
         account_summary: Dict[str, AccountValue],
     ) -> List[PortfolioItem]:
-        return await self.roll_positions(puts, "P", account_summary)
+        return await self.options_engine.roll_puts(puts, account_summary)
 
     async def close_calls(self, calls: List[PortfolioItem]) -> None:
-        return await self.close_positions("C", calls)
+        await self.options_engine.close_calls(calls)
 
     async def roll_calls(
         self,
@@ -3105,55 +926,12 @@ class PortfolioManager:
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> List[PortfolioItem]:
-        return await self.roll_positions(
-            calls, "C", account_summary, portfolio_positions
+        return await self.options_engine.roll_calls(
+            calls, account_summary, portfolio_positions
         )
 
     async def close_positions(self, right: str, positions: List[PortfolioItem]) -> None:
-        log.notice(f"Close {right} positions...")
-        for position in positions:
-            try:
-                position.contract.exchange = self.get_order_exchange()
-                price = None
-                ticker = await self.ibkr.get_ticker_for_contract(
-                    position.contract,
-                    required_fields=[],
-                    optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
-                )
-                is_short = position.position < 0
-                price = (
-                    round(get_lower_price(ticker), 2)
-                    if is_short
-                    else round(get_higher_price(ticker), 2)
-                )
-                if not price or util.isNan(price) or math.isnan(price):
-                    # if the price is near zero or NaN, use the minimum price
-                    log.warning(
-                        f"Market price data unavailable for {position.contract.localSymbol}, using ticker.minTick={ticker.minTick}"
-                    )
-                    price = ticker.minTick
-
-                # Round VIX prices according to contract specifications
-                if position.contract.symbol == "VIX":
-                    price = self.round_vix_price(price)
-
-                qty = abs(position.position)
-                order = LimitOrder(
-                    "BUY" if is_short else "SELL",
-                    qty,
-                    price,
-                    algoStrategy=self.get_algo_strategy(),
-                    algoParams=self.get_algo_params(),
-                    tif="DAY",
-                    account=self.account_number,
-                )
-
-                self.enqueue_order(ticker.contract, order)
-            except RuntimeError:
-                log.error(
-                    "Error occurred when trying to close position. Continuing anyway..."
-                )
-                continue
+        await self.options_engine.close_positions(right, positions)
 
     async def roll_positions(
         self,
@@ -3162,878 +940,26 @@ class PortfolioManager:
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Optional[Dict[str, List[PortfolioItem]]] = None,
     ) -> List[PortfolioItem]:
-        closeable_positions: List[PortfolioItem] = []
-
-        log.notice(f"Rolling {right} positions...")
-
-        for position in positions:
-            try:
-                symbol = position.contract.symbol
-
-                position.contract.exchange = self.get_order_exchange()
-                buy_ticker = await self.ibkr.get_ticker_for_contract(
-                    position.contract,
-                    required_fields=[],
-                    optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
-                )
-
-                strike_limit = self.config.get_strike_limit(symbol, right)
-                if right.startswith("C"):
-                    average_cost = (
-                        [
-                            p.averageCost
-                            for p in portfolio_positions[symbol]
-                            if isinstance(p.contract, Stock)
-                        ]
-                        if portfolio_positions and symbol in portfolio_positions
-                        else [0]
-                    )
-                    strike_limit = round(
-                        max([strike_limit or 0] + average_cost),
-                        2,
-                    )
-                    if self.config.maintain_high_water_mark(symbol):
-                        strike_limit = max([strike_limit, position.contract.strike])
-
-                elif right.startswith("P"):
-                    strike_limit = round(
-                        min(
-                            [strike_limit or sys.float_info.max]
-                            + [
-                                max(
-                                    [
-                                        position.contract.strike,
-                                        position.contract.strike
-                                        + (
-                                            position.averageCost
-                                            / float(position.contract.multiplier)
-                                        )
-                                        - midpoint_or_market_price(buy_ticker),
-                                    ]
-                                )
-                            ]
-                        ),
-                        2,
-                    )
-                    # special case: if we're rolling a put that's ITM, we want to roll to an equal or lower strike, not higher
-                    if isinstance(position.contract, Option) and await self.put_is_itm(
-                        position.contract
-                    ):
-                        strike_limit = min([strike_limit, position.contract.strike])
-
-                kind = "calls" if right.startswith("C") else "puts"
-
-                minimum_price = (
-                    (lambda: self.config.orders.minimum_credit)
-                    if not getattr(self.config.roll_when, kind).credit_only
-                    else (
-                        lambda: midpoint_or_market_price(buy_ticker)
-                        + self.config.orders.minimum_credit
-                    )
-                )
-
-                def fallback_minimum_price() -> float:
-                    return midpoint_or_market_price(buy_ticker)
-
-                sell_ticker = await self.find_eligible_contracts(
-                    Stock(
-                        symbol,
-                        self.get_order_exchange(),
-                        "USD",
-                        primaryExchange=self.get_primary_exchange(symbol),
-                    ),
-                    right,
-                    strike_limit,
-                    exclude_expirations_before=position.contract.lastTradeDateOrContractMonth,
-                    exclude_exp_strike=(
-                        position.contract.strike,
-                        position.contract.lastTradeDateOrContractMonth,
-                    ),
-                    minimum_price=minimum_price,
-                    fallback_minimum_price=fallback_minimum_price,
-                )
-                if not sell_ticker.contract:
-                    raise RuntimeError(f"Invalid ticker (no contract): {sell_ticker}")
-
-                qty_to_roll = math.floor(abs(position.position))
-                maximum_new_contracts = await self.get_maximum_new_contracts_for(
-                    symbol,
-                    self.get_primary_exchange(symbol),
-                    account_summary,
-                )
-                from_dte = option_dte(position.contract.lastTradeDateOrContractMonth)
-                roll_when_dte = self.config.roll_when.dte
-                if from_dte > roll_when_dte:
-                    qty_to_roll = min([qty_to_roll, maximum_new_contracts])
-
-                price = midpoint_or_market_price(buy_ticker) - midpoint_or_market_price(
-                    sell_ticker
-                )
-                # a buy order should be at most the minimum price, when we expect a credit
-                price = (
-                    min([price, -self.config.orders.minimum_credit])
-                    if getattr(self.config.roll_when, kind).credit_only
-                    else price
-                )
-
-                # Round VIX prices according to contract specifications
-                if position.contract.symbol == "VIX":
-                    price = self.round_vix_price(price)
-
-                # store a copy of the contracts so we can retrieve them later by conId
-                self.qualified_contracts[position.contract.conId] = position.contract
-                self.qualified_contracts[sell_ticker.contract.conId] = (
-                    sell_ticker.contract
-                )
-
-                # Create combo legs
-                comboLegs = [
-                    ComboLeg(
-                        conId=position.contract.conId,
-                        ratio=1,
-                        exchange=self.get_order_exchange(),
-                        action="BUY",
-                    ),
-                    ComboLeg(
-                        conId=sell_ticker.contract.conId,
-                        ratio=1,
-                        exchange=self.get_order_exchange(),
-                        action="SELL",
-                    ),
-                ]
-
-                # Create contract
-                combo = Contract(
-                    secType="BAG",
-                    symbol=symbol,
-                    currency="USD",
-                    exchange=self.get_order_exchange(),
-                    comboLegs=comboLegs,
-                )
-
-                # Create order
-                order = LimitOrder(
-                    "BUY",
-                    qty_to_roll,
-                    round(price, 2),
-                    tif="DAY",
-                    account=self.account_number,
-                )
-
-                to_dte = option_dte(sell_ticker.contract.lastTradeDateOrContractMonth)
-                from_strike = position.contract.strike
-                to_strike = sell_ticker.contract.strike
-                log.info(
-                    f"{symbol}: Rolling from_strike={from_strike} to_strike={to_strike} from_dte={from_dte} to_dte={to_dte} price={dfmt(price, 3)} qty_to_roll={qty_to_roll}"
-                )
-
-                # Enqueue order
-                self.enqueue_order(combo, order)
-            except NoValidContractsError:
-                dte = option_dte(position.contract.lastTradeDateOrContractMonth)
-                if (
-                    self.config.close_if_unable_to_roll(position.contract.symbol)
-                    and self.config.roll_when.max_dte
-                    and dte <= self.config.roll_when.max_dte
-                    and position_pnl(position) > 0
-                ):
-                    log.warning(
-                        f"{position.contract.symbol}: Unable to find a suitable contract to roll to for {position.contract.localSymbol}. Closing position instead..."
-                    )
-                    closeable_positions.append(position)
-                    continue
-                else:
-                    log.error(
-                        f"{position.contract.symbol}: Error occurred when trying to roll position. Continuing anyway..."
-                    )
-            except RuntimeError:
-                log.error(
-                    f"{position.contract.symbol}: Error occurred when trying to roll position. Continuing anyway..."
-                )
-                continue
-
-        return closeable_positions
-
-    async def find_eligible_contracts(
-        self,
-        underlying: Contract,
-        right: str,
-        strike_limit: Optional[float],
-        minimum_price: Callable[[], float],
-        exclude_expirations_before: Optional[str] = None,
-        exclude_exp_strike: Optional[Tuple[float, str]] = None,
-        fallback_minimum_price: Optional[Callable[[], float]] = None,
-        target_dte: Optional[int] = None,
-        target_delta: Optional[float] = None,
-    ) -> Ticker:
-        contract_target_dte: int = (
-            target_dte if target_dte else self.config.get_target_dte(underlying.symbol)
+        return await self.options_engine.roll_positions(
+            positions, right, account_summary, portfolio_positions
         )
-        contract_target_delta: float = (
-            target_delta
-            if target_delta
-            else self.config.get_target_delta(underlying.symbol, right)
-        )
-        contract_max_dte = self.config.get_max_dte_for(
-            underlying.symbol,
-        )
-
-        log.notice(
-            f"{underlying.symbol}: Searching option chain for "
-            f"right={right} strike_limit={strike_limit} minimum_price={dfmt(minimum_price(), 3)} "
-            f"fallback_minimum_price={dfmt(fallback_minimum_price() if fallback_minimum_price else 0, 3)} "
-            f"contract_target_dte={contract_target_dte} contract_max_dte={contract_max_dte} "
-            f"contract_target_delta={contract_target_delta}, "
-            "this can take a while...",
-        )
-
-        underlying_ticker = await self.ibkr.get_ticker_for_contract(underlying)
-
-        underlying_price = midpoint_or_market_price(underlying_ticker)
-
-        chains = await self.ibkr.get_chains_for_contract(underlying)
-
-        # Some option contracts (e.g. IWM) have multiple trading classes; pick the one that matches the underlying exchange and trading class
-        chain = next(
-            c
-            for c in chains
-            if (
-                c.exchange == underlying.exchange
-                # Some underlying contracts do not have a tradingClass e.g. VIX.
-                # And some underlying contracts have a trading class that doesn't match the chain's trading class e.g. RKLB's trading class is "SCM" (not sure why).
-                # If we find other cases that need special handling, it might be better to loosen the matching criteria here, i.e. incrementally add filters if more than 1 chain found.
-                and c.tradingClass == underlying.symbol
-            )
-        )
-
-        def valid_strike(strike: float) -> bool:
-            if right.startswith("P") and strike_limit:
-                return strike <= strike_limit
-            elif right.startswith("P"):
-                return strike <= underlying_price + 0.05 * underlying_price
-            elif right.startswith("C") and strike_limit:
-                return strike >= strike_limit
-            elif right.startswith("C"):
-                return strike >= underlying_price - 0.05 * underlying_price
-            return False
-
-        chain_expirations = self.config.option_chains.expirations
-        min_dte = (
-            option_dte(exclude_expirations_before) if exclude_expirations_before else 0
-        )
-        strikes = sorted(strike for strike in chain.strikes if valid_strike(strike))
-        expirations = sorted(
-            exp
-            for exp in chain.expirations
-            if option_dte(exp) >= contract_target_dte
-            and option_dte(exp) >= min_dte
-            and (not contract_max_dte or option_dte(exp) <= contract_max_dte)
-        )[:chain_expirations]
-        if len(expirations) < 1:
-            raise NoValidContractsError(
-                f"No valid contract expirations found for {underlying.symbol}. Continuing anyway...",
-            )
-        rights = [right]
-
-        def nearest_strikes(strikes: List[float]) -> List[float]:
-            chain_strikes = self.config.option_chains.strikes
-            if right.startswith("P"):
-                return strikes[-chain_strikes:]
-            return strikes[:chain_strikes]
-
-        strikes = nearest_strikes(strikes)
-        if len(strikes) < 1:
-            raise NoValidContractsError(
-                f"No valid contract strikes found for {underlying.symbol}. Continuing anyway...",
-            )
-        log.info(
-            f"{underlying.symbol}: Scanning between strikes {strikes[0]} and {strikes[-1]},"
-            f" from expirations {expirations[0]} to {expirations[-1]}"
-        )
-
-        contracts = [
-            Option(
-                underlying.symbol,
-                expiration,
-                strike,
-                right,
-                self.get_order_exchange(),
-                # tradingClass=chain.tradingClass,
-            )
-            for right in rights
-            for expiration in expirations
-            for strike in strikes
-        ]
-
-        contracts = await self.ibkr.qualify_contracts(*contracts)
-
-        # Filter out None values
-        contracts = [c for c in contracts if c is not None]
-
-        # exclude strike, but only for the first exp
-        if exclude_exp_strike:
-            contracts = [
-                c
-                for c in contracts
-                if (
-                    c.lastTradeDateOrContractMonth != exclude_exp_strike[1]
-                    or c.strike != exclude_exp_strike[0]
-                )
-            ]
-
-        tickers = await self.ibkr.get_tickers_for_contracts(
-            underlying.symbol,
-            contracts,
-            generic_tick_list="101",
-            required_fields=[],
-            optional_fields=[
-                TickerField.MARKET_PRICE,
-                TickerField.GREEKS,
-                TickerField.OPEN_INTEREST,
-                TickerField.MIDPOINT,
-            ],
-        )
-
-        def open_interest_is_valid(ticker: Ticker, minimum_open_interest: int) -> bool:
-            # The open interest value is never present when using historical
-            # data, so just ignore it when the value is None
-            if right.startswith("P"):
-                return ticker.putOpenInterest >= minimum_open_interest
-            if right.startswith("C"):
-                return ticker.callOpenInterest >= minimum_open_interest
-            return False
-
-        def delta_is_valid(ticker: Ticker) -> bool:
-            model_greeks = ticker.modelGreeks
-            delta = model_greeks.delta if model_greeks is not None else None
-            return (
-                delta is not None
-                and not util.isNan(delta)
-                and abs(delta) <= contract_target_delta
-            )
-
-        def price_is_valid(ticker: Ticker) -> bool:
-            def cost_doesnt_exceed_market_price(ticker: Ticker) -> bool:
-                # when writing puts, we need to be sure that the strike +
-                # credit is less than or equal to the current market price, so
-                # that we don't exceed the target capital allocation for this
-                # position
-                return (
-                    right.startswith("C")
-                    or isinstance(ticker.contract, Option)
-                    and ticker.contract.strike
-                    <= midpoint_or_market_price(ticker) + underlying_price
-                )
-
-            return midpoint_or_market_price(
-                ticker
-            ) > minimum_price() and cost_doesnt_exceed_market_price(ticker)
-
-        # Filter out invalid price
-        tickers = [
-            ticker
-            for ticker in log.track(
-                tickers,
-                description=f"{underlying.symbol}: Filtering invalid prices...",
-                total=len(tickers),
-            )
-            if price_is_valid(ticker)
-        ]
-
-        # Filter out invalid greeks
-        new_tickers = []
-        delta_reject_tickers = []
-        for ticker in log.track(
-            tickers,
-            description=f"{underlying.symbol}: Filtering invalid deltas...",
-            total=len(tickers),
-        ):
-            if delta_is_valid(ticker):
-                new_tickers.append(ticker)
-            else:
-                delta_reject_tickers.append(ticker)
-        tickers = new_tickers
-
-        def filter_remaining_tickers(
-            tickers: List[Ticker], delta_ord_desc: bool
-        ) -> List[Ticker]:
-            minimum_open_interest = self.config.target.minimum_open_interest
-
-            if minimum_open_interest > 0:
-                tickers = [
-                    ticker
-                    for ticker in log.track(
-                        tickers,
-                        description=f"{underlying.symbol}: Filtering by open interest with delta_ord_desc={delta_ord_desc}...",
-                        total=len(tickers),
-                    )
-                    if open_interest_is_valid(ticker, minimum_open_interest)
-                ]
-
-            # Sort by delta first, then expiry date
-            tickers = sorted(
-                sorted(
-                    tickers,
-                    key=lambda t: (
-                        abs(t.modelGreeks.delta)
-                        if t.modelGreeks and t.modelGreeks.delta
-                        else 0
-                    ),
-                    reverse=delta_ord_desc,
-                ),
-                key=lambda t: (
-                    option_dte(t.contract.lastTradeDateOrContractMonth)
-                    if t.contract
-                    else 0
-                ),
-            )
-
-            return tickers
-
-        tickers = filter_remaining_tickers(list(tickers), True)
-
-        the_chosen_ticker = None
-
-        if len(tickers) == 0:
-            if not math.isclose(minimum_price(), 0.0):
-                # if we arrive here, it means that 1) we expect to roll for a
-                # credit only, but 2) we didn't find any suitable contracts,
-                # most likely because we can't roll out and up/down to the
-                # target delta
-                #
-                # because of this, we'll allow rolling to a less-than-optimal
-                # strike, provided it's still a credit
-                tickers = filter_remaining_tickers(list(delta_reject_tickers), False)
-            if len(tickers) < 1:
-                # if there are _still_ no tickers remaining, there's nothing
-                # more we can do
-                raise NoValidContractsError(
-                    f"No valid contracts found for {underlying.symbol}. Continuing anyway...",
-                )
-        elif fallback_minimum_price is not None:
-            # if there's a fallback minimum price specified, try to find
-            # contracts that are at least that price first
-            for ticker in tickers:
-                if midpoint_or_market_price(ticker) > fallback_minimum_price():
-                    the_chosen_ticker = ticker
-                    break
-            if the_chosen_ticker is None:
-                # uh of, if we make it here then all of these options are
-                # net debits, so let's at least choose the ticker that will
-                # result in the smallest debit (i.e., minimize the max loss)
-                tickers = sorted(tickers, key=midpoint_or_market_price, reverse=True)
-
-        if the_chosen_ticker is None:
-            # fall back to the first suitable result
-            the_chosen_ticker = tickers[0]
-
-        if not the_chosen_ticker or not the_chosen_ticker.contract:
-            raise RuntimeError(
-                f"{underlying.symbol}: Something went wrong, the_chosen_ticker={the_chosen_ticker}"
-            )
-
-        log.notice(
-            f"{underlying.symbol}: Found suitable contract at "
-            f"strike={the_chosen_ticker.contract.strike} "
-            f"dte={option_dte(the_chosen_ticker.contract.lastTradeDateOrContractMonth)} "
-            f"price={dfmt(midpoint_or_market_price(the_chosen_ticker), 3)}"
-        )
-
-        return the_chosen_ticker
-
-    def get_algo_strategy(self) -> str:
-        return self.config.orders.algo.strategy
-
-    def algo_params_from(self, params: List[List[str]]) -> List[TagValue]:
-        from ib_async import TagValue
-
-        return [TagValue(p[0], p[1]) for p in params]
-
-    def get_algo_params(self) -> List[TagValue]:
-        return self.algo_params_from(self.config.orders.algo.params)
-
-    def get_order_exchange(self) -> str:
-        return self.config.orders.exchange
-
-    def round_vix_price(self, price: float) -> float:
-        """
-        Rounds a VIX price according to contract specifications:
-        - For prices below $3: round to nearest $0.01
-        - For prices $3 and above: round to nearest $0.05
-        """
-        if price >= 3.0:
-            return round(price * 20) / 20  # Round to nearest $0.05
-        else:
-            return round(price * 100) / 100  # Round to nearest $0.01
 
     async def do_vix_hedging(
         self,
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> None:
-        log.notice("VIX: Checking on our VIX call hedge...")
-
-        async def inner_handler() -> None:
-            if not self.config.vix_call_hedge.enabled:
-                log.warning("🛑 VIX call hedging not enabled, skipping...")
-                return None
-
-            async def vix_calls_should_be_closed() -> tuple[
-                bool, Optional[Ticker], Optional[float]
-            ]:
-                if self.config.vix_call_hedge.close_hedges_when_vix_exceeds:
-                    vix_contract = Index("VIX", "CBOE", "USD")
-                    vix_ticker = await self.ibkr.get_ticker_for_contract(vix_contract)
-                    close_hedges_when_vix_exceeds = (
-                        self.config.vix_call_hedge.close_hedges_when_vix_exceeds
-                    )
-                    if vix_ticker.marketPrice() > close_hedges_when_vix_exceeds:
-                        return (True, vix_ticker, close_hedges_when_vix_exceeds)
-                    return (False, vix_ticker, close_hedges_when_vix_exceeds)
-                return (False, None, None)
-
-            ignore_dte = self.config.vix_call_hedge.ignore_dte
-
-            net_vix_call_count = net_option_positions(
-                "VIX", portfolio_positions, "C", ignore_dte=ignore_dte
-            )
-            if net_vix_call_count > 0:
-                log.info(
-                    f"[bold blue_violet]VIX: net_vix_call_count={net_vix_call_count} "
-                    f"(DTE <= {ignore_dte} contracts ignored), "
-                    "checking if we need to close positions...",
-                )
-                (
-                    close_vix_calls,
-                    vix_ticker,
-                    close_hedges_when_vix_exceeds,
-                ) = await vix_calls_should_be_closed()
-                if close_vix_calls and vix_ticker and close_hedges_when_vix_exceeds:
-                    log.info(
-                        f"VIX: VIX={vix_ticker.marketPrice():.2f}, which exceeds "
-                        f"vix_call_hedge.close_hedges_when_vix_exceeds={close_hedges_when_vix_exceeds}, "
-                        "checking if we need to close positions...",
-                    )
-                    for position in portfolio_positions["VIX"]:
-                        if (
-                            position.contract.right.startswith("C")
-                            and position.position < 0
-                        ):
-                            # only applies to long calls
-                            continue
-                        log.notice(
-                            f"Creating closing order for {position.contract.localSymbol}..."
-                        )
-                        position.contract.exchange = self.get_order_exchange()
-                        sell_ticker = await self.ibkr.get_ticker_for_contract(
-                            position.contract
-                        )
-                        price = round(get_lower_price(sell_ticker), 2)
-                        # Round VIX price according to contract specifications
-                        price = self.round_vix_price(price)
-                        qty = abs(position.position)
-                        order = LimitOrder(
-                            "SELL",
-                            qty,
-                            price,
-                            algoStrategy=self.get_algo_strategy(),
-                            algoParams=self.get_algo_params(),
-                            tif="DAY",
-                            account=self.account_number,
-                        )
-
-                        self.enqueue_order(sell_ticker.contract, order)
-
-                log.info(
-                    f"VIX: net_vix_call_count={net_vix_call_count}, no action is needed at this time",
-                )
-                return
-
-            log.info(
-                f"VIX: net_vix_call_count={net_vix_call_count}, checking if we should open new positions...",
-            )
-
-            (
-                close_vix_calls,
-                vix_ticker,
-                close_hedges_when_vix_exceeds,
-            ) = await vix_calls_should_be_closed()
-            # we never want to write calls if we're simultaneously ready to close calls
-            if not close_vix_calls:
-                try:
-                    vixmo_contract = Index("VIXMO", "CBOE", "USD")
-                    vixmo_ticker = await self.ibkr.get_ticker_for_contract(
-                        vixmo_contract
-                    )
-
-                    weight = 0.0
-
-                    for allocation in self.config.vix_call_hedge.allocation:
-                        if (
-                            allocation.lower_bound
-                            and allocation.upper_bound
-                            and allocation.lower_bound
-                            <= vixmo_ticker.marketPrice()
-                            < allocation.upper_bound
-                        ):
-                            weight = allocation.weight
-                            break
-                        elif (
-                            allocation.lower_bound
-                            and allocation.lower_bound <= vixmo_ticker.marketPrice()
-                        ):
-                            weight = allocation.weight
-                            break
-                        elif (
-                            allocation.upper_bound
-                            and vixmo_ticker.marketPrice() < allocation.upper_bound
-                        ):
-                            weight = allocation.weight
-                            break
-
-                    log.info(
-                        f"VIX: VIXMO={vixmo_ticker.marketPrice():.2f}, target call hedge weight={weight}",
-                    )
-
-                    allocation_amount = (
-                        float(account_summary["NetLiquidation"].value) * weight
-                    )
-                    delta = self.config.vix_call_hedge.delta
-                    target_dte = self.config.vix_call_hedge.target_dte
-                    if weight > 0:
-                        log.notice(
-                            f"VIX: Current VIXMO spot price prescribes an allocation of up to "
-                            f"${allocation_amount:.2f} for purchasing VIX calls, "
-                            f"at or above delta={delta} with a DTE >= {target_dte}",
-                        )
-                    else:
-                        log.info(
-                            "VIX: Based on current VIXMO value and rules, no action is needed",
-                        )
-                        return
-
-                    log.info(
-                        "VIX: Scanning option chain for eligible contracts...",
-                    )
-                    vix_contract = Index("VIX", "CBOE", "USD")
-                    buy_ticker = await self.find_eligible_contracts(
-                        vix_contract,
-                        "C",
-                        0,
-                        target_delta=delta,
-                        target_dte=target_dte,
-                        minimum_price=lambda: self.config.orders.minimum_credit,
-                    )
-                    if not isinstance(buy_ticker.contract, Option):
-                        raise RuntimeError(
-                            f"Something went wrong, buy_ticker={buy_ticker}"
-                        )
-                    price = round(get_lower_price(buy_ticker), 2)
-                    # Round VIX price according to contract specifications
-                    price = self.round_vix_price(price)
-                    qty = math.floor(
-                        allocation_amount
-                        / price
-                        / float(buy_ticker.contract.multiplier)
-                    )
-
-                    order = LimitOrder(
-                        "BUY",
-                        qty,
-                        price,
-                        algoStrategy=self.get_algo_strategy(),
-                        algoParams=self.get_algo_params(),
-                        tif="DAY",
-                        account=self.account_number,
-                        transmit=True,
-                    )
-
-                    self.enqueue_order(buy_ticker.contract, order)
-                except (RuntimeError, NoValidContractsError):
-                    log.error(
-                        "VIX: Error occurred when VIX call hedging. Continuing anyway..."
-                    )
-
-        await inner_handler()
+        await self.post_engine.do_vix_hedging(account_summary, portfolio_positions)
 
     def calc_pending_cash_balance(self) -> float:
-        def get_multiplier(contract: Contract) -> float:
-            if contract.secType == "BAG":
-                # with combos/bag orders we'll use the _first_ multiplier, for
-                # simplicity, because we only create combos with equal legs
-                return float(
-                    self.qualified_contracts[contract.comboLegs[0].conId].multiplier
-                )
-            elif contract.secType == "STK":
-                # Stock contracts have a multiplier of 1
-                return 1.0
-            return float(contract.multiplier or 100)
-
-        return sum(
-            [
-                float(order.lmtPrice or 0)
-                * order.totalQuantity
-                * get_multiplier(contract)
-                for (contract, order, _intent_id) in self.orders.records()
-                if order.action == "SELL"
-            ]
-        ) - sum(
-            [
-                float(order.lmtPrice or 0)
-                * order.totalQuantity
-                * get_multiplier(contract)
-                for (contract, order, _intent_id) in self.orders.records()
-                if order.action == "BUY"
-            ]
-        )
+        return self.post_engine.calc_pending_cash_balance()
 
     async def do_cashman(
         self,
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> None:
-        log.notice("Cash management...")
-
-        async def inner_handler() -> None:
-            if not self.config.cash_management.enabled:
-                log.warning(
-                    "🛑 Cash management not enabled, skipping",
-                )
-                return None
-
-            target_cash_balance = self.config.cash_management.target_cash_balance
-            buy_threshold = self.config.cash_management.buy_threshold
-            sell_threshold = self.config.cash_management.sell_threshold
-            cash_balance = math.floor(float(account_summary["TotalCashValue"].value))
-            pending_balance = self.calc_pending_cash_balance()
-
-            try:
-
-                async def make_order() -> tuple[Optional[Ticker], Optional[LimitOrder]]:
-                    symbol = self.config.cash_management.cash_fund
-                    primary_exchange = self.config.cash_management.primary_exchange
-                    order_exchange = self.config.cash_management.orders.exchange
-
-                    ticker = await self.ibkr.get_ticker_for_stock(
-                        symbol, primary_exchange, order_exchange
-                    )
-
-                    algo = (
-                        self.config.cash_management.orders.algo
-                        if self.config.cash_management.orders
-                        else self.config.orders.algo
-                    )
-
-                    amount = cash_balance + pending_balance - target_cash_balance
-                    price = ticker.ask if amount > 0 else ticker.bid
-                    qty = amount // price
-
-                    if util.isNan(qty):
-                        raise RuntimeError("ERROR: qty is NaN")
-
-                    if qty > 0:
-                        log.notice(
-                            f"cash_balance={dfmt(cash_balance)} which exceeds "
-                            f"(target_cash_balance + pending_balance + buy_threshold)="
-                            f"{(dfmt(target_cash_balance + pending_balance + buy_threshold))} "
-                            f"with pending_balance={dfmt(pending_balance)}"
-                        )
-                        log.notice(
-                            f"Will buy {symbol} with qty={qty} shares at price={price}"
-                        )
-
-                    # make sure qty does not exceed balance if it's a negative value
-                    if qty < 0:
-                        # subtract 1 to keep cash balance above target
-                        qty -= 1
-                        log.notice(
-                            f"(cash_balance + pending_balance)={dfmt(cash_balance + pending_balance)} which is less than "
-                            f"(target_cash_balance + pending_balance - sell_threshold)="
-                            f"{(dfmt(target_cash_balance - sell_threshold))} "
-                            f"with pending_balance={dfmt(pending_balance)}"
-                        )
-                        if symbol not in portfolio_positions:
-                            # we don't have any positions to sell
-                            # we don't have any positions to sell
-                            log.warning(
-                                f"Will sell {symbol} with qty={-qty} at"
-                                f" price={price}, but we have no position to sell"
-                            )
-                            return (None, None)
-                        positions = [
-                            p.position
-                            for p in portfolio_positions[symbol]
-                            if isinstance(p.contract, Stock)
-                        ]
-                        position = positions[0] if len(positions) > 0 else 0
-                        qty = min([max([-math.floor(position), qty]), 0])
-                        # if for some reason the qty is zero, do nothing
-                        if qty == 0:
-                            log.warning(
-                                f"Will sell {symbol} with qty={-qty} at price={price}, but we don't have any shares to sell"
-                            )
-                            return (None, None)
-                        log.notice(
-                            f"Will sell {symbol} with qty={-qty} at price={price}"
-                        )
-
-                    order = LimitOrder(
-                        "BUY" if qty > 0 else "SELL",
-                        abs(qty),
-                        round(price, 2),
-                        algoStrategy=algo.strategy,
-                        algoParams=self.algo_params_from(algo.params),
-                        tif="DAY",
-                        account=self.account_number,
-                        transmit=True,
-                    )
-
-                    return (ticker, order)
-
-                if (
-                    cash_balance + pending_balance > target_cash_balance + buy_threshold
-                    or cash_balance + pending_balance
-                    < target_cash_balance - sell_threshold
-                ):
-                    (ticker, order) = await make_order()
-                    if ticker and ticker.contract and order:
-                        self.enqueue_order(ticker.contract, order)
-                else:
-                    log.notice(
-                        "All good, nothing to do here. "
-                        f"cash_balance={dfmt(cash_balance)} pending_balance={dfmt(pending_balance)}"
-                    )
-
-            except RuntimeError:
-                log.error("Error occurred when cash hedging. Continuing anyway...")
-
-        await inner_handler()
-
-    def enqueue_order(self, contract: Optional[Contract], order: LimitOrder) -> None:
-        if not contract:
-            return
-        intent_id = None
-        if self.data_store:
-            intent_id = self.data_store.record_order_intent(contract, order)
-        self.orders.add_order(contract, order, intent_id)
-        if self.data_store:
-            self.data_store.record_event(
-                "order_enqueued",
-                {
-                    "symbol": getattr(contract, "symbol", None),
-                    "sec_type": getattr(contract, "secType", None),
-                    "con_id": getattr(contract, "conId", None),
-                    "exchange": getattr(contract, "exchange", None),
-                    "currency": getattr(contract, "currency", None),
-                    "action": getattr(order, "action", None),
-                    "quantity": getattr(order, "totalQuantity", None),
-                    "limit_price": getattr(order, "lmtPrice", None),
-                    "order_type": getattr(order, "orderType", None),
-                    "order_ref": getattr(order, "orderRef", None),
-                    "intent_id": intent_id,
-                },
-                symbol=getattr(contract, "symbol", None),
-            )
+        await self.post_engine.do_cashman(account_summary, portfolio_positions)
 
     def submit_orders(self) -> None:
         for contract, order, intent_id in self.orders.records():
@@ -4044,8 +970,8 @@ class PortfolioManager:
         if (
             all(
                 [
-                    not self.config.symbols[symbol].adjust_price_after_delay
-                    for symbol in self.config.symbols
+                    not self.config.portfolio.symbols[symbol].adjust_price_after_delay
+                    for symbol in self.config.portfolio.symbols
                 ]
             )
             or self.trades.is_empty()
@@ -4054,8 +980,8 @@ class PortfolioManager:
             return
 
         delay = random.randrange(
-            self.config.orders.price_update_delay[0],
-            self.config.orders.price_update_delay[1],
+            self.config.runtime.orders.price_update_delay[0],
+            self.config.runtime.orders.price_update_delay[1],
         )
 
         await self.ibkr.wait_for_orders_complete(self.trades.records(), delay)
@@ -4064,8 +990,10 @@ class PortfolioManager:
             (idx, trade)
             for idx, trade in enumerate(self.trades.records())
             if trade
-            and trade.contract.symbol in self.config.symbols
-            and self.config.symbols[trade.contract.symbol].adjust_price_after_delay
+            and trade.contract.symbol in self.config.portfolio.symbols
+            and self.config.portfolio.symbols[
+                trade.contract.symbol
+            ].adjust_price_after_delay
             and not trade.isDone()
         ]
 
@@ -4081,7 +1009,7 @@ class PortfolioManager:
                 updated_price = np.sign(float(order.lmtPrice or 0)) * max(
                     [
                         (
-                            self.config.orders.minimum_credit
+                            self.config.runtime.orders.minimum_credit
                             if order.action == "BUY"
                             and float(order.lmtPrice or 0) <= 0.0
                             else 0.0
@@ -4097,7 +1025,7 @@ class PortfolioManager:
 
                 if trade.contract.symbol == "VIX":
                     # Round VIX prices according to contract specifications
-                    updated_price = self.round_vix_price(updated_price)
+                    updated_price = self.order_ops.round_vix_price(updated_price)
 
                 # We only want to tighten spreads, not widen them. If the
                 # resulting price change would increase the spread, we'll
@@ -4155,7 +1083,8 @@ class PortfolioManager:
         )
         if threshold_sigma:
             hist_prices = await self.ibkr.request_historical_data(
-                ticker.contract, self.config.constants.daily_stddev_window
+                ticker.contract,
+                self.config.strategies.wheel.defaults.constants.daily_stddev_window,
             )
             log_prices = np.log(np.array([p.close for p in hist_prices]))
             stddev = np.std(np.diff(log_prices), ddof=1)
@@ -4164,9 +1093,9 @@ class PortfolioManager:
                 close_price * (np.exp(stddev) - 1).astype(float) * threshold_sigma,
                 absolute_daily_change,
             )
-        else:
-            threshold_perc = self.config.get_write_threshold_perc(
-                ticker.contract.symbol,
-                right,
-            )
-            return (threshold_perc * close_price, absolute_daily_change)
+
+        threshold_perc = self.config.get_write_threshold_perc(
+            ticker.contract.symbol,
+            right,
+        )
+        return (threshold_perc * close_price, absolute_daily_change)
