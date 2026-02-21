@@ -789,10 +789,14 @@ class Config(BaseModel, DisplayMixin):
 DEFAULT_RUN_STRATEGIES: list[str] = ["wheel", "vix_call_hedge", "cash_management"]
 
 
+def enabled_stage_ids_from_run(run: RunConfig) -> List[str]:
+    return [stage.id for stage in run.resolved_stages() if stage.enabled]
+
+
 def stage_enabled_map(config: Config) -> Dict[str, bool]:
     return stage_enabled_map_from_run(config.run)
 
 
 def stage_enabled_map_from_run(run: RunConfig) -> Dict[str, bool]:
-    resolved_ids = {stage.id for stage in run.resolved_stages() if stage.enabled}
+    resolved_ids = set(enabled_stage_ids_from_run(run))
     return {stage_id: (stage_id in resolved_ids) for stage_id in STAGE_KIND_BY_ID}

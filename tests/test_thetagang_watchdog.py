@@ -93,6 +93,7 @@ def test_watchdog_runs_inside_task(monkeypatch, tmp_path):
             _dry_run,
             data_store=None,
             run_stage_flags=None,
+            run_stage_order=None,
         ):
             if not completion_future.done():
                 completion_future.set_result(True)
