@@ -116,7 +116,7 @@ class IBKR:
         self.ib.cancelOrder(order)
 
     async def refresh_account_updates(self, account: str) -> None:
-        if self._account_snapshot_ready(account):
+        if self._account_snapshot_ready(account) and self.ib.portfolio(account):
             log.info(
                 f"{account}: Account snapshot already populated, skipping refresh wait."
             )

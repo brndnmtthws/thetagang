@@ -451,6 +451,9 @@ class PortfolioManager:
                 if not missing_positions:
                     return portfolio_by_symbol
 
+                # Portfolio is missing some positions. Supplement with reqPositions
+                # data for the missing ones (handles secondary/linked accounts where
+                # reqAccountUpdates doesn't return all positions).
                 missing_symbols = ", ".join(
                     sorted({pos.contract.symbol for pos in missing_positions})
                 )
@@ -458,11 +461,30 @@ class PortfolioManager:
                     (
                         f"Attempt {attempt}/{attempts}: Portfolio snapshot is missing "
                         f"{len(missing_positions)} of {len(tracked_positions)} tracked "
-                        f"positions (symbols: {missing_symbols}). Waiting briefly before retrying..."
+                        f"positions (symbols: {missing_symbols}). "
+                        "Supplementing with reqPositions data."
                     )
                 )
-                await asyncio.sleep(1)
-                continue
+                missing_conids = {pos.contract.conId for pos in missing_positions}
+                synth_items = [
+                    PortfolioItem(
+                        contract=pos.contract,
+                        position=pos.position,
+                        marketPrice=0.0,
+                        marketValue=0.0,
+                        averageCost=pos.avgCost,
+                        unrealizedPNL=0.0,
+                        realizedPNL=0.0,
+                        account=pos.account,
+                    )
+                    for pos in tracked_positions
+                    if pos.contract.conId in missing_conids
+                ]
+                merged = filtered_positions + synth_items
+                self.last_untracked_positions = portfolio_positions_to_dict(
+                    untracked_positions
+                )
+                return portfolio_positions_to_dict(merged)
 
             try:
                 positions_snapshot = await self.ibkr.refresh_positions()
@@ -490,14 +512,38 @@ class PortfolioManager:
             if not tracked_positions:
                 return portfolio_by_symbol
 
+            # Portfolio is empty but reqPositions shows holdings. This typically
+            # happens with secondary/linked accounts where reqAccountUpdates does
+            # not return updatePortfolio messages. Fall back to building synthetic
+            # PortfolioItem objects from reqPositions data.
             log.warning(
                 (
                     f"Attempt {attempt}/{attempts}: IBKR reported {len(tracked_positions)} "
                     "tracked positions but returned an empty portfolio snapshot. "
-                    "Waiting briefly before retrying..."
+                    "Falling back to reqPositions data."
                 )
             )
-            await asyncio.sleep(1)
+            all_account_positions = [
+                pos
+                for pos in positions_snapshot
+                if pos.account == self.account_number and pos.position != 0
+            ]
+            synth_portfolio = [
+                PortfolioItem(
+                    contract=pos.contract,
+                    position=pos.position,
+                    marketPrice=0.0,
+                    marketValue=0.0,
+                    averageCost=pos.avgCost,
+                    unrealizedPNL=0.0,
+                    realizedPNL=0.0,
+                    account=pos.account,
+                )
+                for pos in all_account_positions
+            ]
+            filtered_synth, untracked_synth = self.partition_positions(synth_portfolio)
+            self.last_untracked_positions = portfolio_positions_to_dict(untracked_synth)
+            return portfolio_positions_to_dict(filtered_synth)
 
         raise RuntimeError(
             "Failed to load IBKR portfolio positions after multiple attempts. "
