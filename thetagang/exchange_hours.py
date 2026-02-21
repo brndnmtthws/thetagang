@@ -7,7 +7,7 @@ from rich import box
 from rich.table import Table
 
 from thetagang import log
-from thetagang.config import ExchangeHoursConfig
+from thetagang.config_models import ExchangeHoursConfig
 
 
 def _session_times_from_schedule(

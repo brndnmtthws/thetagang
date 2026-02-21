@@ -69,6 +69,24 @@ strategies as long as you have the buying power available and set the
 appropriate configuration (in particular, by setting
 `write_when.calculate_net_contracts = true`).
 
+### Running multiple strategies safely
+
+If you want to run materially different strategies, it is strongly recommended
+to use separate IBKR accounts (for example, separate linked sub-accounts) and
+fund each one independently.
+
+Mixing multiple strategy styles in one account can produce confusing or harmful
+interactions because ThetaGang decisions are account-level. Buying power usage,
+position targeting, rebalancing logic, option rolls, cash management, and hedge
+logic all see the same combined portfolio and can interfere with each other in
+ways that are hard to reason about.
+
+In practice, one strategy per account is usually the cleanest setup:
+- Cleaner risk boundaries and capital budgets
+- Cleaner performance attribution
+- Fewer unexpected cross-strategy side effects
+- Easier debugging when behavior is not what you expected
+
 Over time, additional features were added to support different portfolio
 workflows and risk controls. You can enable or disable them independently via
 config:

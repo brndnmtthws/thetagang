@@ -33,7 +33,23 @@ CONTEXT_SETTINGS = dict(
     is_flag=True,
     help="Perform a dry run. This will display the the orders without sending any live trades.",
 )
-def cli(config: str, without_ibc: bool, dry_run: bool) -> None:
+@click.option(
+    "--migrate-config",
+    is_flag=True,
+    help="Migrate a v1 config file to v2 and exit without running trading logic.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Automatically approve config migration prompts.",
+)
+def cli(
+    config: str,
+    without_ibc: bool,
+    dry_run: bool,
+    migrate_config: bool,
+    yes: bool,
+) -> None:
     """ThetaGang is an IBKR bot for collecting money.
 
     You can configure this tool by supplying a toml configuration file.
@@ -48,6 +64,29 @@ def cli(config: str, without_ibc: bool, dry_run: bool) -> None:
         logging.getLogger("ib_async").setLevel(logging.WARNING)
         logging.getLogger("ib_async.client").setLevel(logging.WARNING)
 
+    from thetagang.config_migration.startup_migration import (
+        InvalidMigrationOptionError,
+        MigrationDeclinedError,
+        MigrationPreviewRedactionError,
+        MigrationRequiredError,
+        UnknownSchemaError,
+    )
+
     from .thetagang import start
 
-    start(config, without_ibc, dry_run)
+    try:
+        start(
+            config,
+            without_ibc,
+            dry_run,
+            migrate_config=migrate_config,
+            auto_approve_migration=yes,
+        )
+    except (
+        InvalidMigrationOptionError,
+        MigrationDeclinedError,
+        MigrationPreviewRedactionError,
+        MigrationRequiredError,
+        UnknownSchemaError,
+    ) as exc:
+        raise click.ClickException(str(exc)) from exc

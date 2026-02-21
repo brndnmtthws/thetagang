@@ -1,17 +1,33 @@
 import asyncio
 from pathlib import Path
 
-import toml
+import tomlkit
 
 
 def test_watchdog_runs_inside_task(monkeypatch, tmp_path):
     import thetagang.thetagang as tg
 
-    base_config = toml.loads(Path("thetagang.toml").read_text(encoding="utf8"))
-    base_config["database"]["enabled"] = False
-    base_config["ib_async"]["logfile"] = ""
+    base_config = tomlkit.parse(
+        Path("thetagang.toml").read_text(encoding="utf8")
+    ).unwrap()
+    if "meta" in base_config and base_config.get("meta", {}).get("schema_version") == 2:
+        base_config["runtime"]["database"]["enabled"] = False
+        base_config["runtime"]["ib_async"]["logfile"] = ""
+        stages = base_config.get("run", {}).get("stages", [])
+        if isinstance(stages, list):
+            base_config["run"].pop("strategies", None)
+            base_config["run"]["stages"] = [
+                {
+                    "id": "options_write_puts",
+                    "kind": "options.write_puts",
+                    "enabled": True,
+                }
+            ]
+    else:
+        base_config["database"]["enabled"] = False
+        base_config["ib_async"]["logfile"] = ""
     config_path = tmp_path / "thetagang.toml"
-    config_path.write_text(toml.dumps(base_config), encoding="utf8")
+    config_path.write_text(tomlkit.dumps(tomlkit.item(base_config)), encoding="utf8")
 
     loop = asyncio.new_event_loop()
     monkeypatch.setattr(tg.util, "getLoop", lambda: loop)
@@ -69,7 +85,15 @@ def test_watchdog_runs_inside_task(monkeypatch, tmp_path):
             loop.close()
 
     class FakePortfolioManager:
-        def __init__(self, _config, _ib, completion_future, _dry_run, data_store=None):
+        def __init__(
+            self,
+            _config,
+            _ib,
+            completion_future,
+            _dry_run,
+            data_store=None,
+            run_stage_flags=None,
+        ):
             if not completion_future.done():
                 completion_future.set_result(True)
 
@@ -79,7 +103,12 @@ def test_watchdog_runs_inside_task(monkeypatch, tmp_path):
     monkeypatch.setattr(tg, "PortfolioManager", FakePortfolioManager)
     monkeypatch.setattr(tg, "Contract", FakeContract)
 
-    tg.start(str(config_path), without_ibc=False, dry_run=True)
+    tg.start(
+        str(config_path),
+        without_ibc=False,
+        dry_run=True,
+        auto_approve_migration=False,
+    )
 
     assert captured["watchdog"].started is True
     assert captured["watchdog"].stopped is True
