@@ -43,7 +43,7 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Test with pytest
-        run: uv run py.test
+        run: uv run pytest -q tests thetagang
 
   build-and-push:
     needs: test
