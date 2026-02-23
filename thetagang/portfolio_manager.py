@@ -759,46 +759,49 @@ class PortfolioManager:
 
                 try:
                     await self.ibkr.wait_for_submitting_orders(self.trades.records())
-                except RuntimeError:
-                    log.error("Submitting orders failed. Continuing anyway..")
-                    pass
+                except RuntimeError as exc:
+                    # DAY orders can remain working at the broker after submission.
+                    # Keep running and let later status checks/logs report open orders.
+                    log.warning(f"Order submission wait timed out: {exc}")
 
                 await self.adjust_prices()
 
-                await self.ibkr.wait_for_submitting_orders(self.trades.records())
-                incomplete_trades = await self.ibkr.wait_for_orders_complete(
-                    self.trades.records()
+                try:
+                    await self.ibkr.wait_for_submitting_orders(self.trades.records())
+                except RuntimeError as exc:
+                    log.warning(f"Post-adjust order submission wait timed out: {exc}")
+                working_statuses = {"PendingSubmit", "PreSubmitted", "Submitted"}
+                incomplete_trades = [
+                    trade
+                    for trade in self.trades.records()
+                    if trade and not trade.isDone()
+                ]
+                still_working = [
+                    trade
+                    for trade in incomplete_trades
+                    if getattr(trade.orderStatus, "status", "") in working_statuses
+                ]
+                unexpected_state = [
+                    trade for trade in incomplete_trades if trade not in still_working
+                ]
+                open_orders = ", ".join(
+                    f"{trade.contract.symbol} (OrderId: {trade.order.orderId}, status={getattr(trade.orderStatus, 'status', 'UNKNOWN')})"
+                    for trade in still_working
                 )
-                if incomplete_trades:
-                    working_statuses = {"PendingSubmit", "PreSubmitted", "Submitted"}
-                    still_working = [
-                        trade
-                        for trade in incomplete_trades
-                        if getattr(trade.orderStatus, "status", "") in working_statuses
-                    ]
-                    unexpected_state = [
-                        trade
-                        for trade in incomplete_trades
-                        if trade not in still_working
-                    ]
-                    open_orders = ", ".join(
-                        f"{trade.contract.symbol} (OrderId: {trade.order.orderId}, status={getattr(trade.orderStatus, 'status', 'UNKNOWN')})"
-                        for trade in still_working
+                if open_orders:
+                    log.info(
+                        "Run completed with working submitted orders still open at broker: "
+                        f"{open_orders}"
                     )
-                    if open_orders:
-                        log.info(
-                            "Run completed with working submitted orders still open at broker: "
-                            f"{open_orders}"
-                        )
-                    if unexpected_state:
-                        unexpected_orders = ", ".join(
-                            f"{trade.contract.symbol} (OrderId: {trade.order.orderId}, status={getattr(trade.orderStatus, 'status', 'UNKNOWN')})"
-                            for trade in unexpected_state
-                        )
-                        log.warning(
-                            "Run completed with non-working incomplete orders at broker: "
-                            f"{unexpected_orders}"
-                        )
+                if unexpected_state:
+                    unexpected_orders = ", ".join(
+                        f"{trade.contract.symbol} (OrderId: {trade.order.orderId}, status={getattr(trade.orderStatus, 'status', 'UNKNOWN')})"
+                        for trade in unexpected_state
+                    )
+                    log.warning(
+                        "Run completed with non-working incomplete orders at broker: "
+                        f"{unexpected_orders}"
+                    )
 
             log.info("ThetaGang is done, shutting down! Cya next time. :sparkles:")
         except:
@@ -1085,10 +1088,14 @@ class PortfolioManager:
 
         for idx, trade in unfilled:
             try:
-                ticker = await self.ibkr.get_ticker_for_contract(
-                    trade.contract,
-                    required_fields=[TickerField.MIDPOINT],
-                    optional_fields=[TickerField.MARKET_PRICE],
+                # Bound midpoint price requests so repricing never blocks run termination.
+                ticker = await asyncio.wait_for(
+                    self.ibkr.get_ticker_for_contract(
+                        trade.contract,
+                        required_fields=[TickerField.MIDPOINT],
+                        optional_fields=[TickerField.MARKET_PRICE],
+                    ),
+                    timeout=self.config.runtime.ib_async.api_response_wait_time,
                 )
 
                 (contract, order) = (trade.contract, trade.order)
@@ -1150,10 +1157,23 @@ class PortfolioManager:
                     self.trades.submit_order(contract, order, idx)
 
                     log.info(f"{contract.symbol}: Order updated, order={order}")
-            except (RuntimeError, RequiredFieldValidationError):
-                log.error(
-                    f"Couldn't generate midpoint price for {trade.contract}, skipping"
+            except (
+                asyncio.TimeoutError,
+                RuntimeError,
+                RequiredFieldValidationError,
+            ) as exc:
+                log.warning(
+                    f"Couldn't generate midpoint price for {trade.contract}, skipping repricing"
                 )
+                if self.data_store:
+                    self.data_store.record_event(
+                        "order_price_adjustment_skipped",
+                        {
+                            "symbol": getattr(trade.contract, "symbol", ""),
+                            "secType": getattr(trade.contract, "secType", ""),
+                            "reason": type(exc).__name__,
+                        },
+                    )
                 continue
 
     async def get_write_threshold(

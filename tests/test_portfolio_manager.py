@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -229,6 +230,147 @@ class TestPortfolioManager:
             ("post", {"post_cash_management"}),
         ]
         pm.get_portfolio_positions.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_manage_continues_if_order_submission_wait_times_out(
+        self, mock_ib, mock_config, mocker
+    ):
+        completion_future = mocker.Mock()
+        pm = PortfolioManager(
+            mock_config,
+            mock_ib,
+            completion_future,
+            dry_run=False,
+            run_stage_order=["equity_buy_rebalance"],
+        )
+
+        pm.initialize_account = mocker.Mock()
+        pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
+        pm.get_portfolio_positions = mocker.AsyncMock(return_value={})
+        pm.orders.print_summary = mocker.Mock()
+        pm.submit_orders = mocker.Mock()
+        pm.adjust_prices = mocker.AsyncMock()
+        pm.trades = mocker.Mock()
+        pm.trades.records = mocker.Mock(return_value=[mocker.Mock()])
+
+        mocker.patch(
+            "thetagang.portfolio_manager.run_equity_rebalance_stages",
+            new=mocker.AsyncMock(),
+        )
+        pm.ibkr.wait_for_submitting_orders = mocker.AsyncMock(
+            side_effect=RuntimeError("timed out")
+        )
+
+        await pm.manage()
+
+        pm.submit_orders.assert_called_once()
+        assert pm.ibkr.wait_for_submitting_orders.await_count == 2
+        pm.adjust_prices.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_manage_allows_incomplete_working_orders(
+        self, mock_ib, mock_config, mocker
+    ):
+        completion_future = mocker.Mock()
+        pm = PortfolioManager(
+            mock_config,
+            mock_ib,
+            completion_future,
+            dry_run=False,
+            run_stage_order=["equity_buy_rebalance"],
+        )
+
+        pm.initialize_account = mocker.Mock()
+        pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
+        pm.get_portfolio_positions = mocker.AsyncMock(return_value={})
+        pm.orders.print_summary = mocker.Mock()
+        pm.submit_orders = mocker.Mock()
+        pm.adjust_prices = mocker.AsyncMock()
+
+        trade = mocker.Mock()
+        trade.contract = mocker.Mock(symbol="SPY")
+        trade.order = mocker.Mock(orderId=123)
+        trade.orderStatus = mocker.Mock(status="Submitted", filled=0.0, remaining=1.0)
+        trade.isDone.return_value = False
+
+        pm.trades = mocker.Mock()
+        pm.trades.records = mocker.Mock(return_value=[trade])
+
+        mocker.patch(
+            "thetagang.portfolio_manager.run_equity_rebalance_stages",
+            new=mocker.AsyncMock(),
+        )
+        pm.ibkr.wait_for_submitting_orders = mocker.AsyncMock(return_value=None)
+
+        await pm.manage()
+
+    @pytest.mark.asyncio
+    async def test_adjust_prices_continues_if_midpoint_market_data_missing(
+        self, portfolio_manager, mocker
+    ):
+        from thetagang.ibkr import RequiredFieldValidationError
+
+        portfolio_manager.config.runtime.orders.price_update_delay = (1, 2)
+        portfolio_manager.config.runtime.orders.minimum_credit = 0.01
+
+        trade = mocker.Mock()
+        trade.contract = mocker.Mock(symbol="SPY")
+        trade.contract.symbol = "SPY"
+        trade.order = mocker.Mock(lmtPrice=1.23, action="SELL", totalQuantity=1)
+        trade.orderId = 101
+        trade.contract.secType = "OPT"
+        trade.orderStatus = mocker.Mock(status="Submitted", filled=0.0, remaining=1.0)
+        trade.isDone.return_value = False
+
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.records = mocker.Mock(return_value=[trade])
+        portfolio_manager.trades.is_empty = mocker.Mock(return_value=False)
+
+        portfolio_manager.config.portfolio.symbols = {
+            "SPY": mocker.Mock(adjust_price_after_delay=True)
+        }
+        portfolio_manager.ibkr.wait_for_orders_complete = mocker.AsyncMock(
+            return_value=[trade]
+        )
+        portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(
+            side_effect=RequiredFieldValidationError("market data unavailable")
+        )
+
+        await portfolio_manager.adjust_prices()
+        portfolio_manager.ibkr.get_ticker_for_contract.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_adjust_prices_continues_when_combo_bag_midpoint_times_out(
+        self, portfolio_manager, mocker
+    ):
+        portfolio_manager.config.runtime.orders.price_update_delay = (1, 2)
+        portfolio_manager.config.runtime.orders.minimum_credit = 0.01
+
+        trade = mocker.Mock()
+        trade.contract = mocker.Mock(symbol="QQQ")
+        trade.contract.symbol = "QQQ"
+        trade.contract.secType = "BAG"
+        trade.order = mocker.Mock(lmtPrice=-1.25, action="BUY", totalQuantity=1)
+        trade.orderStatus = mocker.Mock(status="Submitted", filled=0.0, remaining=1.0)
+        trade.isDone.return_value = False
+
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.records = mocker.Mock(return_value=[trade])
+        portfolio_manager.trades.is_empty = mocker.Mock(return_value=False)
+
+        portfolio_manager.config.portfolio.symbols = {
+            "QQQ": mocker.Mock(adjust_price_after_delay=True)
+        }
+        portfolio_manager.ibkr.wait_for_orders_complete = mocker.AsyncMock(
+            return_value=[trade]
+        )
+        portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(
+            side_effect=asyncio.TimeoutError()
+        )
+
+        await portfolio_manager.adjust_prices()
+
+        portfolio_manager.ibkr.get_ticker_for_contract.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_write_calls_respects_can_write_when_green_with_nan_close(
