@@ -339,13 +339,17 @@ class TestPortfolioManager:
         assert portfolio_manager.ibkr.refresh_account_updates.await_count == 3
 
     @pytest.mark.asyncio
-    async def test_get_portfolio_positions_raises_after_missing_positions(
+    async def test_get_portfolio_positions_falls_back_to_positions(
         self, portfolio_manager, mocker
     ):
-        """Raises when portfolio snapshot never includes tracked positions."""
+        """Falls back to reqPositions when portfolio snapshot is empty but positions exist.
+
+        This handles secondary/linked IBKR accounts where reqAccountUpdates
+        does not return updatePortfolio messages.
+        """
         portfolio_manager.config.symbols = {"AAPL": mocker.Mock()}
 
-        sleep_mock = mocker.patch(
+        mocker.patch(
             "thetagang.portfolio_manager.asyncio.sleep", new=mocker.AsyncMock()
         )
 
@@ -354,18 +358,23 @@ class TestPortfolioManager:
 
         tracked_position = SimpleNamespace(
             account="TEST123",
-            contract=SimpleNamespace(symbol="AAPL", conId=1),
+            contract=SimpleNamespace(symbol="AAPL", conId=1, multiplier=100),
             position=5,
+            avgCost=10.0,
         )
         portfolio_manager.ibkr.refresh_positions = mocker.AsyncMock(
             return_value=[tracked_position]
         )
 
-        with pytest.raises(RuntimeError):
-            await portfolio_manager.get_portfolio_positions()
+        result = await portfolio_manager.get_portfolio_positions()
 
-        assert portfolio_manager.ibkr.refresh_positions.await_count == 3
-        sleep_mock.assert_awaited()
+        # Should return a portfolio built from positions data, not raise
+        assert result is not None
+        assert "AAPL" in result
+        assert len(result["AAPL"]) == 1
+        assert result["AAPL"][0].position == 5
+        assert result["AAPL"][0].averageCost == 10.0
+        assert result["AAPL"][0].marketPrice == 0.0
 
     @pytest.mark.asyncio
     async def test_check_buy_only_positions(self, portfolio_manager, mocker):
