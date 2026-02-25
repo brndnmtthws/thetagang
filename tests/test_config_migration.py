@@ -628,7 +628,7 @@ def test_migration_report_contains_mapping_and_warnings_sections(
     assert "`symbols` -> `portfolio.symbols`" in report
 
 
-def test_migration_regime_enabled_non_shares_only_uses_explicit_stage_plan() -> None:
+def test_migration_regime_enabled_non_shares_only_uses_strategy_plan() -> None:
     raw = """
 [account]
 number = "DUX"
@@ -658,24 +658,13 @@ weight = 1.0
     migrated = migrate_v1_to_v2(raw)
     parsed = tomlkit.parse(migrated.migrated_text).unwrap()
     run = parsed["run"]
-    assert "stages" in run
-    assert "strategies" not in run
-    stage_ids = [stage["id"] for stage in run["stages"]]
-    assert stage_ids == [
-        "options_write_puts",
-        "options_write_calls",
-        "equity_regime_rebalance",
-        "equity_buy_rebalance",
-        "equity_sell_rebalance",
-        "options_roll_positions",
-        "options_close_positions",
-    ]
-    assert any("explicit run.stages" in warning for warning in migrated.warnings), (
-        migrated.warnings
-    )
+    assert "strategies" in run
+    assert "stages" not in run
+    assert run["strategies"] == ["regime_rebalance"]
+    assert not any("explicit run.stages" in warning for warning in migrated.warnings)
 
 
-def test_migration_regime_shares_only_excludes_option_stages() -> None:
+def test_migration_regime_shares_only_uses_strategy_plan() -> None:
     raw = """
 [account]
 number = "DUX"
@@ -704,16 +693,74 @@ weight = 1.0
 """
     migrated = migrate_v1_to_v2(raw)
     parsed = tomlkit.parse(migrated.migrated_text).unwrap()
-    stage_ids = [stage["id"] for stage in parsed["run"]["stages"]]
-    assert "options_write_puts" not in stage_ids
-    assert "options_write_calls" not in stage_ids
-    assert "options_roll_positions" not in stage_ids
-    assert "options_close_positions" not in stage_ids
-    assert stage_ids == [
-        "equity_regime_rebalance",
-        "equity_buy_rebalance",
-        "equity_sell_rebalance",
-    ]
+    run = parsed["run"]
+    assert "strategies" in run
+    assert "stages" not in run
+    assert run["strategies"] == ["regime_rebalance"]
+
+
+def test_migration_cash_management_enabled_does_not_force_wheel_strategy() -> None:
+    raw = """
+[account]
+number = "DUX"
+margin_usage = 0.5
+
+[option_chains]
+expirations = 4
+strikes = 10
+
+[target]
+dte = 30
+minimum_open_interest = 5
+
+[roll_when]
+dte = 7
+
+[ibc]
+
+[cash_management]
+enabled = true
+cash_fund = "SGOV"
+target_cash_balance = 1000
+
+[symbols.AAA]
+weight = 1.0
+"""
+    migrated = migrate_v1_to_v2(raw)
+    parsed = tomlkit.parse(migrated.migrated_text).unwrap()
+    run = parsed["run"]
+    assert run["strategies"] == ["cash_management"]
+
+
+def test_migration_vix_enabled_does_not_force_wheel_strategy() -> None:
+    raw = """
+[account]
+number = "DUX"
+margin_usage = 0.5
+
+[option_chains]
+expirations = 4
+strikes = 10
+
+[target]
+dte = 30
+minimum_open_interest = 5
+
+[roll_when]
+dte = 7
+
+[ibc]
+
+[vix_call_hedge]
+enabled = true
+
+[symbols.AAA]
+weight = 1.0
+"""
+    migrated = migrate_v1_to_v2(raw)
+    parsed = tomlkit.parse(migrated.migrated_text).unwrap()
+    run = parsed["run"]
+    assert run["strategies"] == ["vix_call_hedge"]
 
 
 def test_golden_migration_output_subset_for_stable_shape() -> None:
