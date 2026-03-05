@@ -23,7 +23,7 @@ license = "AGPL-3.0-only"
 name = "thetagang"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
-version = "2.0.0"
+version = "2.0.1"
 
   [project.urls]
   "Bug Tracker" = "https://github.com/brndnmtthws/thetagang/issues"
