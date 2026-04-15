@@ -171,12 +171,22 @@ def _mock_regime_history(portfolio_manager, mocker, closes):
     return bars
 
 
-def _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=100.0):
+def _mock_regime_tickers(
+    portfolio_manager,
+    mocker,
+    aaa_price=100.0,
+    bbb_price=100.0,
+    extra_prices: dict[str, float] | None = None,
+):
     aaa_ticker = mocker.Mock()
     aaa_ticker.marketPrice.return_value = aaa_price
     bbb_ticker = mocker.Mock()
     bbb_ticker.marketPrice.return_value = bbb_price
     tickers = {"AAA": aaa_ticker, "BBB": bbb_ticker}
+    for symbol, price in (extra_prices or {}).items():
+        ticker = mocker.Mock()
+        ticker.marketPrice.return_value = price
+        tickers[symbol] = ticker
 
     async def _get_ticker(symbol, _primary_exchange):
         return tickers[symbol]
@@ -431,6 +441,50 @@ async def test_regime_rebalance_hard_band_ignores_ratio_gate(portfolio_manager, 
     )
 
     assert orders == [("AAA", "NYSE", -1), ("BBB", "NYSE", 1)]
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_ratio_gate_handles_uninvested_rest_symbol(
+    portfolio_manager, mocker
+):
+    portfolio_manager.config.portfolio.symbols["AAA"].weight = 0.4
+    portfolio_manager.config.portfolio.symbols["BBB"].weight = 0.4
+    portfolio_manager.config.portfolio.symbols["CCC"] = SimpleNamespace(
+        weight=0.2, primary_exchange="NYSE"
+    )
+    portfolio_manager.config.strategies.regime_rebalance.symbols = [
+        "AAA",
+        "BBB",
+        "CCC",
+    ]
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = SimpleNamespace(
+        enabled=True,
+        anchor="BBB",
+        drift_max=1.25,
+        var_min=0.0,
+    )
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="500")}
+    portfolio_positions = {
+        "AAA": [SimpleNamespace(contract=Stock("AAA", "SMART", "USD"), position=3)],
+        "BBB": [SimpleNamespace(contract=Stock("BBB", "SMART", "USD"), position=1)],
+    }
+
+    _mock_regime_tickers(
+        portfolio_manager,
+        mocker,
+        extra_prices={"CCC": 100.0},
+    )
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 100.0, 100.0, 100.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    assert isinstance(orders, list)
 
 
 @pytest.mark.asyncio

@@ -933,7 +933,7 @@ class PortfolioManager:
         lookback_days: int,
         cooldown_days: int,
         weights_override: Optional[Dict[str, float]] = None,
-    ) -> Tuple[List[date], List[float], Dict[str, List[float]]]:
+    ) -> Tuple[List[date], List[float]]:
         return await self.regime_engine._get_regime_proxy_series(
             symbols, lookback_days, cooldown_days, weights_override
         )

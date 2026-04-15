@@ -85,12 +85,11 @@ class RegimeRebalanceEngine:
         lookback_days: int,
         cooldown_days: int,
         weights_override: Optional[Dict[str, float]] = None,
-    ) -> Tuple[List[date], List[float], Dict[str, List[float]]]:
+    ) -> Tuple[List[date], List[float]]:
         symbol_configs = resolve_symbol_configs(
             self.config, context="regime proxy series"
         )
-        if weights_override:
-            symbols = list(weights_override.keys())
+        proxy_symbols = list(weights_override.keys()) if weights_override else symbols
         sorted_dates, aligned_closes = await self._get_regime_aligned_closes(
             symbols,
             lookback_days,
@@ -100,7 +99,9 @@ class RegimeRebalanceEngine:
         if weights_override:
             weights = weights_override
         else:
-            weights = {symbol: symbol_configs[symbol].weight for symbol in symbols}
+            weights = {
+                symbol: symbol_configs[symbol].weight for symbol in proxy_symbols
+            }
         total_weight = sum(weights.values())
         if total_weight <= 0:
             log.error("Regime-aware rebalancing weights sum to zero, skipping.")
@@ -114,13 +115,13 @@ class RegimeRebalanceEngine:
         normalized_series = [1.0]
         for idx in range(1, len(sorted_dates)):
             daily_factor = 0.0
-            for symbol in symbols:
+            for symbol in proxy_symbols:
                 prev_close = aligned_closes[symbol][idx - 1]
                 curr_close = aligned_closes[symbol][idx]
                 daily_factor += normalized_weights[symbol] * (curr_close / prev_close)
             normalized_series.append(normalized_series[-1] * daily_factor)
 
-        return (sorted_dates, normalized_series, aligned_closes)
+        return (sorted_dates, normalized_series)
 
     async def _get_regime_aligned_closes(
         self,
@@ -428,7 +429,7 @@ class RegimeRebalanceEngine:
                 symbol: symbol_configs[symbol].weight for symbol in symbols
             }
 
-        dates, values, aligned_closes = await self._get_regime_proxy_series(
+        dates, values = await self._get_regime_proxy_series(
             symbols,
             regime_rebalance.lookback_days,
             regime_rebalance.cooldown_days,
@@ -463,6 +464,11 @@ class RegimeRebalanceEngine:
         ratio_anchor: Optional[str] = None
         ratio_rest: List[str] = []
         if ratio_gate is not None:
+            _, aligned_closes = await self._get_regime_aligned_closes(
+                symbols,
+                regime_rebalance.lookback_days,
+                regime_rebalance.cooldown_days,
+            )
             ratio_anchor = getattr(ratio_gate, "anchor", "")
             ratio_rest = [s for s in symbols if s != ratio_anchor]
             if not ratio_anchor or ratio_anchor not in symbols or not ratio_rest:
