@@ -674,6 +674,56 @@ class Config(BaseModel, DisplayMixin):
             )
         return table
 
+    def create_volatility_weight_table(self) -> Optional[Table]:
+        volatility_symbols = {
+            symbol: sconfig.volatility_weight
+            for symbol, sconfig in self.symbols.items()
+            if sconfig.volatility_weight is not None
+        }
+        if not volatility_symbols:
+            return None
+
+        table = Table(
+            title="Configured volatility-weight targets",
+            box=box.SIMPLE_HEAVY,
+            show_lines=True,
+        )
+        table.add_column("Symbol")
+        table.add_column("Enabled", justify="center")
+        table.add_column("Target vol", justify="right")
+        table.add_column("Lookback", justify="right")
+        table.add_column("Min weight", justify="right")
+        table.add_column("Max weight", justify="right")
+        table.add_column("Band", justify="right")
+        table.add_column("Smooth", justify="right")
+        table.add_column("Up smooth", justify="right")
+        table.add_column("Down smooth", justify="right")
+
+        for symbol, volatility_weight in volatility_symbols.items():
+            if volatility_weight is None:
+                continue
+            table.add_row(
+                symbol,
+                "True" if volatility_weight.enabled else "False",
+                pfmt(volatility_weight.target_vol),
+                str(volatility_weight.lookback_days),
+                pfmt(volatility_weight.min_weight),
+                pfmt(volatility_weight.max_weight),
+                pfmt(volatility_weight.rebalance_band),
+                ffmt(volatility_weight.smoothing_factor),
+                (
+                    ffmt(volatility_weight.increase_smoothing_factor)
+                    if volatility_weight.increase_smoothing_factor is not None
+                    else "-"
+                ),
+                (
+                    ffmt(volatility_weight.decrease_smoothing_factor)
+                    if volatility_weight.decrease_smoothing_factor is not None
+                    else "-"
+                ),
+            )
+        return table
+
     def display(self, config_path: str) -> None:
         console = Console()
         config_table = Table(box=box.SIMPLE_HEAVY)
@@ -698,6 +748,14 @@ class Config(BaseModel, DisplayMixin):
         tree = Tree(":control_knobs:")
         tree.add(Group(f":file_cabinet: Loaded from {config_path}", config_table))
         tree.add(Group(":yin_yang: Symbology", self.create_symbols_table()))
+        volatility_weight_table = self.create_volatility_weight_table()
+        if volatility_weight_table is not None:
+            tree.add(
+                Group(
+                    ":chart_with_upwards_trend: Volatility weights",
+                    volatility_weight_table,
+                )
+            )
 
         console.print(Panel(tree, title="Config"))
 
