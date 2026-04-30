@@ -20,6 +20,31 @@ from thetagang.ibkr import IBKR
 from thetagang.strategies.runtime_services import resolve_symbol_configs
 from thetagang.trading_operations import OrderOperations
 
+AlignedClosesResult = Tuple[List[date], Dict[str, List[float]]]
+AlignedClosesFetcher = Callable[
+    [List[str], int, int], Coroutine[Any, Any, AlignedClosesResult]
+]
+
+
+class RegimeHistoryCache:
+    def __init__(self, fetcher: AlignedClosesFetcher) -> None:
+        self._fetcher = fetcher
+        self._cache: Dict[Tuple[Tuple[str, ...], int, int], AlignedClosesResult] = {}
+
+    async def get(
+        self,
+        symbols: List[str],
+        lookback_days: int,
+        cooldown_days: int,
+    ) -> AlignedClosesResult:
+        key = (tuple(symbols), lookback_days, cooldown_days)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        result = await self._fetcher(symbols, lookback_days, cooldown_days)
+        self._cache[key] = result
+        return result
+
 
 class RegimeRebalanceEngine:
     def __init__(
@@ -85,23 +110,24 @@ class RegimeRebalanceEngine:
         lookback_days: int,
         cooldown_days: int,
         weights_override: Optional[Dict[str, float]] = None,
-        aligned_closes_cache: Optional[
-            Dict[
-                Tuple[Tuple[str, ...], int, int],
-                Tuple[List[date], Dict[str, List[float]]],
-            ]
-        ] = None,
+        history_cache: Optional[RegimeHistoryCache] = None,
     ) -> Tuple[List[date], List[float]]:
         symbol_configs = resolve_symbol_configs(
             self.config, context="regime proxy series"
         )
         proxy_symbols = list(weights_override.keys()) if weights_override else symbols
-        sorted_dates, aligned_closes = await self._get_regime_aligned_closes_cached(
-            symbols,
-            lookback_days,
-            cooldown_days,
-            aligned_closes_cache,
-        )
+        if history_cache is None:
+            sorted_dates, aligned_closes = await self._get_regime_aligned_closes(
+                symbols,
+                lookback_days,
+                cooldown_days,
+            )
+        else:
+            sorted_dates, aligned_closes = await history_cache.get(
+                symbols,
+                lookback_days,
+                cooldown_days,
+            )
 
         if weights_override:
             weights = weights_override
@@ -129,32 +155,6 @@ class RegimeRebalanceEngine:
             normalized_series.append(normalized_series[-1] * daily_factor)
 
         return (sorted_dates, normalized_series)
-
-    async def _get_regime_aligned_closes_cached(
-        self,
-        symbols: List[str],
-        lookback_days: int,
-        cooldown_days: int,
-        cache: Optional[
-            Dict[
-                Tuple[Tuple[str, ...], int, int],
-                Tuple[List[date], Dict[str, List[float]]],
-            ]
-        ],
-    ) -> Tuple[List[date], Dict[str, List[float]]]:
-        if cache is None:
-            return await self._get_regime_aligned_closes(
-                symbols, lookback_days, cooldown_days
-            )
-        key = (tuple(symbols), lookback_days, cooldown_days)
-        cached = cache.get(key)
-        if cached is not None:
-            return cached
-        result = await self._get_regime_aligned_closes(
-            symbols, lookback_days, cooldown_days
-        )
-        cache[key] = result
-        return result
 
     async def _get_regime_aligned_closes(
         self,
@@ -233,12 +233,7 @@ class RegimeRebalanceEngine:
         self,
         symbols: List[str],
         symbol_configs: Dict[str, Any],
-        aligned_closes_cache: Optional[
-            Dict[
-                Tuple[Tuple[str, ...], int, int],
-                Tuple[List[date], Dict[str, List[float]]],
-            ]
-        ] = None,
+        history_cache: Optional[RegimeHistoryCache] = None,
     ) -> Tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
         effective_weights = {
             symbol: float(symbol_configs[symbol].weight) for symbol in symbols
@@ -268,12 +263,18 @@ class RegimeRebalanceEngine:
 
         for lookback_days, group_symbols in volatility_symbols_by_lookback.items():
             try:
-                _, aligned_closes = await self._get_regime_aligned_closes_cached(
-                    group_symbols,
-                    lookback_days,
-                    0,
-                    aligned_closes_cache,
-                )
+                if history_cache is None:
+                    _, aligned_closes = await self._get_regime_aligned_closes(
+                        group_symbols,
+                        lookback_days,
+                        0,
+                    )
+                else:
+                    _, aligned_closes = await history_cache.get(
+                        group_symbols,
+                        lookback_days,
+                        0,
+                    )
             except Exception as exc:
                 for symbol in group_symbols:
                     log.warning(
@@ -579,14 +580,12 @@ class RegimeRebalanceEngine:
             log.error("Rebalance base value is not positive, skipping rebalancing.")
             raise ValueError("Regime-aware rebalancing requires a positive base value.")
 
-        aligned_closes_cache: Dict[
-            Tuple[Tuple[str, ...], int, int], Tuple[List[date], Dict[str, List[float]]]
-        ] = {}
+        history_cache = RegimeHistoryCache(self._get_regime_aligned_closes)
         current_weights: Dict[str, float] = {}
         effective_weights, volatility_details = await self._resolve_effective_weights(
             symbols,
             symbol_configs,
-            aligned_closes_cache,
+            history_cache,
         )
         total_effective_weight = sum(effective_weights.values())
         if total_effective_weight <= 0:
@@ -631,7 +630,7 @@ class RegimeRebalanceEngine:
             regime_rebalance.lookback_days,
             regime_rebalance.cooldown_days,
             weights_override=proxy_weights,
-            aligned_closes_cache=aligned_closes_cache,
+            history_cache=history_cache,
         )
         if len(values) < regime_rebalance.lookback_days + 1:
             log.error("Insufficient historical data for regime rebalancing, aborting.")
@@ -662,11 +661,10 @@ class RegimeRebalanceEngine:
         ratio_anchor: Optional[str] = None
         ratio_rest: List[str] = []
         if ratio_gate is not None:
-            _, aligned_closes = await self._get_regime_aligned_closes_cached(
+            _, aligned_closes = await history_cache.get(
                 symbols,
                 regime_rebalance.lookback_days,
                 regime_rebalance.cooldown_days,
-                aligned_closes_cache,
             )
             ratio_anchor = getattr(ratio_gate, "anchor", "")
             ratio_rest = [s for s in symbols if s != ratio_anchor]
