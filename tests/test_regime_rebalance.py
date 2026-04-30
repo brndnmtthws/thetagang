@@ -417,6 +417,35 @@ async def test_regime_rebalance_volatility_weight_smooths_from_previous_state(
 
 
 @pytest.mark.asyncio
+async def test_regime_rebalance_volatility_weight_batches_shared_lookbacks(
+    portfolio_manager, mocker
+):
+    portfolio_manager.config.portfolio.symbols[
+        "AAA"
+    ].volatility_weight = _volatility_weight(
+        target_vol=0.32, min_weight=0.25, max_weight=0.6
+    )
+    portfolio_manager.config.portfolio.symbols[
+        "BBB"
+    ].volatility_weight = _volatility_weight(
+        target_vol=0.32, min_weight=0.25, max_weight=0.6
+    )
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 101.0, 102.0, 103.0])
+    aligned_spy = mocker.spy(
+        portfolio_manager.regime_engine,
+        "_get_regime_aligned_closes",
+    )
+
+    await portfolio_manager.regime_engine._resolve_effective_weights(
+        ["AAA", "BBB"],
+        portfolio_manager.config.portfolio.symbols,
+    )
+
+    aligned_spy.assert_called_once()
+    assert aligned_spy.call_args.args[:3] == (["AAA", "BBB"], 3, 0)
+
+
+@pytest.mark.asyncio
 async def test_regime_rebalance_volatility_weight_uses_increase_smoothing_factor(
     portfolio_manager_with_db, mocker
 ):
@@ -462,6 +491,39 @@ async def test_regime_rebalance_volatility_weight_uses_increase_smoothing_factor
     assert payload["symbols"]["AAA"]["target_weight"] == pytest.approx(0.6)
     assert payload["symbols"]["AAA"]["effective_weight"] == pytest.approx(0.44)
     assert payload["symbols"]["AAA"]["smoothing_factor"] == pytest.approx(0.2)
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_empty_proxy_fallback_uses_effective_weights(
+    portfolio_manager, mocker
+):
+    portfolio_manager.config.portfolio.symbols[
+        "AAA"
+    ].volatility_weight = _volatility_weight(
+        target_vol=0.10,
+        min_weight=0.25,
+        max_weight=0.6,
+        smoothing_factor=1.0,
+    )
+    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
+    portfolio_positions = {"AAA": [], "BBB": []}
+
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 200.0, 100.0, 200.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    proxy_spy = mocker.spy(portfolio_manager.regime_engine, "_get_regime_proxy_series")
+
+    await portfolio_manager.check_regime_rebalance_positions(
+        account_summary,
+        portfolio_positions,
+    )
+
+    weights_override = proxy_spy.call_args.kwargs["weights_override"]
+    assert weights_override["AAA"] == pytest.approx(0.25)
+    assert weights_override["BBB"] == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
