@@ -494,6 +494,23 @@ class SymbolConfig(BaseModel):
             default_factory=lambda: SymbolConfig.WriteWhen()
         )
 
+    class VolatilityWeight(BaseModel):
+        enabled: bool = Field(default=False)
+        target_vol: float = Field(..., gt=0.0)
+        lookback_days: int = Field(..., ge=2)
+        min_weight: float = Field(..., gt=0.0, le=1.0)
+        max_weight: float = Field(..., ge=0.0, le=1.0)
+        rebalance_band: float = Field(default=0.0, ge=0.0, le=1.0)
+        smoothing_factor: float = Field(default=0.3, gt=0.0, le=1.0)
+        increase_smoothing_factor: Optional[float] = Field(default=None, gt=0.0, le=1.0)
+        decrease_smoothing_factor: Optional[float] = Field(default=None, gt=0.0, le=1.0)
+
+        @model_validator(mode="after")
+        def validate_weight_bounds(self) -> Self:
+            if self.max_weight < self.min_weight:
+                raise ValueError("volatility_weight.max_weight must be >= min_weight")
+            return self
+
     weight: float = Field(..., ge=0, le=1)
     primary_exchange: str = Field(default="", min_length=1)
     delta: Optional[float] = Field(default=None, ge=0, le=1)
@@ -504,6 +521,7 @@ class SymbolConfig(BaseModel):
     close_if_unable_to_roll: Optional[bool] = None
     calls: Optional["SymbolConfig.Calls"] = None
     puts: Optional["SymbolConfig.Puts"] = None
+    volatility_weight: Optional["SymbolConfig.VolatilityWeight"] = None
     adjust_price_after_delay: bool = Field(default=False)
     no_trading: Optional[bool] = None
     buy_only_rebalancing: Optional[bool] = None
