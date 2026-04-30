@@ -183,6 +183,45 @@ def test_v2_to_legacy_does_not_materialize_absent_strategy_sections() -> None:
     assert config.strategies.cash_management.enabled is False
 
 
+def test_symbol_accepts_volatility_weight_config() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["volatility_weight"] = {
+        "enabled": True,
+        "target_vol": 0.32,
+        "lookback_days": 30,
+        "min_weight": 0.25,
+        "max_weight": 1.0,
+        "rebalance_band": 0.05,
+    }
+
+    config = Config(**data)
+
+    volatility_weight = config.portfolio.symbols["AAA"].volatility_weight
+    assert volatility_weight is not None
+    assert volatility_weight.enabled is True
+    assert volatility_weight.target_vol == 0.32
+    assert volatility_weight.smoothing_factor == 0.3
+
+
+def test_symbol_accepts_volatility_weight_above_base_weight() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["weight"] = 0.4
+    data["portfolio"]["symbols"]["BBB"] = {"weight": 0.6}
+    data["portfolio"]["symbols"]["AAA"]["volatility_weight"] = {
+        "enabled": True,
+        "target_vol": 0.32,
+        "lookback_days": 30,
+        "min_weight": 0.25,
+        "max_weight": 0.5,
+    }
+
+    config = Config(**data)
+
+    volatility_weight = config.portfolio.symbols["AAA"].volatility_weight
+    assert volatility_weight is not None
+    assert volatility_weight.max_weight == 0.5
+
+
 def test_v2_rejects_transitional_symbols_and_overrides() -> None:
     with pytest.raises(ValueError):
         Config.model_validate(

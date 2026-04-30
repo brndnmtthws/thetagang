@@ -196,6 +196,131 @@ class RegimeRebalanceEngine:
 
         return (sorted_dates, aligned_closes)
 
+    async def _resolve_effective_weights(
+        self,
+        symbols: List[str],
+        symbol_configs: Dict[str, Any],
+    ) -> Tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
+        effective_weights = {
+            symbol: float(symbol_configs[symbol].weight) for symbol in symbols
+        }
+        volatility_details: Dict[str, Dict[str, float]] = {}
+        previous_state = (
+            self.data_store.get_last_event_payload("volatility_weight_state")
+            if self.data_store
+            else None
+        )
+        previous_symbols = (
+            previous_state.get("symbols", {})
+            if isinstance(previous_state, dict)
+            else {}
+        )
+
+        for symbol in symbols:
+            symbol_config = symbol_configs[symbol]
+            volatility_weight = getattr(symbol_config, "volatility_weight", None)
+            if volatility_weight is None or not getattr(
+                volatility_weight, "enabled", False
+            ):
+                continue
+
+            base_weight = float(symbol_config.weight)
+            lookback_days = int(volatility_weight.lookback_days)
+            try:
+                _, aligned_closes = await self._get_regime_aligned_closes(
+                    [symbol],
+                    lookback_days,
+                    0,
+                )
+                closes = aligned_closes[symbol]
+                if len(closes) < lookback_days + 1:
+                    log.warning(
+                        f"{symbol}: volatility weight has insufficient history; using static weight."
+                    )
+                    continue
+
+                window = np.array(closes[-(lookback_days + 1) :], dtype=float)
+                if np.any(window <= 0) or np.any(np.isnan(window)):
+                    log.warning(
+                        f"{symbol}: volatility weight found invalid closes; using static weight."
+                    )
+                    continue
+
+                returns = np.diff(np.log(window))
+                realized_vol = float(np.std(returns, ddof=1) * math.sqrt(252))
+                if math.isnan(realized_vol) or realized_vol <= 0:
+                    log.warning(
+                        f"{symbol}: volatility weight realized vol is invalid; using static weight."
+                    )
+                    continue
+
+                max_weight = float(volatility_weight.max_weight)
+                raw_weight = (
+                    base_weight * float(volatility_weight.target_vol) / realized_vol
+                )
+                target_weight = max(
+                    float(volatility_weight.min_weight),
+                    min(raw_weight, max_weight),
+                )
+                previous_symbol_state = previous_symbols.get(symbol, {})
+                previous_weight_raw = (
+                    previous_symbol_state.get("effective_weight")
+                    if isinstance(previous_symbol_state, dict)
+                    else None
+                )
+                previous_weight = (
+                    float(previous_weight_raw)
+                    if isinstance(previous_weight_raw, (int, float))
+                    and not isinstance(previous_weight_raw, bool)
+                    else base_weight
+                )
+                smoothing_factor = float(volatility_weight.smoothing_factor)
+                if target_weight > previous_weight:
+                    smoothing_factor = float(
+                        volatility_weight.increase_smoothing_factor
+                        if volatility_weight.increase_smoothing_factor is not None
+                        else smoothing_factor
+                    )
+                elif target_weight < previous_weight:
+                    smoothing_factor = float(
+                        volatility_weight.decrease_smoothing_factor
+                        if volatility_weight.decrease_smoothing_factor is not None
+                        else smoothing_factor
+                    )
+
+                rebalance_band = float(volatility_weight.rebalance_band)
+                if abs(target_weight - previous_weight) < rebalance_band:
+                    effective_weight = previous_weight
+                else:
+                    effective_weight = previous_weight + (
+                        smoothing_factor * (target_weight - previous_weight)
+                    )
+                effective_weight = max(
+                    float(volatility_weight.min_weight),
+                    min(effective_weight, max_weight),
+                )
+                effective_weights[symbol] = effective_weight
+                volatility_details[symbol] = {
+                    "base_weight": base_weight,
+                    "effective_weight": effective_weight,
+                    "realized_vol": realized_vol,
+                    "raw_weight": raw_weight,
+                    "target_weight": target_weight,
+                    "previous_weight": previous_weight,
+                    "smoothing_factor": smoothing_factor,
+                }
+                log.notice(
+                    f"{symbol}: volatility weight base={pfmt(base_weight)} "
+                    f"realized_vol={pfmt(realized_vol)} "
+                    f"target={pfmt(target_weight)} effective={pfmt(effective_weight)}"
+                )
+            except Exception as exc:
+                log.warning(
+                    f"{symbol}: volatility weight calculation failed ({type(exc).__name__}); using static weight."
+                )
+
+        return effective_weights, volatility_details
+
     async def _get_last_regime_rebalance_time(
         self, symbols: List[str]
     ) -> Optional[datetime]:
@@ -399,12 +524,16 @@ class RegimeRebalanceEngine:
             raise ValueError("Regime-aware rebalancing requires a positive base value.")
 
         current_weights: Dict[str, float] = {}
+        effective_weights, volatility_details = await self._resolve_effective_weights(
+            symbols,
+            symbol_configs,
+        )
         for symbol in symbols:
             market_price = market_prices[symbol]
             current_position = current_positions[symbol]
             current_value = current_values[symbol]
             current_weights[symbol] = current_value / total_value
-            target_weight = symbol_configs[symbol].weight
+            target_weight = effective_weights[symbol]
             target_values[symbol] = target_weight * total_value
             target_shares[symbol] = math.floor(target_values[symbol] / market_price)
             share_gaps[symbol] = target_shares[symbol] - current_position
@@ -828,7 +957,7 @@ class RegimeRebalanceEngine:
         regime_summary: List[Dict[str, Any]] = []
         net_liquidation_value = float(account_summary["NetLiquidation"].value)
         for symbol in symbols:
-            target_weight = symbol_configs[symbol].weight
+            target_weight = effective_weights[symbol]
             target_value = target_values[symbol]
             target_share = target_shares[symbol]
             trade_shares = orders_by_symbol.get(symbol, 0)
@@ -981,9 +1110,18 @@ class RegimeRebalanceEngine:
                 f"deficit={'on' if deficit_gate else 'off'}"
             )
 
+            volatility_detail = volatility_details.get(symbol)
+            target_weight_display = pfmt(target_weight)
+            if volatility_detail is not None:
+                target_weight_display = (
+                    f"{pfmt(target_weight)} "
+                    f"(base {pfmt(volatility_detail['base_weight'])}, "
+                    f"vol {pfmt(volatility_detail['realized_vol'])})"
+                )
+
             table.add_row(
                 symbol,
-                f"{pfmt(current_weights[symbol])}->{pfmt(target_weight)} "
+                f"{pfmt(current_weights[symbol])}->{target_weight_display} "
                 f"({pfmt(weight_delta)})",
                 f"{dfmt(current_values[symbol])}->{dfmt(target_value)} "
                 f"({dfmt(value_delta)})",
@@ -1008,6 +1146,7 @@ class RegimeRebalanceEngine:
                     "shares_delta": shares_delta,
                     "trading_allowed": trading_allowed,
                     "action": action,
+                    "volatility_weight": volatility_detail,
                 }
             )
 
@@ -1101,5 +1240,21 @@ class RegimeRebalanceEngine:
                     "deficit_active": deficit_active_state,
                 },
             )
+            if volatility_details:
+                self.data_store.record_event(
+                    "volatility_weight_state",
+                    {
+                        "symbols": {
+                            symbol: {
+                                "base_weight": details["base_weight"],
+                                "effective_weight": details["effective_weight"],
+                                "target_weight": details["target_weight"],
+                                "realized_vol": details["realized_vol"],
+                                "smoothing_factor": details["smoothing_factor"],
+                            }
+                            for symbol, details in volatility_details.items()
+                        }
+                    },
+                )
 
         return (table, to_trade)
