@@ -56,7 +56,7 @@ WORKDIR /src
 ADD ./tws/Jts /root/Jts
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
-ADD ./data/jxbrowser-linux64-arm-7.29.jar /root/Jts/1037/jars/
+ADD ./data/jxbrowser-linux64-arm-7.29.jar /root/Jts/1045/jars/
 
 RUN wget -qO- https://astral.sh/uv/install.sh | sh \
   && uv python install 3.14 \
