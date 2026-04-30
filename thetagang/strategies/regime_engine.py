@@ -368,8 +368,12 @@ class RegimeRebalanceEngine:
                     }
                     log.notice(
                         f"{symbol}: volatility weight base={pfmt(base_weight)} "
+                        f"raw={pfmt(raw_weight)} "
                         f"realized_vol={pfmt(realized_vol)} "
-                        f"target={pfmt(target_weight)} effective={pfmt(effective_weight)}"
+                        f"clamped={pfmt(target_weight)} "
+                        f"previous={pfmt(previous_weight)} "
+                        f"smoothing={ffmt(smoothing_factor)} "
+                        f"effective={pfmt(effective_weight)}"
                     )
                 except Exception as exc:
                     log.warning(
