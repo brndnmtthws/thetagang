@@ -373,7 +373,7 @@ If you find something that you think is a bug, or some other issue, please
 The bot is based on the [ib_async](https://github.com/ib-api-reloaded/ib_async)
 library, and uses [IBC](https://github.com/IbcAlpha/IBC) for managing the API
 gateway. The bundled IBC configuration targets the current stable TWS/Gateway
-version (see `IBC(1037, ...)` in the code).
+version (see `IBC(1045, ...)` in the code).
 
 To use the bot, you'll need an Interactive Brokers account with a working
 installation of IBC. If you want to modify the bot, you'll need an
