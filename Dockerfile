@@ -71,8 +71,8 @@ RUN wget -qO- https://astral.sh/uv/install.sh | sh \
   && echo '--add-opens java.desktop/java.awt=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--add-opens java.base/java.util=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--add-opens javafx.graphics/com.sun.javafx.application=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '-Dlog4j2.statusLoggerLevel=OFF' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '-Dorg.apache.logging.log4j.simplelog.StatusLogger.level=OFF' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '-Dlog4j2.statusLoggerLevel=ERROR' | tee -a /root/Jts/*/tws.vmoptions \
+  && echo '-Dorg.apache.logging.log4j.simplelog.StatusLogger.level=ERROR' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '[Logon]' | tee -a /root/Jts/jts.ini \
   && echo 'UseSSL=true' | tee -a /root/Jts/jts.ini
 
