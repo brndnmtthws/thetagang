@@ -98,7 +98,7 @@ def test_watchdog_runs_inside_task(monkeypatch, tmp_path):
             if not completion_future.done():
                 completion_future.set_result(True)
 
-    monkeypatch.setattr(tg, "IBC", FakeIBC)
+    monkeypatch.setattr(tg, "QuietIBC", FakeIBC)
     monkeypatch.setattr(tg, "Watchdog", FakeWatchdog)
     monkeypatch.setattr(tg, "IB", FakeIB)
     monkeypatch.setattr(tg, "PortfolioManager", FakePortfolioManager)
