@@ -73,6 +73,12 @@ RUN wget -qO- https://astral.sh/uv/install.sh | sh \
   && echo '--add-opens javafx.graphics/com.sun.javafx.application=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '-Dlog4j2.statusLoggerLevel=ERROR' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '-Dorg.apache.logging.log4j.simplelog.StatusLogger.level=ERROR' | tee -a /root/Jts/*/tws.vmoptions \
+  && for f in /root/Jts/*/ibgateway.vmoptions; do \
+    test ! -f "$f" || { \
+      echo '-Dlog4j2.statusLoggerLevel=ERROR' | tee -a "$f" ; \
+      echo '-Dorg.apache.logging.log4j.simplelog.StatusLogger.level=ERROR' | tee -a "$f" ; \
+    } ; \
+  done \
   && echo '[Logon]' | tee -a /root/Jts/jts.ini \
   && echo 'UseSSL=true' | tee -a /root/Jts/jts.ini
 
