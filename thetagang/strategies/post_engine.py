@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from ib_async import AccountValue, PortfolioItem, Ticker, util
 from ib_async.contract import Contract, Index, Option, Stock
 
 from thetagang import log
 from thetagang.config import Config
+from thetagang.fmt import dfmt
 from thetagang.ibkr import IBKR
 from thetagang.orders import Orders
 from thetagang.trading_operations import (
@@ -28,6 +29,7 @@ class PostStrategyEngine:
         option_scanner: OptionChainScanner,
         orders: Orders,
         qualified_contracts: Dict[int, Contract],
+        get_reserved_cash_for_post_management: Callable[[], float] | None = None,
     ) -> None:
         self.config = config
         self.ibkr = ibkr
@@ -35,6 +37,14 @@ class PostStrategyEngine:
         self.option_scanner = option_scanner
         self.orders = orders
         self.qualified_contracts = qualified_contracts
+        self._get_reserved_cash_for_post_management = (
+            get_reserved_cash_for_post_management
+        )
+
+    def reserved_cash_for_post_management(self) -> float:
+        if self._get_reserved_cash_for_post_management is None:
+            return 0.0
+        return max(0.0, self._get_reserved_cash_for_post_management())
 
     def calc_pending_cash_balance(self) -> float:
         def get_multiplier(contract: Contract) -> float:
@@ -198,11 +208,21 @@ class PostStrategyEngine:
         sell_threshold = self.config.strategies.cash_management.sell_threshold
         cash_balance = math.floor(float(account_summary["TotalCashValue"].value))
         pending_balance = self.calc_pending_cash_balance()
+        effective_cash_balance = cash_balance + pending_balance
+        reserved_cash = self.reserved_cash_for_post_management()
+        sweepable_cash_balance = effective_cash_balance - reserved_cash
+        if reserved_cash > 0:
+            log.notice(
+                "Cash management: reserving "
+                f"{dfmt(reserved_cash)} for regime flow deployment."
+            )
         try:
-            if not (
-                cash_balance + pending_balance > target_cash_balance + buy_threshold
-                or cash_balance + pending_balance < target_cash_balance - sell_threshold
-            ):
+            amount = 0.0
+            if sweepable_cash_balance > target_cash_balance + buy_threshold:
+                amount = sweepable_cash_balance - target_cash_balance
+            elif effective_cash_balance < target_cash_balance - sell_threshold:
+                amount = effective_cash_balance - target_cash_balance
+            else:
                 return
 
             symbol = self.config.strategies.cash_management.cash_fund
@@ -217,7 +237,6 @@ class PostStrategyEngine:
                 if self.config.strategies.cash_management.orders
                 else self.config.runtime.orders.algo
             )
-            amount = cash_balance + pending_balance - target_cash_balance
             price = ticker.ask if amount > 0 else ticker.bid
             qty = amount // price
             if util.isNan(qty):

@@ -114,9 +114,47 @@ async def test_do_cashman_excess_cash_buys_cash_fund(mocker):
 
 
 @pytest.mark.asyncio
+async def test_do_cashman_reserved_regime_cash_suppresses_cash_fund_buy(mocker):
+    engine, ibkr, order_ops, _scanner = _make_engine(mocker)
+    engine.config.strategies.cash_management.enabled = True
+    engine._get_reserved_cash_for_post_management = lambda: 4100.0
+    account_summary = {"TotalCashValue": SimpleNamespace(value="8400")}
+    stock_contract = Stock("AAA", "SMART", "USD")
+    stock_order = SimpleNamespace(action="BUY", lmtPrice=100.0, totalQuantity=43)
+    engine.orders.records = mocker.Mock(
+        return_value=[(stock_contract, stock_order, None)]
+    )
+
+    await engine.do_cashman(account_summary, {})
+
+    ibkr.get_ticker_for_stock.assert_not_called()
+    order_ops.create_limit_order.assert_not_called()
+    order_ops.enqueue_order.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_do_cashman_cash_deficit_sells_cash_fund(mocker):
     engine, ibkr, order_ops, _scanner = _make_engine(mocker)
     engine.config.strategies.cash_management.enabled = True
+    account_summary = {"TotalCashValue": SimpleNamespace(value="0")}
+    ticker = SimpleNamespace(contract=Contract(), ask=100.0, bid=100.0)
+    ibkr.get_ticker_for_stock = AsyncMock(return_value=ticker)
+    portfolio_positions = {
+        "SGOV": [SimpleNamespace(contract=Stock("SGOV", "SMART", "USD"), position=10)]
+    }
+
+    await engine.do_cashman(account_summary, portfolio_positions)
+
+    order_ops.create_limit_order.assert_called_once()
+    assert order_ops.create_limit_order.call_args.kwargs["action"] == "SELL"
+    assert order_ops.create_limit_order.call_args.kwargs["quantity"] > 0
+
+
+@pytest.mark.asyncio
+async def test_do_cashman_reserved_regime_cash_does_not_block_cash_fund_sell(mocker):
+    engine, ibkr, order_ops, _scanner = _make_engine(mocker)
+    engine.config.strategies.cash_management.enabled = True
+    engine._get_reserved_cash_for_post_management = lambda: 5000.0
     account_summary = {"TotalCashValue": SimpleNamespace(value="0")}
     ticker = SimpleNamespace(contract=Contract(), ask=100.0, bid=100.0)
     ibkr.get_ticker_for_stock = AsyncMock(return_value=ticker)

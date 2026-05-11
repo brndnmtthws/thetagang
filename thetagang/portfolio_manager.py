@@ -116,6 +116,7 @@ class PortfolioManager:
         self.qualified_contracts: Dict[int, Contract] = {}
         self.dry_run = dry_run
         self.last_untracked_positions: Dict[str, List[PortfolioItem]] = {}
+        self._reserved_cash_for_post_management = 0.0
         self.order_ops = OrderOperations(
             config=self.config,
             account_number=self.account_number,
@@ -171,6 +172,9 @@ class PortfolioManager:
             get_primary_exchange=self.get_primary_exchange,
             get_buying_power=self.get_regime_buying_power,
             now_provider=lambda: datetime.now(),
+            set_reserved_cash_for_post_management=(
+                self.set_reserved_cash_for_post_management
+            ),
         )
         self.equity_engine = EquityRebalanceEngine(
             config=self.config,
@@ -186,6 +190,9 @@ class PortfolioManager:
             option_scanner=self.option_scanner,
             orders=self.orders,
             qualified_contracts=self.qualified_contracts,
+            get_reserved_cash_for_post_management=(
+                self.get_reserved_cash_for_post_management
+            ),
         )
         if run_stage_flags is None:
             default_run = RunConfig(strategies=DEFAULT_RUN_STRATEGIES)
@@ -236,6 +243,12 @@ class PortfolioManager:
             enabled_stages=enabled_stages,
             service=self.post_engine,
         )
+
+    def set_reserved_cash_for_post_management(self, amount: float) -> None:
+        self._reserved_cash_for_post_management = max(0.0, amount)
+
+    def get_reserved_cash_for_post_management(self) -> float:
+        return self._reserved_cash_for_post_management
 
     def get_short_calls(
         self, portfolio_positions: Dict[str, List[PortfolioItem]]
@@ -652,6 +665,7 @@ class PortfolioManager:
     async def manage(self) -> None:
         had_error = False
         try:
+            self.set_reserved_cash_for_post_management(0.0)
             if self.data_store:
                 self.data_store.record_event("run_start", {"dry_run": self.dry_run})
             self.initialize_account()
