@@ -1,6 +1,4 @@
-import asyncio
 from pathlib import Path
-from typing import Any, cast
 
 import thetagang.thetagang as tg
 
@@ -52,33 +50,3 @@ def test_configure_ib_async_logging_warns_and_continues_on_oserror(
     assert len(warnings) == 1
     assert "Unable to initialize ib_async logfile" in warnings[0]
     assert str(Path(target)) in warnings[0]
-
-
-def test_quiet_ibc_filters_non_started_appender_noise():
-    messages: list[str] = []
-
-    class FakeLogger:
-        def log(self, _level, message: str) -> None:
-            messages.append(message)
-
-    class FakeStdout:
-        def __init__(self):
-            self._lines = [
-                b"JTS-EServerSocketNotifier-103 ERROR Attempted to append to non-started appender h\n",
-                b"JTS-Main ERROR Real startup failure\n",
-                b"",
-            ]
-
-        async def readline(self):
-            return self._lines.pop(0)
-
-    class FakeProc:
-        stdout = FakeStdout()
-
-    ibc = tg.QuietIBC(1045)
-    ibc._proc = cast(Any, FakeProc())
-    ibc._logger = cast(Any, FakeLogger())
-
-    asyncio.run(ibc.monitorAsync())
-
-    assert messages == ["JTS-Main ERROR Real startup failure"]
