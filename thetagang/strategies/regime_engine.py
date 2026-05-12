@@ -57,6 +57,7 @@ class RegimeRebalanceEngine:
         get_primary_exchange: Callable[[str], str],
         get_buying_power: Callable[[Dict[str, AccountValue]], int],
         now_provider: Callable[[], datetime],
+        set_reserved_cash_for_post_management: Callable[[float], None] | None = None,
     ) -> None:
         self.config = config
         self.ibkr = ibkr
@@ -65,7 +66,15 @@ class RegimeRebalanceEngine:
         self._get_primary_exchange = get_primary_exchange
         self._get_buying_power = get_buying_power
         self._now = now_provider
+        self._set_reserved_cash_for_post_management = (
+            set_reserved_cash_for_post_management
+        )
         self.regime_rebalance_order_ref_prefix = "tg:regime-rebalance"
+
+    def _reserve_cash_for_post_management(self, amount: float) -> None:
+        if self._set_reserved_cash_for_post_management is None:
+            return
+        self._set_reserved_cash_for_post_management(max(0.0, amount))
 
     @staticmethod
     def _as_int_or_none(value: Any) -> int | None:
@@ -457,6 +466,7 @@ class RegimeRebalanceEngine:
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> Tuple[Table, List[Tuple[str, str, int]]]:
+        self._reserve_cash_for_post_management(0.0)
         symbol_configs = resolve_symbol_configs(
             self.config, context="regime rebalance check"
         )
@@ -1222,6 +1232,25 @@ class RegimeRebalanceEngine:
                 }
             )
 
+        reserved_cash_for_post_management = 0.0
+        if rebalance_mode == "flow" and flow_gate and excess_cash > 0:
+            buy_order_value = sum(
+                shares * market_prices[symbol]
+                for symbol, _primary_exchange, shares in to_trade
+                if shares > 0
+            )
+            if buy_order_value > 0:
+                reserved_cash_for_post_management = max(
+                    0.0, excess_cash - buy_order_value
+                )
+            if reserved_cash_for_post_management > 0:
+                log.notice(
+                    "Regime rebalancing: reserving "
+                    f"{dfmt(reserved_cash_for_post_management)} "
+                    "from cash management for future flow deployment."
+                )
+        self._reserve_cash_for_post_management(reserved_cash_for_post_management)
+
         log.info(
             f"Regime rebalancing gates: max_relative_drift={pfmt(max_relative_drift)} "
             f"soft_band={pfmt(regime_rebalance.soft_band, 0)} "
@@ -1283,6 +1312,9 @@ class RegimeRebalanceEngine:
                     "flow_gate": flow_gate,
                     "deficit_gate": deficit_gate,
                     "excess_cash": excess_cash,
+                    "reserved_cash_for_post_management": (
+                        reserved_cash_for_post_management
+                    ),
                     "mode": rebalance_mode,
                     "orders": to_trade,
                     "ratio_gate": ratio_payload,
@@ -1300,6 +1332,9 @@ class RegimeRebalanceEngine:
                     "flow_gate": flow_gate,
                     "deficit_gate": deficit_gate,
                     "excess_cash": excess_cash,
+                    "reserved_cash_for_post_management": (
+                        reserved_cash_for_post_management
+                    ),
                     "mode": rebalance_mode,
                     "summary": regime_summary,
                     "ratio_gate": ratio_payload,
