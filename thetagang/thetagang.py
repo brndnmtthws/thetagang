@@ -31,30 +31,6 @@ else:
 console = Console()
 
 
-USELESS_IBC_LOG_MESSAGES = ("Attempted to append to non-started appender h",)
-
-
-class QuietIBC(IBC):
-    async def monitorAsync(self) -> None:
-        while self._proc:
-            stdout = self._proc.stdout
-            if stdout is None:
-                break
-
-            line = await stdout.readline()
-            if not line:
-                break
-
-            message = line.strip().decode()
-            if any(
-                useless_message in message
-                for useless_message in USELESS_IBC_LOG_MESSAGES
-            ):
-                continue
-
-            self._logger.log(self.IbcLogLevel, message)
-
-
 def _configure_ib_async_logging(logfile: Optional[str]) -> None:
     if not logfile:
         return
@@ -147,7 +123,7 @@ def start(
     if not without_ibc:
         # TWS version is pinned to current stable
         ibc_config = config.runtime.ibc
-        ibc = QuietIBC(1045, **ibc_config.to_dict())
+        ibc = IBC(1045, **ibc_config.to_dict())
         log.info(f"Starting TWS with twsVersion={ibc.twsVersion}")
 
         ib.RaiseRequestErrors = ibc_config.RaiseRequestErrors
