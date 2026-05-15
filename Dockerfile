@@ -56,6 +56,7 @@ WORKDIR /src
 ADD ./tws/Jts /root/Jts
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
+ADD docker/patch-ibc-java-logging.sh /src/patch-ibc-java-logging.sh
 ADD ./data/jxbrowser-linux64-arm-7.29.jar /root/Jts/1045/jars/
 ADD ./thetagang/ibgateway-log4j2.xml /opt/thetagang/ibgateway-log4j2.xml
 
@@ -72,13 +73,7 @@ RUN wget -qO- https://astral.sh/uv/install.sh | sh \
   && echo '--add-opens java.desktop/java.awt=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--add-opens java.base/java.util=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
   && echo '--add-opens javafx.graphics/com.sun.javafx.application=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
-  && for f in /root/Jts/*/tws.vmoptions /root/Jts/*/ibgateway.vmoptions; do \
-    test ! -f "$f" || { \
-      echo '-Dlog4j.configurationFile=file:/opt/thetagang/ibgateway-log4j2.xml' | tee -a "$f" ; \
-      echo '-Dlog4j2.statusLoggerLevel=OFF' | tee -a "$f" ; \
-      echo '-Dorg.apache.logging.log4j.simplelog.StatusLogger.level=OFF' | tee -a "$f" ; \
-    } ; \
-  done \
+  && sh /src/patch-ibc-java-logging.sh \
   && echo '[Logon]' | tee -a /root/Jts/jts.ini \
   && echo 'UseSSL=true' | tee -a /root/Jts/jts.ini
 
