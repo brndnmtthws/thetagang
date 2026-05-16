@@ -10,11 +10,8 @@ _Beat the capitalists at their own game with ThetaGang 📈_
 
 ThetaGang is an [IBKR](https://www.interactivebrokers.com/) trading bot that
 started as a basic implementation of "The Wheel" strategy and has grown into a
-broader, configurable portfolio automation tool. The Wheel is a strategy that
-[surfaced on
-Reddit](https://www.reddit.com/r/options/comments/a36k4j/the_wheel_aka_triple_income_strategy_explained/),
-but has been used by many in the past. ThetaGang still supports a modified
-version of The Wheel, and now also includes features like direct share
+broader, configurable portfolio automation tool. ThetaGang still supports a
+modified version of The Wheel, and now also includes features like direct share
 rebalancing, cash management, VIX call hedging, regime-aware rebalancing, and
 exchange-hours gating.
 
@@ -35,12 +32,7 @@ Before using ThetaGang:
 
 ## How it works
 
-Start by reading [the Reddit
-post](https://www.reddit.com/r/options/comments/a36k4j/the_wheel_aka_triple_income_strategy_explained/)
-to get some background.
-
-The strategy, as implemented here, does a few things differently from the one
-described in the post above. For one, it's intended to be used to augment a
+The strategy, as implemented here, is intended to be used to augment a
 typical index-fund based portfolio with specific asset allocations. The
 default configuration includes a diversified portfolio with SPY (40%), QQQ
 (30%), TLT (20%), and smaller positions in individual stocks. This strategy
