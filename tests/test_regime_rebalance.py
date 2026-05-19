@@ -1,3 +1,4 @@
+import math
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
@@ -171,6 +172,25 @@ def _mock_regime_history(portfolio_manager, mocker, closes):
     return bars
 
 
+def _mock_regime_histories(portfolio_manager, mocker, closes_by_symbol):
+    start_date = datetime(2024, 1, 2)
+    bars_by_symbol = {
+        symbol: [
+            SimpleNamespace(date=start_date + timedelta(days=offset), close=close)
+            for offset, close in enumerate(closes)
+        ]
+        for symbol, closes in closes_by_symbol.items()
+    }
+
+    async def _get_history(contract, *_args, **_kwargs):
+        return bars_by_symbol[contract.symbol]
+
+    portfolio_manager.ibkr.request_historical_data = mocker.AsyncMock(
+        side_effect=_get_history
+    )
+    return bars_by_symbol
+
+
 def _mock_regime_tickers(
     portfolio_manager,
     mocker,
@@ -247,6 +267,46 @@ def _volatility_weight(
         smoothing_factor=smoothing_factor,
         increase_smoothing_factor=increase_smoothing_factor,
         decrease_smoothing_factor=decrease_smoothing_factor,
+    )
+
+
+def _ratio_gate_result(
+    portfolio_manager,
+    *,
+    closes_by_symbol,
+    ratio_gate,
+    effective_weights,
+    lookback_days=3,
+):
+    start_date = datetime(2024, 1, 2)
+    symbols = list(closes_by_symbol.keys())
+    dates = [
+        (start_date + timedelta(days=offset)).date()
+        for offset in range(len(next(iter(closes_by_symbol.values()))))
+    ]
+    return portfolio_manager.regime_engine._calculate_ratio_gate(
+        symbols=symbols,
+        dates=dates,
+        aligned_closes=closes_by_symbol,
+        ratio_gate=ratio_gate,
+        effective_weights=effective_weights,
+        lookback_days=lookback_days,
+        eps=1e-8,
+    )
+
+
+def _ratio_gate_config(
+    *,
+    enabled: bool = True,
+    anchor: str = "BBB",
+    drift_max: float = 1.25,
+    vol_min: float = 0.0,
+):
+    return SimpleNamespace(
+        enabled=enabled,
+        anchor=anchor,
+        drift_max=drift_max,
+        vol_min=vol_min,
     )
 
 
@@ -855,12 +915,7 @@ async def test_regime_rebalance_ratio_gate_shadow_metrics_emitted(
     portfolio_manager_with_db, mocker
 ):
     portfolio_manager_with_db.config.strategies.regime_rebalance.ratio_gate = (
-        SimpleNamespace(
-            enabled=False,
-            anchor="BBB",
-            drift_max=1.25,
-            var_min=0.0,
-        )
+        _ratio_gate_config(enabled=False)
     )
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
     portfolio_positions = {
@@ -894,11 +949,8 @@ async def test_regime_rebalance_ratio_gate_blocks_soft_rebalance(
 ):
     portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
     portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = SimpleNamespace(
-        enabled=True,
-        anchor="BBB",
-        drift_max=1.25,
-        var_min=0.0,
+    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = (
+        _ratio_gate_config()
     )
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
     portfolio_positions = {
@@ -923,11 +975,8 @@ async def test_regime_rebalance_hard_band_ignores_ratio_gate(portfolio_manager, 
     portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.10
     portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 10.0
     portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 0.01
-    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = SimpleNamespace(
-        enabled=True,
-        anchor="BBB",
-        drift_max=1.25,
-        var_min=0.0,
+    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = (
+        _ratio_gate_config()
     )
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
     portfolio_positions = {
@@ -962,11 +1011,8 @@ async def test_regime_rebalance_ratio_gate_handles_uninvested_rest_symbol(
     ]
     portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
     portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = SimpleNamespace(
-        enabled=True,
-        anchor="BBB",
-        drift_max=1.25,
-        var_min=0.0,
+    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = (
+        _ratio_gate_config()
     )
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="500")}
@@ -988,6 +1034,151 @@ async def test_regime_rebalance_ratio_gate_handles_uninvested_rest_symbol(
     )
 
     assert isinstance(orders, list)
+
+
+def test_regime_rebalance_ratio_gate_reports_nonzero_rebased_metrics(
+    portfolio_manager,
+):
+    result = _ratio_gate_result(
+        portfolio_manager,
+        closes_by_symbol={
+            "AAA": [100.0, 110.0, 105.0, 120.0],
+            "BBB": [100.0, 101.0, 99.0, 103.0],
+        },
+        ratio_gate=_ratio_gate_config(drift_max=999.0),
+        effective_weights={"AAA": 0.5, "BBB": 0.5},
+    )
+
+    assert result.daily_var is not None
+    assert result.daily_std is not None
+    assert result.annualized_vol is not None
+    assert result.daily_var > 0.0
+    assert result.daily_std > 0.0
+    assert result.annualized_vol == pytest.approx(result.daily_std * math.sqrt(252))
+    assert result.ok is True
+
+
+def test_regime_rebalance_ratio_gate_vol_min_is_annualized(portfolio_manager):
+    result = _ratio_gate_result(
+        portfolio_manager,
+        closes_by_symbol={
+            "AAA": [100.0, 110.0, 105.0, 120.0],
+            "BBB": [100.0, 101.0, 99.0, 103.0],
+        },
+        ratio_gate=_ratio_gate_config(drift_max=999.0, vol_min=0.05),
+        effective_weights={"AAA": 0.5, "BBB": 0.5},
+    )
+
+    assert result.daily_var is not None
+    assert result.annualized_vol is not None
+    assert result.daily_var < 0.05
+    assert result.annualized_vol >= 0.05
+    assert result.vol_min == pytest.approx(0.05)
+    assert result.ok is True
+
+
+def test_regime_rebalance_ratio_gate_rebased_index_is_price_scale_invariant(
+    portfolio_manager,
+):
+    closes_by_symbol = {
+        "AAA": [50.0, 55.0, 52.0, 56.0],
+        "BBB": [30.0, 31.0, 30.0, 32.0],
+        "CCC": [20.0, 19.0, 21.0, 22.0],
+    }
+    scaled_closes_by_symbol = {
+        **closes_by_symbol,
+        "AAA": [price * 10 for price in closes_by_symbol["AAA"]],
+    }
+    ratio_gate = _ratio_gate_config(drift_max=999.0)
+    effective_weights = {"AAA": 0.4, "BBB": 0.4, "CCC": 0.2}
+
+    base_result = _ratio_gate_result(
+        portfolio_manager,
+        closes_by_symbol=closes_by_symbol,
+        ratio_gate=ratio_gate,
+        effective_weights=effective_weights,
+    )
+    scaled_result = _ratio_gate_result(
+        portfolio_manager,
+        closes_by_symbol=scaled_closes_by_symbol,
+        ratio_gate=ratio_gate,
+        effective_weights=effective_weights,
+    )
+
+    assert scaled_result.daily_mean == pytest.approx(base_result.daily_mean)
+    assert scaled_result.daily_std == pytest.approx(base_result.daily_std)
+    assert scaled_result.daily_var == pytest.approx(base_result.daily_var)
+    assert scaled_result.annualized_vol == pytest.approx(base_result.annualized_vol)
+    assert scaled_result.tstat == pytest.approx(base_result.tstat)
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_ratio_gate_uses_effective_rest_weights(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager_with_db.config.portfolio.symbols["AAA"].weight = 0.4
+    portfolio_manager_with_db.config.portfolio.symbols[
+        "AAA"
+    ].volatility_weight = _volatility_weight(
+        target_vol=0.05,
+        min_weight=0.1,
+        max_weight=0.4,
+        smoothing_factor=1.0,
+    )
+    portfolio_manager_with_db.config.portfolio.symbols["BBB"].weight = 0.4
+    portfolio_manager_with_db.config.portfolio.symbols["CCC"] = SimpleNamespace(
+        weight=0.2,
+        primary_exchange="NYSE",
+    )
+    portfolio_manager_with_db.config.strategies.regime_rebalance.symbols = [
+        "AAA",
+        "BBB",
+        "CCC",
+    ]
+    portfolio_manager_with_db.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager_with_db.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager_with_db.config.strategies.regime_rebalance.ratio_gate = (
+        _ratio_gate_config(enabled=False, drift_max=999.0)
+    )
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 1)],
+        "BBB": [_stock_position("BBB", 1)],
+        "CCC": [_stock_position("CCC", 1)],
+    }
+
+    _mock_regime_tickers(
+        portfolio_manager_with_db,
+        mocker,
+        aaa_price=100.0,
+        bbb_price=100.0,
+        extra_prices={"CCC": 100.0},
+    )
+    _mock_regime_histories(
+        portfolio_manager_with_db,
+        mocker,
+        {
+            "AAA": [100.0, 200.0, 100.0, 200.0],
+            "BBB": [100.0, 101.0, 100.0, 102.0],
+            "CCC": [100.0, 102.0, 104.0, 106.0],
+        },
+    )
+    portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
+        return_value=[]
+    )
+
+    await portfolio_manager_with_db.check_regime_rebalance_positions(
+        account_summary,
+        portfolio_positions,
+    )
+
+    payload = portfolio_manager_with_db.data_store.get_last_event_payload(
+        "regime_rebalance_gate"
+    )
+    ratio_payload = payload["ratio_gate"]
+    assert ratio_payload["weights"]["AAA"] == pytest.approx(1 / 3)
+    assert ratio_payload["weights"]["CCC"] == pytest.approx(2 / 3)
 
 
 @pytest.mark.asyncio
@@ -1323,6 +1514,9 @@ async def test_regime_rebalance_flow_trades_ignore_regime_gate(
     portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 0.01
     portfolio_manager.config.strategies.regime_rebalance.flow_trade_min = 0.10
     portfolio_manager.config.strategies.regime_rebalance.flow_trade_stop = 0.05
+    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = (
+        _ratio_gate_config(vol_min=0.05)
+    )
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
     portfolio_positions = {
@@ -1380,6 +1574,37 @@ def test_regime_rebalance_config_rejects_flow_hysteresis_inversion():
 def test_regime_rebalance_config_rejects_deficit_hysteresis_inversion():
     with pytest.raises(ValueError, match="deficit_rail_start"):
         RegimeRebalanceConfig(deficit_rail_start=0.10, deficit_rail_stop=0.20)
+
+
+def test_regime_rebalance_config_accepts_ratio_gate_vol_min():
+    config = RegimeRebalanceConfig(
+        symbols=["AAA", "BBB"],
+        ratio_gate=RatioGateConfig(
+            enabled=True,
+            anchor="AAA",
+            vol_min=0.05,
+        ),
+    )
+
+    assert config.ratio_gate is not None
+    assert config.ratio_gate.vol_min == pytest.approx(0.05)
+
+
+def test_regime_rebalance_config_rejects_ratio_gate_var_min():
+    with pytest.raises(
+        ValueError,
+        match=(
+            "ratio_gate.var_min has been removed; use vol_min instead.*"
+            r"vol_min = sqrt\(var_min \* 252\)"
+        ),
+    ):
+        RatioGateConfig.model_validate(
+            {
+                "enabled": True,
+                "anchor": "AAA",
+                "var_min": 0.01,
+            }
+        )
 
 
 def test_regime_rebalance_config_rejects_ratio_gate_missing_anchor():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
 
@@ -24,6 +25,60 @@ AlignedClosesResult = Tuple[List[date], Dict[str, List[float]]]
 AlignedClosesFetcher = Callable[
     [List[str], int, int], Coroutine[Any, Any, AlignedClosesResult]
 ]
+TRADING_DAYS_PER_YEAR = 252
+
+
+@dataclass(frozen=True)
+class RatioGateResult:
+    ok: bool
+    reason: str
+    anchor: str
+    rest: List[str]
+    weights: Dict[str, float]
+    daily_mean: Optional[float]
+    daily_std: Optional[float]
+    daily_var: Optional[float]
+    annualized_vol: Optional[float]
+    vol_min: float
+    tstat: float
+    drift_max: float
+
+    def to_payload(self, *, enabled: bool) -> Dict[str, Any]:
+        return {
+            "enabled": enabled,
+            "anchor": self.anchor,
+            "rest": self.rest,
+            "weights": self.weights,
+            "var": self.daily_var,
+            "vol": self.annualized_vol,
+            "vol_min": self.vol_min,
+            "std_daily": self.daily_std,
+            "mean_daily": self.daily_mean,
+            "tstat": self.tstat,
+            "drift_max": self.drift_max,
+            "reason": self.reason,
+            "ok": self.ok,
+        }
+
+    def to_log_fields(self) -> str:
+        return (
+            f" ratio_ok={self.ok} "
+            f"ratio_reason={self.reason} "
+            f"ratio_var={_ffmt_or_dash(self.daily_var, 8)} "
+            f"ratio_vol={_pfmt_or_dash(self.annualized_vol)} "
+            f"ratio_vol_min={_pfmt_or_dash(self.vol_min)} "
+            f"ratio_tstat={_ffmt_or_dash(self.tstat)} "
+            f"ratio_drift_max={_ffmt_or_dash(self.drift_max)} "
+            f"anchor={self.anchor} rest={','.join(self.rest)}"
+        )
+
+
+def _ffmt_or_dash(value: Optional[float], precision: int = 2) -> str:
+    return ffmt(value, precision) if value is not None else "-"
+
+
+def _pfmt_or_dash(value: Optional[float]) -> str:
+    return pfmt(value) if value is not None else "-"
 
 
 class RegimeHistoryCache:
@@ -88,6 +143,136 @@ class RegimeRebalanceEngine:
             return float(value)
         return None
 
+    @classmethod
+    def _resolve_ratio_gate_vol_min(cls, ratio_gate: Any) -> float:
+        vol_min = cls._as_float_or_none(getattr(ratio_gate, "vol_min", None))
+        if vol_min is None:
+            return 0.0
+        return max(vol_min, 0.0)
+
+    @staticmethod
+    def _normalize_weights(weights: Dict[str, float]) -> Dict[str, float]:
+        total_weight = sum(weights.values())
+        if total_weight <= 0:
+            raise ValueError("weights must sum to a positive value")
+        return {symbol: weight / total_weight for symbol, weight in weights.items()}
+
+    @staticmethod
+    def _weighted_return_index(
+        symbols: List[str],
+        weights: Dict[str, float],
+        aligned_closes: Dict[str, List[float]],
+        length: int,
+        eps: float = 0.0,
+    ) -> List[float]:
+        index = [1.0]
+        for idx in range(1, length):
+            daily_factor = 0.0
+            for symbol in symbols:
+                prev_close = max(aligned_closes[symbol][idx - 1], eps)
+                curr_close = max(aligned_closes[symbol][idx], eps)
+                daily_factor += weights[symbol] * (curr_close / prev_close)
+            index.append(index[-1] * max(daily_factor, eps))
+        return index
+
+    def _calculate_ratio_gate(
+        self,
+        *,
+        symbols: List[str],
+        dates: List[date],
+        aligned_closes: Dict[str, List[float]],
+        ratio_gate: Any,
+        effective_weights: Dict[str, float],
+        lookback_days: int,
+        eps: float,
+    ) -> RatioGateResult:
+        ratio_anchor = getattr(ratio_gate, "anchor", "")
+        ratio_rest = [symbol for symbol in symbols if symbol != ratio_anchor]
+        if not ratio_anchor or ratio_anchor not in symbols or not ratio_rest:
+            log.error("Regime-aware ratio gate has invalid anchor configuration.")
+            raise ValueError(
+                "Regime-aware ratio gate requires a valid anchor and rest basket."
+            )
+
+        rest_weights = {symbol: effective_weights[symbol] for symbol in ratio_rest}
+        try:
+            normalized_rest_weights = self._normalize_weights(rest_weights)
+        except ValueError:
+            log.error("Ratio gate rest weights sum to zero, skipping.")
+            raise ValueError(
+                "Regime-aware ratio gate requires positive weights."
+            ) from None
+
+        rest_index = self._weighted_return_index(
+            ratio_rest,
+            normalized_rest_weights,
+            aligned_closes,
+            len(dates),
+            eps,
+        )
+        anchor_index = self._weighted_return_index(
+            [ratio_anchor],
+            {ratio_anchor: 1.0},
+            aligned_closes,
+            len(dates),
+            eps,
+        )
+
+        ratio_series = np.log(np.array(rest_index) / np.array(anchor_index))
+        ratio_returns = pd.Series(ratio_series).diff()
+        rolling_returns = ratio_returns.rolling(lookback_days)
+        ratio_var = float(rolling_returns.var(ddof=1).iloc[-1])
+        ratio_mean = float(rolling_returns.mean().iloc[-1])
+        ratio_std = float(rolling_returns.std(ddof=1).iloc[-1])
+        ratio_vol_min = self._resolve_ratio_gate_vol_min(ratio_gate)
+        ratio_drift_max = float(getattr(ratio_gate, "drift_max", 0.0))
+
+        if math.isnan(ratio_var) or math.isnan(ratio_mean) or math.isnan(ratio_std):
+            return RatioGateResult(
+                ok=False,
+                reason="insufficient_history",
+                anchor=ratio_anchor,
+                rest=ratio_rest,
+                weights=normalized_rest_weights,
+                daily_mean=None,
+                daily_std=None,
+                daily_var=None,
+                annualized_vol=None,
+                vol_min=ratio_vol_min,
+                tstat=float("inf"),
+                drift_max=ratio_drift_max,
+            )
+
+        if ratio_std <= 0:
+            ratio_tstat = float("inf")
+        else:
+            ratio_tstat = abs(ratio_mean / (ratio_std / math.sqrt(lookback_days)))
+        annualized_vol = ratio_std * math.sqrt(TRADING_DAYS_PER_YEAR)
+
+        if ratio_std <= 0:
+            reason = "zero_volatility"
+        elif annualized_vol < ratio_vol_min:
+            reason = "vol_below_min"
+        elif ratio_tstat > ratio_drift_max:
+            reason = "drift_above_max"
+        else:
+            reason = "ok"
+
+        return RatioGateResult(
+            ok=reason == "ok",
+            reason=reason,
+            anchor=ratio_anchor,
+            rest=ratio_rest,
+            weights=normalized_rest_weights,
+            daily_mean=ratio_mean,
+            daily_std=ratio_std,
+            daily_var=ratio_var,
+            annualized_vol=annualized_vol,
+            vol_min=ratio_vol_min,
+            tstat=ratio_tstat,
+            drift_max=ratio_drift_max,
+        )
+
     def _resolve_regime_margin_usage(self) -> float:
         fallback_raw = self.config.runtime.account.margin_usage
         fallback = (
@@ -144,25 +329,20 @@ class RegimeRebalanceEngine:
             weights = {
                 symbol: symbol_configs[symbol].weight for symbol in proxy_symbols
             }
-        total_weight = sum(weights.values())
-        if total_weight <= 0:
+        try:
+            normalized_weights = self._normalize_weights(weights)
+        except ValueError:
             log.error("Regime-aware rebalancing weights sum to zero, skipping.")
             raise ValueError(
                 "Regime-aware rebalancing weights must sum to a positive value."
-            )
-        normalized_weights = {
-            symbol: weight / total_weight for symbol, weight in weights.items()
-        }
+            ) from None
 
-        normalized_series = [1.0]
-        for idx in range(1, len(sorted_dates)):
-            daily_factor = 0.0
-            for symbol in proxy_symbols:
-                prev_close = aligned_closes[symbol][idx - 1]
-                curr_close = aligned_closes[symbol][idx]
-                daily_factor += normalized_weights[symbol] * (curr_close / prev_close)
-            normalized_series.append(normalized_series[-1] * daily_factor)
-
+        normalized_series = self._weighted_return_index(
+            proxy_symbols,
+            normalized_weights,
+            aligned_closes,
+            len(sorted_dates),
+        )
         return (sorted_dates, normalized_series)
 
     async def _get_regime_aligned_closes(
@@ -667,90 +847,22 @@ class RegimeRebalanceEngine:
         regime_ok = chop_ok and er_ok
 
         ratio_gate = getattr(regime_rebalance, "ratio_gate", None)
-        ratio_ok: Optional[bool] = None
-        ratio_var: Optional[float] = None
-        ratio_tstat: Optional[float] = None
-        ratio_var_threshold: Optional[float] = None
-        ratio_drift_max: Optional[float] = None
-        ratio_anchor: Optional[str] = None
-        ratio_rest: List[str] = []
+        ratio_result: Optional[RatioGateResult] = None
         if ratio_gate is not None:
-            _, aligned_closes = await history_cache.get(
+            _, ratio_aligned_closes = await history_cache.get(
                 symbols,
                 regime_rebalance.lookback_days,
                 regime_rebalance.cooldown_days,
             )
-            ratio_anchor = getattr(ratio_gate, "anchor", "")
-            ratio_rest = [s for s in symbols if s != ratio_anchor]
-            if not ratio_anchor or ratio_anchor not in symbols or not ratio_rest:
-                log.error("Regime-aware ratio gate has invalid anchor configuration.")
-                raise ValueError(
-                    "Regime-aware ratio gate requires a valid anchor and rest basket."
-                )
-
-            rest_weights = {
-                symbol: symbol_configs[symbol].weight for symbol in ratio_rest
-            }
-            total_rest_weight = sum(rest_weights.values())
-            if total_rest_weight <= 0:
-                log.error("Ratio gate rest weights sum to zero, skipping.")
-                raise ValueError("Regime-aware ratio gate requires positive weights.")
-            normalized_rest_weights = {
-                symbol: weight / total_rest_weight
-                for symbol, weight in rest_weights.items()
-            }
-
-            rest_index = []
-            anchor_series = aligned_closes[ratio_anchor]
-            for idx in range(len(dates)):
-                basket_value = 0.0
-                for symbol in ratio_rest:
-                    basket_value += (
-                        normalized_rest_weights[symbol] * aligned_closes[symbol][idx]
-                    )
-                rest_index.append(max(basket_value, regime_rebalance.eps))
-
-            anchor_prices = [
-                max(price, regime_rebalance.eps) for price in anchor_series
-            ]
-            ratio_series = np.log(np.array(rest_index) / np.array(anchor_prices))
-            ratio_returns = pd.Series(ratio_series).diff()
-            ratio_var = float(
-                ratio_returns.rolling(regime_rebalance.lookback_days)
-                .var(ddof=1)
-                .iloc[-1]
+            ratio_result = self._calculate_ratio_gate(
+                symbols=symbols,
+                dates=dates,
+                aligned_closes=ratio_aligned_closes,
+                ratio_gate=ratio_gate,
+                effective_weights=effective_weights,
+                lookback_days=regime_rebalance.lookback_days,
+                eps=regime_rebalance.eps,
             )
-            ratio_mean = float(
-                ratio_returns.rolling(regime_rebalance.lookback_days).mean().iloc[-1]
-            )
-            ratio_std = float(
-                ratio_returns.rolling(regime_rebalance.lookback_days)
-                .std(ddof=1)
-                .iloc[-1]
-            )
-            if math.isnan(ratio_var) or math.isnan(ratio_mean) or math.isnan(ratio_std):
-                ratio_ok = False
-                ratio_tstat = float("inf")
-                ratio_var_threshold = max(
-                    float(getattr(ratio_gate, "var_min", 0.0)), 0.0
-                )
-                ratio_drift_max = float(getattr(ratio_gate, "drift_max", 0.0))
-            else:
-                if ratio_std <= 0:
-                    ratio_tstat = float("inf")
-                else:
-                    ratio_tstat = abs(
-                        ratio_mean
-                        / (ratio_std / math.sqrt(regime_rebalance.lookback_days))
-                    )
-
-                ratio_var_threshold = max(
-                    float(getattr(ratio_gate, "var_min", 0.0)), 0.0
-                )
-                ratio_drift_max = float(getattr(ratio_gate, "drift_max", 0.0))
-                ratio_ok = (
-                    ratio_var >= ratio_var_threshold and ratio_tstat <= ratio_drift_max
-                )
 
         last_rebalance = await self._get_last_regime_rebalance_time(symbols)
         cooldown_ok = True
@@ -774,7 +886,9 @@ class RegimeRebalanceEngine:
             bool(getattr(ratio_gate, "enabled", False)) if ratio_gate else False
         )
         ratio_gate_ok = (
-            True if ratio_gate is None or not ratio_enabled else bool(ratio_ok)
+            True
+            if ratio_gate is None or not ratio_enabled
+            else bool(ratio_result and ratio_result.ok)
         )
         soft_rebalance = soft_breach and regime_ok and cooldown_ok and ratio_gate_ok
         rebalance_fraction = 1.0
@@ -1251,6 +1365,18 @@ class RegimeRebalanceEngine:
                 )
         self._reserve_cash_for_post_management(reserved_cash_for_post_management)
 
+        ratio_gate_log = ""
+        if ratio_gate is not None:
+            ratio_gate_log = (
+                " ratio_gate="
+                + ("on" if ratio_enabled else "shadow")
+                + (
+                    ratio_result.to_log_fields()
+                    if ratio_result is not None
+                    else " ratio_ok=None"
+                )
+            )
+
         log.info(
             f"Regime rebalancing gates: max_relative_drift={pfmt(max_relative_drift)} "
             f"soft_band={pfmt(regime_rebalance.soft_band, 0)} "
@@ -1264,34 +1390,16 @@ class RegimeRebalanceEngine:
             f"flow_stop={pfmt(regime_rebalance.flow_trade_stop)}({dfmt(flow_trade_stop_amount)}) "
             f"deficit_start={pfmt(regime_rebalance.deficit_rail_start)}({dfmt(deficit_rail_start_amount)}) "
             f"deficit_stop={pfmt(regime_rebalance.deficit_rail_stop)}({dfmt(deficit_rail_stop_amount)}) "
-            f"excess_cash={dfmt(excess_cash)}"
-            + (
-                " "
-                + "ratio_gate="
-                + ("on" if ratio_enabled else "shadow")
-                + f" ratio_ok={ratio_ok} "
-                + f"ratio_var={ffmt(ratio_var) if ratio_var is not None else '-'} "
-                + f"ratio_var_min={ffmt(ratio_var_threshold) if ratio_var_threshold is not None else '-'} "
-                + f"ratio_tstat={ffmt(ratio_tstat) if ratio_tstat is not None else '-'} "
-                + f"ratio_drift_max={ffmt(ratio_drift_max) if ratio_drift_max is not None else '-'} "
-                + f"anchor={ratio_anchor} rest={','.join(ratio_rest)}"
-                if ratio_gate is not None
-                else ""
-            )
+            f"excess_cash={dfmt(excess_cash)}" + ratio_gate_log
         )
         if self.data_store:
             ratio_payload = None
             if ratio_gate is not None:
-                ratio_payload = {
-                    "enabled": ratio_enabled,
-                    "anchor": ratio_anchor,
-                    "rest": ratio_rest,
-                    "var": ratio_var,
-                    "var_min": ratio_var_threshold,
-                    "tstat": ratio_tstat,
-                    "drift_max": ratio_drift_max,
-                    "ok": ratio_ok,
-                }
+                ratio_payload = (
+                    ratio_result.to_payload(enabled=ratio_enabled)
+                    if ratio_result is not None
+                    else {"enabled": ratio_enabled}
+                )
             deficit_active_state = (
                 deficit_gate_after
                 if (hard_rebalance or soft_rebalance)

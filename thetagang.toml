@@ -641,7 +641,7 @@ daily_stddev_window = "30 D"
 # enabled = false  # when true, gates soft rebalances only
 # anchor = "BTAL"  # hedge sleeve anchor; rest is symbols minus anchor
 # drift_max = 1.25  # t-stat threshold for mean drift of ratio returns
-# var_min = 0.0  # minimum variance of ratio returns
+# vol_min = 0.0  # minimum annualized volatility of ratio returns
 
   [portfolio.symbols.TLT]
   weight = 0.2
