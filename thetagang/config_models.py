@@ -2,7 +2,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rich.console import Console
 from rich.table import Table
 from typing_extensions import Self
@@ -551,16 +551,35 @@ class SymbolConfig(BaseModel):
 
 
 class RatioGateConfig(BaseModel, DisplayMixin):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = Field(default=False)
     anchor: str = Field(default="")
     drift_max: float = Field(default=1.25, ge=0.0)
-    var_min: float = Field(default=0.0, ge=0.0)
+    vol_min: Optional[float] = Field(default=None, ge=0.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_var_min(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "var_min" in data:
+            raise ValueError(
+                "regime_rebalance.ratio_gate.var_min has been removed; use "
+                "vol_min instead. vol_min is annualized ratio volatility. To "
+                "migrate an old daily variance threshold, set "
+                "vol_min = sqrt(var_min * 252)."
+            )
+        return data
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_row("", "Ratio gate enabled", "=", f"{self.enabled}")
         table.add_row("", "Ratio gate anchor", "=", self.anchor or "-")
         table.add_row("", "Ratio gate drift max", "=", f"{ffmt(self.drift_max)}")
-        table.add_row("", "Ratio gate var min", "=", f"{ffmt(self.var_min)}")
+        table.add_row(
+            "",
+            "Ratio gate vol min",
+            "=",
+            f"{pfmt(self.vol_min) if self.vol_min is not None else '-'}",
+        )
 
 
 class RegimeRebalanceBaseEnum(str, Enum):
