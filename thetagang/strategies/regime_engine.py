@@ -890,7 +890,8 @@ class RegimeRebalanceEngine:
             if ratio_gate is None or not ratio_enabled
             else bool(ratio_result and ratio_result.ok)
         )
-        soft_rebalance = soft_breach and regime_ok and cooldown_ok and ratio_gate_ok
+        soft_or_flow_rebalance_allowed = regime_ok and cooldown_ok and ratio_gate_ok
+        soft_rebalance = soft_breach and soft_or_flow_rebalance_allowed
         rebalance_fraction = 1.0
         if hard_rebalance:
             rebalance_fraction = regime_rebalance.hard_band_rebalance_fraction
@@ -1143,7 +1144,7 @@ class RegimeRebalanceEngine:
                     if delta == 0:
                         continue
                     orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + delta
-        elif flow_gate:
+        elif flow_gate and soft_or_flow_rebalance_allowed:
             rebalance_mode = "flow"
             flow_orders = build_flow_orders(excess_cash)
             for symbol, delta in flow_orders.items():

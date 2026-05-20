@@ -310,6 +310,21 @@ def _ratio_gate_config(
     )
 
 
+def _configure_flow_rebalance(
+    portfolio_manager,
+    *,
+    choppiness_min: float = 0.0,
+    efficiency_max: float = 1.0,
+) -> None:
+    regime_rebalance = portfolio_manager.config.strategies.regime_rebalance
+    regime_rebalance.soft_band = 0.50
+    regime_rebalance.hard_band = 0.80
+    regime_rebalance.choppiness_min = choppiness_min
+    regime_rebalance.efficiency_max = efficiency_max
+    regime_rebalance.flow_trade_min = 0.10
+    regime_rebalance.flow_trade_stop = 0.05
+
+
 @pytest.mark.asyncio
 async def test_regime_rebalance_generates_orders(portfolio_manager, mocker):
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
@@ -1505,23 +1520,19 @@ async def test_regime_rebalance_soft_band_blocked_by_regime(portfolio_manager, m
 
 
 @pytest.mark.asyncio
-async def test_regime_rebalance_flow_trades_ignore_regime_gate(
+async def test_regime_rebalance_flow_trades_require_regime_gate(
     portfolio_manager, mocker
 ):
-    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.50
-    portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.80
-    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 10.0
-    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 0.01
-    portfolio_manager.config.strategies.regime_rebalance.flow_trade_min = 0.10
-    portfolio_manager.config.strategies.regime_rebalance.flow_trade_stop = 0.05
-    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = (
-        _ratio_gate_config(vol_min=0.05)
+    _configure_flow_rebalance(
+        portfolio_manager,
+        choppiness_min=10.0,
+        efficiency_max=0.01,
     )
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
     portfolio_positions = {
-        "AAA": [SimpleNamespace(contract=Stock("AAA", "SMART", "USD"), position=8)],
-        "BBB": [SimpleNamespace(contract=Stock("BBB", "SMART", "USD"), position=8)],
+        "AAA": [_stock_position("AAA", 8)],
+        "BBB": [_stock_position("BBB", 8)],
     }
 
     _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=100.0)
@@ -1532,7 +1543,33 @@ async def test_regime_rebalance_flow_trades_ignore_regime_gate(
         account_summary, portfolio_positions
     )
 
-    assert orders == [("AAA", "NYSE", 2), ("BBB", "NYSE", 2)]
+    assert orders == []
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_ratio_gate_blocks_flow_rebalance(
+    portfolio_manager, mocker
+):
+    _configure_flow_rebalance(portfolio_manager)
+    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = (
+        _ratio_gate_config(vol_min=0.05)
+    )
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 8)],
+        "BBB": [_stock_position("BBB", 8)],
+    }
+
+    _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=100.0)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    assert orders == []
 
 
 def test_normalize_config_converts_parts_to_weights():
