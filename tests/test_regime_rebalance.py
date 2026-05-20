@@ -315,14 +315,16 @@ def _configure_flow_rebalance(
     *,
     choppiness_min: float = 0.0,
     efficiency_max: float = 1.0,
+    flow_trade_min: float = 0.10,
+    flow_trade_stop: float = 0.05,
 ) -> None:
     regime_rebalance = portfolio_manager.config.strategies.regime_rebalance
     regime_rebalance.soft_band = 0.50
     regime_rebalance.hard_band = 0.80
     regime_rebalance.choppiness_min = choppiness_min
     regime_rebalance.efficiency_max = efficiency_max
-    regime_rebalance.flow_trade_min = 0.10
-    regime_rebalance.flow_trade_stop = 0.05
+    regime_rebalance.flow_trade_min = flow_trade_min
+    regime_rebalance.flow_trade_stop = flow_trade_stop
 
 
 @pytest.mark.asyncio
@@ -1570,6 +1572,68 @@ async def test_regime_rebalance_ratio_gate_blocks_flow_rebalance(
     )
 
     assert orders == []
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_blocked_flow_preserves_hysteresis(
+    portfolio_manager_with_db, mocker
+):
+    _configure_flow_rebalance(
+        portfolio_manager_with_db,
+        flow_trade_min=0.25,
+        flow_trade_stop=0.05,
+    )
+    portfolio_manager_with_db.config.strategies.regime_rebalance.ratio_gate = (
+        _ratio_gate_config(vol_min=0.05)
+    )
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
+
+    _mock_regime_tickers(
+        portfolio_manager_with_db,
+        mocker,
+        aaa_price=100.0,
+        bbb_price=100.0,
+    )
+    _mock_regime_history(
+        portfolio_manager_with_db,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
+        return_value=[]
+    )
+
+    (
+        _,
+        blocked_orders,
+    ) = await portfolio_manager_with_db.check_regime_rebalance_positions(
+        account_summary,
+        {
+            "AAA": [_stock_position("AAA", 7)],
+            "BBB": [_stock_position("BBB", 7)],
+        },
+    )
+
+    assert blocked_orders == []
+    assert portfolio_manager_with_db.data_store.get_last_event_payload(
+        "regime_rebalance_state"
+    ) == {"flow_active": True, "deficit_active": False}
+
+    portfolio_manager_with_db.config.strategies.regime_rebalance.ratio_gate = None
+
+    (
+        _,
+        resumed_orders,
+    ) = await portfolio_manager_with_db.check_regime_rebalance_positions(
+        account_summary,
+        {
+            "AAA": [_stock_position("AAA", 8)],
+            "BBB": [_stock_position("BBB", 8)],
+        },
+    )
+
+    assert resumed_orders == [("AAA", "NYSE", 2), ("BBB", "NYSE", 2)]
 
 
 def test_normalize_config_converts_parts_to_weights():

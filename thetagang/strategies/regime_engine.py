@@ -925,6 +925,7 @@ class RegimeRebalanceEngine:
             flow_gate = excess_cash >= flow_trade_min_amount or (
                 flow_active and excess_cash >= flow_trade_stop_amount
             )
+        flow_rebalance = flow_gate and soft_or_flow_rebalance_allowed
 
         allowed_symbols = {
             symbol for symbol in symbols if self.config.trading_is_allowed(symbol)
@@ -1144,7 +1145,7 @@ class RegimeRebalanceEngine:
                     if delta == 0:
                         continue
                     orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + delta
-        elif flow_gate and soft_or_flow_rebalance_allowed:
+        elif flow_rebalance:
             rebalance_mode = "flow"
             flow_orders = build_flow_orders(excess_cash)
             for symbol, delta in flow_orders.items():
@@ -1406,6 +1407,7 @@ class RegimeRebalanceEngine:
                 if (hard_rebalance or soft_rebalance)
                 else deficit_gate
             )
+            flow_active_state = flow_gate and rebalance_mode in {"flow", "no"}
             self.data_store.record_event(
                 "regime_rebalance_gate",
                 {
@@ -1452,7 +1454,7 @@ class RegimeRebalanceEngine:
             self.data_store.record_event(
                 "regime_rebalance_state",
                 {
-                    "flow_active": rebalance_mode == "flow" and flow_gate,
+                    "flow_active": flow_active_state,
                     "deficit_active": deficit_active_state,
                 },
             )
