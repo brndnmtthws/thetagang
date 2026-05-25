@@ -4,23 +4,50 @@ set -eu
 ibcstart=${1:-/opt/ibc/scripts/ibcstart.sh}
 log4j_config=${2:-file:/opt/thetagang/ibgateway-log4j2.xml}
 
-if grep -q -- "-Dlog4j.configurationFile=" "$ibcstart"; then
+required_options=$(cat <<EOF
+-Dlog4j.configurationFile=$log4j_config
+-Dlog4j2.statusLoggerLevel=OFF
+-Dlog4j2.StatusLogger.level=OFF
+-Dorg.apache.logging.log4j.simplelog.StatusLogger.level=OFF
+-DStatusLogger.level=OFF
+EOF
+)
+
+all_options_present=true
+missing_options=
+for option in $required_options; do
+  if ! grep -q -- "$option" "$ibcstart"; then
+    all_options_present=false
+    missing_options="${missing_options}${option}
+"
+  fi
+done
+
+if $all_options_present; then
   exit 0
 fi
 
 tmp=$(mktemp)
-awk -v log4j_config="$log4j_config" '
-  {
-    print
-  }
-  $0 ~ /^java_vm_options="\$java_vm_options -Dinstall4jType=standalone"/ {
-    print "java_vm_options=\"$java_vm_options -Dlog4j.configurationFile=" log4j_config "\""
-    print "java_vm_options=\"$java_vm_options -Dlog4j2.statusLoggerLevel=OFF\""
-    print "java_vm_options=\"$java_vm_options -Dorg.apache.logging.log4j.simplelog.StatusLogger.level=OFF\""
-  }
-' "$ibcstart" > "$tmp"
+while IFS= read -r line; do
+  printf '%s\n' "$line"
+  case "$line" in
+    'java_vm_options="$java_vm_options -Dinstall4jType=standalone"')
+      for option in $missing_options; do
+        printf '%s\n' "java_vm_options=\"\$java_vm_options $option\""
+      done
+      ;;
+  esac
+done < "$ibcstart" > "$tmp"
 
-if ! grep -q -- "-Dlog4j.configurationFile=$log4j_config" "$tmp"; then
+for option in $required_options; do
+  if ! grep -q -- "$option" "$tmp"; then
+    rm -f "$tmp"
+    echo "Unable to patch IBC Java logging option $option into $ibcstart" >&2
+    exit 1
+  fi
+done
+
+if ! grep -q -- "-Dinstall4jType=standalone" "$ibcstart"; then
   rm -f "$tmp"
   echo "Unable to patch IBC Java logging options into $ibcstart" >&2
   exit 1
