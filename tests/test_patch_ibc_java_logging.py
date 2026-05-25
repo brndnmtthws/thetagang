@@ -60,3 +60,28 @@ def test_patch_ibc_java_logging_repairs_partial_older_patch(tmp_path):
     for option in REQUIRED_OPTIONS:
         assert option in patched
         assert patched.count(option) == 1
+
+
+def test_patch_ibc_java_logging_requires_exact_anchor(tmp_path):
+    ibcstart = tmp_path / "ibcstart.sh"
+    ibcstart.write_text(
+        "\n".join(
+            (
+                "#!/bin/bash",
+                'java_vm_options="$java_vm_options -Dinstall4jType=standalonex"',
+                '"$java_path/java" $java_vm_options ibcalpha.ibc.IbcGateway',
+            )
+        )
+    )
+
+    result = subprocess.run(
+        ["sh", str(PATCH_SCRIPT), str(ibcstart)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "Unable to patch IBC Java logging options" in result.stderr
+    for option in REQUIRED_OPTIONS:
+        assert option not in ibcstart.read_text()

@@ -16,7 +16,7 @@ EOF
 all_options_present=true
 missing_options=
 for option in $required_options; do
-  if ! grep -q -- "$option" "$ibcstart"; then
+  if ! grep -Fq -- "$option" "$ibcstart"; then
     all_options_present=false
     missing_options="${missing_options}${option}
 "
@@ -27,11 +27,17 @@ if $all_options_present; then
   exit 0
 fi
 
+anchor='java_vm_options="$java_vm_options -Dinstall4jType=standalone"'
+if ! grep -Fxq -- "$anchor" "$ibcstart"; then
+  echo "Unable to patch IBC Java logging options into $ibcstart" >&2
+  exit 1
+fi
+
 tmp=$(mktemp)
 while IFS= read -r line; do
   printf '%s\n' "$line"
   case "$line" in
-    'java_vm_options="$java_vm_options -Dinstall4jType=standalone"')
+    "$anchor")
       for option in $missing_options; do
         printf '%s\n' "java_vm_options=\"\$java_vm_options $option\""
       done
@@ -40,18 +46,12 @@ while IFS= read -r line; do
 done < "$ibcstart" > "$tmp"
 
 for option in $required_options; do
-  if ! grep -q -- "$option" "$tmp"; then
+  if ! grep -Fq -- "$option" "$tmp"; then
     rm -f "$tmp"
     echo "Unable to patch IBC Java logging option $option into $ibcstart" >&2
     exit 1
   fi
 done
-
-if ! grep -q -- "-Dinstall4jType=standalone" "$ibcstart"; then
-  rm -f "$tmp"
-  echo "Unable to patch IBC Java logging options into $ibcstart" >&2
-  exit 1
-fi
 
 cat "$tmp" > "$ibcstart"
 rm -f "$tmp"
