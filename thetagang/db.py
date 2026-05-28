@@ -8,6 +8,7 @@ import shutil
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional
 
 from alembic.config import Config as AlembicConfig
@@ -558,6 +559,40 @@ class DataStore:
                     session.execute(stmt)
         except Exception as exc:
             log.warning(f"Failed to record historical bars: {exc}")
+
+    def get_historical_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> list[Any]:
+        with self.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(HistoricalBar)
+                    .where(HistoricalBar.symbol == symbol)
+                    .where(HistoricalBar.timeframe == timeframe)
+                    .where(HistoricalBar.bar_time >= start_time)
+                    .where(HistoricalBar.bar_time <= end_time)
+                    .order_by(HistoricalBar.bar_time.asc())
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                SimpleNamespace(
+                    date=row.bar_time,
+                    open=row.open,
+                    high=row.high,
+                    low=row.low,
+                    close=row.close,
+                    volume=row.volume,
+                    barCount=row.bar_count,
+                    average=row.average,
+                )
+                for row in rows
+            ]
 
     def get_last_regime_rebalance_time(
         self,

@@ -157,6 +157,46 @@ def test_record_historical_bars_upserts_and_parses_dates(tmp_path) -> None:
     assert volume == 20
 
 
+def test_get_historical_bars_filters_by_symbol_timeframe_and_time(tmp_path) -> None:
+    db_path = tmp_path / "state.db"
+    data_store = DataStore(
+        f"sqlite:///{db_path}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=False,
+        config_text="test",
+    )
+
+    data_store.record_historical_bars(
+        "AAA",
+        "1 day",
+        [
+            SimpleNamespace(date="20240104", close=1.0),
+            SimpleNamespace(date="20240105", close=2.0),
+        ],
+    )
+    data_store.record_historical_bars(
+        "AAA",
+        "1 hour",
+        [SimpleNamespace(date="20240105 12:00:00", close=99.0)],
+    )
+    data_store.record_historical_bars(
+        "BBB",
+        "1 day",
+        [SimpleNamespace(date="20240105", close=100.0)],
+    )
+
+    bars = data_store.get_historical_bars(
+        "AAA",
+        "1 day",
+        datetime(2024, 1, 5, 0, 0, 0),
+        datetime(2024, 1, 5, 23, 59, 59),
+    )
+
+    assert len(bars) == 1
+    assert bars[0].date == datetime(2024, 1, 5)
+    assert bars[0].close == 2.0
+
+
 def test_record_executions_parses_string_times(tmp_path) -> None:
     db_path = tmp_path / "state.db"
     data_store = DataStore(

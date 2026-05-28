@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
+from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional, Tuple
 
 import exchange_calendars as xcals
 import numpy as np
@@ -25,7 +26,17 @@ AlignedClosesResult = Tuple[List[date], Dict[str, List[float]]]
 AlignedClosesFetcher = Callable[
     [List[str], int, int], Coroutine[Any, Any, AlignedClosesResult]
 ]
+ClosesBySymbol = Dict[str, Dict[date, float]]
 TRADING_DAYS_PER_YEAR = 252
+REGIME_HISTORY_TIMEFRAME = "1 day"
+REGIME_HISTORY_MAX_ATTEMPTS = 3
+REGIME_HISTORY_RETRY_DELAY_SECONDS = 0.25
+
+
+class RegimeHistoryValidationError(ValueError):
+    def __init__(self, message: str, *, cache_recoverable: bool) -> None:
+        super().__init__(message)
+        self.cache_recoverable = cache_recoverable
 
 
 @dataclass(frozen=True)
@@ -174,6 +185,97 @@ class RegimeRebalanceEngine:
                 daily_factor += weights[symbol] * (curr_close / prev_close)
             index.append(index[-1] * max(daily_factor, eps))
         return index
+
+    @staticmethod
+    def _bars_to_closes(bars: Iterable[Any]) -> Dict[date, float]:
+        closes: Dict[date, float] = {}
+        for bar in bars:
+            bar_date = bar.date.date() if hasattr(bar.date, "date") else bar.date
+            closes[bar_date] = float(bar.close)
+        return closes
+
+    @staticmethod
+    def _describe_history_closes(closes: Dict[date, float]) -> str:
+        if not closes:
+            return "0 bars"
+        sorted_dates = sorted(closes)
+        return f"{len(sorted_dates)} bars {sorted_dates[0]}..{sorted_dates[-1]}"
+
+    @classmethod
+    def _align_regime_closes(
+        cls,
+        *,
+        symbols: List[str],
+        closes_by_symbol: ClosesBySymbol,
+        required_points: int,
+        required_dates: List[date],
+        missing_dates_cache_recoverable: bool,
+    ) -> AlignedClosesResult:
+        close_dates_by_symbol = {
+            symbol: set(closes_by_symbol.get(symbol, {})) for symbol in symbols
+        }
+        common_dates = set.intersection(*close_dates_by_symbol.values())
+        if not common_dates:
+            details = ", ".join(
+                (
+                    f"{symbol}: "
+                    f"{cls._describe_history_closes(closes_by_symbol.get(symbol, {}))}"
+                )
+                for symbol in symbols
+            )
+            log.error(
+                "Regime-aware rebalancing history has no common dates across "
+                f"symbols ({details})."
+            )
+            raise RegimeHistoryValidationError(
+                "Regime-aware rebalancing requires aligned history for all symbols.",
+                cache_recoverable=True,
+            )
+
+        missing_dates = [
+            required_date
+            for required_date in required_dates
+            if required_date not in common_dates
+        ]
+        if missing_dates:
+            sample = ", ".join(str(missing) for missing in missing_dates[:5])
+            if len(missing_dates) > 5:
+                sample += ", ..."
+            log.error(
+                f"Regime history is missing required completed sessions: {sample}."
+            )
+            raise RegimeHistoryValidationError(
+                "Regime-aware rebalancing requires fresh historical data.",
+                cache_recoverable=missing_dates_cache_recoverable,
+            )
+        sorted_dates = sorted(required_dates)
+        if len(sorted_dates) < required_points:
+            log.error(
+                "Insufficient historical data for regime rebalancing "
+                f"({len(sorted_dates)}/{required_points} common points), aborting."
+            )
+            raise RegimeHistoryValidationError(
+                "Regime-aware rebalancing requires full lookback history.",
+                cache_recoverable=True,
+            )
+
+        aligned_closes: Dict[str, List[float]] = {}
+        for symbol in symbols:
+            aligned: List[float] = []
+            for date_point in sorted_dates:
+                close = closes_by_symbol[symbol].get(date_point)
+                if close is None or math.isnan(close) or math.isclose(close, 0):
+                    log.error(
+                        f"Invalid close for {symbol} on {date_point} (close={close})."
+                    )
+                    raise RegimeHistoryValidationError(
+                        "Regime-aware rebalancing found invalid historical closes.",
+                        cache_recoverable=False,
+                    )
+                aligned.append(close)
+            aligned_closes[symbol] = aligned
+
+        return (sorted_dates, aligned_closes)
 
     def _calculate_ratio_gate(
         self,
@@ -345,6 +447,143 @@ class RegimeRebalanceEngine:
         )
         return (sorted_dates, normalized_series)
 
+    def _get_required_history_dates(self, required_points: int) -> Optional[List[date]]:
+        if required_points <= 0:
+            return []
+        try:
+            exchange = self.config.runtime.exchange_hours.exchange
+            calendar = xcals.get_calendar(exchange)
+            now = pd.Timestamp.now(tz="UTC")
+            today = now.tz_convert(None).normalize()
+            sessions = calendar.sessions[calendar.sessions <= today]
+            if sessions.empty:
+                return None
+
+            latest_session = sessions[-1]
+            latest_close = calendar.session_close(latest_session, _parse=False)
+            if now < latest_close:
+                latest_index = calendar.sessions.get_loc(latest_session)
+                if latest_index == 0:
+                    return None
+                latest_session = calendar.sessions[latest_index - 1]
+
+            latest_index = calendar.sessions.get_loc(latest_session)
+            first_index = latest_index - required_points + 1
+            if first_index < 0:
+                return None
+            return [
+                session.date()
+                for session in calendar.sessions[first_index : latest_index + 1]
+            ]
+        except Exception as exc:
+            log.warning(
+                f"Regime history freshness calculation failed ({type(exc).__name__})."
+            )
+            return None
+
+    async def _fetch_regime_history_bars(
+        self, symbol: str, duration: str
+    ) -> Tuple[str, List[Any]]:
+        contract = Stock(
+            symbol,
+            self.order_ops.get_order_exchange(),
+            currency="USD",
+            primaryExchange=self.get_primary_exchange(symbol),
+        )
+        for attempt in range(1, REGIME_HISTORY_MAX_ATTEMPTS + 1):
+            bars = list(await self.ibkr.request_historical_data(contract, duration))
+            if bars:
+                if attempt > 1:
+                    log.warning(
+                        f"{symbol}: regime history fetch recovered after "
+                        f"{attempt} attempts."
+                    )
+                return symbol, bars
+            if attempt < REGIME_HISTORY_MAX_ATTEMPTS:
+                log.warning(
+                    f"{symbol}: regime history fetch returned no bars "
+                    f"(attempt {attempt}/{REGIME_HISTORY_MAX_ATTEMPTS}); retrying."
+                )
+                await asyncio.sleep(REGIME_HISTORY_RETRY_DELAY_SECONDS)
+        log.error(
+            f"{symbol}: regime history fetch returned no bars after "
+            f"{REGIME_HISTORY_MAX_ATTEMPTS} attempts."
+        )
+        return symbol, []
+
+    async def _fetch_regime_history_closes(
+        self, symbols: List[str], duration: str
+    ) -> ClosesBySymbol:
+        tasks: List[Coroutine[Any, Any, Tuple[str, List[Any]]]] = [
+            self._fetch_regime_history_bars(symbol, duration) for symbol in symbols
+        ]
+        histories = await log.track_async(
+            tasks, description="Fetching regime rebalancing history..."
+        )
+        return {symbol: self._bars_to_closes(bars) for symbol, bars in histories}
+
+    def _merge_cached_regime_closes(
+        self,
+        symbols: List[str],
+        api_closes_by_symbol: ClosesBySymbol,
+        required_dates: List[date],
+    ) -> ClosesBySymbol:
+        if self.data_store is None:
+            raise RegimeHistoryValidationError(
+                "Regime-aware rebalancing requires a history cache.",
+                cache_recoverable=False,
+            )
+        start_time = datetime.combine(required_dates[0], datetime.min.time())
+        end_time = datetime.combine(required_dates[-1], datetime.max.time())
+        merged_closes_by_symbol: ClosesBySymbol = {}
+        for symbol in symbols:
+            try:
+                cached_bars = self.data_store.get_historical_bars(
+                    symbol, REGIME_HISTORY_TIMEFRAME, start_time, end_time
+                )
+            except Exception as exc:
+                log.error(f"{symbol}: failed to read cached regime history.")
+                raise RegimeHistoryValidationError(
+                    "Regime-aware rebalancing requires a readable history cache.",
+                    cache_recoverable=False,
+                ) from exc
+            cached_closes = self._bars_to_closes(cached_bars)
+            if cached_closes:
+                log.warning(
+                    f"{symbol}: using {len(cached_closes)} cached historical bars "
+                    "to validate regime history."
+                )
+            merged = dict(cached_closes)
+            merged.update(api_closes_by_symbol[symbol])
+            merged_closes_by_symbol[symbol] = merged
+        return merged_closes_by_symbol
+
+    def _recover_regime_history_from_cache(
+        self,
+        *,
+        symbols: List[str],
+        api_closes_by_symbol: ClosesBySymbol,
+        required_points: int,
+        required_dates: List[date],
+    ) -> AlignedClosesResult:
+        merged_closes_by_symbol = self._merge_cached_regime_closes(
+            symbols,
+            api_closes_by_symbol,
+            required_dates,
+        )
+        dates, aligned_closes = self._align_regime_closes(
+            symbols=symbols,
+            closes_by_symbol=merged_closes_by_symbol,
+            required_points=required_points,
+            required_dates=required_dates,
+            missing_dates_cache_recoverable=False,
+        )
+        log.warning(
+            "Regime-aware rebalancing recovered from incomplete API history "
+            "using fresh cached bars."
+        )
+        return (dates, aligned_closes)
+
     async def _get_regime_aligned_closes(
         self,
         symbols: List[str],
@@ -354,69 +593,37 @@ class RegimeRebalanceEngine:
         if not symbols:
             log.error("Regime-aware rebalancing has no symbols to build a proxy.")
             raise ValueError("Regime-aware rebalancing requires proxy symbols.")
+        required_points = lookback_days + 1
+        required_dates = self._get_required_history_dates(required_points)
+        if required_dates is None:
+            raise RegimeHistoryValidationError(
+                "Regime-aware rebalancing requires completed session dates.",
+                cache_recoverable=False,
+            )
         trading_days_needed = lookback_days + 1 + max(cooldown_days, 0)
         calendar_days = math.ceil(trading_days_needed * 7 / 5) + 5
         duration = f"{calendar_days} D"
-
-        async def fetch_history_task(symbol: str) -> Tuple[str, List[Any]]:
-            contract = Stock(
-                symbol,
-                self.order_ops.get_order_exchange(),
-                currency="USD",
-                primaryExchange=self.get_primary_exchange(symbol),
-            )
-            bars = await self.ibkr.request_historical_data(contract, duration)
-            return symbol, list(bars)
-
-        tasks: List[Coroutine[Any, Any, Tuple[str, List[Any]]]] = [
-            fetch_history_task(symbol) for symbol in symbols
-        ]
-        histories = await log.track_async(
-            tasks, description="Fetching regime rebalancing history..."
+        api_closes_by_symbol = await self._fetch_regime_history_closes(
+            symbols, duration
         )
 
-        closes_by_symbol: Dict[str, Dict[date, float]] = {}
-        for symbol, bars in histories:
-            closes: Dict[date, float] = {}
-            for bar in bars:
-                bar_date = bar.date.date() if hasattr(bar.date, "date") else bar.date
-                closes[bar_date] = float(bar.close)
-            closes_by_symbol[symbol] = closes
-
-        common_dates = set.intersection(
-            *(set(closes.keys()) for closes in closes_by_symbol.values())
-        )
-        if not common_dates:
-            log.error(
-                "Regime-aware rebalancing history has no common dates across symbols."
+        try:
+            return self._align_regime_closes(
+                symbols=symbols,
+                closes_by_symbol=api_closes_by_symbol,
+                required_points=required_points,
+                required_dates=required_dates,
+                missing_dates_cache_recoverable=True,
             )
-            raise ValueError(
-                "Regime-aware rebalancing requires aligned history for all symbols."
+        except RegimeHistoryValidationError as api_exc:
+            if not api_exc.cache_recoverable or self.data_store is None:
+                raise
+            return self._recover_regime_history_from_cache(
+                symbols=symbols,
+                api_closes_by_symbol=api_closes_by_symbol,
+                required_points=required_points,
+                required_dates=required_dates,
             )
-
-        sorted_dates = sorted(common_dates)
-        if len(sorted_dates) < 2:
-            log.error("Regime-aware rebalancing history has fewer than 2 points.")
-            raise ValueError(
-                "Regime-aware rebalancing requires at least 2 history points."
-            )
-
-        aligned_closes: Dict[str, List[float]] = {}
-        for symbol in symbols:
-            aligned: List[float] = []
-            for date_point in sorted_dates:
-                close = closes_by_symbol[symbol].get(date_point)
-                if close is None or math.isnan(close) or math.isclose(close, 0):
-                    log.error(
-                        f"Invalid close for {symbol} on {date_point} (close={close})."
-                    )
-                    raise ValueError(
-                        "Regime-aware rebalancing found invalid historical closes."
-                    )
-                aligned.append(close)
-            aligned_closes[symbol] = aligned
-
-        return (sorted_dates, aligned_closes)
 
     async def _resolve_effective_weights(
         self,
