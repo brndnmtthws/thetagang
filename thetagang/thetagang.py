@@ -132,6 +132,30 @@ def start(
             ibc, ib, probeContract=probeContract, **watchdog_config.to_dict()
         )
 
+        max_retries = watchdog_config.maxStartupRetries
+        startup_failures = 0
+
+        def on_watchdog_started(_w: Watchdog) -> None:
+            nonlocal startup_failures
+            startup_failures = 0
+
+        def on_watchdog_stopped(_w: Watchdog) -> None:
+            nonlocal startup_failures
+            startup_failures += 1
+            if max_retries > 0 and startup_failures >= max_retries:
+                log.error(
+                    f"Watchdog failed to start {max_retries} consecutive times, giving up"
+                )
+                if not completion_future.done():
+                    completion_future.set_exception(
+                        RuntimeError(
+                            f"Failed to connect after {max_retries} attempts"
+                        )
+                    )
+
+        watchdog.startedEvent += on_watchdog_started
+        watchdog.stoppedEvent += on_watchdog_stopped
+
         async def run_with_watchdog() -> None:
             watchdog.start()
             try:

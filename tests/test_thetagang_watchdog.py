@@ -64,6 +64,8 @@ def test_watchdog_runs_inside_task(monkeypatch, tmp_path):
         def __init__(self, *_args, **_kwargs):
             self.started = False
             self.stopped = False
+            self.startedEvent = DummyEvent()
+            self.stoppedEvent = DummyEvent()
             captured["watchdog"] = self
 
         def start(self):

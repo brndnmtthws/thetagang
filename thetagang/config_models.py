@@ -176,6 +176,7 @@ class WatchdogConfig(BaseModel):
     probeTimeout: int = Field(default=4)
     readonly: bool = Field(default=False)
     retryDelay: int = Field(default=2)
+    maxStartupRetries: int = Field(default=3)
     probeContract: "WatchdogConfig.ProbeContract" = Field(
         default_factory=lambda: WatchdogConfig.ProbeContract()
     )
