@@ -176,6 +176,11 @@ class WatchdogConfig(BaseModel):
     probeTimeout: int = Field(default=4)
     readonly: bool = Field(default=False)
     retryDelay: int = Field(default=2)
+    # Number of consecutive startup failures (connection attempts that never
+    # reach a successful connect) after which thetagang gives up instead of
+    # retrying forever. 0 (the default) preserves the original unlimited-retry
+    # behavior; set a positive value to bound 2FA/login retry loops.
+    maxStartupRetries: int = Field(default=0, ge=0)
     probeContract: "WatchdogConfig.ProbeContract" = Field(
         default_factory=lambda: WatchdogConfig.ProbeContract()
     )

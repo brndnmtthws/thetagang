@@ -179,6 +179,14 @@ port           = 7497
 probeTimeout   = 4
 readonly       = false
 retryDelay     = 2
+# Give up after this many consecutive startup failures (connection attempts
+# that never successfully connect), instead of retrying forever. This is useful
+# to bound 2FA/login retry loops, e.g. when IBKR Mobile 2FA is not completed and
+# the gateway would otherwise restart and re-prompt indefinitely. Once a
+# connection succeeds the counter resets, so runtime disconnects that recover do
+# not count toward the limit. 0 (the default) keeps the original behavior of
+# retrying indefinitely.
+maxStartupRetries = 0
 
   [runtime.watchdog.probeContract]
   currency = 'USD'

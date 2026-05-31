@@ -132,6 +132,46 @@ def start(
             ibc, ib, probeContract=probeContract, **watchdog_config.to_dict()
         )
 
+        max_retries = watchdog_config.maxStartupRetries
+        startup_failures = 0
+        # Tracks whether the current watchdog cycle reached a successful
+        # connect. ib_async emits exactly one stoppedEvent per connect cycle
+        # (in runAsync's finally block); startedEvent only fires mid-cycle once
+        # the connection succeeds. We use this flag to distinguish a stop that
+        # follows a successful connect (a runtime disconnect/timeout, which must
+        # not count toward the startup limit) from a stop in a cycle that never
+        # connected (a genuine startup failure).
+        started_this_cycle = False
+
+        def on_watchdog_started(_w: Watchdog) -> None:
+            nonlocal startup_failures, started_this_cycle
+            started_this_cycle = True
+            # A successful connect clears any accumulated startup failures so
+            # that later flapping does not eventually trip the limit.
+            startup_failures = 0
+
+        def on_watchdog_stopped(_w: Watchdog) -> None:
+            nonlocal startup_failures, started_this_cycle
+            if started_this_cycle:
+                # Started successfully, then stopped later (disconnect, hard
+                # timeout, or restart). Not a startup failure; reset the flag
+                # for the next cycle.
+                started_this_cycle = False
+                return
+
+            startup_failures += 1
+            if max_retries > 0 and startup_failures >= max_retries:
+                log.error(
+                    f"Watchdog failed to start {max_retries} consecutive times, giving up"
+                )
+                if not completion_future.done():
+                    completion_future.set_exception(
+                        RuntimeError(f"Failed to connect after {max_retries} attempts")
+                    )
+
+        watchdog.startedEvent += on_watchdog_started
+        watchdog.stoppedEvent += on_watchdog_stopped
+
         async def run_with_watchdog() -> None:
             watchdog.start()
             try:
