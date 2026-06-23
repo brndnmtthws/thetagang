@@ -42,6 +42,21 @@ RUN wget2 https://github.com/IbcAlpha/IBC/releases/download/${IBC_VERSION}/IBCLi
 
 ENV INSTALL_FILENAME="ibgateway-${IB_GATEWAY_VERSION}-standalone-linux-x64.sh"
 
+# IB Gateway ships only an x64 JRE, so the bundled JRE can't run on arm64. On
+# aarch64 we install Azul Zulu's JavaFX-enabled JRE and point the installer at
+# it via app_java_home (the JRE stays in the image for the gateway to use at
+# runtime). On amd64 the installer's bundled JRE is used as-is.
+ARG ZULU_NAME=zulu17.60.17-ca-fx-jre17.0.16-linux_aarch64
+ARG ZULU_FILE=${ZULU_NAME}.tar.gz
+ARG ZULU_URL=https://cdn.azul.com/zulu/bin/${ZULU_FILE}
+
+RUN if [ "$(uname -m)" = "aarch64" ]; then \
+        wget2 "${ZULU_URL}" -O "${ZULU_FILE}" \
+        && tar -xzf "${ZULU_FILE}" -C /usr/local/ \
+        && ln -s "/usr/local/${ZULU_NAME}" /usr/local/zulu17 \
+        && rm "${ZULU_FILE}"; \
+    fi
+
 # Fetch hashes
 RUN wget2 "https://github.com/extrange/ibkr-docker/releases/download/${IB_GATEWAY_VERSION}-stable/ibgateway-${IB_GATEWAY_VERSION}-standalone-linux-x64.sh.sha256" \
     -O hash
@@ -51,7 +66,11 @@ RUN wget2 "https://github.com/extrange/ibkr-docker/releases/download/${IB_GATEWA
     -O "$INSTALL_FILENAME" \
     && sha256sum -c hash \
     && chmod +x "$INSTALL_FILENAME" \
-    && yes '' | "./$INSTALL_FILENAME"  \
+    && if [ "$(uname -m)" = "aarch64" ]; then \
+        yes '' | app_java_home=/usr/local/zulu17 "./$INSTALL_FILENAME"; \
+    else \
+        yes '' | "./$INSTALL_FILENAME"; \
+    fi \
     && rm "$INSTALL_FILENAME"
 
 # Copy scripts
