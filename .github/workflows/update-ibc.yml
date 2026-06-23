@@ -1,0 +1,78 @@
+name: Update IBC Version
+
+on:
+  schedule:
+    # Run weekly on Mondays at 9:30 AM UTC (30 min after IBKR Gateway check)
+    - cron: '30 9 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  update-ibc:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Check for IBC updates
+        id: check-version
+        run: |
+          # Fetch latest release from GitHub API
+          LATEST_RELEASE=$(curl -s https://api.github.com/repos/IbcAlpha/IBC/releases/latest)
+          UPSTREAM_VERSION=$(echo "$LATEST_RELEASE" | jq -r '.tag_name')
+
+          # Extract current version from our Dockerfile
+          CURRENT_VERSION=$(grep -oP 'IBC_VERSION=\K[0-9]+\.[0-9]+\.[0-9]+' Dockerfile)
+
+          echo "upstream_version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+          echo "Upstream version: $UPSTREAM_VERSION"
+          echo "Current version: $CURRENT_VERSION"
+
+          if [ "$UPSTREAM_VERSION" != "$CURRENT_VERSION" ]; then
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+            echo "Update needed: $CURRENT_VERSION -> $UPSTREAM_VERSION"
+          else
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+            echo "Already up to date"
+          fi
+
+      - name: Update Dockerfile
+        if: steps.check-version.outputs.update_needed == 'true'
+        run: |
+          UPSTREAM_VERSION="${{ steps.check-version.outputs.upstream_version }}"
+          CURRENT_VERSION="${{ steps.check-version.outputs.current_version }}"
+
+          # Update IBC_VERSION in Dockerfile
+          sed -i "s/IBC_VERSION=${CURRENT_VERSION}/IBC_VERSION=${UPSTREAM_VERSION}/" Dockerfile
+
+          echo "Updated Dockerfile:"
+          grep "IBC_VERSION" Dockerfile
+
+      - name: Create Pull Request
+        if: steps.check-version.outputs.update_needed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: Update IBC to ${{ steps.check-version.outputs.upstream_version }}"
+          title: "chore: Update IBC to ${{ steps.check-version.outputs.upstream_version }}"
+          body: |
+            This PR updates the IBC (Interactive Brokers Controller) version in the Dockerfile.
+
+            **Changes:**
+            - `${{ steps.check-version.outputs.current_version }}` -> `${{ steps.check-version.outputs.upstream_version }}`
+
+            **Source:**
+            - [IBC Releases](https://github.com/IbcAlpha/IBC/releases/tag/${{ steps.check-version.outputs.upstream_version }})
+
+            ---
+            *This PR was automatically created by the update-ibc workflow.*
+          branch: update-ibc-${{ steps.check-version.outputs.upstream_version }}
+          delete-branch: true
+          labels: |
+            dependencies
+            automated

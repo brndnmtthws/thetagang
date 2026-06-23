@@ -1,0 +1,80 @@
+name: Update IBKR Gateway Version
+
+on:
+  schedule:
+    # Run weekly on Mondays at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  update-gateway:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Check for IBKR Gateway updates
+        id: check-version
+        run: |
+          # Fetch upstream Dockerfile
+          UPSTREAM_DOCKERFILE=$(curl -s https://raw.githubusercontent.com/extrange/ibkr-docker/master/stable/Dockerfile)
+
+          # Extract version from upstream (format: ibgateway-X.XX.Xx-standalone)
+          UPSTREAM_VERSION=$(echo "$UPSTREAM_DOCKERFILE" | grep -oP 'ibgateway-\K[0-9]+\.[0-9]+\.[0-9]+[a-z]?' | head -1)
+
+          # Extract current version from our Dockerfile
+          CURRENT_VERSION=$(grep -oP 'IB_GATEWAY_VERSION=\K[0-9]+\.[0-9]+\.[0-9]+[a-z]?' Dockerfile)
+
+          echo "upstream_version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+          echo "Upstream version: $UPSTREAM_VERSION"
+          echo "Current version: $CURRENT_VERSION"
+
+          if [ "$UPSTREAM_VERSION" != "$CURRENT_VERSION" ]; then
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+            echo "Update needed: $CURRENT_VERSION -> $UPSTREAM_VERSION"
+          else
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+            echo "Already up to date"
+          fi
+
+      - name: Update Dockerfile
+        if: steps.check-version.outputs.update_needed == 'true'
+        run: |
+          UPSTREAM_VERSION="${{ steps.check-version.outputs.upstream_version }}"
+          CURRENT_VERSION="${{ steps.check-version.outputs.current_version }}"
+
+          # Update IB_GATEWAY_VERSION in Dockerfile
+          sed -i "s/IB_GATEWAY_VERSION=${CURRENT_VERSION}/IB_GATEWAY_VERSION=${UPSTREAM_VERSION}/" Dockerfile
+
+          echo "Updated Dockerfile:"
+          grep "IB_GATEWAY_VERSION" Dockerfile
+
+      - name: Create Pull Request
+        if: steps.check-version.outputs.update_needed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: Update IBKR Gateway to ${{ steps.check-version.outputs.upstream_version }}"
+          title: "chore: Update IBKR Gateway to ${{ steps.check-version.outputs.upstream_version }}"
+          body: |
+            This PR updates the IBKR Gateway version in the Dockerfile.
+
+            **Changes:**
+            - `${{ steps.check-version.outputs.current_version }}` -> `${{ steps.check-version.outputs.upstream_version }}`
+
+            **Source:**
+            - [extrange/ibkr-docker stable Dockerfile](https://github.com/extrange/ibkr-docker/blob/master/stable/Dockerfile)
+
+            ---
+            *This PR was automatically created by the update-ibkr-gateway workflow.*
+          branch: update-ibkr-gateway-${{ steps.check-version.outputs.upstream_version }}
+          delete-branch: true
+          labels: |
+            dependencies
+            automated
