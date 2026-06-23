@@ -99,6 +99,20 @@ price_update_delay = [30, 60]
 # order price. This doesn't apply to debit orders.
 minimum_credit = 0.05
 
+# Default price strategy used to derive option order limit prices. By default
+# (when left unset/commented out) ThetaGang uses the midpoint/model price, which
+# fills reliably but may leave money on the table for illiquid options. Set
+# `sell_price`/`buy_price` to one of "midpoint", "latest", "bid", or "ask" to
+# quote more aggressively: e.g. `sell_price = "ask"` and `buy_price = "bid"`
+# capture more of the spread at the cost of slower (or missed) fills. The
+# optional `*_price_adjustment` values are added to the chosen price (use a
+# negative number to shave a cent off to improve fill odds). These can be
+# overridden per symbol under `[portfolio.symbols.<SYMBOL>]`.
+# sell_price = "ask"
+# buy_price = "bid"
+# sell_price_adjustment = 0.0
+# buy_price_adjustment = 0.0
+
   [runtime.orders.algo]
   # By default we use adaptive orders with patient priority which gives reasonable
   # results. You can also experiment with TWAP or other options, however the

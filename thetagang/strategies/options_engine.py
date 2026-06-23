@@ -376,7 +376,12 @@ class OptionsStrategyEngine:
             order = self.order_ops.create_limit_order(
                 action="SELL",
                 quantity=quantity,
-                limit_price=round(get_higher_price(sell_ticker), 2),
+                limit_price=round(
+                    self.config.get_order_limit_price(
+                        symbol, sell_ticker, "SELL", get_higher_price(sell_ticker)
+                    ),
+                    2,
+                ),
             )
             self.order_ops.enqueue_order(sell_ticker.contract, order)
 
@@ -405,7 +410,12 @@ class OptionsStrategyEngine:
             order = self.order_ops.create_limit_order(
                 action="SELL",
                 quantity=quantity,
-                limit_price=round(get_higher_price(sell_ticker), 2),
+                limit_price=round(
+                    self.config.get_order_limit_price(
+                        symbol, sell_ticker, "SELL", get_higher_price(sell_ticker)
+                    ),
+                    2,
+                ),
             )
             self.order_ops.enqueue_order(sell_ticker.contract, order)
 
@@ -1071,10 +1081,15 @@ class OptionsStrategyEngine:
                     optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
                 )
                 is_short = position.position < 0
-                price = (
-                    round(get_lower_price(ticker), 2)
-                    if is_short
-                    else round(get_higher_price(ticker), 2)
+                action = "BUY" if is_short else "SELL"
+                fallback_price = (
+                    get_lower_price(ticker) if is_short else get_higher_price(ticker)
+                )
+                price = round(
+                    self.config.get_order_limit_price(
+                        position.contract.symbol, ticker, action, fallback_price
+                    ),
+                    2,
                 )
                 if not price or util.isNan(price) or math.isnan(price):
                     log.warning(
@@ -1087,7 +1102,7 @@ class OptionsStrategyEngine:
 
                 qty = abs(position.position)
                 order = self.order_ops.create_limit_order(
-                    action="BUY" if is_short else "SELL",
+                    action=action,
                     quantity=qty,
                     limit_price=price,
                     transmit=True,
