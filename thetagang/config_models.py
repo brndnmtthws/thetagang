@@ -92,6 +92,13 @@ class OrdersConfig(BaseModel, DisplayMixin):
     price_update_delay: List[int] = Field(
         default_factory=lambda: [30, 60], min_length=2, max_length=2
     )
+    # Default price strategy used to derive option order limit prices. When left
+    # unset (None), the existing midpoint/model-price behavior is preserved.
+    # Can be overridden per symbol via SymbolConfig.{sell,buy}_price.
+    sell_price: Optional[Literal["midpoint", "latest", "bid", "ask"]] = None
+    buy_price: Optional[Literal["midpoint", "latest", "bid", "ask"]] = None
+    sell_price_adjustment: float = Field(default=0.0)
+    buy_price_adjustment: float = Field(default=0.0)
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
@@ -100,6 +107,9 @@ class OrdersConfig(BaseModel, DisplayMixin):
         table.add_row("", "Params", "=", f"{self.algo.params}")
         table.add_row("", "Price update delay", "=", f"{self.price_update_delay}")
         table.add_row("", "Minimum credit", "=", f"{dfmt(self.minimum_credit)}")
+        if self.sell_price is not None or self.buy_price is not None:
+            table.add_row("", "Sell price", "=", self.sell_price or "default")
+            table.add_row("", "Buy price", "=", self.buy_price or "default")
 
 
 class IBAsyncConfig(BaseModel):
@@ -528,6 +538,13 @@ class SymbolConfig(BaseModel):
     puts: Optional["SymbolConfig.Puts"] = None
     volatility_weight: Optional["SymbolConfig.VolatilityWeight"] = None
     adjust_price_after_delay: bool = Field(default=False)
+    # Per-symbol overrides for the order price strategy. When unset, the global
+    # [runtime.orders] default applies; when that is also unset, the existing
+    # midpoint/model-price behavior is preserved.
+    sell_price: Optional[Literal["midpoint", "latest", "bid", "ask"]] = None
+    buy_price: Optional[Literal["midpoint", "latest", "bid", "ask"]] = None
+    sell_price_adjustment: Optional[float] = None
+    buy_price_adjustment: Optional[float] = None
     no_trading: Optional[bool] = None
     buy_only_rebalancing: Optional[bool] = None
     buy_only_min_threshold_shares: Optional[int] = Field(default=None, ge=1)
