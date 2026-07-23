@@ -659,9 +659,24 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
         table.add_row("", "Cooldown days", "=", f"{self.cooldown_days}")
         table.add_row("", "Choppiness min", "=", f"{ffmt(self.choppiness_min)}")
         table.add_row("", "Efficiency max", "=", f"{pfmt(self.efficiency_max)}")
-        table.add_row("", "Flow trade min", "=", f"{pfmt(self.flow_trade_min)}")
-        table.add_row("", "Flow trade stop", "=", f"{pfmt(self.flow_trade_stop)}")
-        table.add_row("", "Flow imbalance tau", "=", f"{ffmt(self.flow_imbalance_tau)}")
+        table.add_row(
+            "",
+            "Inferred-capacity flow start",
+            "=",
+            f"{pfmt(self.flow_trade_min)}",
+        )
+        table.add_row(
+            "",
+            "Inferred-capacity flow stop",
+            "=",
+            f"{pfmt(self.flow_trade_stop)}",
+        )
+        table.add_row(
+            "",
+            "Directional share-gap tau",
+            "=",
+            f"{ffmt(self.flow_imbalance_tau)}",
+        )
         table.add_row("", "Deficit rail start", "=", f"{pfmt(self.deficit_rail_start)}")
         table.add_row("", "Deficit rail stop", "=", f"{pfmt(self.deficit_rail_stop)}")
         table.add_row("", "Shares only", "=", f"{self.shares_only}")

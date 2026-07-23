@@ -214,7 +214,8 @@ class PostStrategyEngine:
         if reserved_cash > 0:
             log.notice(
                 "Cash management: reserving "
-                f"{dfmt(reserved_cash)} for regime flow deployment."
+                f"{dfmt(reserved_cash)} for inferred-capacity regime "
+                "flow deployment."
             )
         try:
             amount = 0.0
