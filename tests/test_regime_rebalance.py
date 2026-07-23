@@ -7,6 +7,7 @@ import pytest
 from ib_async import IB, Option, Stock
 
 import thetagang.portfolio_manager as pm_module
+import thetagang.strategies.regime_engine as regime_engine_module
 from thetagang.config import Config
 from thetagang.db import DataStore
 from thetagang.legacy_config import (
@@ -1761,10 +1762,10 @@ async def test_regime_rebalance_soft_band_blocked_by_regime(portfolio_manager, m
 
 @pytest.mark.asyncio
 async def test_regime_rebalance_flow_trades_require_regime_gate(
-    portfolio_manager, mocker
+    portfolio_manager_with_db, mocker
 ):
     _configure_flow_rebalance(
-        portfolio_manager,
+        portfolio_manager_with_db,
         choppiness_min=10.0,
         efficiency_max=0.01,
     )
@@ -1775,15 +1776,92 @@ async def test_regime_rebalance_flow_trades_require_regime_gate(
         "BBB": [_stock_position("BBB", 8)],
     }
 
-    _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=100.0)
-    _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
-    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    _mock_regime_tickers(
+        portfolio_manager_with_db,
+        mocker,
+        aaa_price=100.0,
+        bbb_price=100.0,
+    )
+    _mock_regime_history(
+        portfolio_manager_with_db,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
+        return_value=[]
+    )
+    info_mock = mocker.patch.object(regime_engine_module.log, "info")
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
     assert orders == []
+    payload = portfolio_manager_with_db.data_store.get_last_event_payload(
+        "regime_rebalance_gate"
+    )
+    assert payload["telemetry_schema_version"] == 2
+    assert payload["legacy_field_aliases"] == {
+        "excess_cash": "unallocated_rebalance_capacity"
+    }
+    assert payload["unallocated_rebalance_capacity"] == pytest.approx(400.0)
+    assert payload["excess_cash"] == pytest.approx(400.0)
+    assert payload["choppiness_ok"] is False
+    assert payload["regime_ok"] is False
+    assert payload["shared_rebalance_gates_ok"] is False
+    assert payload["mode"] == "no"
+    assert payload["flow"] == {
+        "signal_kind": "inferred_unallocated_rebalance_capacity",
+        "external_flow_detection": "not_performed",
+        "capacity_source": "rebalance_base_minus_managed_sleeve_value",
+        "weight_base": "net_liq_ex_options",
+        "margin_usage": 1.0,
+        "rebalance_base": 2000,
+        "managed_sleeve_value": 1600.0,
+        "unallocated_rebalance_capacity": 400.0,
+        "direction": "buy",
+        "gate": True,
+        "decision_status": "blocked_by_shared_gates",
+        "shared_rebalance_gates_ok": False,
+        "shared_gate_blockers": ["regime"],
+        "rebalance_eligible": False,
+        "selected": False,
+        "was_active": False,
+        "will_be_active": True,
+        "start_threshold": 200.0,
+        "stop_threshold": 100.0,
+        "candidate_symbols": ["AAA", "BBB"],
+        "net_share_gap": 4,
+        "total_absolute_share_gap": 4,
+        "imbalance_ratio": 1.0,
+        "imbalance_tau": 0.7,
+        "directional_imbalance_ok": True,
+        "orders": [],
+        "reserved_cash_for_post_management": 0.0,
+    }
+    assert payload["deficit"] == {
+        "gate": False,
+        "was_active": False,
+        "will_be_active": False,
+        "start_threshold": 120.0,
+        "stop_threshold": 60.0,
+    }
+    summary_payload = portfolio_manager_with_db.data_store.get_last_event_payload(
+        "regime_rebalance_summary"
+    )
+    assert summary_payload["telemetry_schema_version"] == 2
+    assert summary_payload["unallocated_rebalance_capacity"] == pytest.approx(400.0)
+    assert summary_payload["flow"] == payload["flow"]
+    assert summary_payload["deficit"] == payload["deficit"]
+    info_messages = [call.args[0] for call in info_mock.call_args_list]
+    flow_message = next(
+        message
+        for message in info_messages
+        if message.startswith("Regime rebalancing inferred-capacity flow:")
+    )
+    assert "decision=blocked_by_shared_gates" in flow_message
+    assert "shared_gate_blockers=regime" in flow_message
+    assert "was_active=False will_be_active=True" in flow_message
 
 
 @pytest.mark.asyncio
@@ -1857,6 +1935,13 @@ async def test_regime_rebalance_blocked_flow_preserves_hysteresis(
     assert portfolio_manager_with_db.data_store.get_last_event_payload(
         "regime_rebalance_state"
     ) == {"flow_active": True, "deficit_active": False}
+    blocked_payload = portfolio_manager_with_db.data_store.get_last_event_payload(
+        "regime_rebalance_gate"
+    )
+    assert blocked_payload["flow"]["decision_status"] == "blocked_by_shared_gates"
+    assert blocked_payload["flow"]["shared_gate_blockers"] == ["ratio"]
+    assert blocked_payload["flow"]["was_active"] is False
+    assert blocked_payload["flow"]["will_be_active"] is True
 
     portfolio_manager_with_db.config.strategies.regime_rebalance.ratio_gate = None
 
@@ -2151,14 +2236,15 @@ async def test_regime_rebalance_flow_hysteresis_uses_db_state(
 
 @pytest.mark.asyncio
 async def test_regime_rebalance_deficit_rail_sells_overweights(
-    portfolio_manager, mocker
+    portfolio_manager_with_db, mocker
 ):
-    portfolio_manager.config.strategies.regime_rebalance.soft_band = 1.2
-    portfolio_manager.config.strategies.regime_rebalance.hard_band = 1.5
-    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
-    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_start = 0.30
-    portfolio_manager.config.strategies.regime_rebalance.deficit_rail_stop = 0.10
+    regime_rebalance = portfolio_manager_with_db.config.strategies.regime_rebalance
+    regime_rebalance.soft_band = 1.2
+    regime_rebalance.hard_band = 1.5
+    regime_rebalance.choppiness_min = 0.0
+    regime_rebalance.efficiency_max = 1.0
+    regime_rebalance.deficit_rail_start = 0.30
+    regime_rebalance.deficit_rail_stop = 0.10
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
@@ -2166,15 +2252,33 @@ async def test_regime_rebalance_deficit_rail_sells_overweights(
         "BBB": [SimpleNamespace(contract=Stock("BBB", "SMART", "USD"), position=5)],
     }
 
-    _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=100.0)
-    _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
-    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    _mock_regime_tickers(
+        portfolio_manager_with_db,
+        mocker,
+        aaa_price=100.0,
+        bbb_price=100.0,
+    )
+    _mock_regime_history(
+        portfolio_manager_with_db,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
+        return_value=[]
+    )
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
     assert orders == [("AAA", "NYSE", -4)]
+    payload = portfolio_manager_with_db.data_store.get_last_event_payload(
+        "regime_rebalance_gate"
+    )
+    assert payload["mode"] == "deficit"
+    assert payload["flow"]["gate"] is False
+    assert payload["flow"]["decision_status"] == "superseded_by_deficit_rail"
+    assert payload["deficit"]["gate"] is True
 
 
 @pytest.mark.asyncio

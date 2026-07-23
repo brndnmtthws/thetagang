@@ -1097,79 +1097,105 @@ class RegimeRebalanceEngine:
             if ratio_gate is None or not ratio_enabled
             else bool(ratio_result and ratio_result.ok)
         )
-        soft_or_flow_rebalance_allowed = regime_ok and cooldown_ok and ratio_gate_ok
-        soft_rebalance = soft_breach and soft_or_flow_rebalance_allowed
+        shared_rebalance_gates_ok = regime_ok and cooldown_ok and ratio_gate_ok
+        soft_rebalance = soft_breach and shared_rebalance_gates_ok
         rebalance_fraction = 1.0
         if hard_rebalance:
             rebalance_fraction = regime_rebalance.hard_band_rebalance_fraction
 
         share_tolerance = 1
-        flow_active = False
-        deficit_active = False
+        flow_was_active = False
+        deficit_was_active = False
         if self.data_store:
             state = self.data_store.get_last_event_payload("regime_rebalance_state")
             if state:
-                flow_active = bool(state.get("flow_active", False))
-                deficit_active = bool(state.get("deficit_active", False))
+                flow_was_active = bool(state.get("flow_active", False))
+                deficit_was_active = bool(state.get("deficit_active", False))
 
-        excess_cash = total_value - invested_value
+        unallocated_rebalance_capacity = total_value - invested_value
         flow_trade_min_amount = total_value * regime_rebalance.flow_trade_min
         flow_trade_stop_amount = total_value * regime_rebalance.flow_trade_stop
         deficit_rail_start_amount = total_value * regime_rebalance.deficit_rail_start
         deficit_rail_stop_amount = total_value * regime_rebalance.deficit_rail_stop
         flow_gate = False
         deficit_gate = False
-        if excess_cash < 0:
-            deficit_amount = -excess_cash
+        if unallocated_rebalance_capacity < 0:
+            deficit_amount = -unallocated_rebalance_capacity
             deficit_gate = deficit_amount >= deficit_rail_start_amount or (
-                deficit_active and deficit_amount >= deficit_rail_stop_amount
+                deficit_was_active and deficit_amount >= deficit_rail_stop_amount
             )
             if not deficit_gate:
                 flow_gate = deficit_amount >= flow_trade_min_amount or (
-                    flow_active and deficit_amount >= flow_trade_stop_amount
+                    flow_was_active and deficit_amount >= flow_trade_stop_amount
                 )
         else:
-            flow_gate = excess_cash >= flow_trade_min_amount or (
-                flow_active and excess_cash >= flow_trade_stop_amount
+            flow_gate = unallocated_rebalance_capacity >= flow_trade_min_amount or (
+                flow_was_active
+                and unallocated_rebalance_capacity >= flow_trade_stop_amount
             )
-        flow_rebalance = flow_gate and soft_or_flow_rebalance_allowed
+        flow_rebalance_eligible = flow_gate and shared_rebalance_gates_ok
 
         allowed_symbols = {
             symbol for symbol in symbols if self.config.trading_is_allowed(symbol)
         }
+        flow_candidate_symbols = [
+            symbol
+            for symbol in symbols
+            if symbol in allowed_symbols and abs(share_gaps[symbol]) > share_tolerance
+        ]
+        flow_net_share_gap = sum(
+            share_gaps[symbol] for symbol in flow_candidate_symbols
+        )
+        flow_total_absolute_share_gap = sum(
+            abs(share_gaps[symbol]) for symbol in flow_candidate_symbols
+        )
+        flow_imbalance_ratio = (
+            flow_net_share_gap / flow_total_absolute_share_gap
+            if flow_total_absolute_share_gap > 0
+            else None
+        )
+
+        def directional_flow_is_allowed(amount: float) -> bool:
+            if flow_total_absolute_share_gap <= 0:
+                return False
+            if amount > 0:
+                return (
+                    flow_net_share_gap
+                    > regime_rebalance.flow_imbalance_tau
+                    * flow_total_absolute_share_gap
+                )
+            if amount < 0:
+                return (
+                    flow_net_share_gap
+                    < -regime_rebalance.flow_imbalance_tau
+                    * flow_total_absolute_share_gap
+                )
+            return False
+
+        flow_directional_imbalance_ok = directional_flow_is_allowed(
+            unallocated_rebalance_capacity
+        )
 
         def build_flow_orders(amount: float) -> Dict[str, int]:
             if amount == 0:
                 return {}
-            active_symbols = [
-                symbol
-                for symbol in symbols
-                if symbol in allowed_symbols
-                and abs(share_gaps[symbol]) > share_tolerance
-            ]
-            if not active_symbols:
+            if not flow_candidate_symbols:
                 return {}
-            net_gap = sum(share_gaps[symbol] for symbol in active_symbols)
-            tot_gap = sum(abs(share_gaps[symbol]) for symbol in active_symbols)
-            if tot_gap <= 0:
+            if flow_total_absolute_share_gap <= 0:
                 return {}
-
-            ok_buy = net_gap > regime_rebalance.flow_imbalance_tau * tot_gap
-            ok_sell = net_gap < -regime_rebalance.flow_imbalance_tau * tot_gap
-            if amount > 0 and not ok_buy:
-                return {}
-            if amount < 0 and not ok_sell:
+            if not directional_flow_is_allowed(amount):
                 return {}
 
             orders: Dict[str, int] = {}
             if amount > 0:
                 deficits = {
-                    symbol: max(share_gaps[symbol], 0) for symbol in active_symbols
+                    symbol: max(share_gaps[symbol], 0)
+                    for symbol in flow_candidate_symbols
                 }
                 total_deficit = sum(deficits.values())
                 if total_deficit <= 0:
                     return {}
-                for symbol in active_symbols:
+                for symbol in flow_candidate_symbols:
                     deficit = deficits[symbol]
                     if deficit <= 0:
                         continue
@@ -1189,12 +1215,13 @@ class RegimeRebalanceEngine:
             else:
                 need = -amount
                 excesses = {
-                    symbol: max(-share_gaps[symbol], 0) for symbol in active_symbols
+                    symbol: max(-share_gaps[symbol], 0)
+                    for symbol in flow_candidate_symbols
                 }
                 total_excess = sum(excesses.values())
                 if total_excess <= 0:
                     return {}
-                for symbol in active_symbols:
+                for symbol in flow_candidate_symbols:
                     excess = excesses[symbol]
                     if excess <= 0:
                         continue
@@ -1340,7 +1367,10 @@ class RegimeRebalanceEngine:
                         )
         elif deficit_gate:
             rebalance_mode = "deficit"
-            deficit_needed = max(0.0, -excess_cash - deficit_rail_stop_amount)
+            deficit_needed = max(
+                0.0,
+                -unallocated_rebalance_capacity - deficit_rail_stop_amount,
+            )
             deficit_orders = build_deficit_orders(
                 current_positions,
                 deficit_needed,
@@ -1352,13 +1382,45 @@ class RegimeRebalanceEngine:
                     if delta == 0:
                         continue
                     orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + delta
-        elif flow_rebalance:
+        elif flow_rebalance_eligible:
             rebalance_mode = "flow"
-            flow_orders = build_flow_orders(excess_cash)
+            flow_orders = build_flow_orders(unallocated_rebalance_capacity)
             for symbol, delta in flow_orders.items():
                 if delta == 0:
                     continue
                 orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + delta
+
+        flow_shared_gate_blockers = []
+        if not regime_ok:
+            flow_shared_gate_blockers.append("regime")
+        if not cooldown_ok:
+            flow_shared_gate_blockers.append("cooldown")
+        if not ratio_gate_ok:
+            flow_shared_gate_blockers.append("ratio")
+        if deficit_gate:
+            flow_decision_status = "superseded_by_deficit_rail"
+        elif not flow_gate:
+            flow_decision_status = "below_activation_threshold"
+        elif flow_shared_gate_blockers:
+            flow_decision_status = "blocked_by_shared_gates"
+        elif rebalance_mode != "flow":
+            flow_decision_status = f"superseded_by_{rebalance_mode}"
+        elif not flow_directional_imbalance_ok:
+            flow_decision_status = "blocked_by_directional_imbalance"
+        else:
+            flow_decision_status = "selected"
+        flow_direction = (
+            "buy"
+            if unallocated_rebalance_capacity > 0
+            else "sell"
+            if unallocated_rebalance_capacity < 0
+            else "flat"
+        )
+        deficit_active_next = (
+            deficit_gate_after if (hard_rebalance or soft_rebalance) else deficit_gate
+        )
+        flow_active_next = flow_gate and rebalance_mode in {"flow", "no"}
+
         regime_summary: List[Dict[str, Any]] = []
         net_liquidation_value = float(account_summary["NetLiquidation"].value)
         for symbol in symbols:
@@ -1511,7 +1573,7 @@ class RegimeRebalanceEngine:
                 f"band={band_status} "
                 f"regime={'ok' if regime_ok else 'no'} "
                 f"cooldown={'ok' if cooldown_ok else 'no'} "
-                f"flow={'on' if flow_gate else 'off'} "
+                f"inferred_flow={flow_decision_status} "
                 f"deficit={'on' if deficit_gate else 'off'}"
             )
 
@@ -1556,7 +1618,11 @@ class RegimeRebalanceEngine:
             )
 
         reserved_cash_for_post_management = 0.0
-        if rebalance_mode == "flow" and flow_gate and excess_cash > 0:
+        if (
+            rebalance_mode == "flow"
+            and flow_gate
+            and unallocated_rebalance_capacity > 0
+        ):
             buy_order_value = sum(
                 shares * market_prices[symbol]
                 for symbol, _primary_exchange, shares in to_trade
@@ -1564,13 +1630,14 @@ class RegimeRebalanceEngine:
             )
             if buy_order_value > 0:
                 reserved_cash_for_post_management = max(
-                    0.0, excess_cash - buy_order_value
+                    0.0, unallocated_rebalance_capacity - buy_order_value
                 )
             if reserved_cash_for_post_management > 0:
                 log.notice(
                     "Regime rebalancing: reserving "
                     f"{dfmt(reserved_cash_for_post_management)} "
-                    "from cash management for future flow deployment."
+                    "from cash management for future inferred-capacity "
+                    "flow deployment."
                 )
         self._reserve_cash_for_post_management(reserved_cash_for_post_management)
 
@@ -1586,20 +1653,87 @@ class RegimeRebalanceEngine:
                 )
             )
 
+        flow_telemetry = {
+            "signal_kind": "inferred_unallocated_rebalance_capacity",
+            "external_flow_detection": "not_performed",
+            "capacity_source": "rebalance_base_minus_managed_sleeve_value",
+            "weight_base": regime_rebalance.weight_base.value,
+            "margin_usage": regime_margin_usage,
+            "rebalance_base": total_value,
+            "managed_sleeve_value": invested_value,
+            "unallocated_rebalance_capacity": unallocated_rebalance_capacity,
+            "direction": flow_direction,
+            "gate": flow_gate,
+            "decision_status": flow_decision_status,
+            "shared_rebalance_gates_ok": shared_rebalance_gates_ok,
+            "shared_gate_blockers": flow_shared_gate_blockers,
+            "rebalance_eligible": flow_rebalance_eligible,
+            "selected": rebalance_mode == "flow",
+            "was_active": flow_was_active,
+            "will_be_active": flow_active_next,
+            "start_threshold": flow_trade_min_amount,
+            "stop_threshold": flow_trade_stop_amount,
+            "candidate_symbols": flow_candidate_symbols,
+            "net_share_gap": flow_net_share_gap,
+            "total_absolute_share_gap": flow_total_absolute_share_gap,
+            "imbalance_ratio": flow_imbalance_ratio,
+            "imbalance_tau": regime_rebalance.flow_imbalance_tau,
+            "directional_imbalance_ok": flow_directional_imbalance_ok,
+            "orders": to_trade if rebalance_mode == "flow" else [],
+            "reserved_cash_for_post_management": reserved_cash_for_post_management,
+        }
+        deficit_telemetry = {
+            "gate": deficit_gate,
+            "was_active": deficit_was_active,
+            "will_be_active": deficit_active_next,
+            "start_threshold": deficit_rail_start_amount,
+            "stop_threshold": deficit_rail_stop_amount,
+        }
+
         log.info(
             f"Regime rebalancing gates: max_relative_drift={pfmt(max_relative_drift)} "
             f"soft_band={pfmt(regime_rebalance.soft_band, 0)} "
             f"hard_band={pfmt(regime_rebalance.hard_band, 0)} "
             f"hard_breach={hard_breach} soft_breach={soft_breach} "
-            f"chop={ffmt(choppiness)} er={pfmt(efficiency)} "
-            f"cooldown_ok={cooldown_ok} mode={rebalance_mode} "
-            f"flow_gate={flow_gate} deficit_gate={deficit_gate} "
-            f"flow_active={flow_active} deficit_active={deficit_active} "
-            f"flow_min={pfmt(regime_rebalance.flow_trade_min)}({dfmt(flow_trade_min_amount)}) "
-            f"flow_stop={pfmt(regime_rebalance.flow_trade_stop)}({dfmt(flow_trade_stop_amount)}) "
-            f"deficit_start={pfmt(regime_rebalance.deficit_rail_start)}({dfmt(deficit_rail_start_amount)}) "
-            f"deficit_stop={pfmt(regime_rebalance.deficit_rail_stop)}({dfmt(deficit_rail_stop_amount)}) "
-            f"excess_cash={dfmt(excess_cash)}" + ratio_gate_log
+            f"chop={ffmt(choppiness)} chop_ok={chop_ok} "
+            f"er={pfmt(efficiency)} er_ok={er_ok} "
+            f"regime_ok={regime_ok} cooldown_ok={cooldown_ok} "
+            f"shared_gates_ok={shared_rebalance_gates_ok} "
+            f"mode={rebalance_mode}" + ratio_gate_log
+        )
+        log.info(
+            "Regime rebalancing inferred-capacity flow: "
+            "signal=inferred_unallocated_rebalance_capacity "
+            "external_flow_detection=not_performed "
+            f"weight_base={regime_rebalance.weight_base.value} "
+            f"margin_usage={ffmt(regime_margin_usage)} "
+            f"rebalance_base={dfmt(total_value)} "
+            f"managed_sleeves={dfmt(invested_value)} "
+            f"unallocated_capacity={dfmt(unallocated_rebalance_capacity)} "
+            f"direction={flow_direction} gate={flow_gate} "
+            f"decision={flow_decision_status} "
+            f"shared_gate_blockers="
+            f"{','.join(flow_shared_gate_blockers) or 'none'} "
+            f"eligible={flow_rebalance_eligible} "
+            f"was_active={flow_was_active} will_be_active={flow_active_next} "
+            f"start={pfmt(regime_rebalance.flow_trade_min)}"
+            f"({dfmt(flow_trade_min_amount)}) "
+            f"stop={pfmt(regime_rebalance.flow_trade_stop)}"
+            f"({dfmt(flow_trade_stop_amount)}) "
+            f"net_share_gap={ifmt(flow_net_share_gap)} "
+            f"total_abs_share_gap={ifmt(flow_total_absolute_share_gap)} "
+            f"imbalance_ratio={_ffmt_or_dash(flow_imbalance_ratio)} "
+            f"imbalance_tau={ffmt(regime_rebalance.flow_imbalance_tau)} "
+            f"directional_ok={flow_directional_imbalance_ok}"
+        )
+        log.info(
+            "Regime rebalancing deficit rail: "
+            f"gate={deficit_gate} was_active={deficit_was_active} "
+            f"will_be_active={deficit_active_next} "
+            f"start={pfmt(regime_rebalance.deficit_rail_start)}"
+            f"({dfmt(deficit_rail_start_amount)}) "
+            f"stop={pfmt(regime_rebalance.deficit_rail_stop)}"
+            f"({dfmt(deficit_rail_stop_amount)})"
         )
         if self.data_store:
             ratio_payload = None
@@ -1609,15 +1743,13 @@ class RegimeRebalanceEngine:
                     if ratio_result is not None
                     else {"enabled": ratio_enabled}
                 )
-            deficit_active_state = (
-                deficit_gate_after
-                if (hard_rebalance or soft_rebalance)
-                else deficit_gate
-            )
-            flow_active_state = flow_gate and rebalance_mode in {"flow", "no"}
             self.data_store.record_event(
                 "regime_rebalance_gate",
                 {
+                    "telemetry_schema_version": 2,
+                    "legacy_field_aliases": {
+                        "excess_cash": "unallocated_rebalance_capacity"
+                    },
                     "symbols": symbols,
                     "max_relative_drift": max_relative_drift,
                     "soft_band": regime_rebalance.soft_band,
@@ -1625,22 +1757,35 @@ class RegimeRebalanceEngine:
                     "hard_breach": hard_breach,
                     "soft_breach": soft_breach,
                     "choppiness": choppiness,
+                    "choppiness_ok": chop_ok,
                     "efficiency": efficiency,
+                    "efficiency_ok": er_ok,
+                    "regime_ok": regime_ok,
                     "cooldown_ok": cooldown_ok,
+                    "ratio_gate_ok": ratio_gate_ok,
+                    "shared_rebalance_gates_ok": shared_rebalance_gates_ok,
                     "flow_gate": flow_gate,
                     "deficit_gate": deficit_gate,
-                    "excess_cash": excess_cash,
+                    "unallocated_rebalance_capacity": unallocated_rebalance_capacity,
+                    # Retain the legacy key for historical telemetry queries.
+                    "excess_cash": unallocated_rebalance_capacity,
                     "reserved_cash_for_post_management": (
                         reserved_cash_for_post_management
                     ),
                     "mode": rebalance_mode,
                     "orders": to_trade,
                     "ratio_gate": ratio_payload,
+                    "flow": flow_telemetry,
+                    "deficit": deficit_telemetry,
                 },
             )
             self.data_store.record_event(
                 "regime_rebalance_summary",
                 {
+                    "telemetry_schema_version": 2,
+                    "legacy_field_aliases": {
+                        "excess_cash": "unallocated_rebalance_capacity"
+                    },
                     "symbols": symbols,
                     "total_value": total_value,
                     "hard_breach": hard_breach,
@@ -1649,20 +1794,24 @@ class RegimeRebalanceEngine:
                     "cooldown_ok": cooldown_ok,
                     "flow_gate": flow_gate,
                     "deficit_gate": deficit_gate,
-                    "excess_cash": excess_cash,
+                    "unallocated_rebalance_capacity": unallocated_rebalance_capacity,
+                    # Retain the legacy key for historical telemetry queries.
+                    "excess_cash": unallocated_rebalance_capacity,
                     "reserved_cash_for_post_management": (
                         reserved_cash_for_post_management
                     ),
                     "mode": rebalance_mode,
                     "summary": regime_summary,
                     "ratio_gate": ratio_payload,
+                    "flow": flow_telemetry,
+                    "deficit": deficit_telemetry,
                 },
             )
             self.data_store.record_event(
                 "regime_rebalance_state",
                 {
-                    "flow_active": flow_active_state,
-                    "deficit_active": deficit_active_state,
+                    "flow_active": flow_active_next,
+                    "deficit_active": deficit_active_next,
                 },
             )
             if volatility_details:

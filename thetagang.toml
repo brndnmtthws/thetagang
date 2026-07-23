@@ -627,9 +627,12 @@ daily_stddev_window = "30 D"
 # cooldown_days = 5
 # choppiness_min = 3.0
 # efficiency_max = 0.30
-# flow_trade_min = 0.025  # excess cash needed to start flow trades (fraction of base)
-# flow_trade_stop = 0.0125  # hysteresis stop once within this band (fraction of base)
-# flow_imbalance_tau = 0.70  # 0..1, higher requires more directional coherence
+# The flow rail infers unallocated capacity as the rebalance base minus the
+# managed sleeve value. It does not detect broker deposits or withdrawals.
+# Flow trades still require the regime, cooldown, and ratio gates to pass.
+# flow_trade_min = 0.025  # inferred capacity needed to activate (fraction of base)
+# flow_trade_stop = 0.0125  # active-state hysteresis stop (fraction of base)
+# flow_imbalance_tau = 0.70  # directional share-gap coherence, from 0 to 1
 # deficit_rail_start = 0.06  # deficit that triggers safety rail (fraction of base)
 # deficit_rail_stop = 0.03  # hysteresis stop once within this band (fraction of base)
 # order_history_lookback_days = 30  # look back this many calendar days for fills
