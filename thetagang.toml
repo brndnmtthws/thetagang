@@ -629,7 +629,9 @@ daily_stddev_window = "30 D"
 # efficiency_max = 0.30
 # The flow rail infers unallocated capacity as the rebalance base minus the
 # managed sleeve value. It does not detect broker deposits or withdrawals.
-# Flow trades still require the regime, cooldown, and ratio gates to pass.
+# Positive inferred-capacity deployment bypasses the choppiness and efficiency
+# regime veto, but still requires the cooldown, ratio, and directional gates.
+# Negative inferred-capacity reductions retain all ordinary rebalance gates.
 # flow_trade_min = 0.025  # inferred capacity needed to activate (fraction of base)
 # flow_trade_stop = 0.0125  # active-state hysteresis stop (fraction of base)
 # flow_imbalance_tau = 0.70  # directional share-gap coherence, from 0 to 1
