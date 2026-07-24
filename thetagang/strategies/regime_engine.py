@@ -1098,6 +1098,13 @@ class RegimeRebalanceEngine:
             else bool(ratio_result and ratio_result.ok)
         )
         shared_rebalance_gates_ok = regime_ok and cooldown_ok and ratio_gate_ok
+        shared_rebalance_gate_blockers = []
+        if not regime_ok:
+            shared_rebalance_gate_blockers.append("regime")
+        if not cooldown_ok:
+            shared_rebalance_gate_blockers.append("cooldown")
+        if not ratio_gate_ok:
+            shared_rebalance_gate_blockers.append("ratio")
         soft_rebalance = soft_breach and shared_rebalance_gates_ok
         rebalance_fraction = 1.0
         if hard_rebalance:
@@ -1113,6 +1120,13 @@ class RegimeRebalanceEngine:
                 deficit_was_active = bool(state.get("deficit_active", False))
 
         unallocated_rebalance_capacity = total_value - invested_value
+        flow_classification = (
+            "inferred_capacity_deployment"
+            if unallocated_rebalance_capacity > 0
+            else "inferred_capacity_reduction"
+            if unallocated_rebalance_capacity < 0
+            else "none"
+        )
         flow_trade_min_amount = total_value * regime_rebalance.flow_trade_min
         flow_trade_stop_amount = total_value * regime_rebalance.flow_trade_stop
         deficit_rail_start_amount = total_value * regime_rebalance.deficit_rail_start
@@ -1133,7 +1147,14 @@ class RegimeRebalanceEngine:
                 flow_was_active
                 and unallocated_rebalance_capacity >= flow_trade_stop_amount
             )
-        flow_rebalance_eligible = flow_gate and shared_rebalance_gates_ok
+
+        flow_eligibility_gate_blockers = []
+        if flow_classification != "inferred_capacity_deployment" and not regime_ok:
+            flow_eligibility_gate_blockers.append("regime")
+        if not cooldown_ok:
+            flow_eligibility_gate_blockers.append("cooldown")
+        if not ratio_gate_ok:
+            flow_eligibility_gate_blockers.append("ratio")
 
         allowed_symbols = {
             symbol for symbol in symbols if self.config.trading_is_allowed(symbol)
@@ -1175,6 +1196,10 @@ class RegimeRebalanceEngine:
         flow_directional_imbalance_ok = directional_flow_is_allowed(
             unallocated_rebalance_capacity
         )
+        if flow_gate and not flow_directional_imbalance_ok:
+            flow_eligibility_gate_blockers.append("directional_imbalance")
+        flow_eligibility_gates_ok = not flow_eligibility_gate_blockers
+        flow_rebalance_eligible = flow_gate and flow_eligibility_gates_ok
 
         def build_flow_orders(amount: float) -> Dict[str, int]:
             if amount == 0:
@@ -1192,24 +1217,20 @@ class RegimeRebalanceEngine:
                     symbol: max(share_gaps[symbol], 0)
                     for symbol in flow_candidate_symbols
                 }
-                total_deficit = sum(deficits.values())
-                if total_deficit <= 0:
+                total_deficit_value = sum(
+                    deficit * market_prices[symbol]
+                    for symbol, deficit in deficits.items()
+                )
+                if total_deficit_value <= 0:
                     return {}
+                deployment_fraction = min(amount / total_deficit_value, 1.0)
                 for symbol in flow_candidate_symbols:
                     deficit = deficits[symbol]
                     if deficit <= 0:
                         continue
                     if not self.config.trading_is_allowed(symbol):
                         continue
-                    max_buy = max(
-                        (target_shares[symbol] + share_tolerance)
-                        - current_positions[symbol],
-                        0,
-                    )
-                    if max_buy <= 0:
-                        continue
-                    alloc = amount * (deficit / total_deficit)
-                    buy_shares = min(int(alloc // market_prices[symbol]), max_buy)
+                    buy_shares = math.floor(deficit * deployment_fraction)
                     if buy_shares > 0:
                         orders[symbol] = buy_shares
             else:
@@ -1390,23 +1411,16 @@ class RegimeRebalanceEngine:
                     continue
                 orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + delta
 
-        flow_shared_gate_blockers = []
-        if not regime_ok:
-            flow_shared_gate_blockers.append("regime")
-        if not cooldown_ok:
-            flow_shared_gate_blockers.append("cooldown")
-        if not ratio_gate_ok:
-            flow_shared_gate_blockers.append("ratio")
         if deficit_gate:
             flow_decision_status = "superseded_by_deficit_rail"
         elif not flow_gate:
             flow_decision_status = "below_activation_threshold"
-        elif flow_shared_gate_blockers:
+        elif not flow_directional_imbalance_ok:
+            flow_decision_status = "blocked_by_directional_imbalance"
+        elif flow_eligibility_gate_blockers:
             flow_decision_status = "blocked_by_shared_gates"
         elif rebalance_mode != "flow":
             flow_decision_status = f"superseded_by_{rebalance_mode}"
-        elif not flow_directional_imbalance_ok:
-            flow_decision_status = "blocked_by_directional_imbalance"
         else:
             flow_decision_status = "selected"
         flow_direction = (
@@ -1422,6 +1436,7 @@ class RegimeRebalanceEngine:
         flow_active_next = flow_gate and rebalance_mode in {"flow", "no"}
 
         regime_summary: List[Dict[str, Any]] = []
+        actionable_flow_buy_symbols: set[str] = set()
         net_liquidation_value = float(account_summary["NetLiquidation"].value)
         for symbol in symbols:
             target_weight = effective_weights[symbol]
@@ -1547,6 +1562,8 @@ class RegimeRebalanceEngine:
                     action = f"[yellow]Skip (below relative threshold {pfmt(min_percent_relative)})"
 
             if filtered_trade_shares != 0:
+                if rebalance_mode == "flow" and filtered_trade_shares > 0:
+                    actionable_flow_buy_symbols.add(symbol)
                 to_trade.append(
                     (
                         symbol,
@@ -1629,15 +1646,34 @@ class RegimeRebalanceEngine:
                 if shares > 0
             )
             if buy_order_value > 0:
-                reserved_cash_for_post_management = max(
+                remaining_capacity = max(
                     0.0, unallocated_rebalance_capacity - buy_order_value
+                )
+                buy_orders_by_symbol = {
+                    symbol: shares
+                    for symbol, _primary_exchange, shares in to_trade
+                    if shares > 0
+                }
+                remaining_target_gap_value = sum(
+                    max(
+                        target_shares[symbol]
+                        - current_positions[symbol]
+                        - buy_orders_by_symbol.get(symbol, 0),
+                        0,
+                    )
+                    * market_prices[symbol]
+                    for symbol in symbols
+                    if symbol in actionable_flow_buy_symbols
+                )
+                reserved_cash_for_post_management = min(
+                    remaining_capacity, remaining_target_gap_value
                 )
             if reserved_cash_for_post_management > 0:
                 log.notice(
                     "Regime rebalancing: reserving "
                     f"{dfmt(reserved_cash_for_post_management)} "
-                    "from cash management for future inferred-capacity "
-                    "flow deployment."
+                    "from cash management for remaining inferred-capacity "
+                    "target gaps."
                 )
         self._reserve_cash_for_post_management(reserved_cash_for_post_management)
 
@@ -1655,6 +1691,7 @@ class RegimeRebalanceEngine:
 
         flow_telemetry = {
             "signal_kind": "inferred_unallocated_rebalance_capacity",
+            "classification": flow_classification,
             "external_flow_detection": "not_performed",
             "capacity_source": "rebalance_base_minus_managed_sleeve_value",
             "weight_base": regime_rebalance.weight_base.value,
@@ -1666,7 +1703,9 @@ class RegimeRebalanceEngine:
             "gate": flow_gate,
             "decision_status": flow_decision_status,
             "shared_rebalance_gates_ok": shared_rebalance_gates_ok,
-            "shared_gate_blockers": flow_shared_gate_blockers,
+            "shared_gate_blockers": shared_rebalance_gate_blockers,
+            "eligibility_gates_ok": flow_eligibility_gates_ok,
+            "eligibility_gate_blockers": flow_eligibility_gate_blockers,
             "rebalance_eligible": flow_rebalance_eligible,
             "selected": rebalance_mode == "flow",
             "was_active": flow_was_active,
@@ -1710,10 +1749,14 @@ class RegimeRebalanceEngine:
             f"rebalance_base={dfmt(total_value)} "
             f"managed_sleeves={dfmt(invested_value)} "
             f"unallocated_capacity={dfmt(unallocated_rebalance_capacity)} "
+            f"classification={flow_classification} "
             f"direction={flow_direction} gate={flow_gate} "
             f"decision={flow_decision_status} "
-            f"shared_gate_blockers="
-            f"{','.join(flow_shared_gate_blockers) or 'none'} "
+            f"ordinary_gate_failures="
+            f"{','.join(shared_rebalance_gate_blockers) or 'none'} "
+            f"eligibility_gate_blockers="
+            f"{','.join(flow_eligibility_gate_blockers) or 'none'} "
+            f"eligibility_gates_ok={flow_eligibility_gates_ok} "
             f"eligible={flow_rebalance_eligible} "
             f"was_active={flow_was_active} will_be_active={flow_active_next} "
             f"start={pfmt(regime_rebalance.flow_trade_min)}"
