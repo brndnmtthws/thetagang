@@ -14,7 +14,7 @@ dependencies = [
   "tomlkit>=0.14.0,<1",
   "ib-async>=2.0.1,<3",
   "pydantic>=2.10.2,<3",
-  "annotated-types>=0.7.0,<0.8",
+  "annotated-types>=0.7.0,<0.9",
   "polyfactory>=2.18.1,<4",
   "exchange-calendars>=4.12",
 ]
