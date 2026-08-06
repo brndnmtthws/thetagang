@@ -673,7 +673,7 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
         )
         table.add_row(
             "",
-            "Directional share-gap tau",
+            "Directional dollar-gap tau",
             "=",
             f"{ffmt(self.flow_imbalance_tau)}",
         )
