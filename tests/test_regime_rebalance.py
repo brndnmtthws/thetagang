@@ -588,16 +588,16 @@ async def test_regime_rebalance_rejects_unreadable_cached_history(
 
 @pytest.mark.asyncio
 async def test_regime_rebalance_volatility_weight_scales_down_without_renormalizing(
-    portfolio_manager, mocker
+    portfolio_manager_with_db, mocker
 ):
-    portfolio_manager.config.portfolio.symbols[
+    portfolio_manager_with_db.config.portfolio.symbols[
         "AAA"
     ].volatility_weight = _volatility_weight(
         target_vol=0.10, min_weight=0.25, max_weight=0.5
     )
-    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.0
-    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
-    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager_with_db.config.strategies.regime_rebalance.soft_band = 0.0
+    portfolio_manager_with_db.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager_with_db.config.strategies.regime_rebalance.efficiency_max = 1.0
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
     portfolio_positions = {
@@ -605,15 +605,24 @@ async def test_regime_rebalance_volatility_weight_scales_down_without_renormaliz
         "BBB": [_stock_position("BBB", 2)],
     }
 
-    _mock_regime_tickers(portfolio_manager, mocker)
-    _mock_regime_history(portfolio_manager, mocker, [100.0, 200.0, 100.0, 200.0])
-    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    _mock_regime_tickers(portfolio_manager_with_db, mocker)
+    _mock_regime_history(
+        portfolio_manager_with_db, mocker, [100.0, 200.0, 100.0, 200.0]
+    )
+    portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
+        return_value=[]
+    )
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
     assert orders == [("AAA", "NYSE", -1)]
+    payload = portfolio_manager_with_db.data_store.get_last_event_payload(
+        "volatility_weight_state"
+    )
+    assert payload["total_effective_weight"] == pytest.approx(0.75)
+    assert payload["unallocated_target_weight"] == pytest.approx(0.25)
 
 
 @pytest.mark.asyncio
@@ -650,6 +659,11 @@ async def test_regime_rebalance_volatility_weight_restores_only_to_base_weight(
 async def test_regime_rebalance_volatility_weight_can_scale_above_base(
     portfolio_manager_with_db, mocker
 ):
+    portfolio_manager_with_db.config.portfolio.symbols["BBB"].weight = 0.4
+    portfolio_manager_with_db.config.portfolio.symbols["SHV"] = SimpleNamespace(
+        weight=0.1,
+        primary_exchange="NYSE",
+    )
     portfolio_manager_with_db.config.portfolio.symbols[
         "AAA"
     ].volatility_weight = _volatility_weight(
@@ -662,9 +676,9 @@ async def test_regime_rebalance_volatility_weight_can_scale_above_base(
     portfolio_manager_with_db.config.strategies.regime_rebalance.choppiness_min = 0.0
     portfolio_manager_with_db.config.strategies.regime_rebalance.efficiency_max = 1.0
 
-    account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
+    account_summary = {"NetLiquidation": SimpleNamespace(value="500")}
     portfolio_positions = {
-        "AAA": [_stock_position("AAA", 2)],
+        "AAA": [_stock_position("AAA", 3)],
         "BBB": [_stock_position("BBB", 2)],
     }
 
@@ -685,6 +699,68 @@ async def test_regime_rebalance_volatility_weight_can_scale_above_base(
     )
     assert orders == []
     assert payload["symbols"]["AAA"]["effective_weight"] == pytest.approx(0.6)
+    assert payload["total_effective_weight"] == pytest.approx(1.0)
+    assert payload["unallocated_target_weight"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_rejects_effective_weights_above_100(
+    portfolio_manager, mocker
+):
+    portfolio_manager.config.portfolio.symbols[
+        "AAA"
+    ].volatility_weight = _volatility_weight(
+        target_vol=0.32,
+        min_weight=0.25,
+        max_weight=0.6,
+        smoothing_factor=1.0,
+    )
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 5)],
+        "BBB": [_stock_position("BBB", 5)],
+    }
+
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 101.0, 102.0, 103.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    with pytest.raises(ValueError, match="must not exceed 100%"):
+        await portfolio_manager.check_regime_rebalance_positions(
+            account_summary, portfolio_positions
+        )
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_managed_stocks_rejects_unallocated_weight(
+    portfolio_manager, mocker
+):
+    portfolio_manager.config.strategies.regime_rebalance.weight_base = (
+        RegimeRebalanceBaseEnum.managed_stocks
+    )
+    portfolio_manager.config.portfolio.symbols[
+        "AAA"
+    ].volatility_weight = _volatility_weight(
+        target_vol=0.10,
+        min_weight=0.25,
+        max_weight=0.5,
+    )
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 2)],
+        "BBB": [_stock_position("BBB", 2)],
+    }
+
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 200.0, 100.0, 200.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    with pytest.raises(ValueError, match="weight_base is managed_stocks"):
+        await portfolio_manager.check_regime_rebalance_positions(
+            account_summary, portfolio_positions
+        )
 
 
 @pytest.mark.asyncio
@@ -1800,7 +1876,7 @@ async def test_regime_rebalance_positive_flow_bypasses_regime_gate(
     payload = portfolio_manager_with_db.data_store.get_last_event_payload(
         "regime_rebalance_gate"
     )
-    assert payload["telemetry_schema_version"] == 2
+    assert payload["telemetry_schema_version"] == 3
     assert payload["legacy_field_aliases"] == {
         "excess_cash": "unallocated_rebalance_capacity"
     }
@@ -1836,6 +1912,9 @@ async def test_regime_rebalance_positive_flow_bypasses_regime_gate(
         "candidate_symbols": ["AAA", "BBB"],
         "net_share_gap": 4,
         "total_absolute_share_gap": 4,
+        "net_value_gap": 400.0,
+        "total_absolute_value_gap": 400.0,
+        "imbalance_unit": "dollars",
         "imbalance_ratio": 1.0,
         "imbalance_tau": 0.7,
         "directional_imbalance_ok": True,
@@ -1852,7 +1931,7 @@ async def test_regime_rebalance_positive_flow_bypasses_regime_gate(
     summary_payload = portfolio_manager_with_db.data_store.get_last_event_payload(
         "regime_rebalance_summary"
     )
-    assert summary_payload["telemetry_schema_version"] == 2
+    assert summary_payload["telemetry_schema_version"] == 3
     assert summary_payload["unallocated_rebalance_capacity"] == pytest.approx(400.0)
     assert summary_payload["flow"] == payload["flow"]
     assert summary_payload["deficit"] == payload["deficit"]
@@ -1907,16 +1986,23 @@ async def test_regime_rebalance_positive_flow_scales_to_available_capacity(
     portfolio_manager, mocker
 ):
     _configure_flow_rebalance(portfolio_manager)
-    portfolio_manager.config.portfolio.symbols["AAA"].weight = 0.6
-    portfolio_manager.config.portfolio.symbols["BBB"].weight = 0.6
+    regime_rebalance = portfolio_manager.config.strategies.regime_rebalance
+    regime_rebalance.soft_band = 1.2
+    regime_rebalance.hard_band = 1.5
+    regime_rebalance.flow_imbalance_tau = 0.6
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
-        "AAA": [_stock_position("AAA", 4)],
-        "BBB": [_stock_position("BBB", 4)],
+        "AAA": [_stock_position("AAA", 0)],
+        "BBB": [_stock_position("BBB", 12)],
     }
 
-    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_tickers(
+        portfolio_manager,
+        mocker,
+        aaa_price=100.0,
+        bbb_price=50.0,
+    )
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
@@ -1924,7 +2010,92 @@ async def test_regime_rebalance_positive_flow_scales_to_available_capacity(
         account_summary, portfolio_positions
     )
 
-    assert orders == [("AAA", "NYSE", 1), ("BBB", "NYSE", 1)]
+    assert orders == [("AAA", "NYSE", 4)]
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_directional_gate_uses_dollar_gaps(
+    portfolio_manager_with_db, mocker
+):
+    _configure_flow_rebalance(
+        portfolio_manager_with_db,
+        flow_trade_min=0.005,
+        flow_trade_stop=0.0,
+    )
+    regime_rebalance = portfolio_manager_with_db.config.strategies.regime_rebalance
+    regime_rebalance.soft_band = 2.0
+    regime_rebalance.hard_band = 3.0
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="10000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 55)],
+        "BBB": [_stock_position("BBB", 440)],
+    }
+
+    _mock_regime_tickers(
+        portfolio_manager_with_db,
+        mocker,
+        aaa_price=100.0,
+        bbb_price=10.0,
+    )
+    _mock_regime_history(
+        portfolio_manager_with_db, mocker, [100.0, 110.0, 100.0, 110.0]
+    )
+    portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
+        return_value=[]
+    )
+
+    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    assert orders == []
+    payload = portfolio_manager_with_db.data_store.get_last_event_payload(
+        "regime_rebalance_gate"
+    )
+    assert payload["flow"]["net_share_gap"] == 55
+    assert payload["flow"]["net_value_gap"] == pytest.approx(100.0)
+    assert payload["flow"]["total_absolute_value_gap"] == pytest.approx(1100.0)
+    assert payload["flow"]["imbalance_unit"] == "dollars"
+    assert payload["flow"]["imbalance_ratio"] == pytest.approx(1 / 11)
+    assert payload["flow"]["decision_status"] == "blocked_by_directional_imbalance"
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_negative_flow_sells_by_excess_value(
+    portfolio_manager, mocker
+):
+    _configure_flow_rebalance(
+        portfolio_manager,
+        flow_trade_min=0.05,
+        flow_trade_stop=0.025,
+    )
+    regime_rebalance = portfolio_manager.config.strategies.regime_rebalance
+    regime_rebalance.soft_band = 2.0
+    regime_rebalance.hard_band = 3.0
+    regime_rebalance.deficit_rail_start = 0.2
+    regime_rebalance.deficit_rail_stop = 0.1
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="10000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 55)],
+        "BBB": [_stock_position("BBB", 540)],
+    }
+
+    _mock_regime_tickers(
+        portfolio_manager,
+        mocker,
+        aaa_price=100.0,
+        bbb_price=10.0,
+    )
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    assert orders == [("AAA", "NYSE", -5), ("BBB", "NYSE", -40)]
 
 
 @pytest.mark.asyncio
@@ -2358,19 +2529,17 @@ async def test_regime_rebalance_cash_flow_reserves_actionable_rounding_remainder
     _configure_flow_rebalance(portfolio_manager)
     portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.90
     portfolio_manager.config.strategies.regime_rebalance.hard_band = 0.95
-    portfolio_manager.config.portfolio.symbols["AAA"].weight = 0.6
-    portfolio_manager.config.portfolio.symbols["BBB"].weight = 0.6
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
     portfolio_positions = {
-        "AAA": [_stock_position("AAA", 4)],
-        "BBB": [_stock_position("BBB", 2)],
+        "AAA": [_stock_position("AAA", 2)],
+        "BBB": [_stock_position("BBB", 4)],
     }
 
     _mock_regime_tickers(
         portfolio_manager,
         mocker,
-        aaa_price=100.0,
+        aaa_price=120.0,
         bbb_price=150.0,
     )
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
@@ -2380,8 +2549,8 @@ async def test_regime_rebalance_cash_flow_reserves_actionable_rounding_remainder
         account_summary, portfolio_positions
     )
 
-    assert orders == [("AAA", "NYSE", 1), ("BBB", "NYSE", 1)]
-    assert portfolio_manager.get_reserved_cash_for_post_management() == 50.0
+    assert orders == [("AAA", "NYSE", 1)]
+    assert portfolio_manager.get_reserved_cash_for_post_management() == 40.0
 
 
 @pytest.mark.asyncio
@@ -2552,6 +2721,40 @@ async def test_regime_rebalance_deficit_rail_sells_pro_rata(portfolio_manager, m
     )
 
     assert orders == [("AAA", "NYSE", -1), ("BBB", "NYSE", -1)]
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_deficit_rail_sells_by_overweight_value(
+    portfolio_manager, mocker
+):
+    regime_rebalance = portfolio_manager.config.strategies.regime_rebalance
+    regime_rebalance.soft_band = 2.0
+    regime_rebalance.hard_band = 3.0
+    regime_rebalance.choppiness_min = 0.0
+    regime_rebalance.efficiency_max = 1.0
+    regime_rebalance.deficit_rail_start = 0.10
+    regime_rebalance.deficit_rail_stop = 0.03
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="10000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 61)],
+        "BBB": [_stock_position("BBB", 601)],
+    }
+
+    _mock_regime_tickers(
+        portfolio_manager,
+        mocker,
+        aaa_price=100.0,
+        bbb_price=10.0,
+    )
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    assert orders == [("AAA", "NYSE", -10), ("BBB", "NYSE", -81)]
 
 
 @pytest.mark.asyncio

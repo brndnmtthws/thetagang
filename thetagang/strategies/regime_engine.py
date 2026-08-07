@@ -994,6 +994,34 @@ class RegimeRebalanceEngine:
             raise ValueError(
                 "Regime-aware rebalancing requires positive effective weights."
             )
+        if total_effective_weight > 1.0 + regime_rebalance.eps:
+            log.error(
+                "Regime-aware rebalancing effective weights exceed 100%: "
+                f"{pfmt(total_effective_weight)}."
+            )
+            raise ValueError(
+                "Regime-aware rebalancing effective weights must not exceed 100%."
+            )
+        if weight_base == RegimeRebalanceBaseEnum.managed_stocks and not math.isclose(
+            total_effective_weight,
+            1.0,
+            rel_tol=0.0,
+            abs_tol=regime_rebalance.eps,
+        ):
+            log.error(
+                "Regime-aware rebalancing managed_stocks weights must sum to 100%."
+            )
+            raise ValueError(
+                "Regime-aware rebalancing requires effective weights to sum to "
+                "100% when weight_base is managed_stocks."
+            )
+        unallocated_target_weight = max(0.0, 1.0 - total_effective_weight)
+        if unallocated_target_weight > regime_rebalance.eps:
+            log.notice(
+                "Regime-aware rebalancing leaving "
+                f"{pfmt(unallocated_target_weight)} outside managed targets for "
+                "cash reserves."
+            )
         normalized_effective_weights = {
             symbol: weight / total_effective_weight
             for symbol, weight in effective_weights.items()
@@ -1170,26 +1198,34 @@ class RegimeRebalanceEngine:
         flow_total_absolute_share_gap = sum(
             abs(share_gaps[symbol]) for symbol in flow_candidate_symbols
         )
+        flow_value_gaps = {
+            symbol: share_gaps[symbol] * market_prices[symbol]
+            for symbol in flow_candidate_symbols
+        }
+        flow_net_value_gap = sum(flow_value_gaps.values())
+        flow_total_absolute_value_gap = sum(
+            abs(value) for value in flow_value_gaps.values()
+        )
         flow_imbalance_ratio = (
-            flow_net_share_gap / flow_total_absolute_share_gap
-            if flow_total_absolute_share_gap > 0
+            flow_net_value_gap / flow_total_absolute_value_gap
+            if flow_total_absolute_value_gap > 0
             else None
         )
 
         def directional_flow_is_allowed(amount: float) -> bool:
-            if flow_total_absolute_share_gap <= 0:
+            if flow_total_absolute_value_gap <= 0:
                 return False
             if amount > 0:
                 return (
-                    flow_net_share_gap
+                    flow_net_value_gap
                     > regime_rebalance.flow_imbalance_tau
-                    * flow_total_absolute_share_gap
+                    * flow_total_absolute_value_gap
                 )
             if amount < 0:
                 return (
-                    flow_net_share_gap
+                    flow_net_value_gap
                     < -regime_rebalance.flow_imbalance_tau
-                    * flow_total_absolute_share_gap
+                    * flow_total_absolute_value_gap
                 )
             return False
 
@@ -1206,7 +1242,7 @@ class RegimeRebalanceEngine:
                 return {}
             if not flow_candidate_symbols:
                 return {}
-            if flow_total_absolute_share_gap <= 0:
+            if flow_total_absolute_value_gap <= 0:
                 return {}
             if not directional_flow_is_allowed(amount):
                 return {}
@@ -1235,16 +1271,16 @@ class RegimeRebalanceEngine:
                         orders[symbol] = buy_shares
             else:
                 need = -amount
-                excesses = {
-                    symbol: max(-share_gaps[symbol], 0)
+                excess_values = {
+                    symbol: max(-flow_value_gaps[symbol], 0.0)
                     for symbol in flow_candidate_symbols
                 }
-                total_excess = sum(excesses.values())
-                if total_excess <= 0:
+                total_excess_value = sum(excess_values.values())
+                if total_excess_value <= 0:
                     return {}
                 for symbol in flow_candidate_symbols:
-                    excess = excesses[symbol]
-                    if excess <= 0:
+                    excess_value = excess_values[symbol]
+                    if excess_value <= 0:
                         continue
                     if not self.config.trading_is_allowed(symbol):
                         continue
@@ -1255,7 +1291,7 @@ class RegimeRebalanceEngine:
                     )
                     if max_sell <= 0:
                         continue
-                    alloc = need * (excess / total_excess)
+                    alloc = need * (excess_value / total_excess_value)
                     sell_shares = min(
                         math.ceil(alloc / market_prices[symbol]), max_sell
                     )
@@ -1281,18 +1317,21 @@ class RegimeRebalanceEngine:
                 and symbol in allowed_symbols
             ]
             if overweight_symbols:
-                overages = {
-                    symbol: max(
-                        shares_state[symbol]
-                        - (target_shares[symbol] + share_tolerance),
-                        0,
+                overage_values = {
+                    symbol: (
+                        max(
+                            shares_state[symbol]
+                            - (target_shares[symbol] + share_tolerance),
+                            0,
+                        )
+                        * market_prices[symbol]
                     )
                     for symbol in overweight_symbols
                 }
-                total_over = sum(overages.values())
+                total_overage_value = sum(overage_values.values())
                 for symbol in overweight_symbols:
-                    over = overages[symbol]
-                    if over <= 0:
+                    overage_value = overage_values[symbol]
+                    if overage_value <= 0:
                         continue
                     max_sell = max(
                         shares_state[symbol]
@@ -1302,8 +1341,8 @@ class RegimeRebalanceEngine:
                     if max_sell <= 0:
                         continue
                     alloc = (
-                        initial_amount * (over / total_over)
-                        if total_over > 0
+                        initial_amount * (overage_value / total_overage_value)
+                        if total_overage_value > 0
                         else amount
                     )
                     alloc = min(alloc, amount)
@@ -1715,6 +1754,9 @@ class RegimeRebalanceEngine:
             "candidate_symbols": flow_candidate_symbols,
             "net_share_gap": flow_net_share_gap,
             "total_absolute_share_gap": flow_total_absolute_share_gap,
+            "net_value_gap": flow_net_value_gap,
+            "total_absolute_value_gap": flow_total_absolute_value_gap,
+            "imbalance_unit": "dollars",
             "imbalance_ratio": flow_imbalance_ratio,
             "imbalance_tau": regime_rebalance.flow_imbalance_tau,
             "directional_imbalance_ok": flow_directional_imbalance_ok,
@@ -1763,8 +1805,8 @@ class RegimeRebalanceEngine:
             f"({dfmt(flow_trade_min_amount)}) "
             f"stop={pfmt(regime_rebalance.flow_trade_stop)}"
             f"({dfmt(flow_trade_stop_amount)}) "
-            f"net_share_gap={ifmt(flow_net_share_gap)} "
-            f"total_abs_share_gap={ifmt(flow_total_absolute_share_gap)} "
+            f"net_value_gap={dfmt(flow_net_value_gap)} "
+            f"total_abs_value_gap={dfmt(flow_total_absolute_value_gap)} "
             f"imbalance_ratio={_ffmt_or_dash(flow_imbalance_ratio)} "
             f"imbalance_tau={ffmt(regime_rebalance.flow_imbalance_tau)} "
             f"directional_ok={flow_directional_imbalance_ok}"
@@ -1789,11 +1831,13 @@ class RegimeRebalanceEngine:
             self.data_store.record_event(
                 "regime_rebalance_gate",
                 {
-                    "telemetry_schema_version": 2,
+                    "telemetry_schema_version": 3,
                     "legacy_field_aliases": {
                         "excess_cash": "unallocated_rebalance_capacity"
                     },
                     "symbols": symbols,
+                    "total_effective_weight": total_effective_weight,
+                    "unallocated_target_weight": unallocated_target_weight,
                     "max_relative_drift": max_relative_drift,
                     "soft_band": regime_rebalance.soft_band,
                     "hard_band": regime_rebalance.hard_band,
@@ -1825,12 +1869,14 @@ class RegimeRebalanceEngine:
             self.data_store.record_event(
                 "regime_rebalance_summary",
                 {
-                    "telemetry_schema_version": 2,
+                    "telemetry_schema_version": 3,
                     "legacy_field_aliases": {
                         "excess_cash": "unallocated_rebalance_capacity"
                     },
                     "symbols": symbols,
                     "total_value": total_value,
+                    "total_effective_weight": total_effective_weight,
+                    "unallocated_target_weight": unallocated_target_weight,
                     "hard_breach": hard_breach,
                     "soft_breach": soft_breach,
                     "regime_ok": regime_ok,
@@ -1861,6 +1907,8 @@ class RegimeRebalanceEngine:
                 self.data_store.record_event(
                     "volatility_weight_state",
                     {
+                        "total_effective_weight": total_effective_weight,
+                        "unallocated_target_weight": unallocated_target_weight,
                         "symbols": {
                             symbol: {
                                 "base_weight": details["base_weight"],
@@ -1870,7 +1918,7 @@ class RegimeRebalanceEngine:
                                 "smoothing_factor": details["smoothing_factor"],
                             }
                             for symbol, details in volatility_details.items()
-                        }
+                        },
                     },
                 )
 
