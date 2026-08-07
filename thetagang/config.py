@@ -5,6 +5,7 @@ from collections import defaultdict
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
+from ib_async import Ticker, util as ib_util
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rich import box
 from rich.console import Console, Group
@@ -32,6 +33,10 @@ from thetagang.config_models import (
     WriteWhenConfig,
 )
 from thetagang.fmt import dfmt, ffmt, pfmt
+
+# Floor applied to limit prices derived from a configured price strategy, so an
+# adjustment can never push the price to zero or negative.
+MINIMUM_PRICE = 0.01
 
 STAGE_KIND_BY_ID: dict[str, str] = {
     "options_write_puts": "options.write_puts",
@@ -558,6 +563,56 @@ class Config(BaseModel, DisplayMixin):
     def symbol_config(self, symbol: str) -> Optional[SymbolConfig]:
         return self.symbols.get(symbol)
 
+    def get_order_limit_price(
+        self, symbol: str, ticker: Ticker, action: str, fallback_price: float
+    ) -> float:
+        """Resolve an option order's limit price from the configured strategy.
+
+        The price strategy is resolved per symbol first, then falls back to the
+        global ``[runtime.orders]`` default. When neither is configured, or the
+        chosen price (bid/ask/last/midpoint) is unavailable, ``fallback_price``
+        is returned unchanged so the default pricing behavior is preserved.
+
+        ``action`` is the ib_async order action string ("BUY" or "SELL").
+        """
+        b_or_s = "sell" if action.upper() == "SELL" else "buy"
+
+        symbol_config = self.symbols.get(symbol)
+        price_base = (
+            getattr(symbol_config, f"{b_or_s}_price", None) if symbol_config else None
+        )
+        if price_base is None:
+            price_base = getattr(self.orders, f"{b_or_s}_price", None)
+        if price_base is None:
+            # No strategy configured: keep the caller's existing pricing.
+            return fallback_price
+
+        price_adjustment = (
+            getattr(symbol_config, f"{b_or_s}_price_adjustment", None)
+            if symbol_config
+            else None
+        )
+        if price_adjustment is None:
+            price_adjustment = getattr(self.orders, f"{b_or_s}_price_adjustment", 0.0)
+
+        if price_base == "midpoint":
+            price = ticker.midpoint()
+        elif price_base == "latest":
+            price = ticker.last
+            if ib_util.isNan(price):
+                price = ticker.midpoint()
+        elif price_base == "bid":
+            price = ticker.bid
+        elif price_base == "ask":
+            price = ticker.ask
+        else:  # pragma: no cover - guarded by the Literal type
+            return fallback_price
+
+        if ib_util.isNan(price) or price < 0:
+            return fallback_price
+
+        return max(MINIMUM_PRICE, price + price_adjustment)
+
     def get_target_delta(self, symbol: str, right: str) -> float:
         p_or_c = "calls" if right.upper().startswith("C") else "puts"
         symbol_config = self.symbols.get(symbol)
@@ -646,6 +701,7 @@ class Config(BaseModel, DisplayMixin):
         table.add_column("Put delta", justify="right")
         table.add_column("Put strike limit", justify="right")
         table.add_column("Put threshold", justify="right")
+        table.add_column("Sell/Buy price", justify="right")
 
         for symbol, sconfig in self.symbols.items():
             call_thresh = (
@@ -671,6 +727,10 @@ class Config(BaseModel, DisplayMixin):
                 ffmt(self.get_target_delta(symbol, "P")),
                 dfmt(sconfig.puts.strike_limit if sconfig.puts else None),
                 put_thresh,
+                "{}/{}".format(
+                    sconfig.sell_price or self.orders.sell_price or "default",
+                    sconfig.buy_price or self.orders.buy_price or "default",
+                ),
             )
         return table
 

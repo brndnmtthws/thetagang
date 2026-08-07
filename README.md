@@ -296,6 +296,34 @@ Automatically adjust limit orders after initial delay:
 adjust_price_after_delay = true  # Adjusts to midpoint after delay
 ```
 
+#### Price Strategy
+By default, option order limit prices are derived from the midpoint/model
+price, which fills reliably. For less-liquid options you can instead quote off
+the bid/ask (or last) to capture more of the spread, at the cost of slower or
+missed fills. Configure a global default under `[runtime.orders]`:
+
+```toml
+[runtime.orders]
+sell_price = "ask"            # "midpoint" (default behavior), "latest", "bid", or "ask"
+buy_price = "bid"
+sell_price_adjustment = 0.0   # added to the chosen price; use negative to shave a cent
+buy_price_adjustment = 0.0
+```
+
+…and override it per symbol:
+
+```toml
+[portfolio.symbols.SPY]
+sell_price = "midpoint"       # keep tight, liquid names at the midpoint
+[portfolio.symbols.ABC]
+sell_price = "ask"            # quote illiquid names at the ask
+buy_price = "bid"
+```
+
+When `sell_price`/`buy_price` are unset (the default), pricing is unchanged. If
+the chosen bid/ask/last is unavailable, ThetaGang falls back to the midpoint/
+model price automatically.
+
 #### Algorithm Configuration
 Customize order execution algorithms:
 
