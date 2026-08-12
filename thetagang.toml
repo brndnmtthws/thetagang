@@ -761,6 +761,35 @@ ignore_dte = 0
   weight      = 0.00
 
 
+# Opportunistic long-put vertical spread for a regime-rebalanced risk sleeve.
+# Add "tail_hedge" to run.strategies when enabling this section. V1 manages at
+# most one +1/-1 put spread and submits it as a single midpoint limit order. It
+# buys back the short after the configured profit. At exit_dte, it may keep an
+# otherwise unsaleable residual long while seeking the next spread, but it keeps
+# at most one such lottery ticket and tries to close it before expiration. It will
+# leave the account unhedged when VIX, liquidity, pricing, or budget reject entry.
+# SQLite storage must be enabled so the strategy can identify its own legs and
+# retain the decisions, quotes, order lifecycle, fills, and position snapshots.
+#
+# [strategies.tail_hedge]
+# enabled = true
+# symbol = "QQQ"
+# annual_budget = 0.005  # net spread entry debits over 365 days / protected value
+# entry_vix_max = 20.0
+# target_dte = 150
+# min_dte = 120
+# max_dte = 180
+# exit_dte = 30
+# long_strike_ratio = 0.60
+# short_strike_ratio = 0.40
+# minimum_open_interest = 50
+# minimum_bid = 0.01
+# max_bid_ask_ratio = 0.50  # per-leg quoted width / midpoint
+# max_debit_ratio = 0.15  # spread debit / maximum intrinsic payoff
+# short_close_profit = 0.50  # retain the long after buying back the short
+# short_exit_min_spot_ratio = 1.35  # also exit short when spot / short strike <= this
+
+
 [strategies.cash_management]
 # Cash management gives us a way to earn a little extra yield from excess cash
 # sitting in your account. When the cash balance exceeds a threshold, we buy

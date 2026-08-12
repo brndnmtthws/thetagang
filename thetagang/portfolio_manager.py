@@ -190,6 +190,7 @@ class PortfolioManager:
             option_scanner=self.option_scanner,
             orders=self.orders,
             qualified_contracts=self.qualified_contracts,
+            data_store=self.data_store,
             get_reserved_cash_for_post_management=(
                 self.get_reserved_cash_for_post_management
             ),
@@ -682,7 +683,11 @@ class PortfolioManager:
 
             write_stage_ids = {"options_write_puts", "options_write_calls"}
             management_stage_ids = {"options_roll_positions", "options_close_positions"}
-            post_stage_ids = {"post_vix_call_hedge", "post_cash_management"}
+            post_stage_ids = {
+                "post_vix_call_hedge",
+                "post_tail_hedge",
+                "post_cash_management",
+            }
             option_stage_ids = write_stage_ids | management_stage_ids
             refresh_before_stage_ids = management_stage_ids | post_stage_ids
             pre_management_trade_stage_ids = {

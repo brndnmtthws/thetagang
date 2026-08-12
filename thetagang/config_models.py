@@ -289,6 +289,67 @@ class VIXCallHedgeConfig(BaseModel, DisplayMixin):
                     )
 
 
+class TailHedgeConfig(BaseModel, DisplayMixin):
+    enabled: bool = Field(default=False)
+    symbol: str = Field(default="")
+    annual_budget: float = Field(default=0.005, gt=0.0, le=1.0)
+    entry_vix_max: float = Field(default=20.0, ge=0.0)
+    target_dte: int = Field(default=150, gt=0)
+    min_dte: int = Field(default=120, gt=0)
+    max_dte: int = Field(default=180, gt=0)
+    exit_dte: int = Field(default=30, ge=0)
+    long_strike_ratio: float = Field(default=0.60, gt=0.0, lt=1.0)
+    short_strike_ratio: float = Field(default=0.40, gt=0.0, lt=1.0)
+    minimum_open_interest: int = Field(default=50, ge=0)
+    minimum_bid: float = Field(default=0.01, gt=0.0)
+    max_bid_ask_ratio: float = Field(default=0.50, ge=0.0)
+    max_debit_ratio: float = Field(default=0.15, gt=0.0, le=1.0)
+    short_close_profit: float = Field(default=0.50, gt=0.0, lt=1.0)
+    short_exit_min_spot_ratio: float = Field(default=1.35, gt=1.0)
+
+    @model_validator(mode="after")
+    def validate_spread(self) -> Self:
+        if not self.min_dte <= self.target_dte <= self.max_dte:
+            raise ValueError(
+                "tail_hedge.target_dte must be between min_dte and max_dte"
+            )
+        if self.exit_dte >= self.min_dte:
+            raise ValueError("tail_hedge.exit_dte must be less than min_dte")
+        if self.short_strike_ratio >= self.long_strike_ratio:
+            raise ValueError(
+                "tail_hedge.short_strike_ratio must be less than long_strike_ratio"
+            )
+        return self
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_section()
+        table.add_row("[spring_green1]Tail hedge put spread")
+        table.add_row("", "Enabled", "=", f"{self.enabled}")
+        table.add_row("", "Protected symbol", "=", self.symbol or "-")
+        table.add_row("", "Annual premium budget", "=", pfmt(self.annual_budget))
+        table.add_row("", "Entry VIX maximum", "=", f"{ffmt(self.entry_vix_max)}")
+        table.add_row("", "Target DTE", "=", f"{self.target_dte}")
+        table.add_row("", "DTE range", "=", f"{self.min_dte}-{self.max_dte}")
+        table.add_row("", "Exit DTE", "=", f"{self.exit_dte}")
+        table.add_row(
+            "",
+            "Long/short strike ratios",
+            "=",
+            f"{pfmt(self.long_strike_ratio)} / {pfmt(self.short_strike_ratio)}",
+        )
+        table.add_row("", "Minimum open interest", "=", f"{self.minimum_open_interest}")
+        table.add_row("", "Minimum quoted bid", "=", f"{dfmt(self.minimum_bid)}")
+        table.add_row("", "Maximum bid/ask ratio", "=", pfmt(self.max_bid_ask_ratio))
+        table.add_row("", "Maximum debit/payoff ratio", "=", pfmt(self.max_debit_ratio))
+        table.add_row("", "Short-leg close profit", "=", pfmt(self.short_close_profit))
+        table.add_row(
+            "",
+            "Short-leg minimum spot/strike",
+            "=",
+            f"{ffmt(self.short_exit_min_spot_ratio)}",
+        )
+
+
 class WriteWhenConfig(BaseModel, DisplayMixin):
     class Puts(BaseModel):
         green: bool = Field(default=False)

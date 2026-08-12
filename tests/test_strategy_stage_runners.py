@@ -208,7 +208,11 @@ async def test_run_equity_rebalance_stages_buy_and_sell_paths(mocker):
 
 @pytest.mark.asyncio
 async def test_run_post_stages_respects_enabled_stage_flags():
-    service = SimpleNamespace(do_vix_hedging=AsyncMock(), do_cashman=AsyncMock())
+    service = SimpleNamespace(
+        do_vix_hedging=AsyncMock(),
+        do_tail_hedging=AsyncMock(),
+        do_cashman=AsyncMock(),
+    )
     deps = PostStrategyDeps(
         enabled_stages={"post_cash_management"},
         service=cast(PostStageService, service),
@@ -217,4 +221,22 @@ async def test_run_post_stages_respects_enabled_stage_flags():
     await run_post_stages(deps, {}, {})
 
     service.do_vix_hedging.assert_not_called()
+    service.do_tail_hedging.assert_not_called()
     service.do_cashman.assert_awaited_once_with({}, {})
+
+
+@pytest.mark.asyncio
+async def test_run_post_stages_runs_tail_hedge_stage():
+    service = SimpleNamespace(
+        do_vix_hedging=AsyncMock(),
+        do_tail_hedging=AsyncMock(),
+        do_cashman=AsyncMock(),
+    )
+    deps = PostStrategyDeps(
+        enabled_stages={"post_tail_hedge"},
+        service=cast(PostStageService, service),
+    )
+
+    await run_post_stages(deps, {}, {})
+
+    service.do_tail_hedging.assert_awaited_once_with({}, {})

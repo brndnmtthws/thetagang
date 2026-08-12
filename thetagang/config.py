@@ -26,6 +26,7 @@ from thetagang.config_models import (
     RegimeRebalanceConfig,
     RollWhenConfig,
     SymbolConfig,
+    TailHedgeConfig,
     TargetConfig,
     VIXCallHedgeConfig,
     WatchdogConfig,
@@ -42,6 +43,7 @@ STAGE_KIND_BY_ID: dict[str, str] = {
     "options_roll_positions": "options.roll_positions",
     "options_close_positions": "options.close_positions",
     "post_vix_call_hedge": "post.vix_call_hedge",
+    "post_tail_hedge": "post.tail_hedge",
     "post_cash_management": "post.cash_management",
 }
 
@@ -54,6 +56,7 @@ CANONICAL_STAGE_ORDER: list[str] = [
     "options_roll_positions",
     "options_close_positions",
     "post_vix_call_hedge",
+    "post_tail_hedge",
     "post_cash_management",
 ]
 
@@ -68,6 +71,7 @@ RUN_STRATEGY_IDS = {
     "wheel",
     "regime_rebalance",
     "vix_call_hedge",
+    "tail_hedge",
     "cash_management",
 }
 
@@ -82,6 +86,7 @@ STRATEGY_STAGE_IDS: dict[str, set[str]] = {
     },
     "regime_rebalance": {"equity_regime_rebalance"},
     "vix_call_hedge": {"post_vix_call_hedge"},
+    "tail_hedge": {"post_tail_hedge"},
     "cash_management": {"post_cash_management"},
 }
 
@@ -403,6 +408,7 @@ class StrategiesConfig(BaseModel):
         default_factory=RegimeRebalanceStrategyConfig
     )
     vix_call_hedge: VIXCallHedgeConfig = Field(default_factory=VIXCallHedgeConfig)
+    tail_hedge: TailHedgeConfig = Field(default_factory=TailHedgeConfig)
     cash_management: CashManagementConfig = Field(default_factory=CashManagementConfig)
 
 
@@ -452,6 +458,21 @@ class Config(BaseModel, DisplayMixin):
             WHEEL_SYMBOL_OVERRIDE_KEYS,
         )
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_tail_hedge(self) -> "Config":
+        tail_hedge = self.strategies.tail_hedge
+        if not tail_hedge.enabled:
+            return self
+        if not tail_hedge.symbol:
+            raise ValueError("tail_hedge.symbol must be set when enabled")
+        if tail_hedge.symbol not in self.portfolio.symbols:
+            raise ValueError("tail_hedge.symbol must be in portfolio.symbols")
+        if not self.runtime.database.enabled:
+            raise ValueError("tail_hedge requires runtime.database.enabled = true")
+        if self.strategies.regime_rebalance.shares_only:
+            raise ValueError("tail_hedge cannot be enabled when shares_only is true")
         return self
 
     @property
@@ -513,6 +534,10 @@ class Config(BaseModel, DisplayMixin):
     @property
     def vix_call_hedge(self) -> VIXCallHedgeConfig:
         return self.strategies.vix_call_hedge
+
+    @property
+    def tail_hedge(self) -> TailHedgeConfig:
+        return self.strategies.tail_hedge
 
     @property
     def regime_rebalance(self) -> RegimeRebalanceStrategyConfig:
@@ -743,6 +768,7 @@ class Config(BaseModel, DisplayMixin):
         self.target.add_to_table(config_table)
         self.cash_management.add_to_table(config_table)
         self.vix_call_hedge.add_to_table(config_table)
+        self.tail_hedge.add_to_table(config_table)
         self.regime_rebalance.add_to_table(config_table)
 
         tree = Tree(":control_knobs:")

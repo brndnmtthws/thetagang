@@ -37,6 +37,55 @@ def test_stage_enabled_map_reflects_compiled_strategy_flags() -> None:
     assert flags["post_vix_call_hedge"] is False
 
 
+def test_tail_hedge_strategy_compiles_to_its_post_stage() -> None:
+    data = _base_config({"strategies": ["regime_rebalance", "tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "symbol": "AAA",
+    }
+
+    config = Config(**data)
+
+    flags = stage_enabled_map(config)
+    assert flags["equity_regime_rebalance"] is True
+    assert flags["post_tail_hedge"] is True
+
+
+def test_enabled_tail_hedge_requires_sqlite_state() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["runtime"]["database"] = {"enabled": False}
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "symbol": "AAA",
+    }
+
+    with pytest.raises(ValueError, match="requires runtime.database.enabled"):
+        Config(**data)
+
+
+def test_enabled_tail_hedge_requires_a_managed_symbol() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "symbol": "ZZZ",
+    }
+
+    with pytest.raises(ValueError, match="symbol must be in portfolio.symbols"):
+        Config(**data)
+
+
+def test_tail_hedge_rejects_shares_only_regime_mode() -> None:
+    data = _base_config({"strategies": ["regime_rebalance", "tail_hedge"]})
+    data["strategies"]["regime_rebalance"] = {"shares_only": True}
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "symbol": "AAA",
+    }
+
+    with pytest.raises(ValueError, match="cannot be enabled when shares_only is true"):
+        Config(**data)
+
+
 def test_run_config_rejects_unknown_strategy_id() -> None:
     with pytest.raises(ValueError, match="unknown strategy id"):
         Config(**_base_config({"strategies": ["wheel", "not-a-real-strategy"]}))

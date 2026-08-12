@@ -8,6 +8,7 @@ from ib_async.contract import Contract, Index, Option, Stock
 
 from thetagang import log
 from thetagang.config import Config
+from thetagang.db import DataStore
 from thetagang.fmt import dfmt
 from thetagang.ibkr import IBKR
 from thetagang.orders import Orders
@@ -17,6 +18,8 @@ from thetagang.trading_operations import (
     OrderOperations,
 )
 from thetagang.util import get_lower_price, net_option_positions
+
+from .tail_hedge_engine import TailHedgeEngine
 
 
 class PostStrategyEngine:
@@ -29,6 +32,7 @@ class PostStrategyEngine:
         option_scanner: OptionChainScanner,
         orders: Orders,
         qualified_contracts: Dict[int, Contract],
+        data_store: Optional[DataStore] = None,
         get_reserved_cash_for_post_management: Callable[[], float] | None = None,
     ) -> None:
         self.config = config
@@ -39,6 +43,13 @@ class PostStrategyEngine:
         self.qualified_contracts = qualified_contracts
         self._get_reserved_cash_for_post_management = (
             get_reserved_cash_for_post_management
+        )
+        self.tail_hedge_engine = TailHedgeEngine(
+            config=config,
+            ibkr=ibkr,
+            order_ops=order_ops,
+            data_store=data_store,
+            qualified_contracts=qualified_contracts,
         )
 
     def reserved_cash_for_post_management(self) -> float:
@@ -192,6 +203,14 @@ class PostStrategyEngine:
             self.order_ops.enqueue_order(buy_ticker.contract, order)
         except (RuntimeError, NoValidContractsError):
             log.error("VIX: Error occurred when VIX call hedging. Continuing anyway...")
+
+    async def do_tail_hedging(
+        self,
+        account_summary: Dict[str, AccountValue],
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+    ) -> None:
+        del account_summary
+        await self.tail_hedge_engine.manage(portfolio_positions)
 
     async def do_cashman(
         self,

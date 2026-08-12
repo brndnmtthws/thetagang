@@ -20,6 +20,10 @@ class PostStageService(Protocol):
         self, account_summary: AccountSummary, portfolio_positions: PortfolioBySymbol
     ) -> None: ...
 
+    async def do_tail_hedging(
+        self, account_summary: AccountSummary, portfolio_positions: PortfolioBySymbol
+    ) -> None: ...
+
     async def do_cashman(
         self, account_summary: AccountSummary, portfolio_positions: PortfolioBySymbol
     ) -> None: ...
@@ -32,6 +36,9 @@ async def run_post_stages(
 ) -> None:
     if "post_vix_call_hedge" in deps.enabled_stages:
         await deps.service.do_vix_hedging(account_summary, portfolio_positions)
+
+    if "post_tail_hedge" in deps.enabled_stages:
+        await deps.service.do_tail_hedging(account_summary, portfolio_positions)
 
     if "post_cash_management" in deps.enabled_stages:
         await deps.service.do_cashman(account_summary, portfolio_positions)

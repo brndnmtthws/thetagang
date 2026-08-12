@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -293,3 +293,118 @@ def test_get_last_event_payload_ignores_dry_run(tmp_path) -> None:
     payload = live_store.get_last_event_payload("regime_rebalance_state")
 
     assert payload == {"flow_active": False}
+
+
+def test_get_filled_combo_debit_uses_latest_cumulative_fill(tmp_path) -> None:
+    db_path = tmp_path / "state.db"
+    data_store = DataStore(
+        f"sqlite:///{db_path}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=False,
+        config_text="test",
+    )
+
+    def record_filled_combo(symbol: str, order_id: int, fill_price: float) -> None:
+        contract = SimpleNamespace(
+            symbol=symbol,
+            secType="BAG",
+            conId=0,
+            exchange="SMART",
+            currency="USD",
+        )
+        order = SimpleNamespace(
+            action="BUY",
+            totalQuantity=1,
+            lmtPrice=fill_price,
+            orderType="LMT",
+            orderRef="tg:tail-hedge:entry",
+            orderId=order_id,
+        )
+        data_store.record_order(contract, order)
+        for status, filled, avg_fill_price in (
+            ("Submitted", 0.0, 0.0),
+            ("Filled", 1.0, fill_price),
+        ):
+            data_store.record_order_status(
+                SimpleNamespace(
+                    order=order,
+                    orderStatus=SimpleNamespace(
+                        status=status,
+                        filled=filled,
+                        remaining=1.0 - filled,
+                        avgFillPrice=avg_fill_price,
+                        lastFillPrice=avg_fill_price,
+                    ),
+                )
+            )
+
+    record_filled_combo("TQQQ", 17, 0.65)
+    record_filled_combo("QQQ", 18, 1.25)
+
+    debit = data_store.get_filled_combo_debit(
+        "tg:tail-hedge:entry",
+        datetime.now() - timedelta(days=1),
+        symbol="TQQQ",
+    )
+
+    assert debit == 65.0
+
+
+def test_get_filled_combo_debit_recovers_fill_observed_after_restart(tmp_path) -> None:
+    db_path = tmp_path / "state.db"
+    config_path = str(tmp_path / "thetagang.toml")
+    first_run = DataStore(
+        f"sqlite:///{db_path}",
+        config_path,
+        dry_run=False,
+        config_text="test",
+    )
+    contract = SimpleNamespace(
+        symbol="QQQ",
+        secType="BAG",
+        conId=0,
+        exchange="SMART",
+        currency="USD",
+    )
+    order = SimpleNamespace(
+        action="BUY",
+        totalQuantity=1,
+        lmtPrice=0.70,
+        orderType="LMT",
+        orderRef="tg:tail-hedge:entry",
+        orderId=17,
+    )
+    first_run.record_order(contract, order)
+
+    next_run = DataStore(
+        f"sqlite:///{db_path}",
+        config_path,
+        dry_run=False,
+        config_text="test",
+    )
+    next_run.record_executions(
+        [
+            SimpleNamespace(
+                execution=SimpleNamespace(
+                    execId="late-fill-17",
+                    orderId=17,
+                    orderRef="tg:tail-hedge:entry",
+                    side="BOT",
+                    shares=1,
+                    price=0.68,
+                    exchange="SMART",
+                    time=datetime.now(),
+                ),
+                contract=contract,
+                time=datetime.now(),
+            )
+        ]
+    )
+
+    debit = next_run.get_filled_combo_debit(
+        "tg:tail-hedge:entry",
+        datetime.now() - timedelta(days=1),
+        symbol="QQQ",
+    )
+
+    assert debit == 70.0

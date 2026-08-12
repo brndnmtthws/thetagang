@@ -413,14 +413,17 @@ class IBKR:
             if condition(ticker):
                 event.set()
 
-        ticker.updateEvent += onTicker
+        update_event = ticker.updateEvent
+        if update_event is None:
+            raise RuntimeError("Ticker update event is unavailable")
+        update_event += onTicker
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
             return True
         except asyncio.TimeoutError:
             return False
         finally:
-            ticker.updateEvent -= onTicker
+            update_event -= onTicker
 
     async def wait_for_submitting_orders(
         self, trades: List[Trade], timetout: int = 60
