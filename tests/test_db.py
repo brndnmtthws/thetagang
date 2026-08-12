@@ -304,7 +304,12 @@ def test_get_filled_combo_debit_uses_latest_cumulative_fill(tmp_path) -> None:
         config_text="test",
     )
 
-    def record_filled_combo(symbol: str, order_id: int, fill_price: float) -> None:
+    def record_filled_combo(
+        symbol: str,
+        order_id: int,
+        fill_price: float,
+        quantity: int,
+    ) -> None:
         contract = SimpleNamespace(
             symbol=symbol,
             secType="BAG",
@@ -314,7 +319,7 @@ def test_get_filled_combo_debit_uses_latest_cumulative_fill(tmp_path) -> None:
         )
         order = SimpleNamespace(
             action="BUY",
-            totalQuantity=1,
+            totalQuantity=quantity,
             lmtPrice=fill_price,
             orderType="LMT",
             orderRef="tg:tail-hedge:entry",
@@ -323,7 +328,7 @@ def test_get_filled_combo_debit_uses_latest_cumulative_fill(tmp_path) -> None:
         data_store.record_order(contract, order)
         for status, filled, avg_fill_price in (
             ("Submitted", 0.0, 0.0),
-            ("Filled", 1.0, fill_price),
+            ("Filled", float(quantity), fill_price),
         ):
             data_store.record_order_status(
                 SimpleNamespace(
@@ -331,15 +336,15 @@ def test_get_filled_combo_debit_uses_latest_cumulative_fill(tmp_path) -> None:
                     orderStatus=SimpleNamespace(
                         status=status,
                         filled=filled,
-                        remaining=1.0 - filled,
+                        remaining=float(quantity) - filled,
                         avgFillPrice=avg_fill_price,
                         lastFillPrice=avg_fill_price,
                     ),
                 )
             )
 
-    record_filled_combo("TQQQ", 17, 0.65)
-    record_filled_combo("QQQ", 18, 1.25)
+    record_filled_combo("TQQQ", 17, 0.65, 3)
+    record_filled_combo("QQQ", 18, 1.25, 2)
 
     debit = data_store.get_filled_combo_debit(
         "tg:tail-hedge:entry",
@@ -347,7 +352,7 @@ def test_get_filled_combo_debit_uses_latest_cumulative_fill(tmp_path) -> None:
         symbol="TQQQ",
     )
 
-    assert debit == 65.0
+    assert debit == 195.0
 
 
 def test_get_filled_combo_debit_recovers_fill_observed_after_restart(tmp_path) -> None:
@@ -368,7 +373,7 @@ def test_get_filled_combo_debit_recovers_fill_observed_after_restart(tmp_path) -
     )
     order = SimpleNamespace(
         action="BUY",
-        totalQuantity=1,
+        totalQuantity=3,
         lmtPrice=0.70,
         orderType="LMT",
         orderRef="tg:tail-hedge:entry",
@@ -407,4 +412,4 @@ def test_get_filled_combo_debit_recovers_fill_observed_after_restart(tmp_path) -
         symbol="QQQ",
     )
 
-    assert debit == 70.0
+    assert debit == 210.0

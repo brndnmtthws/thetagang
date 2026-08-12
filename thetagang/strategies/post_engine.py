@@ -209,8 +209,10 @@ class PostStrategyEngine:
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> None:
-        del account_summary
-        await self.tail_hedge_engine.manage(portfolio_positions)
+        await self.tail_hedge_engine.manage(
+            portfolio_positions,
+            net_liquidation=float(account_summary["NetLiquidation"].value),
+        )
 
     async def do_cashman(
         self,

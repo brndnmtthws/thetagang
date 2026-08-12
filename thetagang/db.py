@@ -692,7 +692,7 @@ class DataStore:
                 if fill_price is None:
                     continue
                 debit += max(float(fill_price), 0.0) * filled * multiplier
-            return debit
+            return round(debit, 2)
 
 
 def _parse_bar_time(value: Any) -> Optional[datetime]:

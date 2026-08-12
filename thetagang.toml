@@ -763,18 +763,20 @@ ignore_dte = 0
 
 # Opportunistic long-put vertical spread for a regime-rebalanced risk sleeve.
 # Add "tail_hedge" to run.strategies when enabling this section. V1 manages at
-# most one +1/-1 put spread and submits it as a single midpoint limit order. It
-# buys back the short after the configured profit. At exit_dte, it may keep an
-# otherwise unsaleable residual long while seeking the next spread, but it keeps
-# at most one such lottery ticket and tries to close it before expiration. It will
-# leave the account unhedged when VIX, liquidity, pricing, or budget reject entry.
+# most one put-spread tranche, sized from the remaining annual NLV budget, and
+# submits it as a single midpoint limit order. Contract granularity rounds a
+# positive sub-contract budget up to one spread. It buys back the short after
+# the configured profit. At exit_dte, it may keep an otherwise unsaleable
+# residual long while seeking the next spread, but it keeps at most one such
+# lottery ticket and tries to close it before expiration. It will leave the
+# account unhedged when VIX, liquidity, pricing, or budget reject entry.
 # SQLite storage must be enabled so the strategy can identify its own legs and
 # retain the decisions, quotes, order lifecycle, fills, and position snapshots.
 #
 # [strategies.tail_hedge]
 # enabled = true
 # symbol = "QQQ"
-# annual_budget = 0.005  # net spread entry debits over 365 days / protected value
+# annual_budget = 0.005  # net spread entry debits over 365 days / net liquidation
 # entry_vix_max = 20.0
 # target_dte = 150
 # min_dte = 120

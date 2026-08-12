@@ -26,6 +26,7 @@ LOTTERY_TICKET_EXIT_DTE = 1
 LOTTERY_STATE_FIELDS = (
     "lottery_long_con_id",
     "lottery_long_expiration",
+    "lottery_long_quantity",
     "lottery_long_strike",
     "lottery_long_retained_at",
     "lottery_long_retained_bid",
@@ -83,7 +84,7 @@ class UnderlyingQuote:
 
 
 class TailHedgeEngine:
-    """Manage one put spread plus, at most, one near-worthless residual long."""
+    """Manage one put-spread tranche plus one near-worthless residual tranche."""
 
     def __init__(
         self,
@@ -105,6 +106,8 @@ class TailHedgeEngine:
     async def manage(
         self,
         portfolio_positions: Dict[str, List[PortfolioItem]],
+        *,
+        net_liquidation: float,
     ) -> None:
         tail_config = self.config.strategies.tail_hedge
         if not tail_config.enabled:
@@ -118,7 +121,10 @@ class TailHedgeEngine:
 
         try:
             await self._refresh_execution_telemetry(symbol)
-            await self._manage_positions(portfolio_positions.get(symbol, []))
+            await self._manage_positions(
+                portfolio_positions.get(symbol, []),
+                net_liquidation=net_liquidation,
+            )
         except (
             IndexError,
             RequiredFieldValidationError,
@@ -157,7 +163,12 @@ class TailHedgeEngine:
                     symbol=symbol,
                 )
 
-    async def _manage_positions(self, symbol_positions: List[PortfolioItem]) -> None:
+    async def _manage_positions(
+        self,
+        symbol_positions: List[PortfolioItem],
+        *,
+        net_liquidation: float,
+    ) -> None:
         if self.data_store is None:
             raise RuntimeError("Tail hedge requires SQLite state storage.")
 
@@ -209,6 +220,7 @@ class TailHedgeEngine:
             if lottery_state is not None:
                 await self._evaluate_entry(
                     stock_exposure,
+                    net_liquidation=net_liquidation,
                     previous_state=lottery_state,
                 )
             return
@@ -250,6 +262,7 @@ class TailHedgeEngine:
 
         await self._evaluate_entry(
             stock_exposure,
+            net_liquidation=net_liquidation,
             previous_state=self._lottery_state(state),
         )
 
@@ -257,6 +270,7 @@ class TailHedgeEngine:
         self,
         stock_exposure: StockExposure,
         *,
+        net_liquidation: float,
         previous_state: Optional[Dict[str, Any]] = None,
     ) -> None:
         if self.data_store is None:
@@ -269,15 +283,22 @@ class TailHedgeEngine:
             self._record_evaluation("no_protected_stock_position")
             return
 
-        annual_budget = protected_value * float(tail_config.annual_budget)
+        if not self._is_positive(net_liquidation):
+            raise RuntimeError("Net liquidation value is unavailable")
+
+        annual_budget = round(
+            net_liquidation * float(tail_config.annual_budget),
+            2,
+        )
         budget_start = self._now() - timedelta(days=365)
         spent = self.data_store.get_filled_combo_debit(
             TAIL_HEDGE_ENTRY_ORDER_REF,
             budget_start,
             symbol=symbol,
         )
-        remaining_budget = max(0.0, annual_budget - spent)
+        remaining_budget = round(max(0.0, annual_budget - spent), 2)
         budget_details = {
+            "net_liquidation": net_liquidation,
             "protected_position_value": protected_value,
             "annual_budget_rate": float(tail_config.annual_budget),
             "annual_budget": annual_budget,
@@ -285,7 +306,7 @@ class TailHedgeEngine:
             "remaining_budget": remaining_budget,
             "budget_window_start": budget_start,
         }
-        if remaining_budget < 1.0:
+        if remaining_budget <= 0:
             self._record_evaluation("annual_budget_exhausted", **budget_details)
             return
 
@@ -311,14 +332,13 @@ class TailHedgeEngine:
             self._record_evaluation(rejection, **quote_details)
             return
 
-        entry_cost = quote.limit_debit * self._multiplier(long_contract)
-        if entry_cost > remaining_budget:
-            self._record_evaluation(
-                "spread_exceeds_remaining_budget",
-                entry_cost=entry_cost,
-                **quote_details,
-            )
-            return
+        per_spread_cost = round(
+            quote.limit_debit * self._multiplier(long_contract),
+            2,
+        )
+        entry_quantity = max(1, math.floor(remaining_budget / per_spread_cost))
+        entry_cost = round(per_spread_cost * entry_quantity, 2)
+        budget_overage = round(max(0.0, entry_cost - remaining_budget), 2)
 
         combo = self._spread_contract(
             symbol,
@@ -329,7 +349,7 @@ class TailHedgeEngine:
         )
         order = self.order_ops.create_limit_order(
             action="BUY",
-            quantity=1,
+            quantity=entry_quantity,
             limit_price=quote.limit_debit,
             use_default_algo=False,
             order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
@@ -347,18 +367,24 @@ class TailHedgeEngine:
             short_local_symbol=quote.short_local_symbol,
             short_strike=quote.short_strike,
             short_entry_midpoint=(quote.short_bid + quote.short_ask) / 2.0,
+            entry_quantity=entry_quantity,
             entry_limit_debit=quote.limit_debit,
+            entry_cost=entry_cost,
+            budget_overage=budget_overage,
             order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
         )
         self._record_evaluation(
             "entry_enqueued",
+            entry_quantity=entry_quantity,
+            per_spread_cost=per_spread_cost,
             entry_cost=entry_cost,
+            budget_overage=budget_overage,
             **quote_details,
         )
         log.notice(
-            f"{symbol}: Enqueued {quote.long_strike:g}/{quote.short_strike:g} "
-            f"put spread expiring {quote.expiration} at a "
-            f"{dfmt(quote.limit_debit)} debit."
+            f"{symbol}: Enqueued {entry_quantity}x "
+            f"{quote.long_strike:g}/{quote.short_strike:g} put spreads expiring "
+            f"{quote.expiration} at a {dfmt(quote.limit_debit)} debit each."
         )
 
     def _quote_rejection(self, quote: SpreadQuote) -> Optional[str]:
@@ -436,7 +462,7 @@ class TailHedgeEngine:
                 position
                 for position in put_positions
                 if position.contract.conId == int(con_id)
-                and math.isclose(float(position.position), 1.0)
+                and float(position.position) > 0
             ),
             None,
         )
@@ -453,6 +479,13 @@ class TailHedgeEngine:
         long_position = managed_hedge.long_position
         short_position = managed_hedge.short_position
         if long_position is not None and short_position is None:
+            if float(long_position.position) < 0:
+                await self._close_unsafe_short(
+                    long_position,
+                    state,
+                    reason="recorded_long_is_short",
+                )
+                return None
             return await self._manage_remaining_long(
                 long_position,
                 state,
@@ -461,16 +494,33 @@ class TailHedgeEngine:
         if (
             long_position is None
             and short_position is not None
-            and math.isclose(float(short_position.position), -1.0)
+            and float(short_position.position) < 0
         ):
-            await self._close_orphaned_short(short_position, state)
+            await self._close_unsafe_short(
+                short_position,
+                state,
+                reason="long_leg_missing",
+            )
             return None
         if (
             long_position is None
             or short_position is None
-            or not math.isclose(float(long_position.position), 1.0)
-            or not math.isclose(float(short_position.position), -1.0)
+            or float(long_position.position) <= 0
+            or float(short_position.position) >= 0
         ):
+            unsafe_shorts = [
+                position
+                for position in (long_position, short_position)
+                if position is not None and float(position.position) < 0
+            ]
+            if unsafe_shorts:
+                for position in unsafe_shorts:
+                    await self._close_unsafe_short(
+                        position,
+                        state,
+                        reason="managed_leg_sign_mismatch",
+                    )
+                return None
             self._record_evaluation(
                 "unexpected_managed_position",
                 long_position=(
@@ -483,17 +533,38 @@ class TailHedgeEngine:
                 ),
             )
             log.error(
-                f"{symbol}: Tail-hedge legs do not match the expected +1/-1 spread; refusing to trade."
+                f"{symbol}: Tail-hedge legs have invalid signs; refusing to trade."
+            )
+            return None
+
+        long_quantity = self._position_quantity(long_position)
+        short_quantity = self._position_quantity(short_position)
+        if short_quantity > long_quantity:
+            await self._close_unsafe_short(
+                short_position,
+                state,
+                reason="short_quantity_exceeds_long",
             )
             return None
 
         expiration = long_position.contract.lastTradeDateOrContractMonth
         if expiration != short_position.contract.lastTradeDateOrContractMonth:
-            self._record_evaluation("managed_expirations_do_not_match")
+            await self._close_unsafe_short(
+                short_position,
+                state,
+                reason="managed_expirations_do_not_match",
+            )
             return None
         dte = self._dte(expiration)
         if dte <= self.config.strategies.tail_hedge.exit_dte:
-            await self._close_spread(long_position, short_position, state, dte)
+            await self._close_spread(
+                long_position,
+                short_position,
+                state,
+                dte,
+                long_quantity=long_quantity,
+                short_quantity=short_quantity,
+            )
             return None
 
         await self._manage_short_leg(
@@ -506,39 +577,45 @@ class TailHedgeEngine:
         )
         return None
 
-    async def _close_orphaned_short(
+    async def _close_unsafe_short(
         self,
         short_position: PortfolioItem,
         state: Dict[str, Any],
+        *,
+        reason: str,
     ) -> None:
         symbol = self.config.strategies.tail_hedge.symbol
         ticker = await self._option_ticker(short_position.contract)
         limit_price = round(max(self._midpoint(ticker), 0.01), 2)
+        quantity = self._position_quantity(short_position)
         self._enqueue_single_option_order(
             short_position.contract,
             action="BUY",
+            quantity=quantity,
             limit_price=limit_price,
             order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
         )
         close_details = {
+            "close_reason": reason,
             "expiration": short_position.contract.lastTradeDateOrContractMonth,
             "dte": self._dte(short_position.contract.lastTradeDateOrContractMonth),
             "short_strike": float(short_position.contract.strike),
+            "short_quantity": quantity,
             "limit_price": limit_price,
         }
         self._record_state(
-            "orphaned_short_close_enqueued",
+            "unsafe_short_close_enqueued",
             previous=state,
             order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
             **close_details,
         )
         self._record_evaluation(
-            "orphaned_short_close_enqueued",
+            "unsafe_short_close_enqueued",
             **close_details,
         )
         log.warning(
-            f"{symbol}: Recorded tail-hedge long leg is missing; "
-            "buying back the remaining short put."
+            f"{symbol}: Unsafe tail-hedge short exposure ({reason}); "
+            "buying back all remaining short puts."
         )
 
     async def _manage_short_leg(
@@ -595,10 +672,14 @@ class TailHedgeEngine:
 
         if close_reasons:
             short_close_limit = round(max(short_midpoint, 0.01), 2)
+            short_quantity = self._position_quantity(short_position)
             estimated_financing_profit = (
-                short_entry_price - short_midpoint
-            ) * self._multiplier(short_position.contract)
+                (short_entry_price - short_midpoint)
+                * self._multiplier(short_position.contract)
+                * short_quantity
+            )
             close_details = {
+                "short_quantity": short_quantity,
                 "short_entry_price": short_entry_price,
                 "short_close_limit": short_close_limit,
                 "short_profit_fraction": profit_fraction,
@@ -611,6 +692,7 @@ class TailHedgeEngine:
             self._enqueue_single_option_order(
                 short_position.contract,
                 action="BUY",
+                quantity=short_quantity,
                 limit_price=short_close_limit,
                 order_ref=TAIL_HEDGE_SHORT_CLOSE_ORDER_REF,
             )
@@ -634,7 +716,9 @@ class TailHedgeEngine:
             expiration=expiration,
             dte=dte,
             long_strike=float(long_position.contract.strike),
+            long_quantity=self._position_quantity(long_position),
             short_strike=float(short_position.contract.strike),
+            short_quantity=self._position_quantity(short_position),
             short_entry_price=short_entry_price,
             short_midpoint=short_midpoint,
             short_profit_fraction=profit_fraction,
@@ -650,6 +734,9 @@ class TailHedgeEngine:
         short_position: PortfolioItem,
         state: Dict[str, Any],
         dte: int,
+        *,
+        long_quantity: int,
+        short_quantity: int,
     ) -> None:
         symbol = self.config.strategies.tail_hedge.symbol
         expiration = long_position.contract.lastTradeDateOrContractMonth
@@ -671,16 +758,32 @@ class TailHedgeEngine:
         )
         order = self.order_ops.create_limit_order(
             action="BUY",
-            quantity=1,
+            quantity=short_quantity,
             limit_price=close_price,
             use_default_algo=False,
             order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
             transmit=True,
         )
         self.order_ops.enqueue_order(combo, order)
+        excess_long_quantity = long_quantity - short_quantity
+        long_close_limit = (
+            round(max(long_midpoint, 0.01), 2) if excess_long_quantity > 0 else None
+        )
+        if long_close_limit is not None:
+            self._enqueue_single_option_order(
+                long_position.contract,
+                action="SELL",
+                quantity=excess_long_quantity,
+                limit_price=long_close_limit,
+                order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
+            )
+
         close_details = {
             "expiration": expiration,
             "dte": dte,
+            "spread_quantity": short_quantity,
+            "excess_long_quantity": excess_long_quantity,
+            "excess_long_limit": long_close_limit,
             "limit_price": close_price,
             "long_midpoint": long_midpoint,
             "short_midpoint": short_midpoint,
@@ -705,18 +808,20 @@ class TailHedgeEngine:
     ) -> Optional[Dict[str, Any]]:
         expiration = long_position.contract.lastTradeDateOrContractMonth
         dte = self._dte(expiration)
-        if not math.isclose(float(long_position.position), 1.0):
+        if float(long_position.position) <= 0:
             self._record_evaluation(
                 "unexpected_long_position",
                 position=float(long_position.position),
             )
             return None
+        long_quantity = self._position_quantity(long_position)
         if dte > self.config.strategies.tail_hedge.exit_dte:
             self._record_evaluation(
                 "long_put_held",
                 expiration=expiration,
                 dte=dte,
                 long_strike=float(long_position.contract.strike),
+                long_quantity=long_quantity,
                 estimated_short_financing_profit=state.get(
                     "estimated_short_financing_profit"
                 ),
@@ -735,6 +840,7 @@ class TailHedgeEngine:
                 "dte": dte,
                 "long_con_id": long_position.contract.conId,
                 "long_strike": float(long_position.contract.strike),
+                "long_quantity": long_quantity,
                 "quoted_bid": bid,
                 "retention_bid_max": float(
                     self.config.strategies.tail_hedge.minimum_bid
@@ -750,6 +856,7 @@ class TailHedgeEngine:
                 short_con_id=None,
                 lottery_long_con_id=long_position.contract.conId,
                 lottery_long_expiration=expiration,
+                lottery_long_quantity=long_quantity,
                 lottery_long_strike=float(long_position.contract.strike),
                 lottery_long_retained_at=self._now(),
                 lottery_long_retained_bid=bid,
@@ -767,12 +874,14 @@ class TailHedgeEngine:
         self._enqueue_single_option_order(
             long_position.contract,
             action="SELL",
+            quantity=long_quantity,
             limit_price=limit_price,
             order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
         )
         close_details = {
             "expiration": expiration,
             "dte": dte,
+            "long_quantity": long_quantity,
             "limit_price": limit_price,
             "estimated_short_financing_profit": state.get(
                 "estimated_short_financing_profit"
@@ -802,9 +911,11 @@ class TailHedgeEngine:
 
         ticker = await self._option_ticker(long_position.contract)
         limit_price = round(max(self._midpoint(ticker), 0.01), 2)
+        quantity = self._position_quantity(long_position)
         self._enqueue_single_option_order(
             long_position.contract,
             action="SELL",
+            quantity=quantity,
             limit_price=limit_price,
             order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
         )
@@ -812,6 +923,7 @@ class TailHedgeEngine:
             "lottery_long_expiration": expiration,
             "lottery_long_dte": dte,
             "lottery_long_con_id": long_position.contract.conId,
+            "lottery_long_quantity": quantity,
             "lottery_long_strike": float(long_position.contract.strike),
             "lottery_long_close_limit": limit_price,
         }
@@ -832,12 +944,13 @@ class TailHedgeEngine:
         contract: Contract,
         *,
         action: str,
+        quantity: int,
         limit_price: float,
         order_ref: str,
     ) -> None:
         order = self.order_ops.create_limit_order(
             action=action,
-            quantity=1,
+            quantity=quantity,
             limit_price=limit_price,
             order_ref=order_ref,
             transmit=True,
@@ -1185,6 +1298,17 @@ class TailHedgeEngine:
     def _position_average_price(position: PortfolioItem) -> float:
         average_cost = float(getattr(position, "averageCost", 0.0) or 0.0)
         return average_cost / TailHedgeEngine._multiplier(position.contract)
+
+    @staticmethod
+    def _position_quantity(position: PortfolioItem) -> int:
+        quantity = abs(float(position.position))
+        rounded = round(quantity)
+        if quantity <= 0 or not math.isclose(quantity, rounded):
+            raise RuntimeError(
+                "Tail-hedge option position must have a positive whole-contract "
+                f"quantity, got {position.position}"
+            )
+        return int(rounded)
 
     @staticmethod
     def _is_finite(value: float) -> bool:

@@ -86,6 +86,23 @@ async def test_do_cashman_disabled_noops(mocker):
 
 
 @pytest.mark.asyncio
+async def test_do_tail_hedging_sizes_from_account_net_liquidation(mocker):
+    engine, _ibkr, _order_ops, _scanner = _make_engine(mocker)
+    engine.tail_hedge_engine.manage = AsyncMock()
+    positions = {"QQQ": []}
+
+    await engine.do_tail_hedging(
+        {"NetLiquidation": SimpleNamespace(value="123456.78")},
+        positions,
+    )
+
+    engine.tail_hedge_engine.manage.assert_awaited_once_with(
+        positions,
+        net_liquidation=123456.78,
+    )
+
+
+@pytest.mark.asyncio
 async def test_do_cashman_within_threshold_no_order(mocker):
     engine, ibkr, order_ops, _scanner = _make_engine(mocker)
     engine.config.strategies.cash_management.enabled = True

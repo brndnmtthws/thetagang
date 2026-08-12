@@ -69,6 +69,10 @@ def _make_engine(mocker):
     return engine, ibkr, order_ops, data_store, qualified_contracts
 
 
+async def _manage(engine, positions, *, net_liquidation: float = 20_000.0):
+    await engine.manage(positions, net_liquidation=net_liquidation)
+
+
 def _stock_position(value: float = 20_000.0):
     contract = Stock("TQQQ", "SMART", "USD")
     return SimpleNamespace(
@@ -112,20 +116,29 @@ def _managed_spread_positions(
     short_contract: Option,
     *,
     stock_value: float | None = None,
+    quantity: int = 1,
 ):
     positions = [
-        SimpleNamespace(contract=long_contract, position=1, averageCost=100.0),
-        SimpleNamespace(contract=short_contract, position=-1, averageCost=30.0),
+        SimpleNamespace(
+            contract=long_contract,
+            position=quantity,
+            averageCost=100.0,
+        ),
+        SimpleNamespace(
+            contract=short_contract,
+            position=-quantity,
+            averageCost=30.0,
+        ),
     ]
     if stock_value is not None:
         positions.insert(0, _stock_position(stock_value))
     return positions
 
 
-def _remaining_long_position(long_contract: Option):
+def _remaining_long_position(long_contract: Option, quantity: int = 1):
     return SimpleNamespace(
         contract=long_contract,
-        position=1,
+        position=quantity,
         averageCost=100.0,
     )
 
@@ -184,9 +197,29 @@ def test_quote_rejection_reports_first_failed_entry_gate(
     assert engine._quote_rejection(quote) == expected
 
 
+@pytest.mark.parametrize(
+    (
+        "net_liquidation",
+        "rolling_entry_debit",
+        "expected_quantity",
+        "expected_budget_overage",
+    ),
+    [
+        (100_000.0, 0.0, 7, 0.0),
+        (100_000.0, 225.0, 3, 0.0),
+        (10_000.0, 0.0, 1, 20.0),
+    ],
+)
 @pytest.mark.asyncio
-async def test_favorable_quote_enqueues_one_atomic_spread(mocker):
+async def test_favorable_quote_sizes_atomic_spread_from_nlv_budget(
+    mocker,
+    net_liquidation,
+    rolling_entry_debit,
+    expected_quantity,
+    expected_budget_overage,
+):
     engine, ibkr, order_ops, data_store, qualified_contracts = _make_engine(mocker)
+    data_store.get_filled_combo_debit.return_value = rolling_entry_debit
     ibkr.get_ticker_for_contract = AsyncMock(
         return_value=SimpleNamespace(marketPrice=lambda: 15.0)
     )
@@ -232,11 +265,15 @@ async def test_favorable_quote_enqueues_one_atomic_spread(mocker):
 
     ibkr.get_tickers_for_contracts = AsyncMock(side_effect=get_tickers)
 
-    await engine.manage({"TQQQ": [_stock_position()]})
+    await _manage(
+        engine,
+        {"TQQQ": [_stock_position()]},
+        net_liquidation=net_liquidation,
+    )
 
     order_ops.create_limit_order.assert_called_once_with(
         action="BUY",
-        quantity=1,
+        quantity=expected_quantity,
         limit_price=0.7,
         use_default_algo=False,
         order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
@@ -252,6 +289,14 @@ async def test_favorable_quote_enqueues_one_atomic_spread(mocker):
     assert TAIL_HEDGE_STATE_EVENT in [
         call.args[0] for call in data_store.record_event.call_args_list
     ]
+    state = _state_events(data_store)[-1]
+    assert state["entry_quantity"] == expected_quantity
+    assert state["entry_cost"] == pytest.approx(expected_quantity * 70.0)
+    assert state["budget_overage"] == pytest.approx(expected_budget_overage)
+    evaluation = data_store.record_event.call_args_list[-1].args[1]
+    assert evaluation["net_liquidation"] == net_liquidation
+    assert evaluation["annual_budget"] == pytest.approx(net_liquidation * 0.005)
+    assert evaluation["rolling_entry_debit"] == rolling_entry_debit
     assert _outcomes(data_store) == ["entry_enqueued"]
 
 
@@ -262,7 +307,7 @@ async def test_high_vix_leaves_strategy_unhedged(mocker):
         return_value=SimpleNamespace(marketPrice=lambda: 25.0)
     )
 
-    await engine.manage({"TQQQ": [_stock_position()]})
+    await _manage(engine, {"TQQQ": [_stock_position()]})
 
     ibkr.get_ticker_for_stock.assert_not_called()
     order_ops.enqueue_order.assert_not_called()
@@ -276,7 +321,7 @@ async def test_unavailable_vix_price_does_not_look_like_cheap_volatility(mocker)
         return_value=SimpleNamespace(marketPrice=lambda: -1.0)
     )
 
-    await engine.manage({"TQQQ": [_stock_position()]})
+    await _manage(engine, {"TQQQ": [_stock_position()]})
 
     ibkr.get_ticker_for_stock.assert_not_called()
     order_ops.enqueue_order.assert_not_called()
@@ -288,7 +333,7 @@ async def test_rolling_budget_blocks_entry_before_market_scan(mocker):
     engine, ibkr, order_ops, data_store, _ = _make_engine(mocker)
     data_store.get_filled_combo_debit.return_value = 100.0
 
-    await engine.manage({"TQQQ": [_stock_position()]})
+    await _manage(engine, {"TQQQ": [_stock_position()]})
 
     ibkr.get_ticker_for_contract.assert_not_called()
     order_ops.enqueue_order.assert_not_called()
@@ -315,7 +360,7 @@ async def test_working_tail_order_blocks_duplicate_order(mocker):
         )
     ]
 
-    await engine.manage({"TQQQ": [_stock_position()]})
+    await _manage(engine, {"TQQQ": [_stock_position()]})
 
     order_ops.enqueue_order.assert_not_called()
     data_store.get_filled_combo_debit.assert_not_called()
@@ -339,7 +384,7 @@ async def test_next_run_reconciles_stale_intent_to_empty_broker_positions(
     data_store.get_last_event_payload.return_value = state
     engine._evaluate_entry = AsyncMock()
 
-    await engine.manage({"TQQQ": [_stock_position()]})
+    await _manage(engine, {"TQQQ": [_stock_position()]})
 
     order_ops.enqueue_order.assert_not_called()
     engine._evaluate_entry.assert_awaited_once()
@@ -363,8 +408,8 @@ async def test_next_run_retries_an_unfilled_short_close(mocker):
         return_value=_option_ticker(short_contract, 0.09, 0.11)
     )
 
-    await engine.manage(
-        {"TQQQ": _managed_spread_positions(long_contract, short_contract)}
+    await _manage(
+        engine, {"TQQQ": _managed_spread_positions(long_contract, short_contract)}
     )
 
     order_ops.create_limit_order.assert_called_once_with(
@@ -386,16 +431,17 @@ async def test_recorded_long_only_position_is_managed_safely(mocker):
     state["status"] = "entry_enqueued"
     data_store.get_last_event_payload.return_value = state
 
-    await engine.manage(
+    await _manage(
+        engine,
         {
             "TQQQ": [
                 SimpleNamespace(
                     contract=long_contract,
-                    position=1,
+                    position=2,
                     averageCost=100.0,
                 )
             ]
-        }
+        },
     )
 
     order_ops.enqueue_order.assert_not_called()
@@ -408,33 +454,137 @@ async def test_recorded_short_only_position_is_bought_back(mocker):
     long_contract = _option_contract(60, 90, 60)
     short_contract = _option_contract(40, 90, 40)
     state = _state(long_contract, short_contract)
-    state["status"] = "orphaned_short_close_enqueued"
+    state["status"] = "unsafe_short_close_enqueued"
     data_store.get_last_event_payload.return_value = state
     ibkr.get_ticker_for_contract = AsyncMock(
         return_value=_option_ticker(short_contract, 0.2, 0.3)
     )
 
-    await engine.manage(
+    await _manage(
+        engine,
         {
             "TQQQ": [
                 SimpleNamespace(
                     contract=short_contract,
-                    position=-1,
+                    position=-2,
                     averageCost=30.0,
                 )
             ]
-        }
+        },
     )
 
     order_ops.create_limit_order.assert_called_once_with(
         action="BUY",
-        quantity=1,
+        quantity=2,
         limit_price=0.25,
         order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
         transmit=True,
     )
-    assert _state_events(data_store)[-1]["status"] == ("orphaned_short_close_enqueued")
-    assert _outcomes(data_store) == ["orphaned_short_close_enqueued"]
+    close_state = _state_events(data_store)[-1]
+    assert close_state["status"] == "unsafe_short_close_enqueued"
+    assert close_state["close_reason"] == "long_leg_missing"
+    assert _outcomes(data_store) == ["unsafe_short_close_enqueued"]
+
+
+@pytest.mark.asyncio
+async def test_short_quantity_exceeding_long_is_fully_bought_back(mocker):
+    engine, ibkr, order_ops, data_store, _ = _make_engine(mocker)
+    long_contract = _option_contract(60, 90, 60)
+    short_contract = _option_contract(40, 90, 40)
+    data_store.get_last_event_payload.return_value = _state(
+        long_contract, short_contract
+    )
+    ibkr.get_ticker_for_contract = AsyncMock(
+        return_value=_option_ticker(short_contract, 0.2, 0.3)
+    )
+    positions = [
+        _remaining_long_position(long_contract, quantity=2),
+        SimpleNamespace(
+            contract=short_contract,
+            position=-3,
+            averageCost=30.0,
+        ),
+    ]
+
+    await _manage(engine, {"TQQQ": positions})
+
+    order_ops.create_limit_order.assert_called_once_with(
+        action="BUY",
+        quantity=3,
+        limit_price=0.25,
+        order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
+        transmit=True,
+    )
+    close_state = _state_events(data_store)[-1]
+    assert close_state["status"] == "unsafe_short_close_enqueued"
+    assert close_state["close_reason"] == "short_quantity_exceeds_long"
+    assert _outcomes(data_store) == ["unsafe_short_close_enqueued"]
+
+
+@pytest.mark.asyncio
+async def test_negative_position_recorded_as_long_is_bought_back(mocker):
+    engine, ibkr, order_ops, data_store, _ = _make_engine(mocker)
+    long_contract = _option_contract(60, 90, 60)
+    short_contract = _option_contract(40, 90, 40)
+    data_store.get_last_event_payload.return_value = _state(
+        long_contract, short_contract
+    )
+    ibkr.get_ticker_for_contract = AsyncMock(
+        return_value=_option_ticker(long_contract, 0.2, 0.3)
+    )
+    positions = [
+        SimpleNamespace(
+            contract=long_contract,
+            position=-2,
+            averageCost=100.0,
+        )
+    ]
+
+    await _manage(engine, {"TQQQ": positions})
+
+    order_ops.create_limit_order.assert_called_once_with(
+        action="BUY",
+        quantity=2,
+        limit_price=0.25,
+        order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
+        transmit=True,
+    )
+    close_state = _state_events(data_store)[-1]
+    assert close_state["close_reason"] == "recorded_long_is_short"
+
+
+@pytest.mark.asyncio
+async def test_mismatched_expirations_close_the_short_leg(mocker):
+    engine, ibkr, order_ops, data_store, _ = _make_engine(mocker)
+    long_contract = _option_contract(60, 90, 60)
+    short_contract = _option_contract(40, 60, 40)
+    data_store.get_last_event_payload.return_value = _state(
+        long_contract, short_contract
+    )
+    ibkr.get_ticker_for_contract = AsyncMock(
+        return_value=_option_ticker(short_contract, 0.2, 0.3)
+    )
+
+    await _manage(
+        engine,
+        {
+            "TQQQ": _managed_spread_positions(
+                long_contract,
+                short_contract,
+                quantity=2,
+            )
+        },
+    )
+
+    order_ops.create_limit_order.assert_called_once_with(
+        action="BUY",
+        quantity=2,
+        limit_price=0.25,
+        order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
+        transmit=True,
+    )
+    close_state = _state_events(data_store)[-1]
+    assert close_state["close_reason"] == "managed_expirations_do_not_match"
 
 
 @pytest.mark.asyncio
@@ -454,7 +604,7 @@ async def test_existing_managed_spread_is_held_until_exit_dte(mocker):
         return_value=_option_ticker(short_contract, 0.2, 0.3)
     )
 
-    await engine.manage({"TQQQ": positions})
+    await _manage(engine, {"TQQQ": positions})
 
     order_ops.enqueue_order.assert_not_called()
     assert _outcomes(data_store) == ["existing_spread_held"]
@@ -468,16 +618,20 @@ async def test_profitable_short_leg_is_closed_while_long_is_retained(mocker):
     data_store.get_last_event_payload.return_value = _state(
         long_contract, short_contract
     )
-    positions = _managed_spread_positions(long_contract, short_contract)
+    positions = _managed_spread_positions(
+        long_contract,
+        short_contract,
+        quantity=3,
+    )
     ibkr.get_ticker_for_contract = AsyncMock(
         return_value=_option_ticker(short_contract, 0.09, 0.11)
     )
 
-    await engine.manage({"TQQQ": positions})
+    await _manage(engine, {"TQQQ": positions})
 
     order_ops.create_limit_order.assert_called_once_with(
         action="BUY",
-        quantity=1,
+        quantity=3,
         limit_price=0.1,
         order_ref=TAIL_HEDGE_SHORT_CLOSE_ORDER_REF,
         transmit=True,
@@ -485,6 +639,7 @@ async def test_profitable_short_leg_is_closed_while_long_is_retained(mocker):
     order_ops.enqueue_order.assert_called_once_with(short_contract, "ORDER")
     state_events = _state_events(data_store)
     assert state_events[-1]["status"] == "short_close_enqueued"
+    assert state_events[-1]["short_quantity"] == 3
     assert state_events[-1]["short_profit_fraction"] == pytest.approx(2 / 3)
     assert _outcomes(data_store) == ["short_close_enqueued"]
 
@@ -499,7 +654,11 @@ async def test_short_leg_is_closed_when_spot_approaches_its_strike(mocker):
     )
     underlying_contract = Stock("TQQQ", "SMART", "USD")
     underlying_contract.conId = 10
-    positions = _managed_spread_positions(long_contract, short_contract)
+    positions = _managed_spread_positions(
+        long_contract,
+        short_contract,
+        quantity=2,
+    )
     ibkr.get_ticker_for_contract = AsyncMock(
         return_value=_option_ticker(short_contract, 0.39, 0.41)
     )
@@ -512,11 +671,11 @@ async def test_short_leg_is_closed_when_spot_approaches_its_strike(mocker):
         )
     )
 
-    await engine.manage({"TQQQ": positions})
+    await _manage(engine, {"TQQQ": positions})
 
     order_ops.create_limit_order.assert_called_once_with(
         action="BUY",
-        quantity=1,
+        quantity=2,
         limit_price=0.4,
         order_ref=TAIL_HEDGE_SHORT_CLOSE_ORDER_REF,
         transmit=True,
@@ -524,7 +683,7 @@ async def test_short_leg_is_closed_when_spot_approaches_its_strike(mocker):
     state_events = _state_events(data_store)
     assert state_events[-1]["short_close_reasons"] == ["tail_risk_buffer"]
     assert state_events[-1]["spot_to_short_strike"] == pytest.approx(1.25)
-    assert state_events[-1]["estimated_short_financing_profit"] == pytest.approx(-10.0)
+    assert state_events[-1]["estimated_short_financing_profit"] == pytest.approx(-20.0)
 
 
 @pytest.mark.asyncio
@@ -541,7 +700,10 @@ async def test_remaining_long_is_held_after_short_close(mocker):
     )
     data_store.get_last_event_payload.return_value = state
 
-    await engine.manage({"TQQQ": [_remaining_long_position(long_contract)]})
+    await _manage(
+        engine,
+        {"TQQQ": [_remaining_long_position(long_contract, quantity=3)]},
+    )
 
     order_ops.enqueue_order.assert_not_called()
     assert _outcomes(data_store) == ["long_put_held"]
@@ -571,11 +733,14 @@ async def test_remaining_long_is_closed_or_retried_at_exit_dte(
         return_value=_option_ticker(long_contract, 4.9, 5.1)
     )
 
-    await engine.manage({"TQQQ": [_remaining_long_position(long_contract)]})
+    await _manage(
+        engine,
+        {"TQQQ": [_remaining_long_position(long_contract, quantity=3)]},
+    )
 
     order_ops.create_limit_order.assert_called_once_with(
         action="SELL",
-        quantity=1,
+        quantity=3,
         limit_price=5.0,
         order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
         transmit=True,
@@ -599,13 +764,14 @@ async def test_nearly_worthless_remaining_long_is_kept_while_new_entry_is_checke
     )
     engine._evaluate_entry = AsyncMock()
 
-    await engine.manage(
+    await _manage(
+        engine,
         {
             "TQQQ": [
                 _stock_position(),
-                _remaining_long_position(long_contract),
+                _remaining_long_position(long_contract, quantity=2),
             ]
-        }
+        },
     )
 
     order_ops.enqueue_order.assert_not_called()
@@ -614,11 +780,14 @@ async def test_nearly_worthless_remaining_long_is_kept_while_new_entry_is_checke
     assert retained_state["long_con_id"] is None
     assert retained_state["short_con_id"] is None
     assert retained_state["lottery_long_con_id"] == long_contract.conId
+    assert retained_state["lottery_long_quantity"] == 2
     engine._evaluate_entry.assert_awaited_once_with(
         mocker.ANY,
+        net_liquidation=20_000.0,
         previous_state={
             "lottery_long_con_id": long_contract.conId,
             "lottery_long_expiration": long_contract.lastTradeDateOrContractMonth,
+            "lottery_long_quantity": 2,
             "lottery_long_strike": 60.0,
             "lottery_long_retained_at": NOW,
             "lottery_long_retained_bid": 0.01,
@@ -643,18 +812,20 @@ async def test_retained_lottery_long_does_not_block_a_new_entry_check(mocker):
     }
     engine._evaluate_entry = AsyncMock()
 
-    await engine.manage(
+    await _manage(
+        engine,
         {
             "TQQQ": [
                 _stock_position(),
                 _remaining_long_position(lottery_contract),
             ]
-        }
+        },
     )
 
     order_ops.enqueue_order.assert_not_called()
     engine._evaluate_entry.assert_awaited_once_with(
         mocker.ANY,
+        net_liquidation=20_000.0,
         previous_state={
             "lottery_long_con_id": lottery_contract.conId,
             "lottery_long_expiration": lottery_contract.lastTradeDateOrContractMonth,
@@ -682,13 +853,14 @@ async def test_retained_lottery_long_is_closed_before_expiration(mocker):
         return_value=_option_ticker(lottery_contract, 0.0, 0.02)
     )
 
-    await engine.manage(
+    await _manage(
+        engine,
         {
             "TQQQ": [
                 _stock_position(),
                 _remaining_long_position(lottery_contract),
             ]
-        }
+        },
     )
 
     order_ops.create_limit_order.assert_called_once_with(
@@ -726,14 +898,15 @@ async def test_only_one_nearly_worthless_long_is_retained(mocker):
     )
     engine._evaluate_entry = AsyncMock()
 
-    await engine.manage(
+    await _manage(
+        engine,
         {
             "TQQQ": [
                 _stock_position(),
                 _remaining_long_position(active_long),
                 _remaining_long_position(lottery_long),
             ]
-        }
+        },
     )
 
     order_ops.create_limit_order.assert_called_once_with(
@@ -755,7 +928,11 @@ async def test_existing_managed_spread_closes_both_legs_at_exit_dte(mocker):
     state = _state(long_contract, short_contract)
     state["status"] = "spread_close_enqueued"
     data_store.get_last_event_payload.return_value = state
-    positions = _managed_spread_positions(long_contract, short_contract)
+    positions = _managed_spread_positions(
+        long_contract,
+        short_contract,
+        quantity=4,
+    )
     ibkr.get_tickers_for_contracts = AsyncMock(
         return_value=[
             _option_ticker(long_contract, 4.9, 5.1),
@@ -763,11 +940,11 @@ async def test_existing_managed_spread_closes_both_legs_at_exit_dte(mocker):
         ]
     )
 
-    await engine.manage({"TQQQ": positions})
+    await _manage(engine, {"TQQQ": positions})
 
     order_ops.create_limit_order.assert_called_once_with(
         action="BUY",
-        quantity=1,
+        quantity=4,
         limit_price=-4.0,
         use_default_algo=False,
         order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
@@ -783,12 +960,61 @@ async def test_existing_managed_spread_closes_both_legs_at_exit_dte(mocker):
 
 
 @pytest.mark.asyncio
+async def test_exit_closes_unmatched_long_quantity_separately(mocker):
+    engine, ibkr, order_ops, data_store, _ = _make_engine(mocker)
+    long_contract = _option_contract(60, 20, 60)
+    short_contract = _option_contract(40, 20, 40)
+    data_store.get_last_event_payload.return_value = _state(
+        long_contract, short_contract
+    )
+    positions = [
+        _remaining_long_position(long_contract, quantity=3),
+        SimpleNamespace(
+            contract=short_contract,
+            position=-2,
+            averageCost=30.0,
+        ),
+    ]
+    ibkr.get_tickers_for_contracts = AsyncMock(
+        return_value=[
+            _option_ticker(long_contract, 4.9, 5.1),
+            _option_ticker(short_contract, 0.9, 1.1),
+        ]
+    )
+
+    await _manage(engine, {"TQQQ": positions})
+
+    assert order_ops.create_limit_order.call_args_list == [
+        mocker.call(
+            action="BUY",
+            quantity=2,
+            limit_price=-4.0,
+            use_default_algo=False,
+            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
+            transmit=True,
+        ),
+        mocker.call(
+            action="SELL",
+            quantity=1,
+            limit_price=5.0,
+            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
+            transmit=True,
+        ),
+    ]
+    close_state = _state_events(data_store)[-1]
+    assert close_state["spread_quantity"] == 2
+    assert close_state["excess_long_quantity"] == 1
+    assert close_state["excess_long_limit"] == 5.0
+
+
+@pytest.mark.asyncio
 async def test_unmanaged_puts_block_a_new_strategy_spread(mocker):
     engine, ibkr, order_ops, data_store, _ = _make_engine(mocker)
     manual_put = _option_contract(50, 90, 50)
 
-    await engine.manage(
-        {"TQQQ": [_stock_position(), SimpleNamespace(contract=manual_put, position=1)]}
+    await _manage(
+        engine,
+        {"TQQQ": [_stock_position(), SimpleNamespace(contract=manual_put, position=1)]},
     )
 
     ibkr.get_ticker_for_contract.assert_not_called()

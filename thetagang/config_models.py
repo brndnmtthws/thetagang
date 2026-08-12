@@ -326,7 +326,9 @@ class TailHedgeConfig(BaseModel, DisplayMixin):
         table.add_row("[spring_green1]Tail hedge put spread")
         table.add_row("", "Enabled", "=", f"{self.enabled}")
         table.add_row("", "Protected symbol", "=", self.symbol or "-")
-        table.add_row("", "Annual premium budget", "=", pfmt(self.annual_budget))
+        table.add_row(
+            "", "Annual premium budget (% NLV)", "=", pfmt(self.annual_budget)
+        )
         table.add_row("", "Entry VIX maximum", "=", f"{ffmt(self.entry_vix_max)}")
         table.add_row("", "Target DTE", "=", f"{self.target_dte}")
         table.add_row("", "DTE range", "=", f"{self.min_dte}-{self.max_dte}")
