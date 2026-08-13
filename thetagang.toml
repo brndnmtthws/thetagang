@@ -761,17 +761,21 @@ ignore_dte = 0
   weight      = 0.00
 
 
-# Permanent long-put tail-hedge program for one or more portfolio symbols.
-# Add "tail_hedge" alongside "regime_rebalance" in run.strategies when enabling
-# this section. Targets maintain independent entry schedules, gates, and put
-# ladders under one rolling annual NLV premium budget. Target budget_weight
-# values must sum to 1.0. Contract quantities stay within the global, target,
-# and tranche budgets; if one contract does not fit, that target waits.
-# Unlike every other option position, state-owned tail puts remain in the
-# net_liq_ex_options regime-rebalance base, so their mark-to-market gains count
-# as portfolio capital while the puts are still held.
-# SQLite storage must be enabled so the strategy can identify its own puts and
-# retain the decisions, quotes, order lifecycle, fills, and position snapshots.
+# Long-put tail hedging for one or more portfolio symbols. Enable SQLite and add
+# "tail_hedge" to run.strategies to manage entries and DTE exits.
+#
+# annual_budget applies across all targets over a rolling 365-day window;
+# budget_weight values must sum to 1.0. Each target has its own cadence, entry
+# gate, contract filters, and expiration ladder. Eligible entries buy at least
+# one contract. Additional contracts must fit the tranche, target, and program
+# budgets; one-contract overruns are recorded.
+#
+# With regime_rebalance, profitable puts can fund the residual cash shortfall
+# for a same-symbol buy only when that symbol reaches its own hard underweight
+# band. Deposited cash, enabled cash-fund holdings, approved stock sales, and
+# existing reservations are accounted for first. The stock purchase is deferred
+# until actual proceeds and the current target are revalidated on a later run.
+# With wheel alone, puts remain open until exit_dte. See docs/tail-hedging.md.
 #
 # [strategies.tail_hedge]
 # enabled = true

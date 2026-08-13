@@ -22,6 +22,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    func,
     select,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -164,6 +165,7 @@ class ExecutionRecord(Base):
     side: Mapped[Optional[str]] = mapped_column(String)
     shares: Mapped[Optional[float]] = mapped_column(Float)
     price: Mapped[Optional[float]] = mapped_column(Float)
+    commission: Mapped[Optional[float]] = mapped_column(Float)
     execution_time: Mapped[Optional[datetime]] = mapped_column(DateTime)
     exchange: Mapped[Optional[str]] = mapped_column(String)
 
@@ -517,6 +519,11 @@ class DataStore:
                         side=getattr(execution, "side", None),
                         shares=getattr(execution, "shares", None),
                         price=getattr(execution, "price", None),
+                        commission=getattr(
+                            getattr(fill, "commissionReport", None),
+                            "commission",
+                            None,
+                        ),
                         execution_time=exec_time,
                         exchange=getattr(execution, "exchange", None),
                     )
@@ -524,7 +531,15 @@ class DataStore:
             if rows:
                 with self.session_scope() as session:
                     stmt = sqlite_insert(ExecutionRecord).values(rows)
-                    stmt = stmt.on_conflict_do_nothing(index_elements=["exec_id"])
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["exec_id"],
+                        set_={
+                            "commission": func.coalesce(
+                                stmt.excluded.commission,
+                                ExecutionRecord.commission,
+                            )
+                        },
+                    )
                     session.execute(stmt)
         except Exception as exc:
             log.warning(f"Failed to record executions: {exc}")
@@ -623,6 +638,44 @@ class DataStore:
             )
             result = session.execute(stmt).scalar_one_or_none()
             return result
+
+    def get_executions_for_order_refs(
+        self,
+        order_refs: Iterable[str],
+    ) -> list[Any]:
+        refs = [order_ref for order_ref in order_refs if order_ref]
+        if not refs:
+            return []
+        with self.session_scope() as session:
+            rows = (
+                session.execute(
+                    select(ExecutionRecord)
+                    .where(ExecutionRecord.order_ref.in_(refs))
+                    .order_by(
+                        ExecutionRecord.execution_time.asc(), ExecutionRecord.id.asc()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                SimpleNamespace(
+                    time=row.execution_time,
+                    contract=SimpleNamespace(symbol=row.symbol),
+                    execution=SimpleNamespace(
+                        execId=row.exec_id,
+                        orderId=row.order_id,
+                        orderRef=row.order_ref,
+                        side=row.side,
+                        shares=row.shares,
+                        price=row.price,
+                        time=row.execution_time,
+                        exchange=row.exchange,
+                    ),
+                    commissionReport=SimpleNamespace(commission=row.commission),
+                )
+                for row in rows
+            ]
 
 
 def _parse_bar_time(value: Any) -> Optional[datetime]:

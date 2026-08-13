@@ -58,6 +58,10 @@ from thetagang.strategies.runtime_services import (
     OptionsRuntimeServiceAdapter,
     resolve_symbol_configs,
 )
+from thetagang.strategies.tail_hedge_engine import (
+    TAIL_HEDGE_STATE_EVENT,
+    tail_hedge_owned_con_ids,
+)
 from thetagang.trades import Trades
 from thetagang.trading_operations import (
     OptionChainScanner,
@@ -195,6 +199,7 @@ class PortfolioManager:
             get_reserved_cash_for_post_management=(
                 self.get_reserved_cash_for_post_management
             ),
+            get_regime_buy_symbols=self.regime_engine.approved_buy_symbols,
         )
         if run_stage_flags is None:
             default_run = RunConfig(strategies=DEFAULT_RUN_STRATEGIES)
@@ -340,9 +345,31 @@ class PortfolioManager:
                 combined.setdefault(symbol, []).extend(positions)
         return combined
 
+    def _tail_hedge_owned_con_ids_for_snapshot(self) -> set[int]:
+        if self.data_store is None:
+            return set()
+        ownership_required = bool(
+            self.stage_enabled("post_tail_hedge")
+            and self.config.strategies.tail_hedge.enabled
+        )
+        state = self.data_store.get_last_event_payload(
+            TAIL_HEDGE_STATE_EVENT,
+            raise_on_error=ownership_required,
+        )
+        try:
+            return tail_hedge_owned_con_ids(
+                state,
+                account_number=self.account_number,
+            )
+        except RuntimeError:
+            if ownership_required:
+                raise
+            return set()
+
     async def get_portfolio_positions(self) -> Dict[str, List[PortfolioItem]]:
         attempts = 3
         symbols = set(self.get_symbols())
+        tail_hedge_con_ids = self._tail_hedge_owned_con_ids_for_snapshot()
         self.last_untracked_positions = {}
 
         for attempt in range(1, attempts + 1):
@@ -371,55 +398,10 @@ class PortfolioManager:
             self.last_untracked_positions = portfolio_positions_to_dict(
                 untracked_positions
             )
-            filtered_conids = {item.contract.conId for item in filtered_positions}
-
-            if portfolio_by_symbol:
-                # Still verify against the latest positions snapshot to ensure we didn't
-                # lose any holdings in the portfolio view.
-                try:
-                    positions_snapshot = await self.ibkr.refresh_positions()
-                except IBKRRequestTimeout as exc:
-                    log.warning(
-                        f"Attempt {attempt}/{attempts}: {exc}. Retrying positions snapshot request..."
-                    )
-                    if attempt == attempts:
-                        raise
-                    await asyncio.sleep(1)
-                    continue
-
-                tracked_positions = [
-                    pos
-                    for pos in positions_snapshot
-                    if pos.account == self.account_number
-                    and (
-                        pos.contract.symbol in symbols
-                        or pos.contract.symbol == "VIX"
-                        or pos.contract.symbol
-                        == self.config.strategies.cash_management.cash_fund
-                    )
-                    and pos.position != 0
-                ]
-                missing_positions = [
-                    pos
-                    for pos in tracked_positions
-                    if pos.contract.conId not in filtered_conids
-                ]
-
-                if not missing_positions:
-                    return portfolio_by_symbol
-
-                missing_symbols = ", ".join(
-                    sorted({pos.contract.symbol for pos in missing_positions})
-                )
-                log.warning(
-                    (
-                        f"Attempt {attempt}/{attempts}: Portfolio snapshot is missing "
-                        f"{len(missing_positions)} of {len(tracked_positions)} tracked "
-                        f"positions (symbols: {missing_symbols}). Waiting briefly before retrying..."
-                    )
-                )
-                await asyncio.sleep(1)
-                continue
+            portfolio_conids = {
+                item.contract.conId
+                for item in [*filtered_positions, *untracked_positions]
+            }
 
             try:
                 positions_snapshot = await self.ibkr.refresh_positions()
@@ -432,7 +414,7 @@ class PortfolioManager:
                 await asyncio.sleep(1)
                 continue
 
-            tracked_positions = [
+            protected_positions = [
                 pos
                 for pos in positions_snapshot
                 if pos.account == self.account_number
@@ -441,17 +423,27 @@ class PortfolioManager:
                     or pos.contract.symbol == "VIX"
                     or pos.contract.symbol
                     == self.config.strategies.cash_management.cash_fund
+                    or pos.contract.conId in tail_hedge_con_ids
                 )
                 and pos.position != 0
             ]
+            missing_positions = [
+                pos
+                for pos in protected_positions
+                if pos.contract.conId not in portfolio_conids
+            ]
 
-            if not tracked_positions:
+            if not missing_positions:
                 return portfolio_by_symbol
 
+            missing_symbols = ", ".join(
+                sorted({pos.contract.symbol for pos in missing_positions})
+            )
             log.warning(
                 (
-                    f"Attempt {attempt}/{attempts}: IBKR reported {len(tracked_positions)} "
-                    "tracked positions but returned an empty portfolio snapshot. "
+                    f"Attempt {attempt}/{attempts}: Portfolio snapshot is missing "
+                    f"{len(missing_positions)} of {len(protected_positions)} tracked "
+                    f"or tail-hedge-owned positions (symbols: {missing_symbols}). "
                     "Waiting briefly before retrying..."
                 )
             )
@@ -762,10 +754,16 @@ class PortfolioManager:
                     "equity_buy_rebalance",
                     "equity_sell_rebalance",
                 }:
+                    equity_positions = portfolio_positions
+                    if stage_id == "equity_regime_rebalance":
+                        equity_positions = self.combine_position_maps(
+                            portfolio_positions,
+                            self.last_untracked_positions,
+                        )
                     await run_equity_rebalance_stages(
                         self._equity_strategy_deps({stage_id}),
                         account_summary,
-                        portfolio_positions,
+                        equity_positions,
                     )
                 elif stage_id in post_stage_ids:
                     post_positions = portfolio_positions

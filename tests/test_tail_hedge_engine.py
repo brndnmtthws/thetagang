@@ -18,6 +18,7 @@ from thetagang.strategies.tail_hedge_engine import (
     TAIL_HEDGE_ENTRY_ORDER_REF,
     TAIL_HEDGE_EVALUATION_EVENT,
     TAIL_HEDGE_STATE_EVENT,
+    TAIL_HEDGE_STATE_SCHEMA_VERSION,
     NoLaterExpirationError,
     TailHedgeEngine,
     tail_hedge_owned_con_ids,
@@ -59,9 +60,13 @@ def _make_engine(mocker):
             }
         ),
     )
+    config.trading_is_allowed = lambda symbol: not bool(
+        getattr(config.portfolio.symbols.get(symbol), "no_trading", False)
+    )
     ibkr = mocker.Mock()
     ibkr.open_trades.return_value = []
     order_ops = mocker.Mock()
+    order_ops.orders.records.return_value = []
     order_ops.get_order_exchange.return_value = "SMART"
     order_ops.create_limit_order.return_value = "ORDER"
     data_store = mocker.Mock()
@@ -192,12 +197,13 @@ def _entry(
 
 def _state(*entries: tuple[dict, dict]) -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
         "strategy": "long_put",
         "account": "TEST123",
         "status": "active",
         "tranches": [tranche for tranche, _history in entries],
         "entry_history": [history for _tranche, history in entries],
+        "harvest_plans": [],
     }
 
 
@@ -242,7 +248,7 @@ def test_owned_contract_ids_require_valid_long_put_state() -> None:
     ibit = _put_contract(symbol="IBIT", con_id=160)
     current_state = _state(_entry(qqq), _entry(ibit))
     wrong_state = {
-        "schema_version": 2,
+        "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION + 1,
         "strategy": "long_put",
         "tranches": [],
     }
@@ -330,14 +336,18 @@ async def test_entry_uses_one_annual_budget_slice_and_buys_only_puts(mocker):
     assert state["strategy"] == "long_put"
     assert state["tranches"][0]["entry_cost"] == 100.0
     assert state["tranches"][0]["symbol"] == "QQQ"
+    assert state["tranches"][0]["minimum_contract_floor_applied"] is False
+    assert state["tranches"][0]["tranche_budget_overrun"] == 0.0
+    assert state["tranches"][0]["target_annual_budget_overrun"] == 0.0
+    assert state["tranches"][0]["global_annual_budget_overrun"] == 0.0
     assert state["entry_history"][0]["estimated_cost"] == 100.0
     assert _outcomes(data_store) == ["entry_enqueued"]
 
 
 @pytest.mark.asyncio
-async def test_entry_never_exceeds_its_budget_slice_for_contract_granularity(mocker):
+async def test_entry_buys_one_contract_when_the_tranche_slice_is_too_small(mocker):
     engine, ibkr, order_ops, data_store = _make_engine(mocker)
-    _configure_entry_quote(engine, ibkr)
+    contract = _configure_entry_quote(engine, ibkr)
 
     await _manage(
         engine,
@@ -345,8 +355,51 @@ async def test_entry_never_exceeds_its_budget_slice_for_contract_granularity(moc
         net_liquidation=10_000.0,
     )
 
-    order_ops.enqueue_order.assert_not_called()
-    assert _outcomes(data_store) == ["tranche_budget_too_small"]
+    order_ops.create_limit_order.assert_called_once_with(
+        action="BUY",
+        quantity=1,
+        limit_price=0.5,
+        use_default_algo=False,
+        order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
+        transmit=True,
+    )
+    order_ops.enqueue_order.assert_called_once_with(contract, "ORDER")
+    entry_state = _state_events(data_store)[-1]
+    tranche = entry_state["tranches"][0]
+    assert tranche["minimum_contract_floor_applied"] is True
+    assert tranche["tranche_budget_overrun"] == 37.5
+    assert tranche["target_annual_budget_overrun"] == 0.0
+    assert tranche["global_annual_budget_overrun"] == 0.0
+    assert entry_state["entry_history"][0]["minimum_contract_floor_applied"] is True
+    assert entry_state["entry_history"][0]["tranche_budget_overrun"] == 37.5
+    assert _outcomes(data_store) == ["entry_enqueued"]
+
+
+@pytest.mark.asyncio
+async def test_entry_does_not_buy_a_second_contract_beyond_applicable_budget(mocker):
+    engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    contract = _configure_entry_quote(engine, ibkr)
+
+    await _manage(
+        engine,
+        {"QQQ": [_stock_position(value=60_000.0)]},
+        net_liquidation=60_000.0,
+    )
+
+    order_ops.create_limit_order.assert_called_once_with(
+        action="BUY",
+        quantity=1,
+        limit_price=0.5,
+        use_default_algo=False,
+        order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
+        transmit=True,
+    )
+    order_ops.enqueue_order.assert_called_once_with(contract, "ORDER")
+    tranche = _state_events(data_store)[-1]["tranches"][0]
+    assert tranche["minimum_contract_floor_applied"] is False
+    assert tranche["tranche_budget_overrun"] == 0.0
+    assert tranche["target_annual_budget_overrun"] == 0.0
+    assert tranche["global_annual_budget_overrun"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -390,10 +443,10 @@ async def test_state_from_another_account_fails_closed(mocker):
 
 
 @pytest.mark.asyncio
-async def test_current_schema_with_malformed_budget_history_fails_closed(mocker):
+async def test_malformed_budget_history_fails_closed(mocker):
     engine, _ibkr, order_ops, data_store = _make_engine(mocker)
     data_store.get_last_event_payload.return_value = {
-        "schema_version": 1,
+        "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
         "strategy": "long_put",
         "account": "TEST123",
         "status": "active",
@@ -439,10 +492,11 @@ async def test_recent_entry_applies_derived_annual_spacing(mocker):
 
 
 @pytest.mark.asyncio
-async def test_rolling_annual_budget_blocks_entry_before_market_scan(mocker):
+async def test_rolling_annual_budget_allows_one_contract_minimum(mocker):
     engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    contract = _configure_entry_quote(engine, ibkr)
     data_store.get_last_event_payload.return_value = {
-        "schema_version": 1,
+        "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
         "strategy": "long_put",
         "account": "TEST123",
         "status": "active",
@@ -455,17 +509,77 @@ async def test_rolling_annual_budget_blocks_entry_before_market_scan(mocker):
                 "estimated_cost": 500.0,
             }
         ],
+        "harvest_plans": [],
     }
 
     await _manage(engine, {"QQQ": [_stock_position()]})
 
-    ibkr.get_ticker_for_contract.assert_not_called()
-    order_ops.enqueue_order.assert_not_called()
-    assert _outcomes(data_store) == ["annual_budget_exhausted"]
+    order_ops.create_limit_order.assert_called_once_with(
+        action="BUY",
+        quantity=1,
+        limit_price=0.5,
+        use_default_algo=False,
+        order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
+        transmit=True,
+    )
+    order_ops.enqueue_order.assert_called_once_with(contract, "ORDER")
+    tranche = _state_events(data_store)[-1]["tranches"][0]
+    assert tranche["minimum_contract_floor_applied"] is True
+    assert tranche["tranche_budget_overrun"] == 0.0
+    assert tranche["target_annual_budget_overrun"] == 50.0
+    assert tranche["global_annual_budget_overrun"] == 50.0
+    assert _outcomes(data_store) == ["entry_enqueued"]
 
 
 @pytest.mark.asyncio
-async def test_old_active_tranche_history_is_retained_outside_budget_window(mocker):
+async def test_exhausted_target_budget_allows_one_contract_minimum(mocker):
+    engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    engine.config.strategies.tail_hedge.targets = [
+        _target("QQQ", 0.10, entry_gate="none"),
+        _target("IBIT", 0.90, entry_gate="none"),
+    ]
+    contract = _configure_entry_quote(engine, ibkr)
+    data_store.get_last_event_payload.return_value = {
+        "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
+        "strategy": "long_put",
+        "account": "TEST123",
+        "status": "active",
+        "tranches": [],
+        "entry_history": [
+            {
+                "entry_id": "closed-qqq-entry",
+                "symbol": "QQQ",
+                "entered_at": NOW - timedelta(days=100),
+                "estimated_cost": 50.0,
+            }
+        ],
+        "harvest_plans": [],
+    }
+
+    await _manage(engine, {"QQQ": [_stock_position()]})
+
+    order_ops.create_limit_order.assert_called_once_with(
+        action="BUY",
+        quantity=1,
+        limit_price=0.5,
+        use_default_algo=False,
+        order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
+        transmit=True,
+    )
+    order_ops.enqueue_order.assert_called_once_with(contract, "ORDER")
+    tranche = _state_events(data_store)[-1]["tranches"][0]
+    assert tranche["minimum_contract_floor_applied"] is True
+    assert tranche["tranche_budget_overrun"] == 37.5
+    assert tranche["target_annual_budget_overrun"] == 50.0
+    assert tranche["global_annual_budget_overrun"] == 0.0
+    assert _outcomes(data_store) == [
+        "entry_enqueued",
+        "no_protected_stock_position",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_active_tranche_history_is_retained_outside_budget_window(mocker):
     engine, ibkr, _order_ops, data_store = _make_engine(mocker)
     active_contract = _put_contract(strike=70, dte=120, con_id=70)
     data_store.get_last_event_payload.return_value = _state(
@@ -488,7 +602,7 @@ async def test_old_active_tranche_history_is_retained_outside_budget_window(mock
 async def test_annual_tranche_count_blocks_extra_low_cost_entry(mocker):
     engine, ibkr, order_ops, data_store = _make_engine(mocker)
     data_store.get_last_event_payload.return_value = {
-        "schema_version": 1,
+        "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
         "strategy": "long_put",
         "account": "TEST123",
         "status": "active",
@@ -502,6 +616,7 @@ async def test_annual_tranche_count_blocks_extra_low_cost_entry(mocker):
             }
             for offset in range(4)
         ],
+        "harvest_plans": [],
     }
 
     await _manage(engine, {"QQQ": [_stock_position()]})
@@ -533,6 +648,20 @@ async def test_no_protected_stock_defers_entry_before_market_scan(mocker):
     ibkr.get_ticker_for_contract.assert_not_called()
     order_ops.enqueue_order.assert_not_called()
     assert _outcomes(data_store) == ["no_protected_stock_position"]
+
+
+@pytest.mark.asyncio
+async def test_no_trading_target_does_not_open_a_tail_put(mocker):
+    engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    engine.config.portfolio.symbols["QQQ"].no_trading = True
+    engine._find_put = AsyncMock()
+
+    await _manage(engine, {"QQQ": [_stock_position()]})
+
+    ibkr.get_ticker_for_contract.assert_not_called()
+    engine._find_put.assert_not_awaited()
+    order_ops.enqueue_order.assert_not_called()
+    assert _outcomes(data_store) == ["trading_disabled"]
 
 
 @pytest.mark.asyncio
@@ -610,6 +739,53 @@ async def test_long_put_is_closed_at_roll_dte(mocker):
     assert contract.exchange == "SMART"
     assert _state_events(data_store)[-1]["tranches"][0]["status"] == ("close_enqueued")
     assert _outcomes(data_store) == ["close_enqueued"]
+
+
+@pytest.mark.asyncio
+async def test_active_harvest_plan_blocks_normal_exit_and_new_entry(mocker):
+    engine, _ibkr, order_ops, data_store = _make_engine(mocker)
+    contract = _put_contract(dte=20)
+    state = _state(_entry(contract, days_ago=100))
+    state["harvest_plans"] = [
+        {
+            "plan_id": "harvest-working",
+            "symbol": "QQQ",
+            "status": "put_sell_working",
+            "put_sales": [
+                {
+                    "entry_id": state["tranches"][0]["entry_id"],
+                    "con_id": contract.conId,
+                    "expiration": contract.lastTradeDateOrContractMonth,
+                    "quantity": 1,
+                }
+            ],
+        }
+    ]
+    data_store.get_last_event_payload.return_value = state
+
+    await _manage(
+        engine,
+        {"QQQ": [_stock_position(), _put_position(contract)]},
+    )
+
+    order_ops.enqueue_order.assert_not_called()
+    assert _outcomes(data_store) == ["harvest_plan_active"]
+
+
+@pytest.mark.asyncio
+async def test_no_trading_target_does_not_close_an_owned_tail_put(mocker):
+    engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    engine.config.portfolio.symbols["QQQ"].no_trading = True
+    contract = _put_contract(dte=30)
+    data_store.get_last_event_payload.return_value = _state(
+        _entry(contract, days_ago=150)
+    )
+
+    await _manage(engine, {"QQQ": [_stock_position(), _put_position(contract)]})
+
+    ibkr.get_ticker_for_contract.assert_not_called()
+    order_ops.enqueue_order.assert_not_called()
+    assert _outcomes(data_store) == ["trading_disabled"]
 
 
 @pytest.mark.asyncio
@@ -806,7 +982,23 @@ async def test_unfilled_entry_is_removed_from_state_and_budget_history(mocker):
     reconciled = _state_events(data_store)[-1]
     assert reconciled["tranches"] == []
     assert reconciled["entry_history"] == []
-    engine._evaluate_entry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_closed_active_put_keeps_gross_premium_history(mocker):
+    engine, _ibkr, _order_ops, data_store = _make_engine(mocker)
+    contract = _put_contract()
+    data_store.get_last_event_payload.return_value = _state(
+        _entry(contract, days_ago=10, status="active", cost=75.0)
+    )
+
+    await _manage(engine, {"QQQ": [_stock_position()]})
+
+    reconciled = _state_events(data_store)[0]
+    assert reconciled["status"] == "reconciled"
+    assert reconciled["tranches"] == []
+    assert reconciled["entry_history"][0]["estimated_cost"] == 75.0
+    assert _outcomes(data_store) == ["tranche_entry_spacing"]
 
 
 @pytest.mark.asyncio
@@ -985,12 +1177,13 @@ async def test_target_spacing_does_not_block_another_target(mocker):
     recent_qqq = _put_contract(con_id=61)
     _tranche, recent_history = _entry(recent_qqq, days_ago=10)
     data_store.get_last_event_payload.return_value = {
-        "schema_version": 1,
+        "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
         "strategy": "long_put",
         "account": "TEST123",
         "status": "active",
         "tranches": [],
         "entry_history": [recent_history],
+        "harvest_plans": [],
     }
     ibit_contract = _configure_entry_quote(
         engine,
@@ -1229,6 +1422,41 @@ async def test_entry_excludes_put_contracts_working_at_the_broker(mocker):
 
     assert occupied_at_scan == {60}
     order_ops.enqueue_order.assert_called_once_with(candidate, "ORDER")
+
+
+@pytest.mark.asyncio
+async def test_entry_is_skipped_when_regime_buy_is_queued_for_target(mocker):
+    engine, _ibkr, order_ops, data_store = _make_engine(mocker)
+    engine._find_put = AsyncMock()
+    order_ops.orders.records.return_value = [
+        (
+            Stock("QQQ", "SMART", "USD"),
+            SimpleNamespace(
+                action="BUY",
+                orderRef="tg:regime-rebalance:QQQ",
+            ),
+            None,
+        )
+    ]
+
+    await _manage(engine, {"QQQ": [_stock_position()]})
+
+    engine._find_put.assert_not_awaited()
+    order_ops.create_limit_order.assert_not_called()
+    assert "regime_buy_approved" in _outcomes(data_store)
+
+
+@pytest.mark.asyncio
+async def test_entry_is_skipped_after_regime_approval_without_queued_order(mocker):
+    engine, _ibkr, order_ops, data_store = _make_engine(mocker)
+    engine._get_regime_buy_symbols = lambda: {"QQQ"}
+    engine._find_put = AsyncMock()
+
+    await _manage(engine, {"QQQ": [_stock_position()]})
+
+    engine._find_put.assert_not_awaited()
+    order_ops.create_limit_order.assert_not_called()
+    assert "regime_buy_approved" in _outcomes(data_store)
 
 
 @pytest.mark.asyncio

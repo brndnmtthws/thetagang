@@ -33,9 +33,13 @@ def test_data_store_records_executions_and_queries(tmp_path) -> None:
             execution=SimpleNamespace(
                 execId="1",
                 orderRef="tg:regime-rebalance:AAA",
+                side="BOT",
+                shares=1,
+                price=100.0,
                 time=datetime(2024, 1, 5, 12, 0, 0),
             ),
             contract=SimpleNamespace(symbol="AAA"),
+            commissionReport=SimpleNamespace(commission=1.25),
             time=datetime(2024, 1, 5, 12, 0, 0),
         ),
         SimpleNamespace(
@@ -66,6 +70,13 @@ def test_data_store_records_executions_and_queries(tmp_path) -> None:
     )
 
     assert last == datetime(2024, 1, 7, 12, 0, 0)
+    stored_fills = data_store.get_executions_for_order_refs(["tg:regime-rebalance:AAA"])
+    assert len(stored_fills) == 1
+    assert stored_fills[0].execution.orderRef == "tg:regime-rebalance:AAA"
+    assert stored_fills[0].execution.side == "BOT"
+    assert stored_fills[0].execution.shares == 1
+    assert stored_fills[0].execution.price == 100.0
+    assert stored_fills[0].commissionReport.commission == 1.25
 
 
 def test_sqlite_db_path_parses(tmp_path) -> None:

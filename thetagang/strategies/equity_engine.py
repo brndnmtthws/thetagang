@@ -89,11 +89,23 @@ class EquityRebalanceEngine:
                     optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
                 )
                 limit_price = round(self._midpoint_or_market_price(ticker), 2)
+                quantity, order_ref = self.regime_engine.prepare_regime_order(
+                    symbol,
+                    quantity,
+                    limit_price,
+                )
+                if quantity == 0:
+                    log.notice(
+                        f"{symbol}: Revalidated tail-harvest credit cannot fund "
+                        "one share at the current limit price; holding cash."
+                    )
+                    continue
+                action = "BUY" if quantity > 0 else "SELL"
                 order = self.order_ops.create_limit_order(
                     action=action,
                     quantity=abs(quantity),
                     limit_price=limit_price,
-                    order_ref=f"{self.regime_rebalance_order_ref_prefix}:{symbol}",
+                    order_ref=order_ref,
                     transmit=True,
                 )
                 log.notice(

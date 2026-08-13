@@ -100,6 +100,12 @@ EXPLICIT_STAGE_PREREQUISITES: dict[str, set[str]] = {
     "options_write_calls": {"options_write_puts"},
 }
 
+EXPLICIT_STAGE_ORDER_REQUIREMENTS: tuple[tuple[str, str], ...] = (
+    ("equity_regime_rebalance", "post_tail_hedge"),
+    ("equity_regime_rebalance", "post_cash_management"),
+    ("post_tail_hedge", "post_cash_management"),
+)
+
 
 class ConfigMeta(BaseModel):
     schema_version: int = Field(2)
@@ -206,6 +212,14 @@ class RunConfig(BaseModel):
             dfs(stage_id)
 
         enabled_stage_ids = {stage.id for stage in self.stages if stage.enabled}
+        for earlier_stage, later_stage in EXPLICIT_STAGE_ORDER_REQUIREMENTS:
+            if {earlier_stage, later_stage} <= enabled_stage_ids and (
+                index_by_id[earlier_stage] >= index_by_id[later_stage]
+            ):
+                raise ValueError(
+                    f"run.stages.{earlier_stage} must appear before "
+                    f"run.stages.{later_stage}"
+                )
         for stage_id, required_ids in EXPLICIT_STAGE_PREREQUISITES.items():
             if stage_id not in enabled_stage_ids:
                 continue
@@ -477,7 +491,8 @@ class Config(BaseModel, DisplayMixin):
             )
         if not self.runtime.database.enabled:
             raise ValueError("tail_hedge requires runtime.database.enabled = true")
-        if self.strategies.regime_rebalance.shares_only:
+        regime_rebalance = self.strategies.regime_rebalance
+        if regime_rebalance.enabled and regime_rebalance.shares_only:
             raise ValueError("tail_hedge cannot be enabled when shares_only is true")
         return self
 

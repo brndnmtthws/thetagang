@@ -7,6 +7,7 @@ from ib_async import IB, PortfolioItem, Stock, Ticker
 
 from thetagang.ibkr import IBKRRequestTimeout
 from thetagang.portfolio_manager import PortfolioManager
+from thetagang.strategies.tail_hedge_engine import TAIL_HEDGE_STATE_SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -263,6 +264,43 @@ class TestPortfolioManager:
         await pm.manage()
 
         await_args = run_post.await_args
+        assert await_args is not None
+        assert await_args.args[2] == {
+            "QQQ": [tracked],
+            "OLD": [removed_target],
+        }
+
+    @pytest.mark.asyncio
+    async def test_regime_stage_receives_untracked_tail_positions(
+        self, mock_ib, mock_config, mocker
+    ):
+        pm = PortfolioManager(
+            mock_config,
+            mock_ib,
+            mocker.Mock(),
+            dry_run=True,
+            run_stage_order=["equity_regime_rebalance"],
+        )
+        tracked = cast(
+            PortfolioItem,
+            SimpleNamespace(contract=SimpleNamespace(symbol="QQQ")),
+        )
+        removed_target = cast(
+            PortfolioItem,
+            SimpleNamespace(contract=SimpleNamespace(symbol="OLD")),
+        )
+        pm.initialize_account = mocker.Mock()
+        pm.summarize_account = mocker.AsyncMock(return_value=({}, {"QQQ": [tracked]}))
+        pm.last_untracked_positions = {"OLD": [removed_target]}
+        pm.orders.print_summary = mocker.Mock()
+        run_equity = mocker.patch(
+            "thetagang.portfolio_manager.run_equity_rebalance_stages",
+            new=mocker.AsyncMock(),
+        )
+
+        await pm.manage()
+
+        await_args = run_equity.await_args
         assert await_args is not None
         assert await_args.args[2] == {
             "QQQ": [tracked],
@@ -569,6 +607,91 @@ class TestPortfolioManager:
             "TEST123"
         )
         portfolio_manager.ibkr.refresh_positions.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_portfolio_positions_retries_for_state_owned_removed_target(
+        self, portfolio_manager, mocker
+    ):
+        """Does not drop a removed target when the portfolio view is stale."""
+        portfolio_manager.config.portfolio.symbols = {"QQQ": mocker.Mock()}
+        portfolio_manager.config.strategies.tail_hedge.enabled = True
+        portfolio_manager.run_stage_flags["post_tail_hedge"] = True
+        portfolio_manager.data_store = mocker.Mock()
+        portfolio_manager.data_store.get_last_event_payload.return_value = {
+            "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
+            "strategy": "long_put",
+            "account": "TEST123",
+            "tranches": [
+                {
+                    "entry_id": "OLD:2:2026-08-01T12:00:00",
+                    "symbol": "OLD",
+                    "con_id": 2,
+                    "expiration": "20270219",
+                }
+            ],
+        }
+
+        tracked_item = SimpleNamespace(
+            account="TEST123",
+            contract=SimpleNamespace(symbol="QQQ", conId=1),
+            position=5,
+        )
+        removed_tail_item = SimpleNamespace(
+            account="TEST123",
+            contract=SimpleNamespace(symbol="OLD", conId=2),
+            position=1,
+        )
+        tracked_snapshot = SimpleNamespace(
+            account="TEST123",
+            contract=SimpleNamespace(symbol="QQQ", conId=1),
+            position=5,
+        )
+        removed_tail_snapshot = SimpleNamespace(
+            account="TEST123",
+            contract=SimpleNamespace(symbol="OLD", conId=2),
+            position=1,
+        )
+
+        portfolio_manager.ibkr.refresh_account_updates = mocker.AsyncMock()
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            side_effect=[
+                [tracked_item],
+                [tracked_item, removed_tail_item],
+            ]
+        )
+        portfolio_manager.ibkr.refresh_positions = mocker.AsyncMock(
+            return_value=[tracked_snapshot, removed_tail_snapshot]
+        )
+        sleep_mock = mocker.patch(
+            "thetagang.portfolio_manager.asyncio.sleep", new=mocker.AsyncMock()
+        )
+
+        result = await portfolio_manager.get_portfolio_positions()
+
+        assert result == {"QQQ": [tracked_item]}
+        assert portfolio_manager.last_untracked_positions == {
+            "OLD": [removed_tail_item]
+        }
+        assert portfolio_manager.ibkr.portfolio.call_count == 2
+        sleep_mock.assert_awaited_once_with(1)
+
+    @pytest.mark.asyncio
+    async def test_get_portfolio_positions_fails_closed_when_tail_state_is_unreadable(
+        self, portfolio_manager, mocker
+    ):
+        portfolio_manager.config.portfolio.symbols = {}
+        portfolio_manager.config.strategies.tail_hedge.enabled = True
+        portfolio_manager.run_stage_flags["post_tail_hedge"] = True
+        portfolio_manager.data_store = mocker.Mock()
+        portfolio_manager.data_store.get_last_event_payload.side_effect = RuntimeError(
+            "database unavailable"
+        )
+        portfolio_manager.ibkr.portfolio = mocker.Mock()
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await portfolio_manager.get_portfolio_positions()
+
+        portfolio_manager.ibkr.portfolio.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_portfolio_positions_retries_on_account_timeout(

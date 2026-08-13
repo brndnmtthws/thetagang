@@ -34,6 +34,7 @@ class PostStrategyEngine:
         qualified_contracts: Dict[int, Contract],
         data_store: Optional[DataStore] = None,
         get_reserved_cash_for_post_management: Callable[[], float] | None = None,
+        get_regime_buy_symbols: Callable[[], set[str]] | None = None,
     ) -> None:
         self.config = config
         self.ibkr = ibkr
@@ -49,6 +50,7 @@ class PostStrategyEngine:
             ibkr=ibkr,
             order_ops=order_ops,
             data_store=data_store,
+            get_regime_buy_symbols=get_regime_buy_symbols,
         )
 
     def reserved_cash_for_post_management(self) -> float:
@@ -234,8 +236,8 @@ class PostStrategyEngine:
         if reserved_cash > 0:
             log.notice(
                 "Cash management: reserving "
-                f"{dfmt(reserved_cash)} for remaining inferred-capacity "
-                "target gaps."
+                f"{dfmt(reserved_cash)} for regime rebalancing and active "
+                "tail-harvest plans."
             )
         try:
             amount = 0.0

@@ -20,12 +20,22 @@ from thetagang.util import midpoint_or_market_price
 
 TAIL_HEDGE_ENTRY_ORDER_REF = "tg:tail-hedge:entry"
 TAIL_HEDGE_CLOSE_ORDER_REF = "tg:tail-hedge:close"
+TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX = "tg:tail-harvest"
 TAIL_HEDGE_EVALUATION_EVENT = "tail_hedge_evaluation"
 TAIL_HEDGE_STATE_EVENT = "tail_hedge_state"
 TAIL_HEDGE_STATE_SCHEMA_VERSION = 1
 TAIL_HEDGE_STATE_STRATEGY = "long_put"
 TAIL_HEDGE_ORDER_REFS = frozenset(
     {TAIL_HEDGE_ENTRY_ORDER_REF, TAIL_HEDGE_CLOSE_ORDER_REF}
+)
+TAIL_HEDGE_ACTIVE_HARVEST_STATUSES = frozenset(
+    {
+        "harvest_requested",
+        "put_sell_working",
+        "proceeds_realized",
+        "rebalance_credit_ready",
+        "stock_buy_enqueued",
+    }
 )
 TAIL_HEDGE_ERRORS = (
     IndexError,
@@ -99,7 +109,6 @@ def tail_hedge_owned_con_ids(
         return set()
     _validate_state_identity(state, account_number)
 
-    assert state is not None
     contract_ids: set[int] = set()
     tranches = state.get("tranches")
     if not isinstance(tranches, list):
@@ -123,16 +132,55 @@ def tail_hedge_owned_con_ids(
     return contract_ids
 
 
-def _is_tail_hedge_state(state: Optional[Dict[str, Any]]) -> bool:
-    return bool(
-        isinstance(state, dict)
-        and state.get("schema_version") == TAIL_HEDGE_STATE_SCHEMA_VERSION
-        and state.get("strategy") == TAIL_HEDGE_STATE_STRATEGY
-    )
+def tail_hedge_state_collections(
+    state: Optional[Dict[str, Any]],
+    *,
+    account_number: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return mutable copies of the three persisted tail-hedge collections."""
+    if state is None:
+        return [], [], []
+    _validate_state_identity(state, account_number)
+
+    collections: list[list[dict[str, Any]]] = []
+    for key in ("tranches", "entry_history", "harvest_plans"):
+        raw_items = state.get(key)
+        if not isinstance(raw_items, list) or not all(
+            isinstance(item, dict) for item in raw_items
+        ):
+            raise RuntimeError(f"Tail-hedge state has invalid {key} data")
+        collections.append([dict(item) for item in raw_items])
+    return collections[0], collections[1], collections[2]
+
+
+def active_tail_harvest_con_ids(harvest_plans: List[Dict[str, Any]]) -> set[int]:
+    return {
+        int(sale["con_id"])
+        for plan in harvest_plans
+        if plan.get("status") in TAIL_HEDGE_ACTIVE_HARVEST_STATUSES
+        for sale in plan.get("put_sales", [])
+        if isinstance(sale, dict)
+        and type(sale.get("con_id")) is int
+        and sale["con_id"] > 0
+    }
+
+
+def active_tail_harvest_symbols(harvest_plans: List[Dict[str, Any]]) -> set[str]:
+    return {
+        str(plan["symbol"])
+        for plan in harvest_plans
+        if plan.get("status") in TAIL_HEDGE_ACTIVE_HARVEST_STATUSES
+        and isinstance(plan.get("symbol"), str)
+        and plan["symbol"]
+    }
 
 
 def _validate_state_identity(state: Dict[str, Any], account_number: str) -> None:
-    if not _is_tail_hedge_state(state):
+    if (
+        not isinstance(state, dict)
+        or state.get("schema_version") != TAIL_HEDGE_STATE_SCHEMA_VERSION
+        or state.get("strategy") != TAIL_HEDGE_STATE_STRATEGY
+    ):
         raise RuntimeError("Tail-hedge state has an invalid schema")
     if state.get("account") != account_number:
         raise RuntimeError("Tail-hedge state belongs to a different account")
@@ -149,12 +197,14 @@ class TailHedgeEngine:
         order_ops: OrderOperations,
         data_store: Optional[DataStore],
         now_provider: Callable[[], datetime] = datetime.now,
+        get_regime_buy_symbols: Callable[[], set[str]] | None = None,
     ) -> None:
         self.config = config
         self.ibkr = ibkr
         self.order_ops = order_ops
         self.data_store = data_store
         self._now = now_provider
+        self._get_regime_buy_symbols = get_regime_buy_symbols
         self._cached_vix: Optional[float] = None
 
     async def manage(
@@ -198,7 +248,9 @@ class TailHedgeEngine:
             TAIL_HEDGE_STATE_EVENT,
             raise_on_error=True,
         )
-        tranches, entry_history = self._state_parts(state)
+        tranches, entry_history, harvest_plans = self._state_parts(state)
+        active_harvest_con_ids = active_tail_harvest_con_ids(harvest_plans)
+        active_harvest_symbols = active_tail_harvest_symbols(harvest_plans)
         put_positions = self._put_positions_by_con_id(portfolio_positions)
         open_trades = self._account_open_trades()
         working_orders = self._working_tail_orders(open_trades)
@@ -282,6 +334,13 @@ class TailHedgeEngine:
             ):
                 reconciled["status"] = "active"
                 state_changed = True
+            position_quantity = self._position_quantity(position)
+            if (
+                float(position.position) > 0
+                and reconciled.get("quantity") != position_quantity
+            ):
+                reconciled["quantity"] = position_quantity
+                state_changed = True
             reconciled_tranches.append(reconciled)
 
         tranches[:] = reconciled_tranches
@@ -296,6 +355,7 @@ class TailHedgeEngine:
                 "reconciled",
                 tranches=tranches,
                 entry_history=entry_history,
+                harvest_plans=harvest_plans,
                 removed_entry_ids=removed_entry_ids,
                 persistence_required=False,
             )
@@ -305,6 +365,14 @@ class TailHedgeEngine:
             for order in working_close_orders
             if isinstance(order.symbol, str)
         }
+        blocked_entry_symbols.update(active_harvest_symbols)
+        same_run_regime_buy_symbols = self._same_run_regime_buy_symbols()
+        blocked_entry_symbols.update(same_run_regime_buy_symbols)
+        for symbol in sorted(same_run_regime_buy_symbols & set(targets)):
+            self._record_evaluation(
+                "regime_buy_approved",
+                symbol=symbol,
+            )
 
         # Finish risk-reducing management for every symbol before evaluating
         # any new entry. Failures remain isolated to the affected target.
@@ -313,6 +381,24 @@ class TailHedgeEngine:
             symbol = str(tranche["symbol"])
             position = put_positions.get(con_id)
             if position is None:
+                continue
+            if con_id in active_harvest_con_ids:
+                blocked_entry_symbols.add(symbol)
+                self._record_evaluation(
+                    "harvest_plan_active",
+                    symbol=symbol,
+                    entry_id=tranche["entry_id"],
+                    con_id=con_id,
+                )
+                continue
+            if not self.config.trading_is_allowed(symbol):
+                blocked_entry_symbols.add(symbol)
+                self._record_evaluation(
+                    "trading_disabled",
+                    symbol=symbol,
+                    entry_id=tranche["entry_id"],
+                    con_id=con_id,
+                )
                 continue
             if con_id in working_close_con_ids:
                 self._record_evaluation(
@@ -329,6 +415,7 @@ class TailHedgeEngine:
                     targets.get(symbol),
                     tranches,
                     entry_history,
+                    harvest_plans,
                     tranche_index,
                 )
             except TAIL_HEDGE_ERRORS as exc:
@@ -367,9 +454,7 @@ class TailHedgeEngine:
                     symbol=symbol,
                     orders=[order.event_payload() for order in symbol_working_entries],
                 )
-                log.notice(
-                    f"{symbol}: Tail-hedge entry order is still working; holding."
-                )
+                log.notice(f"{symbol}: Tail-hedge entry order is working; holding.")
                 continue
             try:
                 await self._evaluate_entry(
@@ -378,6 +463,7 @@ class TailHedgeEngine:
                     net_liquidation=net_liquidation,
                     tranches=tranches,
                     entry_history=entry_history,
+                    harvest_plans=harvest_plans,
                     occupied_con_ids=occupied_con_ids,
                 )
             except TAIL_HEDGE_ERRORS as exc:
@@ -398,6 +484,7 @@ class TailHedgeEngine:
         target: Optional[TailHedgeTargetConfig],
         tranches: List[Dict[str, Any]],
         entry_history: List[Dict[str, Any]],
+        harvest_plans: List[Dict[str, Any]],
         tranche_index: int,
     ) -> bool:
         tranche = tranches[tranche_index]
@@ -414,6 +501,7 @@ class TailHedgeEngine:
                 position,
                 tranches,
                 entry_history,
+                harvest_plans,
                 tranche_index,
                 action="BUY",
                 quantity=quantity,
@@ -425,6 +513,7 @@ class TailHedgeEngine:
                 position,
                 tranches,
                 entry_history,
+                harvest_plans,
                 tranche_index,
                 action="SELL",
                 quantity=quantity,
@@ -439,6 +528,7 @@ class TailHedgeEngine:
                 position,
                 tranches,
                 entry_history,
+                harvest_plans,
                 tranche_index,
                 action="SELL",
                 quantity=quantity,
@@ -464,6 +554,7 @@ class TailHedgeEngine:
         position: PortfolioItem,
         tranches: List[Dict[str, Any]],
         entry_history: List[Dict[str, Any]],
+        harvest_plans: List[Dict[str, Any]],
         tranche_index: int,
         *,
         action: str,
@@ -495,6 +586,7 @@ class TailHedgeEngine:
             "close_enqueued",
             tranches=tranches,
             entry_history=entry_history,
+            harvest_plans=harvest_plans,
             action_symbol=symbol,
             action_entry_id=updated["entry_id"],
             order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
@@ -521,12 +613,16 @@ class TailHedgeEngine:
         net_liquidation: float,
         tranches: List[Dict[str, Any]],
         entry_history: List[Dict[str, Any]],
+        harvest_plans: List[Dict[str, Any]],
         occupied_con_ids: set[int],
     ) -> None:
         if self.data_store is None:
             raise RuntimeError("Tail hedge requires SQLite state storage.")
 
         symbol = target.symbol
+        if not self.config.trading_is_allowed(symbol):
+            self._record_evaluation("trading_disabled", symbol=symbol)
+            return
         if stock_exposure <= 0:
             self._record_evaluation("no_protected_stock_position", symbol=symbol)
             return
@@ -561,10 +657,14 @@ class TailHedgeEngine:
             2,
         )
         tranche_budget = round(
+            target_annual_budget / target.annual_tranches,
+            2,
+        )
+        applicable_budget = round(
             min(
                 remaining_budget,
                 target_remaining_budget,
-                target_annual_budget / target.annual_tranches,
+                tranche_budget,
             ),
             2,
         )
@@ -579,6 +679,7 @@ class TailHedgeEngine:
             "target_annual_budget": target_annual_budget,
             "annual_tranches": target.annual_tranches,
             "tranche_budget": tranche_budget,
+            "applicable_budget": applicable_budget,
             "global_entry_spend": global_spent,
             "target_entry_spend": target_spent,
             "remaining_budget": remaining_budget,
@@ -588,20 +689,6 @@ class TailHedgeEngine:
         if len(target_history) >= target.annual_tranches:
             self._record_evaluation(
                 "annual_tranche_limit",
-                symbol=symbol,
-                **budget_details,
-            )
-            return
-        if remaining_budget <= 0:
-            self._record_evaluation(
-                "annual_budget_exhausted",
-                symbol=symbol,
-                **budget_details,
-            )
-            return
-        if tranche_budget <= 0:
-            self._record_evaluation(
-                "target_budget_exhausted",
                 symbol=symbol,
                 **budget_details,
             )
@@ -672,17 +759,25 @@ class TailHedgeEngine:
             return
 
         per_contract_cost = round(quote.limit_price * self._multiplier(contract), 2)
-        quantity = math.floor(tranche_budget / per_contract_cost)
-        if quantity <= 0:
-            self._record_evaluation(
-                "tranche_budget_too_small",
-                symbol=symbol,
-                per_contract_cost=per_contract_cost,
-                **quote_details,
-            )
-            return
-
+        budget_quantity = math.floor(applicable_budget / per_contract_cost)
+        quantity = max(1, budget_quantity)
         entry_cost = round(per_contract_cost * quantity, 2)
+        minimum_contract_floor_applied = budget_quantity < 1
+        tranche_budget_overrun = round(max(0.0, entry_cost - tranche_budget), 2)
+        target_annual_budget_overrun = round(
+            max(0.0, target_spent + entry_cost - target_annual_budget),
+            2,
+        )
+        global_annual_budget_overrun = round(
+            max(0.0, global_spent + entry_cost - annual_budget),
+            2,
+        )
+        sizing_details = {
+            "minimum_contract_floor_applied": minimum_contract_floor_applied,
+            "tranche_budget_overrun": tranche_budget_overrun,
+            "target_annual_budget_overrun": target_annual_budget_overrun,
+            "global_annual_budget_overrun": global_annual_budget_overrun,
+        }
         entered_at = self._now()
         entry_id = f"{symbol}:{quote.con_id}:{entered_at.isoformat()}"
         tranche = {
@@ -697,12 +792,14 @@ class TailHedgeEngine:
             "entry_limit_price": quote.limit_price,
             "entry_cost": entry_cost,
             "entry_enqueued_at": entered_at,
+            **sizing_details,
         }
         history_entry = {
             "entry_id": entry_id,
             "symbol": symbol,
             "entered_at": entered_at,
             "estimated_cost": entry_cost,
+            **sizing_details,
         }
         updated_tranches = [*tranches, tranche]
         active_entry_ids = {str(active["entry_id"]) for active in tranches}
@@ -721,6 +818,7 @@ class TailHedgeEngine:
             "entry_enqueued",
             tranches=updated_tranches,
             entry_history=updated_history,
+            harvest_plans=harvest_plans,
             action_symbol=symbol,
             action_entry_id=entry_id,
             order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
@@ -746,8 +844,22 @@ class TailHedgeEngine:
             per_contract_cost=per_contract_cost,
             entry_cost=entry_cost,
             later_than_expiration=later_than_expiration,
+            **sizing_details,
             **quote_details,
         )
+        if minimum_contract_floor_applied and any(
+            (
+                tranche_budget_overrun,
+                target_annual_budget_overrun,
+                global_annual_budget_overrun,
+            )
+        ):
+            log.warning(
+                f"{symbol}: One-contract tail-hedge minimum exceeded a budget "
+                f"(tranche={dfmt(tranche_budget_overrun)}, "
+                f"target_annual={dfmt(target_annual_budget_overrun)}, "
+                f"global_annual={dfmt(global_annual_budget_overrun)})."
+            )
         log.notice(
             f"{symbol}: Enqueued {quantity}x {quote.strike:g} puts expiring "
             f"{quote.expiration} at {dfmt(quote.limit_price)} each."
@@ -955,7 +1067,10 @@ class TailHedgeEngine:
             order = getattr(trade, "order", None)
             contract = getattr(trade, "contract", None)
             order_ref = getattr(order, "orderRef", None)
-            if order_ref not in TAIL_HEDGE_ORDER_REFS:
+            if order_ref not in TAIL_HEDGE_ORDER_REFS and not (
+                isinstance(order_ref, str)
+                and order_ref.startswith(TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX)
+            ):
                 continue
             status = getattr(trade, "orderStatus", None)
             working_orders.append(
@@ -1005,20 +1120,28 @@ class TailHedgeEngine:
         }
 
     def _queued_put_con_ids(self) -> set[int]:
-        orders = getattr(self.order_ops, "orders", None)
-        records = getattr(orders, "records", None)
-        if not callable(records):
-            return set()
-        queued = records()
-        if not isinstance(queued, list):
-            return set()
         return {
             contract.conId
-            for contract, _order, _intent_id in queued
+            for contract, _order, _intent_id in self.order_ops.orders.records()
             if isinstance(contract, Option)
             and contract.right.upper().startswith("P")
             and contract.conId > 0
         }
+
+    def _same_run_regime_buy_symbols(self) -> set[str]:
+        approved_symbols = (
+            self._get_regime_buy_symbols()
+            if self._get_regime_buy_symbols is not None
+            else set()
+        )
+        queued_symbols = {
+            contract.symbol
+            for contract, order, _intent_id in self.order_ops.orders.records()
+            if isinstance(contract, Stock)
+            and str(getattr(order, "action", "")).upper() == "BUY"
+            and str(getattr(order, "orderRef", "")).startswith("tg:regime-rebalance:")
+        }
+        return approved_symbols | queued_symbols
 
     @staticmethod
     def _stock_exposure(symbol_positions: List[PortfolioItem]) -> float:
@@ -1041,6 +1164,7 @@ class TailHedgeEngine:
         *,
         tranches: List[Dict[str, Any]],
         entry_history: List[Dict[str, Any]],
+        harvest_plans: List[Dict[str, Any]],
         persistence_required: bool = True,
         **payload: Any,
     ) -> Dict[str, Any]:
@@ -1054,6 +1178,7 @@ class TailHedgeEngine:
             "state_recorded_at": self._now(),
             "tranches": tranches,
             "entry_history": entry_history,
+            "harvest_plans": harvest_plans,
             **payload,
         }
         recorded = self.data_store.record_event(TAIL_HEDGE_STATE_EVENT, state)
@@ -1069,14 +1194,13 @@ class TailHedgeEngine:
     def _state_parts(
         self,
         state: Optional[Dict[str, Any]],
-    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
         if state is None:
-            return [], []
-        _validate_state_identity(state, self.config.runtime.account.number)
-        raw_tranches = state.get("tranches")
-        raw_history = state.get("entry_history")
-        if not isinstance(raw_tranches, list) or not isinstance(raw_history, list):
-            raise RuntimeError("Tail-hedge state has invalid tranche or history data")
+            return [], [], []
+        raw_tranches, raw_history, raw_harvest_plans = tail_hedge_state_collections(
+            state,
+            account_number=self.config.runtime.account.number,
+        )
 
         tranches: list[dict[str, Any]] = []
         tranche_entry_ids: set[str] = set()
@@ -1159,7 +1283,37 @@ class TailHedgeEngine:
             for entry_id in tranche_entry_ids
         ):
             raise RuntimeError("Tail-hedge state has mismatched tranche ownership")
-        return tranches, entry_history
+        harvest_plans: list[dict[str, Any]] = []
+        plan_ids: set[str] = set()
+        active_symbols: set[str] = set()
+        valid_statuses = TAIL_HEDGE_ACTIVE_HARVEST_STATUSES | {"completed", "canceled"}
+        for raw_plan in raw_harvest_plans:
+            plan = dict(raw_plan)
+            plan_id = plan.get("plan_id")
+            symbol = plan.get("symbol")
+            status = plan.get("status")
+            put_sales = plan.get("put_sales")
+            if (
+                not isinstance(plan_id, str)
+                or not plan_id
+                or plan_id in plan_ids
+                or not isinstance(symbol, str)
+                or not symbol
+                or status not in valid_statuses
+                or not isinstance(put_sales, list)
+                or not all(isinstance(sale, dict) for sale in put_sales)
+            ):
+                raise RuntimeError("Tail-hedge state contains an invalid harvest plan")
+            if status in TAIL_HEDGE_ACTIVE_HARVEST_STATUSES:
+                if symbol in active_symbols:
+                    raise RuntimeError(
+                        "Tail-hedge state contains duplicate active harvest plans"
+                    )
+                active_symbols.add(symbol)
+            plan_ids.add(plan_id)
+            harvest_plans.append(plan)
+
+        return tranches, entry_history, harvest_plans
 
     def _record_evaluation(
         self,

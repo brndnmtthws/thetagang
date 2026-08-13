@@ -96,7 +96,7 @@ class OptionsStrategyEngine:
             return set()
         state = self.data_store.get_last_event_payload(
             TAIL_HEDGE_STATE_EVENT,
-            raise_on_error=ownership_required,
+            raise_on_error=True,
         )
         return tail_hedge_owned_con_ids(
             state,

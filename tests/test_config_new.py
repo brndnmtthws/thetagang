@@ -85,7 +85,10 @@ def test_enabled_tail_hedge_requires_a_managed_symbol() -> None:
 
 def test_tail_hedge_rejects_shares_only_regime_mode() -> None:
     data = _base_config({"strategies": ["regime_rebalance", "tail_hedge"]})
-    data["strategies"]["regime_rebalance"] = {"shares_only": True}
+    data["strategies"]["regime_rebalance"] = {
+        "enabled": True,
+        "shares_only": True,
+    }
     data["strategies"]["tail_hedge"] = {
         "enabled": True,
         "targets": [_tail_target()],
@@ -93,6 +96,24 @@ def test_tail_hedge_rejects_shares_only_regime_mode() -> None:
 
     with pytest.raises(ValueError, match="cannot be enabled when shares_only is true"):
         Config(**data)
+
+
+def test_tail_hedge_allows_shares_only_on_a_disabled_regime_strategy() -> None:
+    data = _base_config({"strategies": ["wheel", "tail_hedge"]})
+    data["strategies"]["regime_rebalance"] = {
+        "enabled": False,
+        "shares_only": True,
+    }
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+    }
+
+    config = Config(**data)
+
+    assert config.regime_rebalance.enabled is False
+    assert config.regime_rebalance.shares_only is True
+    assert config.tail_hedge.enabled is True
 
 
 def test_long_put_tail_hedge_can_run_with_wheel_option_management() -> None:
@@ -204,6 +225,47 @@ def test_explicit_run_stages_still_supported_for_advanced_mode() -> None:
     flags = stage_enabled_map_from_run(config.run)
     assert flags["equity_regime_rebalance"] is True
     assert flags["post_cash_management"] is True
+
+
+@pytest.mark.parametrize(
+    ("earlier", "later"),
+    [
+        ("equity_regime_rebalance", "post_tail_hedge"),
+        ("equity_regime_rebalance", "post_cash_management"),
+        ("post_tail_hedge", "post_cash_management"),
+    ],
+)
+def test_explicit_run_stages_reject_unsafe_tail_and_cash_ordering(
+    earlier: str,
+    later: str,
+) -> None:
+    stage_kinds = {
+        "equity_regime_rebalance": "equity.regime_rebalance",
+        "post_tail_hedge": "post.tail_hedge",
+        "post_cash_management": "post.cash_management",
+    }
+    with pytest.raises(
+        ValueError,
+        match=rf"{earlier} must appear before run\.stages\.{later}",
+    ):
+        Config(
+            **_base_config(
+                {
+                    "stages": [
+                        {
+                            "id": later,
+                            "kind": stage_kinds[later],
+                            "enabled": True,
+                        },
+                        {
+                            "id": earlier,
+                            "kind": stage_kinds[earlier],
+                            "enabled": True,
+                        },
+                    ]
+                }
+            )
+        )
 
 
 def test_explicit_run_config_rejects_enabled_stage_with_disabled_dependency() -> None:

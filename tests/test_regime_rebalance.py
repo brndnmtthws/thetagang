@@ -21,6 +21,11 @@ from thetagang.strategies.regime_engine import (
     REGIME_HISTORY_MAX_ATTEMPTS,
     REGIME_HISTORY_TIMEFRAME,
 )
+from thetagang.strategies.tail_hedge_engine import (
+    TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
+    TAIL_HEDGE_STATE_EVENT,
+    TAIL_HEDGE_STATE_SCHEMA_VERSION,
+)
 
 REGIME_HISTORY_START = datetime(2024, 1, 2)
 REGIME_SYMBOLS = ("AAA", "BBB")
@@ -55,6 +60,7 @@ def portfolio_manager(mock_ib, mocker):
         ),
         strategies=SimpleNamespace(
             cash_management=SimpleNamespace(cash_fund="SHV"),
+            tail_hedge=SimpleNamespace(enabled=False, targets=[]),
             regime_rebalance=SimpleNamespace(
                 enabled=True,
                 symbols=["AAA", "BBB"],
@@ -105,6 +111,7 @@ def portfolio_manager_with_db(mock_ib, mocker, tmp_path):
         ),
         strategies=SimpleNamespace(
             cash_management=SimpleNamespace(cash_fund="SHV"),
+            tail_hedge=SimpleNamespace(enabled=False, targets=[]),
             regime_rebalance=SimpleNamespace(
                 enabled=True,
                 symbols=["AAA", "BBB"],
@@ -240,8 +247,11 @@ def _stock_position(symbol: str, position: int, market_value: float | None = Non
     )
 
 
-def _regime_account_summary(value: str = "400"):
-    return {"NetLiquidation": SimpleNamespace(value=value)}
+def _regime_account_summary(value: str = "400", *, cash: str | None = None):
+    summary = {"NetLiquidation": SimpleNamespace(value=value)}
+    if cash is not None:
+        summary["TotalCashValue"] = SimpleNamespace(value=cash)
+    return summary
 
 
 def _regime_stock_positions(aaa: int = 3, bbb: int = 1):
@@ -305,6 +315,8 @@ def _option_position(
     right: str = "C",
     expiry: str = "20270115",
     con_id: int = 0,
+    average_cost: float | None = None,
+    unrealized_pnl: float | None = None,
 ):
     contract = Option(
         symbol=symbol,
@@ -319,6 +331,67 @@ def _option_position(
         contract=contract,
         position=position,
         marketValue=market_value,
+        averageCost=average_cost,
+        unrealizedPNL=unrealized_pnl,
+    )
+
+
+def _tail_state(
+    *,
+    symbol: str = "BBB",
+    puts: list[SimpleNamespace] | None = None,
+    harvest_plans: list[dict] | None = None,
+) -> dict:
+    positions = puts or []
+    tranches = []
+    entry_history = []
+    for index, position in enumerate(positions):
+        entry_id = f"{symbol}-tail-{index}"
+        entered_at = datetime(2026, 1, 1) + timedelta(days=index)
+        quantity = int(position.position)
+        tranches.append(
+            {
+                "entry_id": entry_id,
+                "symbol": symbol,
+                "status": "active",
+                "con_id": position.contract.conId,
+                "local_symbol": position.contract.localSymbol,
+                "expiration": position.contract.lastTradeDateOrContractMonth,
+                "strike": float(position.contract.strike),
+                "quantity": quantity,
+                "entry_limit_price": float(position.averageCost or 0.0) / 100.0,
+                "entry_cost": float(position.averageCost or 0.0) * quantity,
+                "entry_enqueued_at": entered_at,
+            }
+        )
+        entry_history.append(
+            {
+                "entry_id": entry_id,
+                "symbol": symbol,
+                "entered_at": entered_at,
+                "estimated_cost": float(position.averageCost or 0.0) * quantity,
+            }
+        )
+    return {
+        "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
+        "strategy": "long_put",
+        "account": "TEST123",
+        "status": "active",
+        "tranches": tranches,
+        "entry_history": entry_history,
+        "harvest_plans": harvest_plans or [],
+    }
+
+
+def _tail_target(symbol: str = "BBB") -> SimpleNamespace:
+    return SimpleNamespace(symbol=symbol)
+
+
+def _option_ticker(price: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        midpoint=lambda: price,
+        marketPrice=lambda: price,
+        modelGreeks=None,
     )
 
 
@@ -1177,7 +1250,7 @@ async def test_regime_rebalance_excludes_options_and_cash_fund_from_base(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tail_enabled", [True, False])
-async def test_regime_rebalance_includes_only_state_owned_tail_puts_in_base(
+async def test_regime_rebalance_excludes_state_owned_tail_puts_from_base(
     portfolio_manager_with_db, mocker, tail_enabled
 ):
     portfolio_manager_with_db.config.runtime.account.margin_usage = 1.2
@@ -1194,7 +1267,7 @@ async def test_regime_rebalance_includes_only_state_owned_tail_puts_in_base(
     assert portfolio_manager_with_db.data_store.record_event(
         "tail_hedge_state",
         {
-            "schema_version": 1,
+            "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
             "strategy": "long_put",
             "account": "TEST123",
             "status": "active",
@@ -1207,6 +1280,7 @@ async def test_regime_rebalance_includes_only_state_owned_tail_puts_in_base(
                 }
             ],
             "entry_history": [],
+            "harvest_plans": [],
         },
         symbol="AAA",
     )
@@ -1222,6 +1296,8 @@ async def test_regime_rebalance_includes_only_state_owned_tail_puts_in_base(
                 market_value=10_000.0,
                 right="P",
                 con_id=tail_con_id,
+                average_cost=10_001.0,
+                unrealized_pnl=-1.0,
             ),
             _option_position(
                 "AAA",
@@ -1253,9 +1329,62 @@ async def test_regime_rebalance_includes_only_state_owned_tail_puts_in_base(
         portfolio_positions,
     )
 
-    # The $10k tail put remains in NLV while the unrelated $5k option is removed:
-    # floor(($100k - $5k) * 1.2) = $114k, or $57k per stock.
-    assert orders == [("AAA", "NYSE", 70), ("BBB", "NYSE", 270)]
+    # Both the state-owned tail put and unrelated option are removed from core
+    # capital: floor(($100k - $15k) * 1.2) = $102k, or $51k per stock.
+    assert orders == [("AAA", "NYSE", 10), ("BBB", "NYSE", 210)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tail_enabled", [True, False])
+async def test_net_liq_base_also_excludes_state_owned_tail_puts(
+    portfolio_manager_with_db, mocker, tail_enabled
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.runtime.account.margin_usage = 1.2
+    regime_config = portfolio_manager.config.strategies.regime_rebalance
+    regime_config.weight_base = RegimeRebalanceBaseEnum.net_liq
+    regime_config.soft_band = 0.0
+    regime_config.choppiness_min = 0.0
+    regime_config.efficiency_max = 1.0
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=tail_enabled,
+        targets=[_tail_target("AAA")],
+    )
+    tail_put = _option_position(
+        "AAA",
+        1,
+        market_value=10_000.0,
+        right="P",
+        con_id=701,
+        average_cost=10_001.0,
+        unrealized_pnl=-1.0,
+    )
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(symbol="AAA", puts=[tail_put]),
+    )
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 500), tail_put],
+        "BBB": [_stock_position("BBB", 300)],
+        "OTHER_OPT": [_option_position("AAA", 1, market_value=5_000.0, con_id=702)],
+    }
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("100000"),
+        portfolio_positions,
+    )
+
+    # Only the $10k state-owned tail put is removed in net_liq mode; the
+    # unrelated $5k option remains in the selected base by configuration.
+    assert orders == [("AAA", "NYSE", 40), ("BBB", "NYSE", 240)]
 
 
 @pytest.mark.asyncio
@@ -3040,3 +3169,813 @@ async def test_regime_rebalance_zero_weights_raises(portfolio_manager, mocker):
         await portfolio_manager.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
+
+
+@pytest.mark.asyncio
+async def test_actionable_buy_harvests_shortest_profitable_puts_and_defers_stock(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target("BBB")],
+    )
+    short_put = _option_position(
+        "BBB",
+        1,
+        market_value=60.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+        unrealized_pnl=10.0,
+    )
+    short_put.contract.multiplier = "100"
+    later_put = _option_position(
+        "BBB",
+        2,
+        market_value=120.0,
+        right="P",
+        expiry="20261218",
+        con_id=802,
+        average_cost=50.0,
+        unrealized_pnl=20.0,
+    )
+    later_put.contract.multiplier = "100"
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(symbol="BBB", puts=[later_put, short_put]),
+    )
+
+    account_summary = _regime_account_summary("580")
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 3)],
+        "BBB": [_stock_position("BBB", 0), short_put, later_put],
+        "OTHER": [_stock_position("OTHER", 1, market_value=100.0)],
+    }
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(
+        return_value=_option_ticker(0.60)
+    )
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        account_summary,
+        portfolio_positions,
+    )
+
+    assert orders == [("AAA", "NYSE", -1)]
+    queued = portfolio_manager.orders.records()
+    assert [contract.conId for contract, _order, _intent_id in queued] == [801, 802]
+    assert [int(order.totalQuantity) for _contract, order, _intent_id in queued] == [
+        1,
+        1,
+    ]
+    assert all(
+        order.orderRef.startswith(TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX)
+        for _contract, order, _intent_id in queued
+    )
+    assert all(len(order.orderRef) <= 32 for _contract, order, _intent_id in queued)
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    plan = state["harvest_plans"][0]
+    assert plan["status"] == "put_sell_working"
+    assert plan["approved_buy_amount"] == 100.0
+    assert plan["target_snapshot"]["ordinary_approved_shares"] == 2
+    assert plan["target_snapshot"]["funding"]["funding_shortfall"] == 100.0
+    assert [sale["con_id"] for sale in plan["put_sales"]] == [801, 802]
+    assert sum(sale["estimated_proceeds"] for sale in plan["put_sales"]) == 120.0
+    assert portfolio_manager.get_reserved_cash_for_post_management() == 120.0
+
+
+@pytest.mark.asyncio
+async def test_cash_deposit_funds_hard_rebalance_without_harvesting_puts(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target("BBB")],
+    )
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=60.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+        unrealized_pnl=10.0,
+    )
+    tail_put.contract.multiplier = "100"
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(symbol="BBB", puts=[tail_put]),
+    )
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("560", cash="100"),
+        {
+            "AAA": [_stock_position("AAA", 3)],
+            "BBB": [_stock_position("BBB", 0), tail_put],
+            "OTHER": [_stock_position("OTHER", 1, market_value=100.0)],
+        },
+    )
+
+    assert orders == [("AAA", "NYSE", -1), ("BBB", "NYSE", 2)]
+    assert portfolio_manager.orders.records() == []
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    assert state["harvest_plans"] == []
+
+
+@pytest.mark.asyncio
+async def test_queued_buy_debit_is_reserved_before_tail_harvesting(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target("BBB")],
+    )
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=60.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+        unrealized_pnl=10.0,
+    )
+    tail_put.contract.multiplier = "100"
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(symbol="BBB", puts=[tail_put]),
+    )
+    portfolio_manager.orders.add_order(
+        Stock("OTHER", "SMART", "USD"),
+        SimpleNamespace(action="BUY", lmtPrice=100.0, totalQuantity=1),
+        None,
+    )
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(
+        return_value=_option_ticker(0.60)
+    )
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("560", cash="100"),
+        {
+            "AAA": [_stock_position("AAA", 3)],
+            "BBB": [_stock_position("BBB", 0), tail_put],
+            "OTHER": [_stock_position("OTHER", 1, market_value=100.0)],
+        },
+    )
+
+    assert orders == [("AAA", "NYSE", -1)]
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    plan = state["harvest_plans"][0]
+    funding = plan["target_snapshot"]["funding"]
+    assert funding["queued_cash_debits"] == 100.0
+    assert funding["funding_shortfall"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_cash_fund_liquidity_is_used_before_tail_harvesting(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.cash_management = SimpleNamespace(
+        enabled=True,
+        cash_fund="SHV",
+        target_cash_balance=50,
+    )
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target("BBB")],
+    )
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=60.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+        unrealized_pnl=10.0,
+    )
+    tail_put.contract.multiplier = "100"
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(symbol="BBB", puts=[tail_put]),
+    )
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("610", cash="0"),
+        {
+            "AAA": [_stock_position("AAA", 3)],
+            "BBB": [_stock_position("BBB", 0), tail_put],
+            "OTHER": [_stock_position("OTHER", 1, market_value=100.0)],
+            "SHV": [_stock_position("SHV", 1, market_value=150.0)],
+        },
+    )
+
+    assert orders == [("AAA", "NYSE", -1), ("BBB", "NYSE", 2)]
+    assert portfolio_manager.orders.records() == []
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    assert state["harvest_plans"] == []
+
+
+@pytest.mark.asyncio
+async def test_other_symbol_hard_breach_does_not_harvest_protected_symbol(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target("BBB")],
+    )
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=60.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+        unrealized_pnl=10.0,
+    )
+    tail_put.contract.multiplier = "100"
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(symbol="BBB", puts=[tail_put]),
+    )
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("1060"),
+        {
+            "AAA": [_stock_position("AAA", 1)],
+            "BBB": [_stock_position("BBB", 4), tail_put],
+            "OTHER": [_stock_position("OTHER", 1, market_value=500.0)],
+        },
+    )
+
+    assert orders == [("AAA", "NYSE", 4), ("BBB", "NYSE", 1)]
+    assert portfolio_manager.orders.records() == []
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    assert state["harvest_plans"] == []
+
+
+@pytest.mark.asyncio
+async def test_released_tail_credit_funds_other_orders_before_new_harvest(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target("AAA"), _tail_target("BBB")],
+    )
+    bbb_put = _option_position(
+        "BBB",
+        1,
+        market_value=60.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+        unrealized_pnl=10.0,
+    )
+    bbb_put.contract.multiplier = "100"
+    ready_plan = {
+        "plan_id": "aaa-ready",
+        "symbol": "AAA",
+        "status": "rebalance_credit_ready",
+        "requested_at": datetime(2026, 8, 12, 12, 0, 0),
+        "approved_buy_amount": 200.0,
+        "target_snapshot": {"approved_shares": 2},
+        "put_sales": [],
+        "actual_put_sale_proceeds": 200.0,
+        "remaining_rebalance_credit": 200.0,
+    }
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(symbol="BBB", puts=[bbb_put], harvest_plans=[ready_plan]),
+    )
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("660", cash="200"),
+        {
+            "AAA": [_stock_position("AAA", 2)],
+            "BBB": [_stock_position("BBB", 0), bbb_put],
+            "OTHER": [_stock_position("OTHER", 2, market_value=200.0)],
+        },
+    )
+
+    assert orders == [("BBB", "NYSE", 2)]
+    assert portfolio_manager.orders.records() == []
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    assert len(state["harvest_plans"]) == 1
+    assert state["harvest_plans"][0]["status"] == "completed"
+    assert state["harvest_plans"][0]["unused_proceeds"] == 200.0
+
+
+@pytest.mark.asyncio
+async def test_funding_shortfall_is_allocated_proportionally_across_tail_targets(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target("AAA"), _tail_target("BBB")],
+    )
+    aaa_put = _option_position(
+        "AAA",
+        3,
+        market_value=180.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+        unrealized_pnl=30.0,
+    )
+    bbb_put = _option_position(
+        "BBB",
+        3,
+        market_value=180.0,
+        right="P",
+        expiry="20261218",
+        con_id=802,
+        average_cost=50.0,
+        unrealized_pnl=30.0,
+    )
+    aaa_put.contract.multiplier = "100"
+    bbb_put.contract.multiplier = "100"
+    aaa_state = _tail_state(symbol="AAA", puts=[aaa_put])
+    bbb_state = _tail_state(symbol="BBB", puts=[bbb_put])
+    state = {
+        **aaa_state,
+        "tranches": aaa_state["tranches"] + bbb_state["tranches"],
+        "entry_history": (aaa_state["entry_history"] + bbb_state["entry_history"]),
+    }
+    assert portfolio_manager.data_store.record_event(TAIL_HEDGE_STATE_EVENT, state)
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(
+        return_value=_option_ticker(1.0)
+    )
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("1360", cash="200"),
+        {
+            "AAA": [_stock_position("AAA", 1), aaa_put],
+            "BBB": [_stock_position("BBB", 1), bbb_put],
+            "OTHER": [_stock_position("OTHER", 1, market_value=600.0)],
+        },
+    )
+
+    assert orders == []
+    queued = portfolio_manager.orders.records()
+    assert [contract.conId for contract, _order, _intent_id in queued] == [801, 802]
+    assert [int(order.totalQuantity) for _contract, order, _intent_id in queued] == [
+        3,
+        3,
+    ]
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    assert [plan["approved_buy_amount"] for plan in state["harvest_plans"]] == [
+        300.0,
+        300.0,
+    ]
+    assert all(
+        plan["target_snapshot"]["funding"]["funding_shortfall"] == 600.0
+        for plan in state["harvest_plans"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_realized_tail_credit_is_capped_by_original_approval_on_later_run(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target("BBB")],
+    )
+    plan_id = "credit-cap"
+    harvest_order_ref = f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{plan_id}:801"
+    harvest_plan = {
+        "plan_id": plan_id,
+        "symbol": "BBB",
+        "status": "put_sell_working",
+        "requested_at": datetime(2026, 8, 12, 12, 0, 0),
+        "approved_buy_amount": 100.0,
+        "target_snapshot": {"approved_shares": 1},
+        "put_sales": [
+            {
+                "entry_id": "bbb-tail",
+                "con_id": 801,
+                "expiration": "20261120",
+                "quantity": 1,
+                "multiplier": 100.0,
+                "estimated_proceeds": 300.0,
+                "order_ref": harvest_order_ref,
+                "order_status": "enqueued",
+            }
+        ],
+        "actual_put_sale_proceeds": 0.0,
+        "remaining_rebalance_credit": 0.0,
+    }
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(harvest_plans=[harvest_plan]),
+    )
+    fill = SimpleNamespace(
+        execution=SimpleNamespace(
+            orderRef=harvest_order_ref,
+            side="SLD",
+            shares=1,
+            price=3.0,
+        ),
+        commissionReport=SimpleNamespace(commission=1.25),
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[fill])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("698.75"),
+        {
+            "AAA": [_stock_position("AAA", 4)],
+            "BBB": [_stock_position("BBB", 0)],
+        },
+    )
+
+    assert ("BBB", "NYSE", 1) in orders
+    assert ("BBB", "NYSE", 2) not in orders
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(
+        return_value=_option_ticker(100.0)
+    )
+    await portfolio_manager.execute_regime_rebalance_orders(
+        [order for order in orders if order[0] == "BBB"]
+    )
+
+    stock_orders = portfolio_manager.orders.records()
+    assert len(stock_orders) == 1
+    contract, order, _intent_id = stock_orders[0]
+    assert isinstance(contract, Stock)
+    assert int(order.totalQuantity) == 1
+    assert order.orderRef == "tg:regime-rebalance:credit-cap"
+    assert len(order.orderRef) <= 32
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    plan = state["harvest_plans"][0]
+    assert plan["status"] == "stock_buy_enqueued"
+    assert plan["actual_put_sale_proceeds"] == 298.75
+    assert plan["stock_buy"]["authorized_amount"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_filled_harvest_leaves_credit_as_cash_when_buy_gap_disappears(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target("BBB")],
+    )
+    plan_id = "gap-gone"
+    harvest_order_ref = f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{plan_id}:801"
+    harvest_plan = {
+        "plan_id": plan_id,
+        "symbol": "BBB",
+        "status": "put_sell_working",
+        "requested_at": datetime(2026, 8, 12, 12, 0, 0),
+        "approved_buy_amount": 100.0,
+        "target_snapshot": {"approved_shares": 1},
+        "put_sales": [
+            {
+                "entry_id": "bbb-tail",
+                "con_id": 801,
+                "expiration": "20261120",
+                "quantity": 1,
+                "multiplier": 100.0,
+                "estimated_proceeds": 150.0,
+                "order_ref": harvest_order_ref,
+                "order_status": "enqueued",
+            }
+        ],
+        "actual_put_sale_proceeds": 0.0,
+        "remaining_rebalance_credit": 0.0,
+    }
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(harvest_plans=[harvest_plan]),
+    )
+    fill = SimpleNamespace(
+        execution=SimpleNamespace(
+            orderRef=harvest_order_ref,
+            side="SLD",
+            shares=1,
+            price=1.5,
+        )
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[fill])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("550"),
+        {
+            "AAA": [_stock_position("AAA", 2)],
+            "BBB": [_stock_position("BBB", 2)],
+        },
+    )
+
+    assert orders == []
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    plan = state["harvest_plans"][0]
+    assert plan["status"] == "completed"
+    assert plan["completion_reason"] == "current_buy_not_actionable"
+    assert plan["actual_put_sale_proceeds"] == 150.0
+    assert plan["unused_proceeds"] == 150.0
+    assert portfolio_manager.get_reserved_cash_for_post_management() == 0.0
+
+
+@pytest.mark.asyncio
+async def test_working_harvest_reconciles_when_tail_entries_are_disabled(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=False,
+        targets=[],
+    )
+    plan_id = "disabled-after-sale"
+    harvest_order_ref = f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{plan_id}:801"
+    harvest_plan = {
+        "plan_id": plan_id,
+        "symbol": "BBB",
+        "status": "put_sell_working",
+        "requested_at": datetime(2026, 8, 12, 12, 0, 0),
+        "approved_buy_amount": 100.0,
+        "target_snapshot": {"approved_shares": 1},
+        "put_sales": [
+            {
+                "entry_id": "bbb-tail",
+                "con_id": 801,
+                "expiration": "20261120",
+                "quantity": 1,
+                "multiplier": 100.0,
+                "estimated_proceeds": 150.0,
+                "order_ref": harvest_order_ref,
+                "order_status": "enqueued",
+            }
+        ],
+        "actual_put_sale_proceeds": 0.0,
+        "remaining_rebalance_credit": 0.0,
+    }
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(harvest_plans=[harvest_plan]),
+    )
+    fill = SimpleNamespace(
+        execution=SimpleNamespace(
+            orderRef=harvest_order_ref,
+            side="SLD",
+            shares=1,
+            price=1.5,
+        )
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[fill])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("550"),
+        {
+            "AAA": [_stock_position("AAA", 4)],
+            "BBB": [_stock_position("BBB", 0)],
+        },
+    )
+
+    assert ("BBB", "NYSE", 2) in orders
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    plan = state["harvest_plans"][0]
+    assert plan["status"] == "completed"
+    assert plan["completion_reason"] == "tail_target_removed"
+    assert plan["actual_put_sale_proceeds"] == 150.0
+    assert plan["unused_proceeds"] == 150.0
+    assert portfolio_manager.get_reserved_cash_for_post_management() == 0.0
+
+
+@pytest.mark.asyncio
+async def test_tail_funded_stock_fill_completes_plan_with_unused_cash(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target("BBB")],
+    )
+    plan_id = "stock-filled"
+    stock_order_ref = f"tg:regime-rebalance:{plan_id}"
+    harvest_plan = {
+        "plan_id": plan_id,
+        "symbol": "BBB",
+        "status": "stock_buy_enqueued",
+        "requested_at": datetime(2026, 8, 12, 12, 0, 0),
+        "approved_buy_amount": 100.0,
+        "target_snapshot": {"approved_shares": 1},
+        "put_sales": [],
+        "actual_put_sale_proceeds": 120.0,
+        "remaining_rebalance_credit": 120.0,
+        "stock_buy": {
+            "order_ref": stock_order_ref,
+            "order_status": "enqueued",
+            "quantity": 1,
+            "limit_price": 100.0,
+            "authorized_amount": 100.0,
+        },
+    }
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(harvest_plans=[harvest_plan]),
+    )
+    fill_time = datetime.now() - timedelta(days=1)
+    fill = SimpleNamespace(
+        time=fill_time,
+        contract=Stock("BBB", "SMART", "USD"),
+        execution=SimpleNamespace(
+            orderRef=stock_order_ref,
+            side="BOT",
+            shares=1,
+            price=99.0,
+            time=fill_time,
+        ),
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[fill])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("400"),
+        {
+            "AAA": [_stock_position("AAA", 2)],
+            "BBB": [_stock_position("BBB", 2)],
+        },
+    )
+
+    assert orders == []
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    plan = state["harvest_plans"][0]
+    assert plan["status"] == "completed"
+    assert plan["stock_buy"]["filled_quantity"] == 1
+    assert plan["stock_buy"]["actual_cost"] == 99.0
+    assert plan["unused_proceeds"] == 21.0
+    assert portfolio_manager.get_reserved_cash_for_post_management() == 0.0
+
+
+@pytest.mark.asyncio
+async def test_tail_credit_does_not_bypass_current_minimum_trade_threshold(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target("BBB")],
+    )
+    portfolio_manager.config.regime_rebalance_policy = lambda _symbol: SimpleNamespace(
+        allows_buy=lambda: True,
+        allows_sell=lambda: True,
+        mode=SimpleNamespace(value="both"),
+        min_threshold_shares=2,
+        min_threshold_amount=None,
+        min_threshold_percent=None,
+        min_threshold_percent_relative=None,
+    )
+    plan_id = "minimum-threshold"
+    harvest_order_ref = f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{plan_id}:801"
+    harvest_plan = {
+        "plan_id": plan_id,
+        "symbol": "BBB",
+        "status": "put_sell_working",
+        "requested_at": datetime(2026, 8, 12, 12, 0, 0),
+        "approved_buy_amount": 200.0,
+        "target_snapshot": {"approved_shares": 2},
+        "put_sales": [
+            {
+                "entry_id": "bbb-tail",
+                "con_id": 801,
+                "expiration": "20261120",
+                "quantity": 1,
+                "multiplier": 100.0,
+                "estimated_proceeds": 150.0,
+                "order_ref": harvest_order_ref,
+                "order_status": "enqueued",
+            }
+        ],
+        "actual_put_sale_proceeds": 0.0,
+        "remaining_rebalance_credit": 0.0,
+    }
+    assert portfolio_manager.data_store.record_event(
+        TAIL_HEDGE_STATE_EVENT,
+        _tail_state(harvest_plans=[harvest_plan]),
+    )
+    fill = SimpleNamespace(
+        execution=SimpleNamespace(
+            orderRef=harvest_order_ref,
+            side="SLD",
+            shares=1,
+            price=1.5,
+        )
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[fill])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+
+    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+        _regime_account_summary("550"),
+        {
+            "AAA": [_stock_position("AAA", 4)],
+            "BBB": [_stock_position("BBB", 0)],
+        },
+    )
+
+    assert orders == [("AAA", "NYSE", -2)]
+    state = portfolio_manager.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+    plan = state["harvest_plans"][0]
+    assert plan["status"] == "completed"
+    assert plan["completion_reason"] == "funded_buy_below_current_minimum_threshold"
+    assert plan["unused_proceeds"] == 150.0
