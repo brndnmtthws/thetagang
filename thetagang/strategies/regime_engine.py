@@ -20,6 +20,10 @@ from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import IBKR
 from thetagang.strategies.runtime_services import resolve_symbol_configs
+from thetagang.strategies.tail_hedge_engine import (
+    TAIL_HEDGE_STATE_EVENT,
+    tail_hedge_owned_con_ids,
+)
 from thetagang.trading_operations import OrderOperations
 
 AlignedClosesResult = Tuple[List[date], Dict[str, List[float]]]
@@ -141,6 +145,15 @@ class RegimeRebalanceEngine:
         if self._set_reserved_cash_for_post_management is None:
             return
         self._set_reserved_cash_for_post_management(max(0.0, amount))
+
+    def _tail_hedge_owned_con_ids(self) -> set[int]:
+        if self.data_store is None:
+            return set()
+        state = self.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
+        return tail_hedge_owned_con_ids(
+            state,
+            account_number=self.config.runtime.account.number,
+        )
 
     @staticmethod
     def _as_int_or_none(value: Any) -> int | None:
@@ -962,16 +975,23 @@ class RegimeRebalanceEngine:
             total_value = sum(current_values.values())
         elif weight_base == RegimeRebalanceBaseEnum.net_liq_ex_options:
             excluded_value = 0.0
+            included_tail_hedge_value = 0.0
+            tail_hedge_con_ids = self._tail_hedge_owned_con_ids()
             for positions in portfolio_positions.values():
                 for position in positions:
                     if isinstance(position.contract, Option):
-                        excluded_value += float(position.marketValue or 0.0)
+                        market_value = float(position.marketValue or 0.0)
+                        if position.contract.conId in tail_hedge_con_ids:
+                            included_tail_hedge_value += market_value
+                        else:
+                            excluded_value += market_value
             net_liq = float(account_summary["NetLiquidation"].value)
             adjusted_net_liq = net_liq - excluded_value
             total_value = math.floor(adjusted_net_liq * regime_margin_usage)
             log.notice(
                 "Regime rebalancing base: mode=net_liq_ex_options "
                 f"net_liq={dfmt(net_liq)} excluded_options={dfmt(excluded_value)} "
+                f"included_tail_hedges={dfmt(included_tail_hedge_value)} "
                 f"margin_usage={ffmt(regime_margin_usage)} "
                 f"base={dfmt(total_value)}"
             )

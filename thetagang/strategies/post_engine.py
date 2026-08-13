@@ -49,7 +49,6 @@ class PostStrategyEngine:
             ibkr=ibkr,
             order_ops=order_ops,
             data_store=data_store,
-            qualified_contracts=qualified_contracts,
         )
 
     def reserved_cash_for_post_management(self) -> float:

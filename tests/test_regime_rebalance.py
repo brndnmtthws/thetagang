@@ -304,16 +304,19 @@ def _option_position(
     strike: float = 100.0,
     right: str = "C",
     expiry: str = "20270115",
+    con_id: int = 0,
 ):
+    contract = Option(
+        symbol=symbol,
+        lastTradeDateOrContractMonth=expiry,
+        strike=strike,
+        right=right,
+        exchange="SMART",
+        currency="USD",
+    )
+    contract.conId = con_id
     return SimpleNamespace(
-        contract=Option(
-            symbol=symbol,
-            lastTradeDateOrContractMonth=expiry,
-            strike=strike,
-            right=right,
-            exchange="SMART",
-            currency="USD",
-        ),
+        contract=contract,
         position=position,
         marketValue=market_value,
     )
@@ -1170,6 +1173,89 @@ async def test_regime_rebalance_excludes_options_and_cash_fund_from_base(
     )
 
     assert orders == [("AAA", "NYSE", 40), ("BBB", "NYSE", 240)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tail_enabled", [True, False])
+async def test_regime_rebalance_includes_only_state_owned_tail_puts_in_base(
+    portfolio_manager_with_db, mocker, tail_enabled
+):
+    portfolio_manager_with_db.config.runtime.account.margin_usage = 1.2
+    regime_config = portfolio_manager_with_db.config.strategies.regime_rebalance
+    regime_config.weight_base = RegimeRebalanceBaseEnum.net_liq_ex_options
+    regime_config.soft_band = 0.0
+    regime_config.choppiness_min = 0.0
+    regime_config.efficiency_max = 1.0
+    portfolio_manager_with_db.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=tail_enabled,
+        targets=[SimpleNamespace(symbol="AAA")],
+    )
+    tail_con_id = 701
+    assert portfolio_manager_with_db.data_store.record_event(
+        "tail_hedge_state",
+        {
+            "schema_version": 1,
+            "strategy": "long_put",
+            "account": "TEST123",
+            "status": "active",
+            "tranches": [
+                {
+                    "entry_id": "tail-entry",
+                    "symbol": "AAA",
+                    "con_id": tail_con_id,
+                    "expiration": "20270115",
+                }
+            ],
+            "entry_history": [],
+        },
+        symbol="AAA",
+    )
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="100000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 500)],
+        "BBB": [_stock_position("BBB", 300)],
+        "AAA_OPT": [
+            _option_position(
+                "AAA",
+                1,
+                market_value=10_000.0,
+                right="P",
+                con_id=tail_con_id,
+            ),
+            _option_position(
+                "AAA",
+                1,
+                market_value=5_000.0,
+                right="P",
+                con_id=702,
+            ),
+        ],
+    }
+
+    _mock_regime_tickers(
+        portfolio_manager_with_db,
+        mocker,
+        aaa_price=100.0,
+        bbb_price=100.0,
+    )
+    _mock_regime_history(
+        portfolio_manager_with_db,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
+        return_value=[]
+    )
+
+    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+        account_summary,
+        portfolio_positions,
+    )
+
+    # The $10k tail put remains in NLV while the unrelated $5k option is removed:
+    # floor(($100k - $5k) * 1.2) = $114k, or $57k per stock.
+    assert orders == [("AAA", "NYSE", 70), ("BBB", "NYSE", 270)]
 
 
 @pytest.mark.asyncio

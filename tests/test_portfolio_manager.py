@@ -1,8 +1,9 @@
 import asyncio
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
-from ib_async import IB, Stock, Ticker
+from ib_async import IB, PortfolioItem, Stock, Ticker
 
 from thetagang.ibkr import IBKRRequestTimeout
 from thetagang.portfolio_manager import PortfolioManager
@@ -230,6 +231,43 @@ class TestPortfolioManager:
             ("post", {"post_cash_management"}),
         ]
         pm.get_portfolio_positions.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_tail_hedge_stage_receives_untracked_positions(
+        self, mock_ib, mock_config, mocker
+    ):
+        pm = PortfolioManager(
+            mock_config,
+            mock_ib,
+            mocker.Mock(),
+            dry_run=True,
+            run_stage_order=["post_tail_hedge"],
+        )
+        tracked = cast(
+            PortfolioItem,
+            SimpleNamespace(contract=SimpleNamespace(symbol="QQQ")),
+        )
+        removed_target = cast(
+            PortfolioItem,
+            SimpleNamespace(contract=SimpleNamespace(symbol="OLD")),
+        )
+        pm.initialize_account = mocker.Mock()
+        pm.summarize_account = mocker.AsyncMock(return_value=({}, {"QQQ": [tracked]}))
+        pm.last_untracked_positions = {"OLD": [removed_target]}
+        pm.orders.print_summary = mocker.Mock()
+        run_post = mocker.patch(
+            "thetagang.portfolio_manager.run_post_stages",
+            new=mocker.AsyncMock(),
+        )
+
+        await pm.manage()
+
+        await_args = run_post.await_args
+        assert await_args is not None
+        assert await_args.args[2] == {
+            "QQQ": [tracked],
+            "OLD": [removed_target],
+        }
 
     @pytest.mark.asyncio
     async def test_manage_continues_if_order_submission_wait_times_out(

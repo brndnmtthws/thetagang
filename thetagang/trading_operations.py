@@ -133,6 +133,7 @@ class OptionChainScanner:
         fallback_minimum_price: Optional[Callable[[], float]] = None,
         target_dte: Optional[int] = None,
         target_delta: Optional[float] = None,
+        exclude_con_ids: Optional[set[int]] = None,
     ) -> Ticker:
         contract_target_dte: int = (
             target_dte if target_dte else self.config.get_target_dte(underlying.symbol)
@@ -219,6 +220,8 @@ class OptionChainScanner:
         ]
         contracts = await self.ibkr.qualify_contracts(*contracts)
         contracts = [c for c in contracts if c is not None]
+        if exclude_con_ids:
+            contracts = [c for c in contracts if c.conId not in exclude_con_ids]
 
         if exclude_exp_strike:
             contracts = [

@@ -5,11 +5,12 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
-from ib_async import ExecutionFilter, PortfolioItem, Ticker, util
-from ib_async.contract import ComboLeg, Contract, Index, Option, Stock
+from ib_async import PortfolioItem, Ticker, Trade, util
+from ib_async.contract import Contract, Index, Option, Stock
 
 from thetagang import log
 from thetagang.config import Config
+from thetagang.config_models import TailHedgeTargetConfig
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt
 from thetagang.ibkr import IBKR, RequiredFieldValidationError, TickerField
@@ -18,63 +19,39 @@ from thetagang.trading_operations import OrderOperations
 from thetagang.util import midpoint_or_market_price
 
 TAIL_HEDGE_ENTRY_ORDER_REF = "tg:tail-hedge:entry"
-TAIL_HEDGE_SHORT_CLOSE_ORDER_REF = "tg:tail-hedge:short-close"
 TAIL_HEDGE_CLOSE_ORDER_REF = "tg:tail-hedge:close"
 TAIL_HEDGE_EVALUATION_EVENT = "tail_hedge_evaluation"
 TAIL_HEDGE_STATE_EVENT = "tail_hedge_state"
-LOTTERY_TICKET_EXIT_DTE = 1
-LOTTERY_STATE_FIELDS = (
-    "lottery_long_con_id",
-    "lottery_long_expiration",
-    "lottery_long_quantity",
-    "lottery_long_strike",
-    "lottery_long_retained_at",
-    "lottery_long_retained_bid",
-)
+TAIL_HEDGE_STATE_SCHEMA_VERSION = 1
+TAIL_HEDGE_STATE_STRATEGY = "long_put"
 TAIL_HEDGE_ORDER_REFS = frozenset(
-    {
-        TAIL_HEDGE_ENTRY_ORDER_REF,
-        TAIL_HEDGE_SHORT_CLOSE_ORDER_REF,
-        TAIL_HEDGE_CLOSE_ORDER_REF,
-    }
+    {TAIL_HEDGE_ENTRY_ORDER_REF, TAIL_HEDGE_CLOSE_ORDER_REF}
+)
+TAIL_HEDGE_ERRORS = (
+    IndexError,
+    RequiredFieldValidationError,
+    RuntimeError,
+    StopIteration,
+    TypeError,
+    ValueError,
 )
 
 
 @dataclass(frozen=True)
-class SpreadQuote:
+class PutQuote:
     expiration: str
     dte: int
     underlying_price: float
-    long_con_id: int
-    long_local_symbol: str
-    long_strike: float
-    long_bid: float
-    long_ask: float
-    long_open_interest: float
-    short_con_id: int
-    short_local_symbol: str
-    short_strike: float
-    short_bid: float
-    short_ask: float
-    short_open_interest: float
-    midpoint_debit: float
-    limit_debit: float
-    spread_width: float
-    debit_ratio: float
-    long_bid_ask_ratio: float
-    short_bid_ask_ratio: float
-
-
-@dataclass(frozen=True)
-class StockExposure:
-    market_value: float
-    market_price: Optional[float]
-
-
-@dataclass(frozen=True)
-class ManagedHedge:
-    long_position: Optional[PortfolioItem]
-    short_position: Optional[PortfolioItem]
+    con_id: int
+    local_symbol: str
+    strike: float
+    bid: float
+    ask: float
+    open_interest: float
+    midpoint: float
+    limit_price: float
+    premium_ratio: float
+    bid_ask_ratio: float
 
 
 @dataclass(frozen=True)
@@ -83,8 +60,86 @@ class UnderlyingQuote:
     price: float
 
 
+@dataclass(frozen=True)
+class WorkingTailOrder:
+    broker_order: Any
+    order_ref: str
+    order_id: Optional[int]
+    symbol: Optional[str]
+    con_id: Optional[int]
+    status: Optional[str]
+    filled: Optional[float]
+    remaining: Optional[float]
+    limit_price: Optional[float]
+
+    def event_payload(self) -> Dict[str, Any]:
+        return {
+            "order_ref": self.order_ref,
+            "order_id": self.order_id,
+            "symbol": self.symbol,
+            "con_id": self.con_id,
+            "status": self.status,
+            "filled": self.filled,
+            "remaining": self.remaining,
+            "limit_price": self.limit_price,
+        }
+
+
+class NoLaterExpirationError(RuntimeError):
+    """Raised when a target's put ladder cannot extend to a later expiration."""
+
+
+def tail_hedge_owned_con_ids(
+    state: Optional[Dict[str, Any]],
+    *,
+    account_number: str,
+) -> set[int]:
+    """Return every contract ID owned by the current portfolio-level state."""
+    if state is None:
+        return set()
+    _validate_state_identity(state, account_number)
+
+    assert state is not None
+    contract_ids: set[int] = set()
+    tranches = state.get("tranches")
+    if not isinstance(tranches, list):
+        raise RuntimeError("Tail-hedge state has invalid tranche data")
+    for tranche in tranches:
+        if not isinstance(tranche, dict):
+            raise RuntimeError("Tail-hedge state contains an invalid tranche")
+        con_id = tranche.get("con_id")
+        if not (
+            isinstance(tranche.get("symbol"), str)
+            and tranche["symbol"]
+            and isinstance(tranche.get("entry_id"), str)
+            and tranche["entry_id"]
+            and isinstance(tranche.get("expiration"), str)
+            and tranche["expiration"]
+            and type(con_id) is int
+            and con_id > 0
+        ):
+            raise RuntimeError("Tail-hedge state contains an invalid tranche")
+        contract_ids.add(con_id)
+    return contract_ids
+
+
+def _is_tail_hedge_state(state: Optional[Dict[str, Any]]) -> bool:
+    return bool(
+        isinstance(state, dict)
+        and state.get("schema_version") == TAIL_HEDGE_STATE_SCHEMA_VERSION
+        and state.get("strategy") == TAIL_HEDGE_STATE_STRATEGY
+    )
+
+
+def _validate_state_identity(state: Dict[str, Any], account_number: str) -> None:
+    if not _is_tail_hedge_state(state):
+        raise RuntimeError("Tail-hedge state has an invalid schema")
+    if state.get("account") != account_number:
+        raise RuntimeError("Tail-hedge state belongs to a different account")
+
+
 class TailHedgeEngine:
-    """Manage one put-spread tranche plus one near-worthless residual tranche."""
+    """Maintain independent long-put ladders under one portfolio budget."""
 
     def __init__(
         self,
@@ -93,15 +148,14 @@ class TailHedgeEngine:
         ibkr: IBKR,
         order_ops: OrderOperations,
         data_store: Optional[DataStore],
-        qualified_contracts: Dict[int, Contract],
         now_provider: Callable[[], datetime] = datetime.now,
     ) -> None:
         self.config = config
         self.ibkr = ibkr
         self.order_ops = order_ops
         self.data_store = data_store
-        self.qualified_contracts = qualified_contracts
         self._now = now_provider
+        self._cached_vix: Optional[float] = None
 
     async def manage(
         self,
@@ -116,860 +170,614 @@ class TailHedgeEngine:
         if self.data_store is None:
             raise RuntimeError("Tail hedge requires SQLite state storage.")
 
-        symbol = tail_config.symbol
-        log.notice(f"{symbol}: Evaluating tail-hedge put spread...")
-
+        log.notice("Evaluating tail-hedge long-put program...")
+        self._cached_vix = None
         try:
-            await self._refresh_execution_telemetry(symbol)
-            await self._manage_positions(
-                portfolio_positions.get(symbol, []),
+            await self._manage_program(
+                portfolio_positions,
                 net_liquidation=net_liquidation,
             )
-        except (
-            IndexError,
-            RequiredFieldValidationError,
-            RuntimeError,
-            StopIteration,
-            TypeError,
-            ValueError,
-        ) as exc:
+        except TAIL_HEDGE_ERRORS as exc:
             self._record_evaluation(
                 "evaluation_error",
                 error_type=type(exc).__name__,
                 detail=str(exc),
             )
-            log.error(
-                f"{symbol}: Tail-hedge evaluation failed ({type(exc).__name__}): {exc}"
-            )
+            log.error(f"Tail-hedge evaluation failed ({type(exc).__name__}): {exc}")
 
-    async def _refresh_execution_telemetry(self, symbol: str) -> None:
-        try:
-            start = self._now() - timedelta(days=7)
-            exec_filter = ExecutionFilter(time=start.strftime("%Y%m%d %H:%M:%S"))
-            await self.ibkr.request_executions(exec_filter)
-        except RuntimeError as exc:
-            log.warning(
-                f"{symbol}: Could not refresh recent executions "
-                f"({type(exc).__name__}); continuing with persisted state."
-            )
-            if self.data_store is not None:
-                self.data_store.record_event(
-                    "tail_hedge_execution_refresh_failed",
-                    {
-                        "schema_version": 1,
-                        "error_type": type(exc).__name__,
-                        "detail": str(exc),
-                    },
-                    symbol=symbol,
-                )
-
-    async def _manage_positions(
+    async def _manage_program(
         self,
-        symbol_positions: List[PortfolioItem],
+        portfolio_positions: Dict[str, List[PortfolioItem]],
         *,
         net_liquidation: float,
     ) -> None:
         if self.data_store is None:
             raise RuntimeError("Tail hedge requires SQLite state storage.")
 
-        symbol = self.config.strategies.tail_hedge.symbol
-        working_orders = self._working_tail_orders(symbol)
-        if working_orders:
-            self._record_evaluation("working_order_present", orders=working_orders)
-            order_refs = ", ".join(order["order_ref"] for order in working_orders)
-            log.notice(
-                f"{symbol}: Tail-hedge order still working ({order_refs}); holding."
-            )
-            return
-
-        put_positions = [
-            position
-            for position in symbol_positions
-            if isinstance(position.contract, Option)
-            and position.contract.right.upper().startswith("P")
-            and not math.isclose(float(position.position), 0.0)
+        state = self.data_store.get_last_event_payload(
+            TAIL_HEDGE_STATE_EVENT,
+            raise_on_error=True,
+        )
+        tranches, entry_history = self._state_parts(state)
+        put_positions = self._put_positions_by_con_id(portfolio_positions)
+        open_trades = self._account_open_trades()
+        working_orders = self._working_tail_orders(open_trades)
+        working_entry_orders = [
+            order
+            for order in working_orders
+            if order.order_ref == TAIL_HEDGE_ENTRY_ORDER_REF
         ]
-        state = self.data_store.get_last_event_payload(TAIL_HEDGE_STATE_EVENT)
-        lottery_long = self._resolve_lottery_long(put_positions, state)
-        if lottery_long is None:
-            state = self._without_lottery_state(state)
-        elif await self._close_expiring_lottery_long(lottery_long, state):
-            return
-
-        lottery_con_id = (
-            lottery_long.contract.conId if lottery_long is not None else None
-        )
-        active_put_positions = [
-            position
-            for position in put_positions
-            if position.contract.conId != lottery_con_id
+        working_close_orders = [
+            order
+            for order in working_orders
+            if order.order_ref == TAIL_HEDGE_CLOSE_ORDER_REF
         ]
-        # Persisted state identifies strategy-owned contracts and the last order
-        # intent; it is not evidence that an order filled. Reconcile it against
-        # the broker's current positions on every independent daily run.
-        managed_hedge = self._resolve_managed_hedge(active_put_positions, state)
-        stock_exposure = self._stock_exposure(symbol_positions)
-
-        if managed_hedge is not None and state is not None:
-            lottery_state = await self._manage_existing_hedge(
-                managed_hedge,
-                state,
-                underlying_price=stock_exposure.market_price,
-                may_retain_long=lottery_long is None,
-            )
-            if lottery_state is not None:
-                await self._evaluate_entry(
-                    stock_exposure,
-                    net_liquidation=net_liquidation,
-                    previous_state=lottery_state,
-                )
-            return
-
-        if (
-            not active_put_positions
-            and state is not None
-            and (
-                state.get("long_con_id") is not None
-                or state.get("short_con_id") is not None
-            )
-        ):
-            previous_status = state.get("status")
-            previous_order_ref = state.get("order_ref")
-            state = self._record_state(
-                "no_active_hedge",
-                previous=self._lottery_state(state),
-                long_con_id=None,
-                short_con_id=None,
-                reconciled_from_status=previous_status,
-                reconciled_from_order_ref=previous_order_ref,
-            )
-            self._record_evaluation(
-                "state_reconciled_no_active_position",
-                previous_status=previous_status,
-                previous_order_ref=previous_order_ref,
-            )
-
-        if active_put_positions:
-            self._record_evaluation(
-                "unmanaged_put_positions",
-                con_ids=[position.contract.conId for position in active_put_positions],
-            )
-            log.warning(
-                f"{symbol}: Existing puts are not owned by the tail-hedge strategy; "
-                "refusing to add another spread."
-            )
-            return
-
-        await self._evaluate_entry(
-            stock_exposure,
-            net_liquidation=net_liquidation,
-            previous_state=self._lottery_state(state),
-        )
-
-    async def _evaluate_entry(
-        self,
-        stock_exposure: StockExposure,
-        *,
-        net_liquidation: float,
-        previous_state: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        if self.data_store is None:
-            raise RuntimeError("Tail hedge requires SQLite state storage.")
-
-        tail_config = self.config.strategies.tail_hedge
-        symbol = tail_config.symbol
-        protected_value = stock_exposure.market_value
-        if protected_value <= 0:
-            self._record_evaluation("no_protected_stock_position")
-            return
-
-        if not self._is_positive(net_liquidation):
-            raise RuntimeError("Net liquidation value is unavailable")
-
-        annual_budget = round(
-            net_liquidation * float(tail_config.annual_budget),
-            2,
-        )
-        budget_start = self._now() - timedelta(days=365)
-        spent = self.data_store.get_filled_combo_debit(
-            TAIL_HEDGE_ENTRY_ORDER_REF,
-            budget_start,
-            symbol=symbol,
-        )
-        remaining_budget = round(max(0.0, annual_budget - spent), 2)
-        budget_details = {
-            "net_liquidation": net_liquidation,
-            "protected_position_value": protected_value,
-            "annual_budget_rate": float(tail_config.annual_budget),
-            "annual_budget": annual_budget,
-            "rolling_entry_debit": spent,
-            "remaining_budget": remaining_budget,
-            "budget_window_start": budget_start,
+        working_close_con_ids = {
+            order.con_id
+            for order in working_close_orders
+            if type(order.con_id) is int and order.con_id > 0
         }
-        if remaining_budget <= 0:
-            self._record_evaluation("annual_budget_exhausted", **budget_details)
-            return
-
-        vix_ticker = await self.ibkr.get_ticker_for_contract(
-            Index("VIX", "CBOE", "USD")
-        )
-        vix = float(vix_ticker.marketPrice())
-        if not self._is_positive(vix):
-            raise RuntimeError("VIX market price is unavailable")
-        if vix > float(tail_config.entry_vix_max):
-            self._record_evaluation(
-                "vix_above_entry_max",
-                vix=vix,
-                entry_vix_max=float(tail_config.entry_vix_max),
-                **budget_details,
-            )
-            return
-
-        quote, long_contract, short_contract = await self._find_spread()
-        quote_details = {"vix": vix, **budget_details, "quote": asdict(quote)}
-        rejection = self._quote_rejection(quote)
-        if rejection is not None:
-            self._record_evaluation(rejection, **quote_details)
-            return
-
-        per_spread_cost = round(
-            quote.limit_debit * self._multiplier(long_contract),
-            2,
-        )
-        entry_quantity = max(1, math.floor(remaining_budget / per_spread_cost))
-        entry_cost = round(per_spread_cost * entry_quantity, 2)
-        budget_overage = round(max(0.0, entry_cost - remaining_budget), 2)
-
-        combo = self._spread_contract(
-            symbol,
-            long_contract,
-            short_contract,
-            long_action="BUY",
-            short_action="SELL",
-        )
-        order = self.order_ops.create_limit_order(
-            action="BUY",
-            quantity=entry_quantity,
-            limit_price=quote.limit_debit,
-            use_default_algo=False,
-            order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
-            transmit=True,
-        )
-        self.order_ops.enqueue_order(combo, order)
-        self._record_state(
-            "entry_enqueued",
-            previous=previous_state,
-            expiration=quote.expiration,
-            long_con_id=quote.long_con_id,
-            long_local_symbol=quote.long_local_symbol,
-            long_strike=quote.long_strike,
-            short_con_id=quote.short_con_id,
-            short_local_symbol=quote.short_local_symbol,
-            short_strike=quote.short_strike,
-            short_entry_midpoint=(quote.short_bid + quote.short_ask) / 2.0,
-            entry_quantity=entry_quantity,
-            entry_limit_debit=quote.limit_debit,
-            entry_cost=entry_cost,
-            budget_overage=budget_overage,
-            order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
-        )
-        self._record_evaluation(
-            "entry_enqueued",
-            entry_quantity=entry_quantity,
-            per_spread_cost=per_spread_cost,
-            entry_cost=entry_cost,
-            budget_overage=budget_overage,
-            **quote_details,
-        )
-        log.notice(
-            f"{symbol}: Enqueued {entry_quantity}x "
-            f"{quote.long_strike:g}/{quote.short_strike:g} put spreads expiring "
-            f"{quote.expiration} at a {dfmt(quote.limit_debit)} debit each."
-        )
-
-    def _quote_rejection(self, quote: SpreadQuote) -> Optional[str]:
-        tail_config = self.config.strategies.tail_hedge
-        if min(quote.long_open_interest, quote.short_open_interest) < (
-            tail_config.minimum_open_interest
-        ):
-            return "insufficient_open_interest"
-        if min(quote.long_bid, quote.short_bid) < tail_config.minimum_bid:
-            return "bid_below_minimum"
-        if max(quote.long_bid_ask_ratio, quote.short_bid_ask_ratio) > (
-            tail_config.max_bid_ask_ratio
-        ):
-            return "bid_ask_too_wide"
-        if quote.debit_ratio > tail_config.max_debit_ratio:
-            return "spread_too_expensive"
-        return None
-
-    def _working_tail_orders(self, symbol: str) -> List[Dict[str, Any]]:
-        working_orders = []
-        for trade in self.ibkr.open_trades():
-            order = getattr(trade, "order", None)
-            contract = getattr(trade, "contract", None)
-            order_ref = getattr(order, "orderRef", None)
-            if (
-                order_ref not in TAIL_HEDGE_ORDER_REFS
-                or getattr(contract, "symbol", None) != symbol
-            ):
+        targets = {
+            target.symbol: target
+            for target in self.config.strategies.tail_hedge.targets
+        }
+        for working_order in working_entry_orders:
+            if working_order.symbol in targets:
                 continue
-            status = getattr(trade, "orderStatus", None)
-            working_orders.append(
-                {
-                    "order_ref": order_ref,
-                    "order_id": getattr(order, "orderId", None),
-                    "perm_id": getattr(order, "permId", None),
-                    "status": getattr(status, "status", None),
-                    "filled": getattr(status, "filled", None),
-                    "remaining": getattr(status, "remaining", None),
-                    "limit_price": getattr(order, "lmtPrice", None),
-                }
-            )
-        return working_orders
-
-    def _resolve_managed_hedge(
-        self,
-        put_positions: List[PortfolioItem],
-        state: Optional[Dict[str, Any]],
-    ) -> Optional[ManagedHedge]:
-        if not state or state.get("symbol") != self.config.strategies.tail_hedge.symbol:
-            return None
-        long_con_id = state.get("long_con_id")
-        short_con_id = state.get("short_con_id")
-        if long_con_id is None or short_con_id is None:
-            return None
-
-        by_con_id = {position.contract.conId: position for position in put_positions}
-        long_position = by_con_id.get(int(long_con_id))
-        short_position = by_con_id.get(int(short_con_id))
-        if long_position is None and short_position is None:
-            return None
-        return ManagedHedge(long_position, short_position)
-
-    def _resolve_lottery_long(
-        self,
-        put_positions: List[PortfolioItem],
-        state: Optional[Dict[str, Any]],
-    ) -> Optional[PortfolioItem]:
-        if not state or state.get("symbol") != self.config.strategies.tail_hedge.symbol:
-            return None
-        con_id = state.get("lottery_long_con_id")
-        if con_id is None:
-            return None
-        return next(
-            (
-                position
-                for position in put_positions
-                if position.contract.conId == int(con_id)
-                and float(position.position) > 0
-            ),
-            None,
-        )
-
-    async def _manage_existing_hedge(
-        self,
-        managed_hedge: ManagedHedge,
-        state: Dict[str, Any],
-        *,
-        underlying_price: Optional[float],
-        may_retain_long: bool,
-    ) -> Optional[Dict[str, Any]]:
-        symbol = self.config.strategies.tail_hedge.symbol
-        long_position = managed_hedge.long_position
-        short_position = managed_hedge.short_position
-        if long_position is not None and short_position is None:
-            if float(long_position.position) < 0:
-                await self._close_unsafe_short(
-                    long_position,
-                    state,
-                    reason="recorded_long_is_short",
-                )
-                return None
-            return await self._manage_remaining_long(
-                long_position,
-                state,
-                may_retain=may_retain_long,
-            )
-        if (
-            long_position is None
-            and short_position is not None
-            and float(short_position.position) < 0
-        ):
-            await self._close_unsafe_short(
-                short_position,
-                state,
-                reason="long_leg_missing",
-            )
-            return None
-        if (
-            long_position is None
-            or short_position is None
-            or float(long_position.position) <= 0
-            or float(short_position.position) >= 0
-        ):
-            unsafe_shorts = [
-                position
-                for position in (long_position, short_position)
-                if position is not None and float(position.position) < 0
-            ]
-            if unsafe_shorts:
-                for position in unsafe_shorts:
-                    await self._close_unsafe_short(
-                        position,
-                        state,
-                        reason="managed_leg_sign_mismatch",
-                    )
-                return None
-            self._record_evaluation(
-                "unexpected_managed_position",
-                long_position=(
-                    float(long_position.position) if long_position is not None else None
-                ),
-                short_position=(
-                    float(short_position.position)
-                    if short_position is not None
-                    else None
-                ),
-            )
-            log.error(
-                f"{symbol}: Tail-hedge legs have invalid signs; refusing to trade."
-            )
-            return None
-
-        long_quantity = self._position_quantity(long_position)
-        short_quantity = self._position_quantity(short_position)
-        if short_quantity > long_quantity:
-            await self._close_unsafe_short(
-                short_position,
-                state,
-                reason="short_quantity_exceeds_long",
-            )
-            return None
-
-        expiration = long_position.contract.lastTradeDateOrContractMonth
-        if expiration != short_position.contract.lastTradeDateOrContractMonth:
-            await self._close_unsafe_short(
-                short_position,
-                state,
-                reason="managed_expirations_do_not_match",
-            )
-            return None
-        dte = self._dte(expiration)
-        if dte <= self.config.strategies.tail_hedge.exit_dte:
-            await self._close_spread(
-                long_position,
-                short_position,
-                state,
-                dte,
-                long_quantity=long_quantity,
-                short_quantity=short_quantity,
-            )
-            return None
-
-        await self._manage_short_leg(
-            long_position,
-            short_position,
-            state,
-            expiration=expiration,
-            dte=dte,
-            underlying_price=underlying_price,
-        )
-        return None
-
-    async def _close_unsafe_short(
-        self,
-        short_position: PortfolioItem,
-        state: Dict[str, Any],
-        *,
-        reason: str,
-    ) -> None:
-        symbol = self.config.strategies.tail_hedge.symbol
-        ticker = await self._option_ticker(short_position.contract)
-        limit_price = round(max(self._midpoint(ticker), 0.01), 2)
-        quantity = self._position_quantity(short_position)
-        self._enqueue_single_option_order(
-            short_position.contract,
-            action="BUY",
-            quantity=quantity,
-            limit_price=limit_price,
-            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
-        )
-        close_details = {
-            "close_reason": reason,
-            "expiration": short_position.contract.lastTradeDateOrContractMonth,
-            "dte": self._dte(short_position.contract.lastTradeDateOrContractMonth),
-            "short_strike": float(short_position.contract.strike),
-            "short_quantity": quantity,
-            "limit_price": limit_price,
-        }
-        self._record_state(
-            "unsafe_short_close_enqueued",
-            previous=state,
-            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
-            **close_details,
-        )
-        self._record_evaluation(
-            "unsafe_short_close_enqueued",
-            **close_details,
-        )
-        log.warning(
-            f"{symbol}: Unsafe tail-hedge short exposure ({reason}); "
-            "buying back all remaining short puts."
-        )
-
-    async def _manage_short_leg(
-        self,
-        long_position: PortfolioItem,
-        short_position: PortfolioItem,
-        state: Dict[str, Any],
-        *,
-        expiration: str,
-        dte: int,
-        underlying_price: Optional[float],
-    ) -> None:
-        short_ticker = await self._option_ticker(short_position.contract)
-        short_midpoint = self._midpoint(short_ticker)
-        short_entry_price = self._position_average_price(short_position)
-        if short_entry_price <= 0:
-            short_entry_price = float(state.get("short_entry_midpoint", 0.0))
-        if short_entry_price <= 0:
-            raise RuntimeError("Short-leg entry price is unavailable")
-        profit_fraction = 1.0 - (short_midpoint / short_entry_price)
-        target_profit = float(self.config.strategies.tail_hedge.short_close_profit)
-        short_strike = float(short_position.contract.strike)
-        close_reasons = []
-        if profit_fraction >= target_profit:
-            close_reasons.append("profit_target")
-
-        if underlying_price is None and not close_reasons:
             try:
-                underlying_price = (await self._underlying_quote()).price
-            except (
-                RequiredFieldValidationError,
-                RuntimeError,
-                TypeError,
-                ValueError,
-            ) as exc:
-                log.warning(
-                    f"{short_position.contract.symbol}: Could not refresh the "
-                    f"underlying price for short-leg management: {exc}"
+                self.ibkr.cancel_order(working_order.broker_order)
+            except TAIL_HEDGE_ERRORS as exc:
+                self._record_evaluation(
+                    "entry_cancel_error",
+                    symbol=working_order.symbol,
+                    order=working_order.event_payload(),
+                    error_type=type(exc).__name__,
+                    detail=str(exc),
+                )
+                log.error(
+                    "Failed to cancel an entry for a removed tail-hedge target "
+                    f"({type(exc).__name__}): {exc}"
+                )
+            else:
+                self._record_evaluation(
+                    "entry_cancel_requested",
+                    symbol=working_order.symbol,
+                    order=working_order.event_payload(),
                 )
 
-        spot_to_short_strike = (
-            underlying_price / short_strike
-            if underlying_price is not None and short_strike > 0
-            else None
-        )
-        minimum_spot_ratio = float(
-            self.config.strategies.tail_hedge.short_exit_min_spot_ratio
-        )
-        if (
-            spot_to_short_strike is not None
-            and spot_to_short_strike <= minimum_spot_ratio
-        ):
-            close_reasons.append("tail_risk_buffer")
+        state_changed = False
+        removed_entry_ids: list[str] = []
+        history_ids_to_remove: set[str] = set()
+        reconciled_tranches: list[dict[str, Any]] = []
+        for tranche in tranches:
+            con_id = int(tranche["con_id"])
+            symbol = str(tranche["symbol"])
+            position = put_positions.get(con_id)
+            if position is None:
+                matching_entries = [
+                    order for order in working_entry_orders if order.symbol == symbol
+                ]
+                matching_con_ids = {
+                    order.con_id
+                    for order in matching_entries
+                    if type(order.con_id) is int and order.con_id > 0
+                }
+                if (
+                    tranche.get("status") == "entry_enqueued"
+                    and matching_entries
+                    and (not matching_con_ids or con_id in matching_con_ids)
+                ):
+                    reconciled_tranches.append(tranche)
+                    continue
+                entry_id = str(tranche["entry_id"])
+                removed_entry_ids.append(entry_id)
+                if tranche.get("status") == "entry_enqueued":
+                    history_ids_to_remove.add(entry_id)
+                state_changed = True
+                continue
 
-        if close_reasons:
-            short_close_limit = round(max(short_midpoint, 0.01), 2)
-            short_quantity = self._position_quantity(short_position)
-            estimated_financing_profit = (
-                (short_entry_price - short_midpoint)
-                * self._multiplier(short_position.contract)
-                * short_quantity
-            )
-            close_details = {
-                "short_quantity": short_quantity,
-                "short_entry_price": short_entry_price,
-                "short_close_limit": short_close_limit,
-                "short_profit_fraction": profit_fraction,
-                "short_close_reasons": close_reasons,
-                "underlying_price": underlying_price,
-                "spot_to_short_strike": spot_to_short_strike,
-                "short_exit_min_spot_ratio": minimum_spot_ratio,
-                "estimated_short_financing_profit": estimated_financing_profit,
-            }
-            self._enqueue_single_option_order(
-                short_position.contract,
-                action="BUY",
-                quantity=short_quantity,
-                limit_price=short_close_limit,
-                order_ref=TAIL_HEDGE_SHORT_CLOSE_ORDER_REF,
-            )
+            reconciled = dict(tranche)
+            if float(position.position) > 0 and reconciled.get("status") == (
+                "entry_enqueued"
+            ):
+                reconciled["status"] = "active"
+                state_changed = True
+            reconciled_tranches.append(reconciled)
+
+        tranches[:] = reconciled_tranches
+        if history_ids_to_remove:
+            entry_history[:] = [
+                entry
+                for entry in entry_history
+                if str(entry.get("entry_id")) not in history_ids_to_remove
+            ]
+        if state_changed:
             self._record_state(
-                "short_close_enqueued",
-                previous=state,
-                order_ref=TAIL_HEDGE_SHORT_CLOSE_ORDER_REF,
-                **close_details,
+                "reconciled",
+                tranches=tranches,
+                entry_history=entry_history,
+                removed_entry_ids=removed_entry_ids,
+                persistence_required=False,
             )
-            self._record_evaluation(
-                "short_close_enqueued",
-                expiration=expiration,
-                dte=dte,
-                target_profit=target_profit,
-                **close_details,
+
+        blocked_entry_symbols = {
+            str(order.symbol)
+            for order in working_close_orders
+            if isinstance(order.symbol, str)
+        }
+
+        # Finish risk-reducing management for every symbol before evaluating
+        # any new entry. Failures remain isolated to the affected target.
+        for tranche_index, tranche in enumerate(tranches):
+            con_id = int(tranche["con_id"])
+            symbol = str(tranche["symbol"])
+            position = put_positions.get(con_id)
+            if position is None:
+                continue
+            if con_id in working_close_con_ids:
+                self._record_evaluation(
+                    "working_close_order_present",
+                    symbol=symbol,
+                    entry_id=tranche["entry_id"],
+                    con_id=con_id,
+                )
+                blocked_entry_symbols.add(symbol)
+                continue
+            try:
+                close_enqueued = await self._manage_existing_put(
+                    position,
+                    targets.get(symbol),
+                    tranches,
+                    entry_history,
+                    tranche_index,
+                )
+            except TAIL_HEDGE_ERRORS as exc:
+                blocked_entry_symbols.add(symbol)
+                self._record_evaluation(
+                    "evaluation_error",
+                    symbol=symbol,
+                    entry_id=tranche["entry_id"],
+                    con_id=con_id,
+                    error_type=type(exc).__name__,
+                    detail=str(exc),
+                )
+                log.error(
+                    f"{symbol}: Tail-put management failed "
+                    f"({type(exc).__name__}): {exc}"
+                )
+                continue
+            if close_enqueued:
+                blocked_entry_symbols.add(symbol)
+
+        occupied_con_ids = (
+            set(put_positions)
+            | self._queued_put_con_ids()
+            | self._working_put_con_ids(open_trades)
+        )
+        for target in self.config.strategies.tail_hedge.targets:
+            symbol = target.symbol
+            if symbol in blocked_entry_symbols:
+                continue
+            symbol_working_entries = [
+                order for order in working_entry_orders if order.symbol == symbol
+            ]
+            if symbol_working_entries:
+                self._record_evaluation(
+                    "working_order_present",
+                    symbol=symbol,
+                    orders=[order.event_payload() for order in symbol_working_entries],
+                )
+                log.notice(
+                    f"{symbol}: Tail-hedge entry order is still working; holding."
+                )
+                continue
+            try:
+                await self._evaluate_entry(
+                    target,
+                    self._stock_exposure(portfolio_positions.get(symbol, [])),
+                    net_liquidation=net_liquidation,
+                    tranches=tranches,
+                    entry_history=entry_history,
+                    occupied_con_ids=occupied_con_ids,
+                )
+            except TAIL_HEDGE_ERRORS as exc:
+                self._record_evaluation(
+                    "evaluation_error",
+                    symbol=symbol,
+                    error_type=type(exc).__name__,
+                    detail=str(exc),
+                )
+                log.error(
+                    f"{symbol}: Tail-hedge entry evaluation failed "
+                    f"({type(exc).__name__}): {exc}"
+                )
+
+    async def _manage_existing_put(
+        self,
+        position: PortfolioItem,
+        target: Optional[TailHedgeTargetConfig],
+        tranches: List[Dict[str, Any]],
+        entry_history: List[Dict[str, Any]],
+        tranche_index: int,
+    ) -> bool:
+        tranche = tranches[tranche_index]
+        symbol = str(tranche["symbol"])
+        if position.contract.symbol != symbol:
+            raise RuntimeError(
+                f"Owned contract symbol {position.contract.symbol} does not match "
+                f"state symbol {symbol}"
             )
-            return
+
+        quantity = self._position_quantity(position)
+        if float(position.position) < 0:
+            await self._close_position(
+                position,
+                tranches,
+                entry_history,
+                tranche_index,
+                action="BUY",
+                quantity=quantity,
+                close_reason="owned_put_is_short",
+            )
+            return True
+        if target is None:
+            await self._close_position(
+                position,
+                tranches,
+                entry_history,
+                tranche_index,
+                action="SELL",
+                quantity=quantity,
+                close_reason="target_removed",
+            )
+            return True
+
+        expiration = position.contract.lastTradeDateOrContractMonth
+        dte = self._dte(expiration)
+        if dte <= target.exit_dte:
+            await self._close_position(
+                position,
+                tranches,
+                entry_history,
+                tranche_index,
+                action="SELL",
+                quantity=quantity,
+                close_reason="roll_dte",
+            )
+            return True
 
         self._record_evaluation(
-            "existing_spread_held",
+            "long_put_held",
+            symbol=symbol,
+            entry_id=tranche["entry_id"],
+            con_id=position.contract.conId,
             expiration=expiration,
             dte=dte,
-            long_strike=float(long_position.contract.strike),
-            long_quantity=self._position_quantity(long_position),
-            short_strike=float(short_position.contract.strike),
-            short_quantity=self._position_quantity(short_position),
-            short_entry_price=short_entry_price,
-            short_midpoint=short_midpoint,
-            short_profit_fraction=profit_fraction,
-            target_profit=target_profit,
-            underlying_price=underlying_price,
-            spot_to_short_strike=spot_to_short_strike,
-            short_exit_min_spot_ratio=minimum_spot_ratio,
-        )
-
-    async def _close_spread(
-        self,
-        long_position: PortfolioItem,
-        short_position: PortfolioItem,
-        state: Dict[str, Any],
-        dte: int,
-        *,
-        long_quantity: int,
-        short_quantity: int,
-    ) -> None:
-        symbol = self.config.strategies.tail_hedge.symbol
-        expiration = long_position.contract.lastTradeDateOrContractMonth
-        long_ticker, short_ticker = await self._spread_tickers(
-            long_position.contract,
-            short_position.contract,
-        )
-        long_midpoint = self._midpoint(long_ticker)
-        short_midpoint = self._midpoint(short_ticker)
-        close_price = round(short_midpoint - long_midpoint, 2)
-        if math.isclose(close_price, 0.0):
-            close_price = -0.01
-        combo = self._spread_contract(
-            symbol,
-            long_position.contract,
-            short_position.contract,
-            long_action="SELL",
-            short_action="BUY",
-        )
-        order = self.order_ops.create_limit_order(
-            action="BUY",
-            quantity=short_quantity,
-            limit_price=close_price,
-            use_default_algo=False,
-            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
-            transmit=True,
-        )
-        self.order_ops.enqueue_order(combo, order)
-        excess_long_quantity = long_quantity - short_quantity
-        long_close_limit = (
-            round(max(long_midpoint, 0.01), 2) if excess_long_quantity > 0 else None
-        )
-        if long_close_limit is not None:
-            self._enqueue_single_option_order(
-                long_position.contract,
-                action="SELL",
-                quantity=excess_long_quantity,
-                limit_price=long_close_limit,
-                order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
-            )
-
-        close_details = {
-            "expiration": expiration,
-            "dte": dte,
-            "spread_quantity": short_quantity,
-            "excess_long_quantity": excess_long_quantity,
-            "excess_long_limit": long_close_limit,
-            "limit_price": close_price,
-            "long_midpoint": long_midpoint,
-            "short_midpoint": short_midpoint,
-        }
-        self._record_state(
-            "spread_close_enqueued",
-            previous=state,
-            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
-            **close_details,
-        )
-        self._record_evaluation(
-            "spread_close_enqueued",
-            **close_details,
-        )
-
-    async def _manage_remaining_long(
-        self,
-        long_position: PortfolioItem,
-        state: Dict[str, Any],
-        *,
-        may_retain: bool,
-    ) -> Optional[Dict[str, Any]]:
-        expiration = long_position.contract.lastTradeDateOrContractMonth
-        dte = self._dte(expiration)
-        if float(long_position.position) <= 0:
-            self._record_evaluation(
-                "unexpected_long_position",
-                position=float(long_position.position),
-            )
-            return None
-        long_quantity = self._position_quantity(long_position)
-        if dte > self.config.strategies.tail_hedge.exit_dte:
-            self._record_evaluation(
-                "long_put_held",
-                expiration=expiration,
-                dte=dte,
-                long_strike=float(long_position.contract.strike),
-                long_quantity=long_quantity,
-                estimated_short_financing_profit=state.get(
-                    "estimated_short_financing_profit"
-                ),
-            )
-            return None
-
-        ticker = await self._option_ticker(long_position.contract)
-        bid = self._quoted_bid(ticker)
-        if (
-            may_retain
-            and dte > LOTTERY_TICKET_EXIT_DTE
-            and bid <= self.config.strategies.tail_hedge.minimum_bid
-        ):
-            retained_details = {
-                "expiration": expiration,
-                "dte": dte,
-                "long_con_id": long_position.contract.conId,
-                "long_strike": float(long_position.contract.strike),
-                "long_quantity": long_quantity,
-                "quoted_bid": bid,
-                "retention_bid_max": float(
-                    self.config.strategies.tail_hedge.minimum_bid
-                ),
-                "lottery_exit_dte": LOTTERY_TICKET_EXIT_DTE,
-                "estimated_short_financing_profit": state.get(
-                    "estimated_short_financing_profit"
-                ),
-            }
-            retained_state = self._record_state(
-                "lottery_long_retained",
-                long_con_id=None,
-                short_con_id=None,
-                lottery_long_con_id=long_position.contract.conId,
-                lottery_long_expiration=expiration,
-                lottery_long_quantity=long_quantity,
-                lottery_long_strike=float(long_position.contract.strike),
-                lottery_long_retained_at=self._now(),
-                lottery_long_retained_bid=bid,
-                estimated_short_financing_profit=state.get(
-                    "estimated_short_financing_profit"
-                ),
-            )
-            self._record_evaluation(
-                "lottery_long_retained",
-                **retained_details,
-            )
-            return self._lottery_state(retained_state)
-
-        limit_price = round(max(self._midpoint(ticker), 0.01), 2)
-        self._enqueue_single_option_order(
-            long_position.contract,
-            action="SELL",
-            quantity=long_quantity,
-            limit_price=limit_price,
-            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
-        )
-        close_details = {
-            "expiration": expiration,
-            "dte": dte,
-            "long_quantity": long_quantity,
-            "limit_price": limit_price,
-            "estimated_short_financing_profit": state.get(
-                "estimated_short_financing_profit"
-            ),
-        }
-        self._record_state(
-            "long_close_enqueued",
-            previous=state,
-            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
-            **close_details,
-        )
-        self._record_evaluation(
-            "long_close_enqueued",
-            **close_details,
-        )
-        return None
-
-    async def _close_expiring_lottery_long(
-        self,
-        long_position: PortfolioItem,
-        state: Optional[Dict[str, Any]],
-    ) -> bool:
-        expiration = long_position.contract.lastTradeDateOrContractMonth
-        dte = self._dte(expiration)
-        if dte > LOTTERY_TICKET_EXIT_DTE:
-            return False
-
-        ticker = await self._option_ticker(long_position.contract)
-        limit_price = round(max(self._midpoint(ticker), 0.01), 2)
-        quantity = self._position_quantity(long_position)
-        self._enqueue_single_option_order(
-            long_position.contract,
-            action="SELL",
+            strike=float(position.contract.strike),
             quantity=quantity,
-            limit_price=limit_price,
-            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
+            market_value=float(getattr(position, "marketValue", 0.0) or 0.0),
         )
-        close_details = {
-            "lottery_long_expiration": expiration,
-            "lottery_long_dte": dte,
-            "lottery_long_con_id": long_position.contract.conId,
-            "lottery_long_quantity": quantity,
-            "lottery_long_strike": float(long_position.contract.strike),
-            "lottery_long_close_limit": limit_price,
-        }
-        self._record_state(
-            "lottery_long_close_enqueued",
-            previous=state,
-            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
-            **close_details,
-        )
-        self._record_evaluation(
-            "lottery_long_close_enqueued",
-            **close_details,
-        )
-        return True
+        return False
 
-    def _enqueue_single_option_order(
+    async def _close_position(
         self,
-        contract: Contract,
+        position: PortfolioItem,
+        tranches: List[Dict[str, Any]],
+        entry_history: List[Dict[str, Any]],
+        tranche_index: int,
         *,
         action: str,
         quantity: int,
-        limit_price: float,
-        order_ref: str,
+        close_reason: str,
     ) -> None:
+        symbol = str(tranches[tranche_index]["symbol"])
+        position.contract.exchange = self.order_ops.get_order_exchange()
+        ticker = await self._option_ticker(position.contract)
+        limit_price = round(max(self._midpoint(ticker), 0.01), 2)
         order = self.order_ops.create_limit_order(
             action=action,
             quantity=quantity,
             limit_price=limit_price,
-            order_ref=order_ref,
+            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
+            transmit=True,
+        )
+        self.order_ops.enqueue_order(position.contract, order)
+
+        updated = dict(tranches[tranche_index])
+        updated.update(
+            status="close_enqueued",
+            close_reason=close_reason,
+            close_limit_price=limit_price,
+            close_enqueued_at=self._now(),
+        )
+        tranches[tranche_index] = updated
+        self._record_state(
+            "close_enqueued",
+            tranches=tranches,
+            entry_history=entry_history,
+            action_symbol=symbol,
+            action_entry_id=updated["entry_id"],
+            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
+            persistence_required=False,
+        )
+        self._record_evaluation(
+            "close_enqueued",
+            symbol=symbol,
+            entry_id=updated["entry_id"],
+            con_id=position.contract.conId,
+            expiration=position.contract.lastTradeDateOrContractMonth,
+            dte=self._dte(position.contract.lastTradeDateOrContractMonth),
+            quantity=quantity,
+            action=action,
+            limit_price=limit_price,
+            close_reason=close_reason,
+        )
+
+    async def _evaluate_entry(
+        self,
+        target: TailHedgeTargetConfig,
+        stock_exposure: float,
+        *,
+        net_liquidation: float,
+        tranches: List[Dict[str, Any]],
+        entry_history: List[Dict[str, Any]],
+        occupied_con_ids: set[int],
+    ) -> None:
+        if self.data_store is None:
+            raise RuntimeError("Tail hedge requires SQLite state storage.")
+
+        symbol = target.symbol
+        if stock_exposure <= 0:
+            self._record_evaluation("no_protected_stock_position", symbol=symbol)
+            return
+        if not self._is_positive(net_liquidation):
+            raise RuntimeError("Net liquidation value is unavailable")
+
+        now = self._now()
+        budget_start = now - timedelta(days=365)
+        recent_history = [
+            entry
+            for entry in entry_history
+            if (entered_at := self._parse_datetime(entry.get("entered_at"))) is not None
+            and entered_at >= budget_start
+        ]
+        target_history = [
+            entry for entry in recent_history if entry.get("symbol") == symbol
+        ]
+        global_spent = sum(
+            float(entry.get("estimated_cost", 0.0) or 0.0) for entry in recent_history
+        )
+        target_spent = sum(
+            float(entry.get("estimated_cost", 0.0) or 0.0) for entry in target_history
+        )
+        annual_budget = round(
+            net_liquidation * float(self.config.strategies.tail_hedge.annual_budget),
+            2,
+        )
+        target_annual_budget = round(annual_budget * target.budget_weight, 2)
+        remaining_budget = round(max(0.0, annual_budget - global_spent), 2)
+        target_remaining_budget = round(
+            max(0.0, target_annual_budget - target_spent),
+            2,
+        )
+        tranche_budget = round(
+            min(
+                remaining_budget,
+                target_remaining_budget,
+                target_annual_budget / target.annual_tranches,
+            ),
+            2,
+        )
+        budget_details = {
+            "net_liquidation": net_liquidation,
+            "protected_position_value": stock_exposure,
+            "annual_budget_rate": float(
+                self.config.strategies.tail_hedge.annual_budget
+            ),
+            "annual_budget": annual_budget,
+            "budget_weight": float(target.budget_weight),
+            "target_annual_budget": target_annual_budget,
+            "annual_tranches": target.annual_tranches,
+            "tranche_budget": tranche_budget,
+            "global_entry_spend": global_spent,
+            "target_entry_spend": target_spent,
+            "remaining_budget": remaining_budget,
+            "target_remaining_budget": target_remaining_budget,
+            "budget_window_start": budget_start,
+        }
+        if len(target_history) >= target.annual_tranches:
+            self._record_evaluation(
+                "annual_tranche_limit",
+                symbol=symbol,
+                **budget_details,
+            )
+            return
+        if remaining_budget <= 0:
+            self._record_evaluation(
+                "annual_budget_exhausted",
+                symbol=symbol,
+                **budget_details,
+            )
+            return
+        if tranche_budget <= 0:
+            self._record_evaluation(
+                "target_budget_exhausted",
+                symbol=symbol,
+                **budget_details,
+            )
+            return
+
+        latest_entry_at = max(
+            (
+                entered_at
+                for entry in target_history
+                if (entered_at := self._parse_datetime(entry.get("entered_at")))
+                is not None
+            ),
+            default=None,
+        )
+        if latest_entry_at is not None:
+            days_since_entry = (now - latest_entry_at).days
+            if days_since_entry < target.tranche_interval_days:
+                self._record_evaluation(
+                    "tranche_entry_spacing",
+                    symbol=symbol,
+                    days_since_entry=days_since_entry,
+                    tranche_interval_days=target.tranche_interval_days,
+                    **budget_details,
+                )
+                return
+
+        vix: Optional[float] = None
+        if target.entry_gate == "vix":
+            vix = await self._vix_price()
+            if vix > target.entry_vix_max:
+                self._record_evaluation(
+                    "vix_above_entry_max",
+                    symbol=symbol,
+                    vix=vix,
+                    entry_vix_max=target.entry_vix_max,
+                    **budget_details,
+                )
+                return
+
+        later_than_expiration = max(
+            (
+                str(tranche["expiration"])
+                for tranche in tranches
+                if tranche.get("symbol") == symbol
+            ),
+            default=None,
+        )
+        try:
+            quote, contract = await self._find_put(
+                target,
+                later_than_expiration=later_than_expiration,
+                exclude_con_ids=occupied_con_ids,
+            )
+        except NoLaterExpirationError:
+            self._record_evaluation(
+                "no_later_expiration_available",
+                symbol=symbol,
+                vix=vix,
+                later_than_expiration=later_than_expiration,
+                **budget_details,
+            )
+            return
+
+        quote_details = {"vix": vix, "quote": asdict(quote), **budget_details}
+        rejection = self._quote_rejection(target, quote)
+        if rejection is not None:
+            self._record_evaluation(rejection, symbol=symbol, **quote_details)
+            return
+
+        per_contract_cost = round(quote.limit_price * self._multiplier(contract), 2)
+        quantity = math.floor(tranche_budget / per_contract_cost)
+        if quantity <= 0:
+            self._record_evaluation(
+                "tranche_budget_too_small",
+                symbol=symbol,
+                per_contract_cost=per_contract_cost,
+                **quote_details,
+            )
+            return
+
+        entry_cost = round(per_contract_cost * quantity, 2)
+        entered_at = self._now()
+        entry_id = f"{symbol}:{quote.con_id}:{entered_at.isoformat()}"
+        tranche = {
+            "entry_id": entry_id,
+            "symbol": symbol,
+            "status": "entry_enqueued",
+            "con_id": quote.con_id,
+            "local_symbol": quote.local_symbol,
+            "expiration": quote.expiration,
+            "strike": quote.strike,
+            "quantity": quantity,
+            "entry_limit_price": quote.limit_price,
+            "entry_cost": entry_cost,
+            "entry_enqueued_at": entered_at,
+        }
+        history_entry = {
+            "entry_id": entry_id,
+            "symbol": symbol,
+            "entered_at": entered_at,
+            "estimated_cost": entry_cost,
+        }
+        updated_tranches = [*tranches, tranche]
+        active_entry_ids = {str(active["entry_id"]) for active in tranches}
+        retained_history = [
+            entry
+            for entry in entry_history
+            if str(entry.get("entry_id")) in active_entry_ids
+            or (
+                (entered_at := self._parse_datetime(entry.get("entered_at")))
+                is not None
+                and entered_at >= budget_start
+            )
+        ]
+        updated_history = [*retained_history, history_entry]
+        self._record_state(
+            "entry_enqueued",
+            tranches=updated_tranches,
+            entry_history=updated_history,
+            action_symbol=symbol,
+            action_entry_id=entry_id,
+            order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
+        )
+        tranches[:] = updated_tranches
+        entry_history[:] = updated_history
+        occupied_con_ids.add(quote.con_id)
+
+        order = self.order_ops.create_limit_order(
+            action="BUY",
+            quantity=quantity,
+            limit_price=quote.limit_price,
+            use_default_algo=False,
+            order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
             transmit=True,
         )
         self.order_ops.enqueue_order(contract, order)
-
-    async def _option_ticker(self, contract: Contract) -> Ticker:
-        return await self.ibkr.get_ticker_for_contract(
-            contract,
-            required_fields=[],
-            optional_fields=[TickerField.MARKET_PRICE, TickerField.MIDPOINT],
+        self._record_evaluation(
+            "entry_enqueued",
+            symbol=symbol,
+            entry_id=entry_id,
+            quantity=quantity,
+            per_contract_cost=per_contract_cost,
+            entry_cost=entry_cost,
+            later_than_expiration=later_than_expiration,
+            **quote_details,
+        )
+        log.notice(
+            f"{symbol}: Enqueued {quantity}x {quote.strike:g} puts expiring "
+            f"{quote.expiration} at {dfmt(quote.limit_price)} each."
         )
 
-    async def _find_spread(self) -> tuple[SpreadQuote, Contract, Contract]:
-        tail_config = self.config.strategies.tail_hedge
-        symbol = tail_config.symbol
+    @staticmethod
+    def _quote_rejection(
+        target: TailHedgeTargetConfig,
+        quote: PutQuote,
+    ) -> Optional[str]:
+        if quote.open_interest < target.minimum_open_interest:
+            return "insufficient_open_interest"
+        if quote.bid < target.minimum_bid:
+            return "bid_below_minimum"
+        if quote.bid_ask_ratio > target.max_bid_ask_ratio:
+            return "bid_ask_too_wide"
+        if quote.premium_ratio > target.max_premium_ratio:
+            return "put_too_expensive"
+        return None
+
+    async def _find_put(
+        self,
+        target: TailHedgeTargetConfig,
+        *,
+        later_than_expiration: Optional[str],
+        exclude_con_ids: set[int],
+    ) -> tuple[PutQuote, Contract]:
+        symbol = target.symbol
         exchange = self.order_ops.get_order_exchange()
-        underlying = await self._underlying_quote()
-        underlying_price = underlying.price
+        underlying = await self._underlying_quote(target)
 
         chains = await self.ibkr.get_chains_for_contract(underlying.contract)
         matching_chains = [chain for chain in chains if chain.tradingClass == symbol]
@@ -979,35 +787,40 @@ class TailHedgeEngine:
             (chain for chain in matching_chains if chain.exchange == exchange),
             matching_chains[0],
         )
-        expiration_dtes = [
-            (expiration, self._dte(expiration)) for expiration in chain.expirations
-        ]
         eligible_expirations = [
-            (expiration, dte)
-            for expiration, dte in expiration_dtes
-            if tail_config.min_dte <= dte <= tail_config.max_dte
+            (expiration, self._dte(expiration))
+            for expiration in chain.expirations
+            if target.min_dte <= self._dte(expiration) <= target.max_dte
+            and (later_than_expiration is None or expiration > later_than_expiration)
         ]
         if not eligible_expirations:
+            if later_than_expiration is not None:
+                raise NoLaterExpirationError(
+                    "No option expiration is inside the configured DTE range "
+                    f"later than {later_than_expiration}"
+                )
             raise RuntimeError(
                 "No option expiration is inside the configured DTE range"
             )
-        expiration = min(
-            eligible_expirations,
+        eligible_expirations.sort(
             key=lambda value: (
-                abs(value[1] - tail_config.target_dte),
+                abs(value[1] - target.target_dte),
                 -value[1],
-            ),
-        )[0]
-        long_target = underlying_price * tail_config.long_strike_ratio
-        short_target = underlying_price * tail_config.short_strike_ratio
+            )
+        )
+
+        strike_target = underlying.price * target.strike_ratio
         otm_strikes = [
-            strike for strike in chain.strikes if 0 < float(strike) < underlying_price
+            float(strike)
+            for strike in chain.strikes
+            if 0 < float(strike) < underlying.price
         ]
         if not otm_strikes:
             raise RuntimeError("No out-of-the-money put strikes are available")
-        candidate_strikes = set(
-            sorted(otm_strikes, key=lambda strike: abs(strike - long_target))[:5]
-        ) | set(sorted(otm_strikes, key=lambda strike: abs(strike - short_target))[:5])
+        candidate_strikes = sorted(
+            otm_strikes,
+            key=lambda strike: abs(strike - strike_target),
+        )[:5]
         contracts = await self.ibkr.qualify_contracts(
             *[
                 Option(
@@ -1018,38 +831,64 @@ class TailHedgeEngine:
                     exchange,
                     currency="USD",
                 )
-                for strike in sorted(candidate_strikes)
+                for expiration, _dte in eligible_expirations
+                for strike in candidate_strikes
             ]
         )
-        candidate_pairs = [
-            (long_contract, short_contract)
-            for long_contract in contracts
-            for short_contract in contracts
-            if float(short_contract.strike) < float(long_contract.strike)
+        contracts = [
+            contract
+            for contract in contracts
+            if contract.conId > 0 and contract.conId not in exclude_con_ids
         ]
-        if not candidate_pairs:
-            raise RuntimeError("No valid put-spread strike pair could be qualified")
-        long_contract, short_contract = min(
-            candidate_pairs,
-            key=lambda pair: abs(float(pair[0].strike) - long_target)
-            + abs(float(pair[1].strike) - short_target),
+        if not contracts:
+            raise RuntimeError("No unoccupied target put contract could be qualified")
+        expiration_rank = {
+            expiration: rank
+            for rank, (expiration, _dte) in enumerate(eligible_expirations)
+        }
+        contracts.sort(
+            key=lambda candidate: (
+                expiration_rank.get(
+                    candidate.lastTradeDateOrContractMonth,
+                    len(expiration_rank),
+                ),
+                abs(float(candidate.strike) - strike_target),
+            )
         )
-        long_ticker, short_ticker = await self._spread_tickers(
-            long_contract,
-            short_contract,
-        )
-        quote = self._build_quote(
-            underlying_price,
-            long_ticker,
-            short_ticker,
-        )
-        return quote, long_contract, short_contract
-
-    async def _underlying_quote(self) -> UnderlyingQuote:
-        symbol = self.config.strategies.tail_hedge.symbol
-        symbol_config = self.config.portfolio.symbols[symbol]
-        ticker = await self.ibkr.get_ticker_for_stock(
+        tickers = await self.ibkr.get_tickers_for_contracts(
             symbol,
+            contracts,
+            generic_tick_list="101",
+            required_fields=[],
+            optional_fields=[
+                TickerField.MARKET_PRICE,
+                TickerField.MIDPOINT,
+                TickerField.OPEN_INTEREST,
+            ],
+        )
+        rejected_quotes: list[tuple[PutQuote, Contract]] = []
+        for ticker in tickers:
+            try:
+                quote = self._build_quote(underlying.price, ticker)
+            except (RuntimeError, TypeError, ValueError):
+                continue
+            contract = ticker.contract
+            if contract is None:
+                continue
+            if self._quote_rejection(target, quote) is None:
+                return quote, contract
+            rejected_quotes.append((quote, contract))
+        if rejected_quotes:
+            return rejected_quotes[0]
+        raise RuntimeError("No target put contract has a usable quote")
+
+    async def _underlying_quote(
+        self,
+        target: TailHedgeTargetConfig,
+    ) -> UnderlyingQuote:
+        symbol_config = self.config.portfolio.symbols[target.symbol]
+        ticker = await self.ibkr.get_ticker_for_stock(
+            target.symbol,
             symbol_config.primary_exchange or "",
             self.order_ops.get_order_exchange(),
         )
@@ -1060,199 +899,282 @@ class TailHedgeEngine:
             raise RuntimeError("Underlying market price is unavailable")
         return UnderlyingQuote(ticker.contract, price)
 
-    async def _spread_tickers(
-        self,
-        long_contract: Contract,
-        short_contract: Contract,
-    ) -> tuple[Ticker, Ticker]:
-        tickers = await self.ibkr.get_tickers_for_contracts(
-            self.config.strategies.tail_hedge.symbol,
-            [long_contract, short_contract],
-            generic_tick_list="101",
+    async def _vix_price(self) -> float:
+        if self._cached_vix is not None:
+            return self._cached_vix
+        ticker = await self.ibkr.get_ticker_for_contract(Index("VIX", "CBOE", "USD"))
+        vix = float(ticker.marketPrice())
+        if not self._is_positive(vix):
+            raise RuntimeError("VIX market price is unavailable")
+        self._cached_vix = vix
+        return vix
+
+    async def _option_ticker(self, contract: Contract) -> Ticker:
+        return await self.ibkr.get_ticker_for_contract(
+            contract,
+            generic_tick_list="",
             required_fields=[],
-            optional_fields=[
-                TickerField.MARKET_PRICE,
-                TickerField.OPEN_INTEREST,
-                TickerField.MIDPOINT,
-            ],
+            optional_fields=[TickerField.MARKET_PRICE, TickerField.MIDPOINT],
         )
-        by_con_id = {
-            ticker.contract.conId: ticker
-            for ticker in tickers
-            if ticker.contract is not None
-        }
-        long_ticker = by_con_id.get(long_contract.conId)
-        short_ticker = by_con_id.get(short_contract.conId)
-        if long_ticker is None or short_ticker is None:
-            raise RuntimeError("One or more option spread quotes are unavailable")
-        return long_ticker, short_ticker
 
-    def _build_quote(
-        self,
-        underlying_price: float,
-        long_ticker: Ticker,
-        short_ticker: Ticker,
-    ) -> SpreadQuote:
-        if long_ticker.contract is None or short_ticker.contract is None:
-            raise RuntimeError("Spread ticker contract is unavailable")
-        long_bid = float(long_ticker.bid)
-        long_ask = float(long_ticker.ask)
-        short_bid = float(short_ticker.bid)
-        short_ask = float(short_ticker.ask)
-        for label, value in (
-            ("long bid", long_bid),
-            ("long ask", long_ask),
-            ("short bid", short_bid),
-            ("short ask", short_ask),
-        ):
-            if not self._is_finite(value) or value < 0:
-                raise RuntimeError(f"{label} is unavailable")
-        if long_ask < long_bid or short_ask < short_bid:
-            raise RuntimeError("Option quote is crossed")
-
-        long_midpoint = (long_bid + long_ask) / 2.0
-        short_midpoint = (short_bid + short_ask) / 2.0
-        midpoint_debit = long_midpoint - short_midpoint
-        if midpoint_debit <= 0:
-            raise RuntimeError("Put spread does not have a positive midpoint debit")
-        limit_debit = round(midpoint_debit, 2)
-        if limit_debit <= 0:
-            raise RuntimeError("Put spread midpoint is below the minimum price tick")
-
-        spread_width = float(long_ticker.contract.strike) - float(
-            short_ticker.contract.strike
-        )
-        if spread_width <= 0:
-            raise RuntimeError("Put spread width must be positive")
-
-        return SpreadQuote(
-            expiration=long_ticker.contract.lastTradeDateOrContractMonth,
-            dte=self._dte(long_ticker.contract.lastTradeDateOrContractMonth),
+    def _build_quote(self, underlying_price: float, ticker: Ticker) -> PutQuote:
+        if ticker.contract is None:
+            raise RuntimeError("Put ticker contract is unavailable")
+        bid = float(ticker.bid)
+        ask = float(ticker.ask)
+        if not self._is_finite(bid) or bid < 0:
+            raise RuntimeError("Put bid is unavailable")
+        if not self._is_finite(ask) or ask < 0:
+            raise RuntimeError("Put ask is unavailable")
+        if ask < bid:
+            raise RuntimeError("Put quote is crossed")
+        midpoint = (bid + ask) / 2.0
+        limit_price = round(midpoint, 2)
+        if limit_price <= 0:
+            raise RuntimeError("Put midpoint is below the minimum price tick")
+        return PutQuote(
+            expiration=ticker.contract.lastTradeDateOrContractMonth,
+            dte=self._dte(ticker.contract.lastTradeDateOrContractMonth),
             underlying_price=underlying_price,
-            long_con_id=long_ticker.contract.conId,
-            long_local_symbol=long_ticker.contract.localSymbol,
-            long_strike=float(long_ticker.contract.strike),
-            long_bid=long_bid,
-            long_ask=long_ask,
-            long_open_interest=self._put_open_interest(long_ticker),
-            short_con_id=short_ticker.contract.conId,
-            short_local_symbol=short_ticker.contract.localSymbol,
-            short_strike=float(short_ticker.contract.strike),
-            short_bid=short_bid,
-            short_ask=short_ask,
-            short_open_interest=self._put_open_interest(short_ticker),
-            midpoint_debit=midpoint_debit,
-            limit_debit=limit_debit,
-            spread_width=spread_width,
-            debit_ratio=limit_debit / spread_width,
-            long_bid_ask_ratio=self._bid_ask_ratio(long_bid, long_ask),
-            short_bid_ask_ratio=self._bid_ask_ratio(short_bid, short_ask),
+            con_id=ticker.contract.conId,
+            local_symbol=ticker.contract.localSymbol,
+            strike=float(ticker.contract.strike),
+            bid=bid,
+            ask=ask,
+            open_interest=self._put_open_interest(ticker),
+            midpoint=midpoint,
+            limit_price=limit_price,
+            premium_ratio=limit_price / underlying_price,
+            bid_ask_ratio=self._bid_ask_ratio(bid, ask),
         )
 
-    def _spread_contract(
-        self,
-        symbol: str,
-        long_contract: Contract,
-        short_contract: Contract,
-        *,
-        long_action: str,
-        short_action: str,
-    ) -> Contract:
-        self.qualified_contracts[long_contract.conId] = long_contract
-        self.qualified_contracts[short_contract.conId] = short_contract
-        exchange = self.order_ops.get_order_exchange()
-        return Contract(
-            secType="BAG",
-            symbol=symbol,
-            currency="USD",
-            exchange=exchange,
-            comboLegs=[
-                ComboLeg(
-                    conId=long_contract.conId,
-                    ratio=1,
-                    exchange=exchange,
-                    action=long_action,
-                ),
-                ComboLeg(
-                    conId=short_contract.conId,
-                    ratio=1,
-                    exchange=exchange,
-                    action=short_action,
-                ),
-            ],
-        )
+    @staticmethod
+    def _working_tail_orders(open_trades: List[Trade]) -> List[WorkingTailOrder]:
+        working_orders: list[WorkingTailOrder] = []
+        for trade in open_trades:
+            order = getattr(trade, "order", None)
+            contract = getattr(trade, "contract", None)
+            order_ref = getattr(order, "orderRef", None)
+            if order_ref not in TAIL_HEDGE_ORDER_REFS:
+                continue
+            status = getattr(trade, "orderStatus", None)
+            working_orders.append(
+                WorkingTailOrder(
+                    broker_order=order,
+                    order_ref=order_ref,
+                    order_id=getattr(order, "orderId", None),
+                    symbol=getattr(contract, "symbol", None),
+                    con_id=getattr(contract, "conId", None),
+                    status=getattr(status, "status", None),
+                    filled=getattr(status, "filled", None),
+                    remaining=getattr(status, "remaining", None),
+                    limit_price=getattr(order, "lmtPrice", None),
+                )
+            )
+        return working_orders
 
-    def _stock_exposure(self, symbol_positions: List[PortfolioItem]) -> StockExposure:
+    def _account_open_trades(self) -> List[Trade]:
+        account_number = self.config.runtime.account.number
+        return [
+            trade
+            for trade in self.ibkr.open_trades()
+            if getattr(getattr(trade, "order", None), "account", None) == account_number
+        ]
+
+    @staticmethod
+    def _working_put_con_ids(open_trades: List[Trade]) -> set[int]:
+        return {
+            trade.contract.conId
+            for trade in open_trades
+            if isinstance(trade.contract, Option)
+            and trade.contract.right.upper().startswith("P")
+            and trade.contract.conId > 0
+        }
+
+    @staticmethod
+    def _put_positions_by_con_id(
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+    ) -> Dict[int, PortfolioItem]:
+        return {
+            position.contract.conId: position
+            for positions in portfolio_positions.values()
+            for position in positions
+            if isinstance(position.contract, Option)
+            and position.contract.right.upper().startswith("P")
+            and not math.isclose(float(position.position), 0.0)
+        }
+
+    def _queued_put_con_ids(self) -> set[int]:
+        orders = getattr(self.order_ops, "orders", None)
+        records = getattr(orders, "records", None)
+        if not callable(records):
+            return set()
+        queued = records()
+        if not isinstance(queued, list):
+            return set()
+        return {
+            contract.conId
+            for contract, _order, _intent_id in queued
+            if isinstance(contract, Option)
+            and contract.right.upper().startswith("P")
+            and contract.conId > 0
+        }
+
+    @staticmethod
+    def _stock_exposure(symbol_positions: List[PortfolioItem]) -> float:
         total_value = 0.0
-        total_shares = 0.0
         for position in symbol_positions:
             if not isinstance(position.contract, Stock) or position.position <= 0:
                 continue
-            shares = float(position.position)
             market_value = float(getattr(position, "marketValue", 0.0) or 0.0)
-            if not self._is_positive(market_value):
+            if not TailHedgeEngine._is_positive(market_value):
                 market_price = float(getattr(position, "marketPrice", 0.0) or 0.0)
-                if not self._is_positive(market_price):
+                if not TailHedgeEngine._is_positive(market_price):
                     continue
-                market_value = shares * market_price
-            total_shares += shares
+                market_value = float(position.position) * market_price
             total_value += market_value
-
-        market_price = total_value / total_shares if total_shares > 0 else None
-        return StockExposure(total_value, market_price)
+        return total_value
 
     def _record_state(
         self,
         status: str,
         *,
-        previous: Optional[Dict[str, Any]] = None,
+        tranches: List[Dict[str, Any]],
+        entry_history: List[Dict[str, Any]],
+        persistence_required: bool = True,
         **payload: Any,
     ) -> Dict[str, Any]:
         if self.data_store is None:
             raise RuntimeError("Tail hedge requires SQLite state storage.")
-        symbol = self.config.strategies.tail_hedge.symbol
-        recorded_at = self._now()
         state = {
-            **(previous or {}),
-            "schema_version": 1,
-            "symbol": symbol,
+            "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
+            "strategy": TAIL_HEDGE_STATE_STRATEGY,
+            "account": self.config.runtime.account.number,
             "status": status,
-            "state_recorded_at": recorded_at,
+            "state_recorded_at": self._now(),
+            "tranches": tranches,
+            "entry_history": entry_history,
             **payload,
         }
-        if "order_ref" in payload:
-            state["order_enqueued_at"] = recorded_at
-        self.data_store.record_event(TAIL_HEDGE_STATE_EVENT, state, symbol=symbol)
+        recorded = self.data_store.record_event(TAIL_HEDGE_STATE_EVENT, state)
+        if not recorded and persistence_required:
+            raise RuntimeError("Failed to persist required tail-hedge state")
+        if not recorded:
+            log.warning(
+                "Failed to persist tail-hedge "
+                f"{status} state; continuing with risk-reducing management."
+            )
         return state
 
-    @staticmethod
-    def _lottery_state(
+    def _state_parts(
+        self,
         state: Optional[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
-        if not state or state.get("lottery_long_con_id") is None:
-            return None
-        return {key: state[key] for key in LOTTERY_STATE_FIELDS if key in state}
-
-    @staticmethod
-    def _without_lottery_state(
-        state: Optional[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         if state is None:
-            return None
-        return {
-            key: value
-            for key, value in state.items()
-            if key not in LOTTERY_STATE_FIELDS
-        }
+            return [], []
+        _validate_state_identity(state, self.config.runtime.account.number)
+        raw_tranches = state.get("tranches")
+        raw_history = state.get("entry_history")
+        if not isinstance(raw_tranches, list) or not isinstance(raw_history, list):
+            raise RuntimeError("Tail-hedge state has invalid tranche or history data")
 
-    def _record_evaluation(self, outcome: str, **payload: Any) -> None:
+        tranches: list[dict[str, Any]] = []
+        tranche_entry_ids: set[str] = set()
+        tranche_con_ids: set[int] = set()
+        tranche_symbols: dict[str, str] = {}
+        for raw_tranche in raw_tranches:
+            if not isinstance(raw_tranche, dict):
+                raise RuntimeError("Tail-hedge state contains an invalid tranche")
+            tranche = dict(raw_tranche)
+            entry_id = tranche.get("entry_id")
+            symbol = tranche.get("symbol")
+            con_id = tranche.get("con_id")
+            expiration = tranche.get("expiration")
+            status = tranche.get("status")
+            if (
+                not isinstance(entry_id, str)
+                or not entry_id
+                or not isinstance(symbol, str)
+                or not symbol
+                or type(con_id) is not int
+                or con_id <= 0
+                or not isinstance(expiration, str)
+                or not expiration
+                or status not in {"entry_enqueued", "active", "close_enqueued"}
+            ):
+                raise RuntimeError("Tail-hedge state contains an invalid tranche")
+            try:
+                contract_date_to_datetime(expiration)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "Tail-hedge state contains an invalid expiration"
+                ) from exc
+            if entry_id in tranche_entry_ids or con_id in tranche_con_ids:
+                raise RuntimeError("Tail-hedge state contains duplicate tranches")
+            tranche_entry_ids.add(entry_id)
+            tranche_con_ids.add(con_id)
+            tranche_symbols[entry_id] = symbol
+            tranches.append(tranche)
+
+        entry_history: list[dict[str, Any]] = []
+        history_entry_ids: set[str] = set()
+        history_symbols: dict[str, str] = {}
+        for raw_entry in raw_history:
+            if not isinstance(raw_entry, dict):
+                raise RuntimeError("Tail-hedge state contains invalid entry history")
+            entry = dict(raw_entry)
+            entry_id = entry.get("entry_id")
+            symbol = entry.get("symbol")
+            entered_at = self._parse_datetime(entry.get("entered_at"))
+            raw_estimated_cost = entry.get("estimated_cost")
+            if isinstance(raw_estimated_cost, bool) or not isinstance(
+                raw_estimated_cost,
+                (int, float, str),
+            ):
+                raise RuntimeError("Tail-hedge state contains invalid entry history")
+            try:
+                estimated_cost = float(raw_estimated_cost)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "Tail-hedge state contains invalid entry history"
+                ) from exc
+            if (
+                not isinstance(entry_id, str)
+                or not entry_id
+                or not isinstance(symbol, str)
+                or not symbol
+                or entry_id in history_entry_ids
+                or entered_at is None
+                or not self._is_finite(estimated_cost)
+                or estimated_cost < 0
+            ):
+                raise RuntimeError("Tail-hedge state contains invalid entry history")
+            history_entry_ids.add(entry_id)
+            history_symbols[entry_id] = symbol
+            entry_history.append(entry)
+        if not tranche_entry_ids.issubset(history_entry_ids):
+            raise RuntimeError("Tail-hedge state is missing tranche entry history")
+        if any(
+            tranche_symbols[entry_id] != history_symbols[entry_id]
+            for entry_id in tranche_entry_ids
+        ):
+            raise RuntimeError("Tail-hedge state has mismatched tranche ownership")
+        return tranches, entry_history
+
+    def _record_evaluation(
+        self,
+        outcome: str,
+        *,
+        symbol: Optional[str] = None,
+        **payload: Any,
+    ) -> None:
         if self.data_store is None:
             return
-        symbol = self.config.strategies.tail_hedge.symbol
         self.data_store.record_event(
             TAIL_HEDGE_EVALUATION_EVENT,
             {
-                "schema_version": 1,
+                "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
+                "account": self.config.runtime.account.number,
                 "evaluated_at": self._now(),
                 "symbol": symbol,
                 "outcome": outcome,
@@ -1263,6 +1185,17 @@ class TailHedgeEngine:
 
     def _dte(self, expiration: str) -> int:
         return (contract_date_to_datetime(expiration).date() - self._now().date()).days
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=None)
+        if not isinstance(value, str):
+            return None
+        try:
+            return datetime.fromisoformat(value).replace(tzinfo=None)
+        except ValueError:
+            return None
 
     @staticmethod
     def _midpoint(ticker: Ticker) -> float:
@@ -1279,11 +1212,6 @@ class TailHedgeEngine:
         return value if TailHedgeEngine._is_finite(value) else 0.0
 
     @staticmethod
-    def _quoted_bid(ticker: Ticker) -> float:
-        value = float(ticker.bid)
-        return value if TailHedgeEngine._is_finite(value) and value >= 0 else 0.0
-
-    @staticmethod
     def _bid_ask_ratio(bid: float, ask: float) -> float:
         midpoint = (bid + ask) / 2.0
         if midpoint <= 0:
@@ -1292,12 +1220,10 @@ class TailHedgeEngine:
 
     @staticmethod
     def _multiplier(contract: Contract) -> float:
-        return float(contract.multiplier or 100)
-
-    @staticmethod
-    def _position_average_price(position: PortfolioItem) -> float:
-        average_cost = float(getattr(position, "averageCost", 0.0) or 0.0)
-        return average_cost / TailHedgeEngine._multiplier(position.contract)
+        multiplier = float(contract.multiplier or 100)
+        if not TailHedgeEngine._is_positive(multiplier):
+            raise RuntimeError("Put contract multiplier is unavailable")
+        return multiplier
 
     @staticmethod
     def _position_quantity(position: PortfolioItem) -> int:

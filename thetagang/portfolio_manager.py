@@ -163,6 +163,7 @@ class PortfolioManager:
             has_excess_puts=self.has_excess_puts,
             has_excess_calls=self.has_excess_calls,
             qualified_contracts=self.qualified_contracts,
+            data_store=self.data_store,
         )
         self.regime_engine = RegimeRebalanceEngine(
             config=self.config,
@@ -328,6 +329,16 @@ class PortfolioManager:
             else:
                 untracked_positions.append(item)
         return (tracked_positions, untracked_positions)
+
+    @staticmethod
+    def combine_position_maps(
+        *position_maps: Dict[str, List[PortfolioItem]],
+    ) -> Dict[str, List[PortfolioItem]]:
+        combined: Dict[str, List[PortfolioItem]] = {}
+        for position_map in position_maps:
+            for symbol, positions in position_map.items():
+                combined.setdefault(symbol, []).extend(positions)
+        return combined
 
     async def get_portfolio_positions(self) -> Dict[str, List[PortfolioItem]]:
         attempts = 3
@@ -515,15 +526,12 @@ class PortfolioManager:
         untracked_positions = self.last_untracked_positions
         if self.data_store:
             self.data_store.record_account_snapshot(account_summary)
-            combined_positions: Dict[str, List[PortfolioItem]] = dict(
-                portfolio_positions
+            self.data_store.record_positions_snapshot(
+                self.combine_position_maps(
+                    portfolio_positions,
+                    untracked_positions,
+                )
             )
-            for symbol, positions in untracked_positions.items():
-                if symbol in combined_positions:
-                    combined_positions[symbol].extend(positions)
-                else:
-                    combined_positions[symbol] = positions
-            self.data_store.record_positions_snapshot(combined_positions)
 
         position_values: Dict[int, Dict[str, str]] = {}
 
@@ -760,10 +768,16 @@ class PortfolioManager:
                         portfolio_positions,
                     )
                 elif stage_id in post_stage_ids:
+                    post_positions = portfolio_positions
+                    if stage_id == "post_tail_hedge":
+                        post_positions = self.combine_position_maps(
+                            portfolio_positions,
+                            self.last_untracked_positions,
+                        )
                     await run_post_stages(
                         self._post_strategy_deps({stage_id}),
                         account_summary,
-                        portfolio_positions,
+                        post_positions,
                     )
 
                 if stage_id in pre_management_trade_stage_ids:

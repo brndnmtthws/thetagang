@@ -1,13 +1,16 @@
 import sqlite3
-from datetime import datetime, timedelta
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 
 import thetagang.db as db_module
 from thetagang.db import (
     DataStore,
+    Event,
     HistoricalBar,
     OrderIntent,
     OrderRecord,
@@ -287,129 +290,100 @@ def test_get_last_event_payload_ignores_dry_run(tmp_path) -> None:
         config_text="test",
     )
 
-    dry_run_store.record_event("regime_rebalance_state", {"flow_active": True})
-    live_store.record_event("regime_rebalance_state", {"flow_active": False})
+    assert dry_run_store.record_event("regime_rebalance_state", {"flow_active": True})
+    assert live_store.record_event("regime_rebalance_state", {"flow_active": False})
 
     payload = live_store.get_last_event_payload("regime_rebalance_state")
 
     assert payload == {"flow_active": False}
 
 
-def test_get_filled_combo_debit_uses_latest_cumulative_fill(tmp_path) -> None:
-    db_path = tmp_path / "state.db"
+def test_get_last_event_payload_breaks_timestamp_ties_by_event_id(tmp_path) -> None:
     data_store = DataStore(
-        f"sqlite:///{db_path}",
+        f"sqlite:///{tmp_path / 'state.db'}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=False,
+        config_text="test",
+    )
+    created_at = datetime(2026, 8, 13, 12, 0, 0)
+    with data_store.session_scope() as session:
+        session.add_all(
+            [
+                Event(
+                    run_id=data_store.run_id,
+                    created_at=created_at,
+                    event_type="tail_hedge_state",
+                    payload='{"sequence": 1}',
+                ),
+                Event(
+                    run_id=data_store.run_id,
+                    created_at=created_at,
+                    event_type="tail_hedge_state",
+                    payload='{"sequence": 2}',
+                ),
+            ]
+        )
+
+    assert data_store.get_last_event_payload("tail_hedge_state") == {"sequence": 2}
+
+
+def test_get_last_event_payload_rejects_non_object_json(tmp_path) -> None:
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'state.db'}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=False,
+        config_text="test",
+    )
+    with data_store.session_scope() as session:
+        session.add(
+            Event(
+                run_id=data_store.run_id,
+                event_type="tail_hedge_state",
+                payload="[]",
+            )
+        )
+
+    assert data_store.get_last_event_payload("tail_hedge_state") is None
+    with pytest.raises(RuntimeError, match="Failed to read event tail_hedge_state"):
+        data_store.get_last_event_payload(
+            "tail_hedge_state",
+            raise_on_error=True,
+        )
+
+
+def test_record_event_reports_persistence_failure(tmp_path, monkeypatch) -> None:
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'state.db'}",
         str(tmp_path / "thetagang.toml"),
         dry_run=False,
         config_text="test",
     )
 
-    def record_filled_combo(
-        symbol: str,
-        order_id: int,
-        fill_price: float,
-        quantity: int,
-    ) -> None:
-        contract = SimpleNamespace(
-            symbol=symbol,
-            secType="BAG",
-            conId=0,
-            exchange="SMART",
-            currency="USD",
-        )
-        order = SimpleNamespace(
-            action="BUY",
-            totalQuantity=quantity,
-            lmtPrice=fill_price,
-            orderType="LMT",
-            orderRef="tg:tail-hedge:entry",
-            orderId=order_id,
-        )
-        data_store.record_order(contract, order)
-        for status, filled, avg_fill_price in (
-            ("Submitted", 0.0, 0.0),
-            ("Filled", float(quantity), fill_price),
-        ):
-            data_store.record_order_status(
-                SimpleNamespace(
-                    order=order,
-                    orderStatus=SimpleNamespace(
-                        status=status,
-                        filled=filled,
-                        remaining=float(quantity) - filled,
-                        avgFillPrice=avg_fill_price,
-                        lastFillPrice=avg_fill_price,
-                    ),
-                )
-            )
+    @contextmanager
+    def failing_session_scope():
+        raise RuntimeError("database unavailable")
+        yield
 
-    record_filled_combo("TQQQ", 17, 0.65, 3)
-    record_filled_combo("QQQ", 18, 1.25, 2)
+    monkeypatch.setattr(data_store, "session_scope", failing_session_scope)
 
-    debit = data_store.get_filled_combo_debit(
-        "tg:tail-hedge:entry",
-        datetime.now() - timedelta(days=1),
-        symbol="TQQQ",
-    )
-
-    assert debit == 195.0
+    assert not data_store.record_event("required_state", {"value": 1})
 
 
-def test_get_filled_combo_debit_recovers_fill_observed_after_restart(tmp_path) -> None:
-    db_path = tmp_path / "state.db"
-    config_path = str(tmp_path / "thetagang.toml")
-    first_run = DataStore(
-        f"sqlite:///{db_path}",
-        config_path,
+def test_get_last_event_payload_can_fail_closed(tmp_path, monkeypatch) -> None:
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'state.db'}",
+        str(tmp_path / "thetagang.toml"),
         dry_run=False,
         config_text="test",
     )
-    contract = SimpleNamespace(
-        symbol="QQQ",
-        secType="BAG",
-        conId=0,
-        exchange="SMART",
-        currency="USD",
-    )
-    order = SimpleNamespace(
-        action="BUY",
-        totalQuantity=3,
-        lmtPrice=0.70,
-        orderType="LMT",
-        orderRef="tg:tail-hedge:entry",
-        orderId=17,
-    )
-    first_run.record_order(contract, order)
 
-    next_run = DataStore(
-        f"sqlite:///{db_path}",
-        config_path,
-        dry_run=False,
-        config_text="test",
-    )
-    next_run.record_executions(
-        [
-            SimpleNamespace(
-                execution=SimpleNamespace(
-                    execId="late-fill-17",
-                    orderId=17,
-                    orderRef="tg:tail-hedge:entry",
-                    side="BOT",
-                    shares=1,
-                    price=0.68,
-                    exchange="SMART",
-                    time=datetime.now(),
-                ),
-                contract=contract,
-                time=datetime.now(),
-            )
-        ]
-    )
+    @contextmanager
+    def failing_session_scope():
+        raise RuntimeError("database unavailable")
+        yield
 
-    debit = next_run.get_filled_combo_debit(
-        "tg:tail-hedge:entry",
-        datetime.now() - timedelta(days=1),
-        symbol="QQQ",
-    )
+    monkeypatch.setattr(data_store, "session_scope", failing_session_scope)
 
-    assert debit == 210.0
+    assert data_store.get_last_event_payload("best_effort_state") is None
+    with pytest.raises(RuntimeError, match="Failed to read event required_state"):
+        data_store.get_last_event_payload("required_state", raise_on_error=True)

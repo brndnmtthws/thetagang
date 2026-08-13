@@ -28,6 +28,10 @@ def _base_config(run):
     }
 
 
+def _tail_target(symbol="AAA", budget_weight=1.0):
+    return {"symbol": symbol, "budget_weight": budget_weight}
+
+
 def test_stage_enabled_map_reflects_compiled_strategy_flags() -> None:
     config = Config(**_base_config({"strategies": ["wheel", "cash_management"]}))
     flags = stage_enabled_map(config)
@@ -41,7 +45,7 @@ def test_tail_hedge_strategy_compiles_to_its_post_stage() -> None:
     data = _base_config({"strategies": ["regime_rebalance", "tail_hedge"]})
     data["strategies"]["tail_hedge"] = {
         "enabled": True,
-        "symbol": "AAA",
+        "targets": [_tail_target()],
     }
 
     config = Config(**data)
@@ -49,6 +53,11 @@ def test_tail_hedge_strategy_compiles_to_its_post_stage() -> None:
     flags = stage_enabled_map(config)
     assert flags["equity_regime_rebalance"] is True
     assert flags["post_tail_hedge"] is True
+    target = config.tail_hedge.targets[0]
+    assert target.annual_tranches == 4
+    assert target.tranche_interval_days == 91
+    assert target.target_dte == 180
+    assert target.exit_dte == 30
 
 
 def test_enabled_tail_hedge_requires_sqlite_state() -> None:
@@ -56,7 +65,7 @@ def test_enabled_tail_hedge_requires_sqlite_state() -> None:
     data["runtime"]["database"] = {"enabled": False}
     data["strategies"]["tail_hedge"] = {
         "enabled": True,
-        "symbol": "AAA",
+        "targets": [_tail_target()],
     }
 
     with pytest.raises(ValueError, match="requires runtime.database.enabled"):
@@ -67,10 +76,10 @@ def test_enabled_tail_hedge_requires_a_managed_symbol() -> None:
     data = _base_config({"strategies": ["tail_hedge"]})
     data["strategies"]["tail_hedge"] = {
         "enabled": True,
-        "symbol": "ZZZ",
+        "targets": [_tail_target("ZZZ")],
     }
 
-    with pytest.raises(ValueError, match="symbol must be in portfolio.symbols"):
+    with pytest.raises(ValueError, match="target symbols must be in portfolio.symbols"):
         Config(**data)
 
 
@@ -79,10 +88,54 @@ def test_tail_hedge_rejects_shares_only_regime_mode() -> None:
     data["strategies"]["regime_rebalance"] = {"shares_only": True}
     data["strategies"]["tail_hedge"] = {
         "enabled": True,
-        "symbol": "AAA",
+        "targets": [_tail_target()],
     }
 
     with pytest.raises(ValueError, match="cannot be enabled when shares_only is true"):
+        Config(**data)
+
+
+def test_long_put_tail_hedge_can_run_with_wheel_option_management() -> None:
+    data = _base_config({"strategies": ["wheel", "tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+    }
+
+    config = Config(**data)
+
+    flags = stage_enabled_map(config)
+    assert flags["options_roll_positions"] is True
+    assert flags["post_tail_hedge"] is True
+
+
+def test_tail_hedge_accepts_an_empty_desired_target_set_for_cleanup() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {"enabled": True}
+
+    config = Config(**data)
+
+    assert config.tail_hedge.targets == []
+    assert stage_enabled_map(config)["post_tail_hedge"] is True
+
+
+def test_tail_hedge_targets_require_unique_symbols_and_complete_budget() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["portfolio"]["symbols"]["BBB"] = {"weight": 0.0}
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target("AAA", 0.5), _tail_target("BBB", 0.5)],
+    }
+
+    config = Config(**data)
+    assert [target.symbol for target in config.tail_hedge.targets] == ["AAA", "BBB"]
+
+    data["strategies"]["tail_hedge"]["targets"][1]["symbol"] = "AAA"
+    with pytest.raises(ValueError, match="symbols must be unique"):
+        Config(**data)
+
+    data["strategies"]["tail_hedge"]["targets"][1] = _tail_target("BBB", 0.4)
+    with pytest.raises(ValueError, match="budget_weight values must sum to 1"):
         Config(**data)
 
 

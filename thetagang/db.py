@@ -314,7 +314,7 @@ class DataStore:
         event_type: str,
         payload: Optional[Dict[str, Any]] = None,
         symbol: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         try:
             payload_json = json.dumps(payload, default=str) if payload else None
             with self.session_scope() as session:
@@ -326,10 +326,17 @@ class DataStore:
                         payload=payload_json,
                     )
                 )
+            return True
         except Exception as exc:
             log.warning(f"Failed to record event {event_type}: {exc}")
+            return False
 
-    def get_last_event_payload(self, event_type: str) -> Optional[Dict[str, Any]]:
+    def get_last_event_payload(
+        self,
+        event_type: str,
+        *,
+        raise_on_error: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         try:
             with self.session_scope() as session:
                 event = (
@@ -338,15 +345,20 @@ class DataStore:
                     .filter(Event.event_type == event_type)
                     .filter(Run.config_path == self.config_path)
                     .filter(Run.dry_run.is_(False))
-                    .order_by(Event.created_at.desc())
+                    .order_by(Event.created_at.desc(), Event.id.desc())
                     .first()
                 )
                 payload = event.payload if event else None
             if not payload:
                 return None
-            return json.loads(payload)
+            decoded = json.loads(payload)
+            if not isinstance(decoded, dict):
+                raise ValueError(f"Event {event_type} payload is not an object")
+            return decoded
         except Exception as exc:
             log.warning(f"Failed to read event {event_type}: {exc}")
+            if raise_on_error:
+                raise RuntimeError(f"Failed to read event {event_type}") from exc
             return None
 
     def record_account_snapshot(self, summary: Dict[str, Any]) -> None:
@@ -611,88 +623,6 @@ class DataStore:
             )
             result = session.execute(stmt).scalar_one_or_none()
             return result
-
-    def get_filled_combo_debit(
-        self,
-        order_ref_prefix: str,
-        start_time: datetime,
-        *,
-        symbol: Optional[str] = None,
-        multiplier: float = 100.0,
-    ) -> float:
-        """Return cumulative filled debit for matching combo buy orders."""
-        with self.session_scope() as session:
-            stmt = (
-                select(OrderRecord)
-                .join(Run, OrderRecord.run_id == Run.id)
-                .where(OrderRecord.created_at >= start_time)
-                .where(Run.config_path == self.config_path)
-                .where(Run.dry_run.is_(False))
-                .where(OrderRecord.order_ref.like(f"{order_ref_prefix}%"))
-                .where(OrderRecord.sec_type == "BAG")
-                .where(OrderRecord.action == "BUY")
-            )
-            if symbol is not None:
-                stmt = stmt.where(OrderRecord.symbol == symbol)
-            order_records = (
-                session.execute(stmt.order_by(OrderRecord.created_at.asc()))
-                .scalars()
-                .all()
-            )
-            execution_stmt = (
-                select(ExecutionRecord.order_id)
-                .join(Run, ExecutionRecord.run_id == Run.id)
-                .where(ExecutionRecord.execution_time >= start_time)
-                .where(Run.config_path == self.config_path)
-                .where(Run.dry_run.is_(False))
-                .where(ExecutionRecord.order_ref.like(f"{order_ref_prefix}%"))
-            )
-            if symbol is not None:
-                execution_stmt = execution_stmt.where(ExecutionRecord.symbol == symbol)
-            executed_order_ids = {
-                order_id
-                for order_id in session.execute(execution_stmt).scalars()
-                if order_id is not None
-            }
-
-            debit = 0.0
-            seen_orders: set[tuple[int, int]] = set()
-            for order_record in order_records:
-                if order_record.order_id is None:
-                    continue
-                order_key = (order_record.run_id, order_record.order_id)
-                if order_key in seen_orders:
-                    continue
-                seen_orders.add(order_key)
-                status = (
-                    session.execute(
-                        select(OrderStatus)
-                        .where(OrderStatus.run_id == order_record.run_id)
-                        .where(OrderStatus.order_id == order_record.order_id)
-                        .order_by(OrderStatus.created_at.desc(), OrderStatus.id.desc())
-                        .limit(1)
-                    )
-                    .scalars()
-                    .first()
-                )
-                if status is not None and status.filled:
-                    filled = float(status.filled)
-                    fill_price = status.avg_fill_price
-                elif order_record.order_id in executed_order_ids:
-                    # A DAY order can fill after a once-daily ThetaGang process
-                    # disconnects. The next run sees the execution but never saw
-                    # the live Filled status, so conservatively charge the full
-                    # submitted limit debit to the budget.
-                    filled = float(order_record.quantity or 0.0)
-                    fill_price = order_record.limit_price
-                else:
-                    continue
-                if fill_price is None:
-                    fill_price = order_record.limit_price
-                if fill_price is None:
-                    continue
-                debit += max(float(fill_price), 0.0) * filled * multiplier
-            return round(debit, 2)
 
 
 def _parse_bar_time(value: Any) -> Optional[datetime]:

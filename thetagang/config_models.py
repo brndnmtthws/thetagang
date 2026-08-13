@@ -1,3 +1,4 @@
+import math
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
@@ -289,67 +290,96 @@ class VIXCallHedgeConfig(BaseModel, DisplayMixin):
                     )
 
 
-class TailHedgeConfig(BaseModel, DisplayMixin):
-    enabled: bool = Field(default=False)
-    symbol: str = Field(default="")
-    annual_budget: float = Field(default=0.005, gt=0.0, le=1.0)
+class TailHedgeTargetConfig(BaseModel, DisplayMixin):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1)
+    budget_weight: float = Field(gt=0.0, le=1.0)
+    annual_tranches: int = Field(default=4, ge=1, le=12)
+    entry_gate: Literal["vix", "none"] = Field(default="vix")
     entry_vix_max: float = Field(default=20.0, ge=0.0)
-    target_dte: int = Field(default=150, gt=0)
-    min_dte: int = Field(default=120, gt=0)
-    max_dte: int = Field(default=180, gt=0)
+    target_dte: int = Field(default=180, gt=0)
+    min_dte: int = Field(default=150, gt=0)
+    max_dte: int = Field(default=210, gt=0)
     exit_dte: int = Field(default=30, ge=0)
-    long_strike_ratio: float = Field(default=0.60, gt=0.0, lt=1.0)
-    short_strike_ratio: float = Field(default=0.40, gt=0.0, lt=1.0)
+    strike_ratio: float = Field(default=0.60, gt=0.0, lt=1.0)
     minimum_open_interest: int = Field(default=50, ge=0)
     minimum_bid: float = Field(default=0.01, gt=0.0)
     max_bid_ask_ratio: float = Field(default=0.50, ge=0.0)
-    max_debit_ratio: float = Field(default=0.15, gt=0.0, le=1.0)
-    short_close_profit: float = Field(default=0.50, gt=0.0, lt=1.0)
-    short_exit_min_spot_ratio: float = Field(default=1.35, gt=1.0)
+    max_premium_ratio: float = Field(default=0.05, gt=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def validate_spread(self) -> Self:
+    def validate_put_program(self) -> Self:
         if not self.min_dte <= self.target_dte <= self.max_dte:
             raise ValueError(
                 "tail_hedge.target_dte must be between min_dte and max_dte"
             )
         if self.exit_dte >= self.min_dte:
             raise ValueError("tail_hedge.exit_dte must be less than min_dte")
-        if self.short_strike_ratio >= self.long_strike_ratio:
-            raise ValueError(
-                "tail_hedge.short_strike_ratio must be less than long_strike_ratio"
-            )
+        return self
+
+    @property
+    def tranche_interval_days(self) -> int:
+        return max(1, 365 // self.annual_tranches)
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_section()
+        table.add_row("", "Protected symbol", "=", self.symbol)
+        table.add_row("", "Budget weight", "=", pfmt(self.budget_weight))
+        table.add_row("", "Annual tranches", "=", f"{self.annual_tranches}")
+        table.add_row(
+            "", "Minimum days between entries", "=", f"{self.tranche_interval_days}"
+        )
+        table.add_row("", "Entry gate", "=", self.entry_gate)
+        if self.entry_gate == "vix":
+            table.add_row("", "Entry VIX maximum", "=", f"{ffmt(self.entry_vix_max)}")
+        table.add_row("", "Target DTE", "=", f"{self.target_dte}")
+        table.add_row("", "DTE range", "=", f"{self.min_dte}-{self.max_dte}")
+        table.add_row("", "Exit DTE", "=", f"{self.exit_dte}")
+        table.add_row("", "Put strike / spot", "=", pfmt(self.strike_ratio))
+        table.add_row("", "Minimum open interest", "=", f"{self.minimum_open_interest}")
+        table.add_row("", "Minimum quoted bid", "=", f"{dfmt(self.minimum_bid)}")
+        table.add_row("", "Maximum bid/ask ratio", "=", pfmt(self.max_bid_ask_ratio))
+        table.add_row(
+            "",
+            "Maximum premium / spot",
+            "=",
+            pfmt(self.max_premium_ratio),
+        )
+
+
+class TailHedgeConfig(BaseModel, DisplayMixin):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False)
+    annual_budget: float = Field(default=0.005, gt=0.0, le=1.0)
+    targets: List[TailHedgeTargetConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_targets(self) -> Self:
+        symbols = [target.symbol for target in self.targets]
+        if len(set(symbols)) != len(symbols):
+            raise ValueError("tail_hedge.targets symbols must be unique")
+        if self.targets and not math.isclose(
+            sum(target.budget_weight for target in self.targets),
+            1.0,
+            abs_tol=1e-9,
+        ):
+            raise ValueError("tail_hedge.targets budget_weight values must sum to 1")
         return self
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
-        table.add_row("[spring_green1]Tail hedge put spread")
+        table.add_row("[spring_green1]Tail hedge long-put program")
         table.add_row("", "Enabled", "=", f"{self.enabled}")
-        table.add_row("", "Protected symbol", "=", self.symbol or "-")
         table.add_row(
             "", "Annual premium budget (% NLV)", "=", pfmt(self.annual_budget)
         )
-        table.add_row("", "Entry VIX maximum", "=", f"{ffmt(self.entry_vix_max)}")
-        table.add_row("", "Target DTE", "=", f"{self.target_dte}")
-        table.add_row("", "DTE range", "=", f"{self.min_dte}-{self.max_dte}")
-        table.add_row("", "Exit DTE", "=", f"{self.exit_dte}")
-        table.add_row(
-            "",
-            "Long/short strike ratios",
-            "=",
-            f"{pfmt(self.long_strike_ratio)} / {pfmt(self.short_strike_ratio)}",
-        )
-        table.add_row("", "Minimum open interest", "=", f"{self.minimum_open_interest}")
-        table.add_row("", "Minimum quoted bid", "=", f"{dfmt(self.minimum_bid)}")
-        table.add_row("", "Maximum bid/ask ratio", "=", pfmt(self.max_bid_ask_ratio))
-        table.add_row("", "Maximum debit/payoff ratio", "=", pfmt(self.max_debit_ratio))
-        table.add_row("", "Short-leg close profit", "=", pfmt(self.short_close_profit))
-        table.add_row(
-            "",
-            "Short-leg minimum spot/strike",
-            "=",
-            f"{ffmt(self.short_exit_min_spot_ratio)}",
-        )
+        if not self.targets:
+            table.add_row("", "Targets", "=", "-")
+            return
+        for target in self.targets:
+            target.add_to_table(table)
 
 
 class WriteWhenConfig(BaseModel, DisplayMixin):

@@ -617,7 +617,7 @@ daily_stddev_window = "30 D"
 #
 # [strategies.regime_rebalance]
 # enabled = true
-# symbols = ["TQQQ", "BTAL"]
+# symbols = ["QQQ", "BTAL"]
 # [strategies.regime_rebalance.risk]
 # margin_usage = 0.8
 # lookback_days = 40
@@ -761,35 +761,52 @@ ignore_dte = 0
   weight      = 0.00
 
 
-# Opportunistic long-put vertical spread for a regime-rebalanced risk sleeve.
-# Add "tail_hedge" to run.strategies when enabling this section. V1 manages at
-# most one put-spread tranche, sized from the remaining annual NLV budget, and
-# submits it as a single midpoint limit order. Contract granularity rounds a
-# positive sub-contract budget up to one spread. It buys back the short after
-# the configured profit. At exit_dte, it may keep an otherwise unsaleable
-# residual long while seeking the next spread, but it keeps at most one such
-# lottery ticket and tries to close it before expiration. It will leave the
-# account unhedged when VIX, liquidity, pricing, or budget reject entry.
-# SQLite storage must be enabled so the strategy can identify its own legs and
+# Permanent long-put tail-hedge program for one or more portfolio symbols.
+# Add "tail_hedge" alongside "regime_rebalance" in run.strategies when enabling
+# this section. Targets maintain independent entry schedules, gates, and put
+# ladders under one rolling annual NLV premium budget. Target budget_weight
+# values must sum to 1.0. Contract quantities stay within the global, target,
+# and tranche budgets; if one contract does not fit, that target waits.
+# Unlike every other option position, state-owned tail puts remain in the
+# net_liq_ex_options regime-rebalance base, so their mark-to-market gains count
+# as portfolio capital while the puts are still held.
+# SQLite storage must be enabled so the strategy can identify its own puts and
 # retain the decisions, quotes, order lifecycle, fills, and position snapshots.
 #
 # [strategies.tail_hedge]
 # enabled = true
+# annual_budget = 0.005  # long-put entry debits over 365 days / net liquidation
+#
+# [[strategies.tail_hedge.targets]]
 # symbol = "QQQ"
-# annual_budget = 0.005  # net spread entry debits over 365 days / net liquidation
+# budget_weight = 0.60
+# annual_tranches = 4  # derives a 91-day minimum interval between entries
+# entry_gate = "vix"
 # entry_vix_max = 20.0
-# target_dte = 150
-# min_dte = 120
-# max_dte = 180
+# target_dte = 180
+# min_dte = 150
+# max_dte = 210
 # exit_dte = 30
-# long_strike_ratio = 0.60
-# short_strike_ratio = 0.40
+# strike_ratio = 0.60
 # minimum_open_interest = 50
 # minimum_bid = 0.01
-# max_bid_ask_ratio = 0.50  # per-leg quoted width / midpoint
-# max_debit_ratio = 0.15  # spread debit / maximum intrinsic payoff
-# short_close_profit = 0.50  # retain the long after buying back the short
-# short_exit_min_spot_ratio = 1.35  # also exit short when spot / short strike <= this
+# max_bid_ask_ratio = 0.50  # quoted width / midpoint
+# max_premium_ratio = 0.05  # put premium / underlying spot
+#
+# [[strategies.tail_hedge.targets]]
+# symbol = "IBIT"
+# budget_weight = 0.40
+# annual_tranches = 4
+# entry_gate = "none"  # VIX is not an entry gate for this target
+# target_dte = 180
+# min_dte = 150
+# max_dte = 210
+# exit_dte = 30
+# strike_ratio = 0.60
+# minimum_open_interest = 25
+# minimum_bid = 0.01
+# max_bid_ask_ratio = 0.50
+# max_premium_ratio = 0.08
 
 
 [strategies.cash_management]

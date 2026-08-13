@@ -465,10 +465,16 @@ class Config(BaseModel, DisplayMixin):
         tail_hedge = self.strategies.tail_hedge
         if not tail_hedge.enabled:
             return self
-        if not tail_hedge.symbol:
-            raise ValueError("tail_hedge.symbol must be set when enabled")
-        if tail_hedge.symbol not in self.portfolio.symbols:
-            raise ValueError("tail_hedge.symbol must be in portfolio.symbols")
+        missing_symbols = [
+            target.symbol
+            for target in tail_hedge.targets
+            if target.symbol not in self.portfolio.symbols
+        ]
+        if missing_symbols:
+            raise ValueError(
+                "tail_hedge target symbols must be in portfolio.symbols: "
+                + ", ".join(missing_symbols)
+            )
         if not self.runtime.database.enabled:
             raise ValueError("tail_hedge requires runtime.database.enabled = true")
         if self.strategies.regime_rebalance.shares_only:
