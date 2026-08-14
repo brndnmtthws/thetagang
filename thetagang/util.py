@@ -1,14 +1,26 @@
 import math
 from operator import itemgetter
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import ib_async.objects
 import ib_async.ticker
 from ib_async import AccountValue, Order, PortfolioItem, Ticker, util
-from ib_async.contract import Option
+from ib_async.contract import Option, Stock
 
 from thetagang.config import Config
 from thetagang.options import option_dte
+
+
+def working_stock_order_symbols(trades: Iterable[Any], account_number: str) -> set[str]:
+    """Return symbols with active stock orders for the selected account."""
+    return {
+        trade.contract.symbol
+        for trade in trades
+        if isinstance(getattr(trade, "contract", None), Stock)
+        and getattr(getattr(trade, "order", None), "account", None) == account_number
+        and str(getattr(trade.order, "action", "")).upper() in {"BUY", "SELL"}
+        and not (callable(getattr(trade, "isDone", None)) and trade.isDone())
+    }
 
 
 def account_summary_to_dict(

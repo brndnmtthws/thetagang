@@ -103,6 +103,8 @@ EXPLICIT_STAGE_PREREQUISITES: dict[str, set[str]] = {
 
 EXPLICIT_STAGE_ORDER_REQUIREMENTS: tuple[tuple[str, str], ...] = (
     ("equity_regime_rebalance", "post_tail_hedge"),
+    ("equity_buy_rebalance", "post_tail_hedge"),
+    ("equity_sell_rebalance", "post_tail_hedge"),
     ("equity_regime_rebalance", "post_cash_management"),
     ("post_tail_hedge", "post_cash_management"),
 )

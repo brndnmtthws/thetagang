@@ -1,5 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,15 +11,18 @@ from sqlalchemy import create_engine, inspect, select
 import thetagang.db as db_module
 from alembic import command
 from thetagang.db import (
+    TAIL_HEDGE_ENTRY_FIELDS,
     DataStore,
     Event,
     ExecutionRecord,
     HistoricalBar,
     OrderIntent,
     OrderRecord,
+    TailHedgeEntry,
     run_migrations,
     sqlite_db_path,
 )
+from thetagang.strategies.tail_hedge_state import TailHedgeCohort
 
 
 def test_data_store_records_executions_and_queries(tmp_path) -> None:
@@ -150,7 +154,7 @@ def test_run_migrations_cleans_temp_on_failure(tmp_path, monkeypatch) -> None:
     assert not temp_path.exists()
 
 
-def test_execution_account_migration_upgrades_and_downgrades(tmp_path) -> None:
+def test_tail_hedge_migration_upgrades_and_downgrades(tmp_path) -> None:
     db_url = f"sqlite:///{tmp_path / 'state.db'}"
     alembic_cfg = db_module.make_alembic_config(db_url)
 
@@ -158,36 +162,146 @@ def test_execution_account_migration_upgrades_and_downgrades(tmp_path) -> None:
     engine = create_engine(db_url, future=True)
     columns = {column["name"] for column in inspect(engine).get_columns("executions")}
     assert "account" not in columns
-    assert "commission" not in columns
-    engine.dispose()
-
-    command.upgrade(alembic_cfg, "0003_add_execution_commission")
-    engine = create_engine(db_url, future=True)
-    columns = {column["name"] for column in inspect(engine).get_columns("executions")}
-    assert "commission" in columns
-    assert "account" not in columns
+    assert "tail_hedge_entries" not in inspect(engine).get_table_names()
     engine.dispose()
 
     command.upgrade(alembic_cfg, "head")
     engine = create_engine(db_url, future=True)
     columns = {column["name"] for column in inspect(engine).get_columns("executions")}
-    assert "commission" in columns
     assert "account" in columns
-    engine.dispose()
-
-    command.downgrade(alembic_cfg, "0003_add_execution_commission")
-    engine = create_engine(db_url, future=True)
-    columns = {column["name"] for column in inspect(engine).get_columns("executions")}
-    assert "commission" in columns
-    assert "account" not in columns
+    assert "commission" not in columns
+    tail_columns = {
+        column["name"] for column in inspect(engine).get_columns("tail_hedge_entries")
+    }
+    cohort_fields = {field.name for field in fields(TailHedgeCohort)}
+    assert set(TAIL_HEDGE_ENTRY_FIELDS) == cohort_fields
+    assert tail_columns == {"account", *cohort_fields}
+    primary_key = inspect(engine).get_pk_constraint("tail_hedge_entries")
+    assert primary_key["constrained_columns"] == ["account", "entry_id"]
     engine.dispose()
 
     command.downgrade(alembic_cfg, "0002_add_order_intents")
     engine = create_engine(db_url, future=True)
     columns = {column["name"] for column in inspect(engine).get_columns("executions")}
-    assert "commission" not in columns
     assert "account" not in columns
+    assert "tail_hedge_entries" not in inspect(engine).get_table_names()
     engine.dispose()
+
+
+def _tail_hedge_row(
+    entry_id: str = "QQQ:60:2026-01-01T12:00:00",
+    *,
+    status: str = "active",
+) -> dict:
+    return {
+        "entry_id": entry_id,
+        "symbol": "QQQ",
+        "status": status,
+        "con_id": 60,
+        "expiration": "20260717",
+        "strike": 60.0,
+        "quantity": 2,
+        "entry_limit_price": 0.5,
+        "entered_at": datetime(2026, 1, 1, 12, 0, 0),
+        "estimated_cost": 100.0,
+        "recovered_cost": 0.0,
+        "pending_recovery_quantity": None,
+        "pending_recovery_per_contract": None,
+        "pending_recovery_enqueued_at": None,
+        "pending_recovery_initial_quantity": None,
+    }
+
+
+def test_tail_hedge_entries_round_trip_active_and_closed_rows(tmp_path) -> None:
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'state.db'}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=False,
+        config_text="test",
+    )
+    active = _tail_hedge_row()
+    active["pending_recovery_quantity"] = 2
+    active["pending_recovery_per_contract"] = 40.0
+    active["pending_recovery_enqueued_at"] = datetime(2026, 1, 2, 12, 0, 0)
+    active["pending_recovery_initial_quantity"] = 2
+
+    assert data_store.save_tail_hedge_entries("TEST123", [active])
+    loaded = data_store.load_tail_hedge_entries("TEST123", raise_on_error=True)
+
+    assert loaded == [active]
+
+    closed = _tail_hedge_row(status="closed")
+    closed["recovered_cost"] = 80.0
+    assert data_store.save_tail_hedge_entries("TEST123", [closed])
+    loaded = data_store.load_tail_hedge_entries("TEST123", raise_on_error=True)
+
+    assert loaded == [closed]
+
+
+def test_tail_hedge_entries_replace_only_one_account(tmp_path) -> None:
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'state.db'}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=False,
+        config_text="test",
+    )
+    original = _tail_hedge_row()
+    assert data_store.save_tail_hedge_entries("TEST123", [original])
+    assert data_store.save_tail_hedge_entries("OTHER", [original])
+
+    assert data_store.load_tail_hedge_entries("TEST123") == [original]
+    assert data_store.load_tail_hedge_entries("OTHER") == [original]
+    assert data_store.save_tail_hedge_entries("TEST123", [])
+    assert data_store.load_tail_hedge_entries("TEST123") == []
+    assert data_store.load_tail_hedge_entries("OTHER") == [original]
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_tail_hedge_entries_normalize_order_and_reject_duplicates(
+    tmp_path,
+    dry_run: bool,
+) -> None:
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'state.db'}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=dry_run,
+        config_text="test",
+    )
+    earlier = _tail_hedge_row("earlier")
+    later = _tail_hedge_row("later")
+    later["entered_at"] = datetime(2026, 1, 2, 12, 0, 0)
+
+    assert data_store.save_tail_hedge_entries("TEST123", [later, earlier])
+    assert data_store.load_tail_hedge_entries("TEST123") == [earlier, later]
+
+    duplicate = dict(earlier, recovered_cost=10.0)
+    assert not data_store.save_tail_hedge_entries(
+        "TEST123",
+        [duplicate, duplicate],
+    )
+    assert data_store.load_tail_hedge_entries("TEST123") == [earlier, later]
+
+
+def test_tail_hedge_dry_run_overlay_never_writes_live_rows(tmp_path) -> None:
+    db_url = f"sqlite:///{tmp_path / 'state.db'}"
+    config_path = str(tmp_path / "thetagang.toml")
+    live_store = DataStore(db_url, config_path, dry_run=False, config_text="test")
+    active = _tail_hedge_row()
+    assert live_store.save_tail_hedge_entries("TEST123", [active])
+
+    dry_store = DataStore(db_url, config_path, dry_run=True, config_text="test")
+    assert dry_store.load_tail_hedge_entries("TEST123") == [active]
+    closed = _tail_hedge_row(status="closed")
+    closed["recovered_cost"] = 50.0
+    assert dry_store.save_tail_hedge_entries("TEST123", [closed])
+    dry_rows = dry_store.load_tail_hedge_entries("TEST123")
+    assert dry_rows[0]["status"] == "closed"
+    assert dry_rows[0]["recovered_cost"] == 50.0
+
+    next_live_store = DataStore(db_url, config_path, dry_run=False, config_text="test")
+    assert next_live_store.load_tail_hedge_entries("TEST123") == [active]
+    with next_live_store.session_scope() as session:
+        assert len(session.execute(select(TailHedgeEntry)).scalars().all()) == 1
 
 
 def test_record_historical_bars_upserts_and_parses_dates(tmp_path) -> None:
@@ -341,6 +455,68 @@ def test_record_executions_backfills_account_on_repeat(tmp_path) -> None:
         )
 
 
+def test_legacy_execution_fallback_never_overrides_scoped_history(tmp_path) -> None:
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'state.db'}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=False,
+        config_text="test",
+    )
+    with data_store.session_scope() as session:
+        session.add_all(
+            [
+                ExecutionRecord(
+                    run_id=data_store.run_id,
+                    exec_id="legacy",
+                    account=None,
+                    order_ref="tg:regime-rebalance:AAA",
+                    symbol="AAA",
+                    execution_time=datetime(2024, 1, 9, 12),
+                ),
+                ExecutionRecord(
+                    run_id=data_store.run_id,
+                    exec_id="scoped",
+                    account="TEST123",
+                    order_ref="tg:regime-rebalance:AAA",
+                    symbol="AAA",
+                    execution_time=datetime(2024, 1, 7, 12),
+                ),
+                ExecutionRecord(
+                    run_id=data_store.run_id,
+                    exec_id="other",
+                    account="OTHER",
+                    order_ref="tg:regime-rebalance:AAA",
+                    symbol="AAA",
+                    execution_time=datetime(2024, 1, 10, 12),
+                ),
+            ]
+        )
+
+    assert data_store.get_last_regime_rebalance_time(
+        symbols=["AAA"],
+        order_ref_prefix="tg:regime-rebalance",
+        start_time=datetime(2024, 1, 1),
+        account="TEST123",
+        include_legacy_unscoped=True,
+    ) == datetime(2024, 1, 7, 12)
+    assert data_store.get_last_regime_rebalance_time(
+        symbols=["AAA"],
+        order_ref_prefix="tg:regime-rebalance",
+        start_time=datetime(2024, 1, 1),
+        account="UNSEEN",
+        include_legacy_unscoped=True,
+    ) == datetime(2024, 1, 9, 12)
+    assert (
+        data_store.get_last_regime_rebalance_time(
+            account="UNSEEN",
+            symbols=["AAA"],
+            order_ref_prefix="tg:regime-rebalance",
+            start_time=datetime(2024, 1, 1),
+        )
+        is None
+    )
+
+
 def test_record_order_intent_links_orders(tmp_path) -> None:
     db_path = tmp_path / "state.db"
     data_store = DataStore(
@@ -418,7 +594,7 @@ def test_dry_run_event_overlay_is_visible_only_within_current_run(tmp_path) -> N
         config_text="test",
     )
     assert live_store.record_event(
-        "tail_hedge_state",
+        "example_state",
         {"status": "live"},
         symbol="TEST123",
     )
@@ -430,16 +606,16 @@ def test_dry_run_event_overlay_is_visible_only_within_current_run(tmp_path) -> N
         config_text="test",
     )
     assert dry_run_store.get_last_event_payload(
-        "tail_hedge_state",
+        "example_state",
         symbol="TEST123",
     ) == {"status": "live"}
     assert dry_run_store.record_event(
-        "tail_hedge_state",
+        "example_state",
         {"status": "same_run_dry_plan"},
         symbol="TEST123",
     )
     assert dry_run_store.get_last_event_payload(
-        "tail_hedge_state",
+        "example_state",
         symbol="TEST123",
     ) == {"status": "same_run_dry_plan"}
 
@@ -450,7 +626,7 @@ def test_dry_run_event_overlay_is_visible_only_within_current_run(tmp_path) -> N
         config_text="test",
     )
     assert next_dry_run_store.get_last_event_payload(
-        "tail_hedge_state",
+        "example_state",
         symbol="TEST123",
     ) == {"status": "live"}
 
@@ -468,19 +644,19 @@ def test_get_last_event_payload_uses_event_insertion_order(tmp_path) -> None:
                 Event(
                     run_id=data_store.run_id,
                     created_at=datetime(2026, 8, 14, 12, 0, 0),
-                    event_type="tail_hedge_state",
+                    event_type="ordered_event",
                     payload='{"sequence": 1}',
                 ),
                 Event(
                     run_id=data_store.run_id,
                     created_at=datetime(2026, 8, 13, 12, 0, 0),
-                    event_type="tail_hedge_state",
+                    event_type="ordered_event",
                     payload='{"sequence": 2}',
                 ),
             ]
         )
 
-    assert data_store.get_last_event_payload("tail_hedge_state") == {"sequence": 2}
+    assert data_store.get_last_event_payload("ordered_event") == {"sequence": 2}
 
 
 def test_event_state_can_fail_closed(tmp_path, monkeypatch) -> None:

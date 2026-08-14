@@ -84,7 +84,10 @@ class TestSellOnlyRebalancing:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        sell_actions_table, to_sell = await portfolio_manager.check_sell_only_positions(
+        (
+            sell_actions_table,
+            to_sell,
+        ) = await portfolio_manager.equity_engine.check_sell_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -141,7 +144,10 @@ class TestSellOnlyRebalancing:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        sell_actions_table, to_sell = await portfolio_manager.check_sell_only_positions(
+        (
+            sell_actions_table,
+            to_sell,
+        ) = await portfolio_manager.equity_engine.check_sell_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -197,7 +203,10 @@ class TestSellOnlyRebalancing:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        sell_actions_table, to_sell = await portfolio_manager.check_sell_only_positions(
+        (
+            sell_actions_table,
+            to_sell,
+        ) = await portfolio_manager.equity_engine.check_sell_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -255,7 +264,10 @@ class TestSellOnlyRebalancing:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        sell_actions_table, to_sell = await portfolio_manager.check_sell_only_positions(
+        (
+            sell_actions_table,
+            to_sell,
+        ) = await portfolio_manager.equity_engine.check_sell_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -314,7 +326,10 @@ class TestSellOnlyRebalancing:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        sell_actions_table, to_sell = await portfolio_manager.check_sell_only_positions(
+        (
+            sell_actions_table,
+            to_sell,
+        ) = await portfolio_manager.equity_engine.check_sell_only_positions(
             account_summary, portfolio_positions
         )
 

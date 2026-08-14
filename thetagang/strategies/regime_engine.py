@@ -19,12 +19,14 @@ from thetagang.config_models import RegimeRebalanceBaseEnum
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import IBKR, TickerField
-from thetagang.orders import PendingBuyCash, order_cash_notional, working_buy_cash
+from thetagang.orders import PendingBuyCash, pending_buy_cash
 from thetagang.strategies.runtime_services import resolve_symbol_configs
 from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
+    TailHedgeCohort,
     TailHedgeStateStore,
     is_tail_reduction_ref,
+    parse_state_datetime,
 )
 from thetagang.trading_operations import OrderOperations
 from thetagang.util import midpoint_or_market_price, portfolio_positions_to_dict
@@ -93,6 +95,7 @@ class RatioGateResult:
 
 @dataclass(frozen=True)
 class HarvestPut:
+    entry_id: str
     contract: Option
     expiration: str
     quantity: int
@@ -137,7 +140,6 @@ class RegimeRebalanceEngine:
         order_ops: OrderOperations,
         data_store: Optional[DataStore],
         get_primary_exchange: Callable[[str], str],
-        get_buying_power: Callable[[Dict[str, AccountValue]], int],
         now_provider: Callable[[], datetime],
         tail_hedge_stage_enabled: Callable[[], bool] | None = None,
         cash_management_stage_enabled: Callable[[], bool] | None = None,
@@ -148,7 +150,6 @@ class RegimeRebalanceEngine:
         self.order_ops = order_ops
         self.data_store = data_store
         self._get_primary_exchange = get_primary_exchange
-        self._get_buying_power = get_buying_power
         self._now = now_provider
         self._tail_hedge_stage_enabled = tail_hedge_stage_enabled or (lambda: False)
         self._cash_management_stage_enabled = cash_management_stage_enabled or (
@@ -161,7 +162,6 @@ class RegimeRebalanceEngine:
             TailHedgeStateStore(
                 data_store,
                 config.runtime.account.number,
-                now_provider=now_provider,
             )
             if data_store is not None
             else None
@@ -176,20 +176,19 @@ class RegimeRebalanceEngine:
     def _configured_tail_harvest_targets(self) -> set[str]:
         if self._tail_state_store is None or not self._tail_hedge_stage_enabled():
             return set()
-        tail_hedge = getattr(self.config.strategies, "tail_hedge", None)
-        if not bool(getattr(tail_hedge, "enabled", False)):
+        tail_hedge = self.config.strategies.tail_hedge
+        if not tail_hedge.enabled:
             return set()
         return {
-            str(target.symbol)
-            for target in getattr(tail_hedge, "targets", [])
-            if isinstance(getattr(target, "symbol", None), str)
-            and self.config.trading_is_allowed(str(target.symbol))
+            target.symbol
+            for target in tail_hedge.targets
+            if self.config.trading_is_allowed(target.symbol)
         }
 
-    def _load_tail_tranches(self) -> list[dict[str, Any]]:
+    def _load_tail_cohorts(self) -> list[TailHedgeCohort]:
         if self._tail_state_store is None:
             return []
-        return self._tail_state_store.load().tranches
+        return self._tail_state_store.load().open_cohorts
 
     def _cash_fund_value(
         self,
@@ -232,16 +231,11 @@ class RegimeRebalanceEngine:
         return value
 
     def _queued_cash_debits(self) -> PendingBuyCash:
-        local_debit = sum(
-            max(0.0, order_cash_notional(contract, order))
-            for contract, order, _intent_id in self.order_ops.orders.records()
-            if str(getattr(order, "action", "")).upper() == "BUY"
-        )
-        working = working_buy_cash(
+        return pending_buy_cash(
             self.ibkr.open_trades(),
+            self.order_ops.orders.records(),
             account=self.config.runtime.account.number,
         )
-        return PendingBuyCash(local_debit + working.debit, working.ambiguous)
 
     def _ordinary_rebalance_shortfall(
         self,
@@ -309,13 +303,12 @@ class RegimeRebalanceEngine:
             approved_buys - ordinary_capacity,
         )
 
+    @staticmethod
     def _tail_hedge_market_value(
-        self,
         portfolio_positions: Dict[str, List[PortfolioItem]],
+        cohorts: list[TailHedgeCohort],
     ) -> float:
-        if self._tail_state_store is None:
-            return 0.0
-        owned_con_ids = self._tail_state_store.load().owned_con_ids
+        owned_con_ids = {cohort.con_id for cohort in cohorts}
         return sum(
             float(position.marketValue or 0.0)
             for positions in portfolio_positions.values()
@@ -391,7 +384,7 @@ class RegimeRebalanceEngine:
         self,
         *,
         symbol: str,
-        tranches: list[dict[str, Any]],
+        cohorts: list[TailHedgeCohort],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> list[HarvestPut]:
         snapshot_positions = {
@@ -412,14 +405,14 @@ class RegimeRebalanceEngine:
             and contract.conId > 0
         )
 
-        quoted: list[tuple[dict[str, Any], float]] = []
-        for tranche in tranches:
-            con_id = int(tranche.get("con_id", 0) or 0)
+        quoted: list[tuple[TailHedgeCohort, float]] = []
+        for cohort in cohorts:
+            con_id = cohort.con_id
             position = snapshot_positions.get(con_id)
             if (
-                tranche.get("symbol") != symbol
-                or tranche.get("status") != "active"
-                or int(tranche.get("quantity", 0) or 0) <= 0
+                cohort.symbol != symbol
+                or cohort.status != "active"
+                or cohort.has_pending_recovery
                 or con_id in unavailable_con_ids
                 or position is None
             ):
@@ -441,15 +434,15 @@ class RegimeRebalanceEngine:
                 continue
             limit_price = round(float(midpoint_or_market_price(ticker)), 2)
             if math.isfinite(limit_price) and limit_price > 0:
-                quoted.append((tranche, limit_price))
+                quoted.append((cohort, limit_price))
 
         # Quote requests yield to ib_async. Re-read its cache once after all
         # requests and before committing any close.
         live_positions = self._live_account_puts()
         unavailable_con_ids, _harvest_symbols = self._working_option_orders()
         candidates: list[HarvestPut] = []
-        for tranche, limit_price in quoted:
-            con_id = int(tranche["con_id"])
+        for cohort, limit_price in quoted:
+            con_id = cohort.con_id
             position = live_positions.get(con_id)
             if (
                 position is None
@@ -467,7 +460,7 @@ class RegimeRebalanceEngine:
             if not math.isfinite(multiplier) or multiplier <= 0:
                 continue
             quantity = min(
-                int(tranche["quantity"]),
+                cohort.quantity,
                 math.floor(float(position.position)),
             )
             if quantity <= 0:
@@ -478,10 +471,7 @@ class RegimeRebalanceEngine:
             except (TypeError, ValueError):
                 average_cost = 0.0
             if not math.isfinite(average_cost) or average_cost <= 0:
-                try:
-                    average_cost = float(tranche["entry_limit_price"]) * multiplier
-                except (KeyError, TypeError, ValueError):
-                    continue
+                average_cost = cohort.entry_limit_price * multiplier
             proceeds = limit_price * multiplier
             if (
                 not math.isfinite(average_cost)
@@ -493,8 +483,9 @@ class RegimeRebalanceEngine:
             contract.exchange = self.order_ops.get_order_exchange()
             candidates.append(
                 HarvestPut(
+                    entry_id=cohort.entry_id,
                     contract=contract,
-                    expiration=str(tranche["expiration"]),
+                    expiration=cohort.expiration,
                     quantity=quantity,
                     limit_price=limit_price,
                     proceeds_per_contract=proceeds,
@@ -516,12 +507,12 @@ class RegimeRebalanceEngine:
         symbol: str,
         stock_price: float,
         deferred_shares: int,
-        tranches: list[dict[str, Any]],
+        cohorts: list[TailHedgeCohort],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> bool:
         candidates = await self._profitable_tail_puts(
             symbol=symbol,
-            tranches=tranches,
+            cohorts=cohorts,
             portfolio_positions=portfolio_positions,
         )
         candidate = next(
@@ -553,6 +544,34 @@ class RegimeRebalanceEngine:
             return False
 
         con_id = candidate.contract.conId
+        if self._tail_state_store is None:
+            return False
+        state = self._tail_state_store.load()
+        state_cohort = state.find_open(candidate.entry_id, con_id)
+        if (
+            state_cohort is None
+            or state_cohort.symbol != symbol
+            or state_cohort.status != "active"
+            or state_cohort.quantity < quantity
+            or state_cohort.has_pending_recovery
+        ):
+            return False
+        # Candidate sizing was refreshed from the live portfolio after quotes.
+        # A prior external reduction is not proceeds from this unsubmitted sale.
+        state_cohort.quantity = min(state_cohort.quantity, candidate.quantity)
+        state_cohort.begin_recovery(
+            quantity=quantity,
+            proceeds_per_contract=round(candidate.proceeds_per_contract, 2),
+            enqueued_at=self._now(),
+        )
+        try:
+            self._tail_state_store.save(state)
+        except RuntimeError:
+            log.error(
+                f"{symbol}: Unable to persist tail-harvest recovery intent; "
+                "keeping the ordinary rebalance order unchanged."
+            )
+            return False
         order = self.order_ops.create_limit_order(
             action="SELL",
             quantity=quantity,
@@ -578,10 +597,10 @@ class RegimeRebalanceEngine:
         market_prices: Dict[str, float],
         regime_summary: List[Dict[str, Any]],
         hard_underweight_symbols: set[str],
-        tranches: list[dict[str, Any]],
+        cohorts: list[TailHedgeCohort],
     ) -> List[Tuple[str, str, int]]:
         targets = self._configured_tail_harvest_targets()
-        if not targets or not tranches or not hard_underweight_symbols:
+        if not targets or not cohorts or not hard_underweight_symbols:
             return orders
 
         # Re-materialize ib_async's fill-current caches after preceding awaits;
@@ -608,11 +627,7 @@ class RegimeRebalanceEngine:
         if funding_shortfall <= 0:
             return orders
 
-        owned_con_ids = {
-            int(tranche["con_id"])
-            for tranche in tranches
-            if type(tranche.get("con_id")) is int
-        }
+        owned_con_ids = {cohort.con_id for cohort in cohorts}
         blocked_symbols = self._tail_sale_in_progress_symbols(owned_con_ids)
         summaries = {str(item["symbol"]): item for item in regime_summary}
         eligible_buys = {
@@ -689,7 +704,7 @@ class RegimeRebalanceEngine:
                     symbol=symbol,
                     stock_price=stock_price,
                     deferred_shares=allocated_deferred_shares,
-                    tranches=tranches,
+                    cohorts=cohorts,
                     portfolio_positions=portfolio_positions,
                 )
             deferred_shares = allocated_deferred_shares if harvest_pending else 0
@@ -962,9 +977,6 @@ class RegimeRebalanceEngine:
 
     def get_primary_exchange(self, symbol: str) -> str:
         return self._get_primary_exchange(symbol)
-
-    def get_buying_power(self, account_summary: Dict[str, AccountValue]) -> int:
-        return self._get_buying_power(account_summary)
 
     async def _get_regime_proxy_series(
         self,
@@ -1360,33 +1372,65 @@ class RegimeRebalanceEngine:
         )
 
         if self.data_store:
+            refresh_failed = False
+            fills: Iterable[Any] = ()
             try:
-                await self.ibkr.request_executions(exec_filter)
+                fills = await self.ibkr.request_executions(exec_filter)
             except Exception as exc:
+                refresh_failed = True
                 log.warning(
                     "Unable to refresh executions for regime rebalancing "
                     f"({type(exc).__name__}); using persisted execution history."
                 )
-            return self.data_store.get_last_regime_rebalance_time(
+            last_rebalance = self.data_store.get_last_regime_rebalance_time(
                 symbols,
                 self.regime_rebalance_order_ref_prefix,
                 start_time,
                 account_number,
+                # Pre-account migrations cannot attribute old rows. Exact
+                # account history wins; otherwise the legacy row is the safer
+                # cooldown anchor until IBKR refreshes it.
+                include_legacy_unscoped=True,
             )
+            if refresh_failed and last_rebalance is None:
+                log.warning(
+                    "Execution history is unavailable; deferring regime rebalancing."
+                )
+                return self._now()
+            live_rebalance = self._last_regime_fill_time(fills, symbols)
+            if live_rebalance is None:
+                return last_rebalance
+            if last_rebalance is None:
+                return live_rebalance
+            return max(last_rebalance, live_rebalance)
 
         fills = await self.ibkr.request_executions(exec_filter)
+        return self._last_regime_fill_time(fills, symbols)
+
+    def _last_regime_fill_time(
+        self,
+        fills: Iterable[Any],
+        symbols: Iterable[str],
+    ) -> Optional[datetime]:
+        symbols = set(symbols)
         last_rebalance: Optional[datetime] = None
         for fill in fills:
-            execution = fill.execution
-            if not execution.orderRef:
+            execution = getattr(fill, "execution", None)
+            order_ref = getattr(execution, "orderRef", None)
+            if not isinstance(order_ref, str):
                 continue
-            if not execution.orderRef.startswith(
-                self.regime_rebalance_order_ref_prefix
-            ):
+            if not order_ref.startswith(self.regime_rebalance_order_ref_prefix):
                 continue
-            if fill.contract.symbol not in symbols:
+            if getattr(getattr(fill, "contract", None), "symbol", None) not in symbols:
                 continue
-            fill_time = fill.time or execution.time
+            account = getattr(execution, "acctNumber", None)
+            if account not in {None, "", self.config.runtime.account.number}:
+                continue
+            fill_time = parse_state_datetime(
+                getattr(fill, "time", None) or getattr(execution, "time", None)
+            )
+            if fill_time is None:
+                continue
             if last_rebalance is None or fill_time > last_rebalance:
                 last_rebalance = fill_time
 
@@ -1532,7 +1576,7 @@ class RegimeRebalanceEngine:
             current_values[symbol] = current_value
 
         last_rebalance = await self._get_last_regime_rebalance_time(symbols)
-        tail_tranches = self._load_tail_tranches()
+        tail_cohorts = self._load_tail_cohorts()
 
         weight_base = regime_rebalance.weight_base
         regime_margin_usage = self._resolve_regime_margin_usage()
@@ -1557,7 +1601,8 @@ class RegimeRebalanceEngine:
         else:
             net_liq = float(account_summary["NetLiquidation"].value)
             excluded_tail_hedge_value = self._tail_hedge_market_value(
-                portfolio_positions
+                portfolio_positions,
+                tail_cohorts,
             )
             adjusted_net_liq = net_liq - excluded_tail_hedge_value
             total_value = math.floor(adjusted_net_liq * regime_margin_usage)
@@ -2288,7 +2333,7 @@ class RegimeRebalanceEngine:
             hard_underweight_symbols=(
                 hard_underweight_symbols & harvest_risk_ready_symbols
             ),
-            tranches=tail_tranches,
+            cohorts=tail_cohorts,
         )
         for details in regime_summary:
             symbol = str(details["symbol"])

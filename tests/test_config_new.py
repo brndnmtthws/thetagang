@@ -54,9 +54,11 @@ def test_tail_hedge_strategy_compiles_to_its_post_stage() -> None:
     assert flags["equity_regime_rebalance"] is True
     assert flags["post_tail_hedge"] is True
     target = config.tail_hedge.targets[0]
-    assert target.annual_tranches == 4
-    assert target.minimum_tranche_spacing_days == 91
+    assert target.entries_per_year == 6
+    assert target.minimum_entry_spacing_days == 61
     assert target.target_dte == 180
+    assert target.min_dte == 120
+    assert target.max_dte == 240
     assert target.exit_dte == 30
 
 
@@ -271,6 +273,8 @@ def test_explicit_run_stages_still_supported_for_advanced_mode() -> None:
     ("earlier", "later"),
     [
         ("equity_regime_rebalance", "post_tail_hedge"),
+        ("equity_buy_rebalance", "post_tail_hedge"),
+        ("equity_sell_rebalance", "post_tail_hedge"),
         ("equity_regime_rebalance", "post_cash_management"),
         ("post_tail_hedge", "post_cash_management"),
     ],
@@ -281,6 +285,8 @@ def test_explicit_run_stages_reject_unsafe_tail_and_cash_ordering(
 ) -> None:
     stage_kinds = {
         "equity_regime_rebalance": "equity.regime_rebalance",
+        "equity_buy_rebalance": "equity.buy_rebalance",
+        "equity_sell_rebalance": "equity.sell_rebalance",
         "post_tail_hedge": "post.tail_hedge",
         "post_cash_management": "post.cash_management",
     }

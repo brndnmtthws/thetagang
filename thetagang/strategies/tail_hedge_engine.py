@@ -19,7 +19,7 @@ from thetagang.options import contract_date_to_datetime
 from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_CLOSE_ORDER_REF,
     TAIL_HEDGE_ENTRY_ORDER_REF,
-    TAIL_HEDGE_STATE_SCHEMA_VERSION,
+    TailHedgeCohort,
     TailHedgeState,
     TailHedgeStateStore,
     is_tail_order_ref,
@@ -27,15 +27,16 @@ from thetagang.strategies.tail_hedge_state import (
     parse_state_datetime,
 )
 from thetagang.trading_operations import OrderOperations
-from thetagang.util import midpoint_or_market_price
+from thetagang.util import midpoint_or_market_price, working_stock_order_symbols
 
 TAIL_HEDGE_EVALUATION_EVENT = "tail_hedge_evaluation"
+TAIL_HEDGE_EVALUATION_SCHEMA_VERSION = 1
+TAIL_ORDER_RECONCILIATION_GRACE = timedelta(minutes=5)
 TAIL_HEDGE_ERRORS = (
     IndexError,
     RequestError,
     RequiredFieldValidationError,
     RuntimeError,
-    StopIteration,
     TypeError,
     ValueError,
 )
@@ -64,8 +65,30 @@ class UnderlyingQuote:
     price: float
 
 
-class NoLaterExpirationError(RuntimeError):
-    """Raised when a target's put ladder cannot extend to a later expiration."""
+@dataclass(frozen=True)
+class BrokerOrderProgress:
+    status: str
+    filled: float
+    observed_at: datetime | None
+
+    @property
+    def is_filled(self) -> bool:
+        return self.status.lower() == "filled"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status.lower() in {
+            "apicancelled",
+            "apicanceled",
+            "cancelled",
+            "canceled",
+            "filled",
+            "inactive",
+        }
+
+
+class NoEligibleExpirationError(RuntimeError):
+    """Raised when the chain has no expiration inside the configured DTE window."""
 
 
 class TailHedgeEngine:
@@ -79,7 +102,6 @@ class TailHedgeEngine:
         order_ops: OrderOperations,
         data_store: Optional[DataStore],
         now_provider: Callable[[], datetime] = datetime.now,
-        dry_run: bool = False,
     ) -> None:
         self.config = config
         self.ibkr = ibkr
@@ -90,12 +112,10 @@ class TailHedgeEngine:
             TailHedgeStateStore(
                 data_store,
                 config.runtime.account.number,
-                now_provider=now_provider,
             )
             if data_store is not None
             else None
         )
-        self.dry_run = dry_run
         self._cached_vix: Optional[float] = None
 
     async def manage(
@@ -108,8 +128,7 @@ class TailHedgeEngine:
         if not tail_config.enabled:
             log.warning("Tail hedge not enabled, skipping...")
             return
-        if self.state_store is None:
-            raise RuntimeError("Tail hedge requires SQLite state storage.")
+        self._require_state_store()
 
         log.notice("Evaluating tail-hedge long-put program...")
         self._cached_vix = None
@@ -132,11 +151,10 @@ class TailHedgeEngine:
         *,
         net_liquidation: float,
     ) -> None:
-        if self.state_store is None:
-            raise RuntimeError("Tail hedge requires SQLite state storage.")
-
-        state = self.state_store.load()
+        state_store = self._require_state_store()
+        state = state_store.load()
         open_trades = self._account_open_trades()
+        account_trades = self._account_trades()
         tail_trades = [
             trade
             for trade in open_trades
@@ -155,60 +173,33 @@ class TailHedgeEngine:
         pending_close_con_ids = self._queued_tail_close_con_ids() | {
             trade.contract.conId for trade in close_trades if trade.contract.conId > 0
         }
+        pending_close_con_ids |= self._reconcile_state(
+            state=state,
+            entry_trades=entry_trades,
+            account_trades=account_trades,
+            pending_close_con_ids=pending_close_con_ids,
+        )
         targets = {
             target.symbol: target
             for target in self.config.strategies.tail_hedge.targets
         }
 
-        put_positions = self._account_put_positions_by_con_id()
-        removed_entry_ids: list[str] = []
-        reconciled_tranches: list[dict[str, Any]] = []
-        for tranche in state.tranches:
-            con_id = int(tranche["con_id"])
-            symbol = str(tranche["symbol"])
-            position = put_positions.get(con_id)
-            if position is None:
-                matching_con_ids = {
-                    trade.contract.conId
-                    for trade in entry_trades
-                    if trade.contract.symbol == symbol
-                    if trade.contract.conId > 0
-                }
-                if (
-                    tranche.get("status") == "entry_enqueued"
-                    and (not matching_con_ids or con_id in matching_con_ids)
-                    and any(trade.contract.symbol == symbol for trade in entry_trades)
-                ):
-                    reconciled_tranches.append(tranche)
-                    continue
-                removed_entry_ids.append(str(tranche["entry_id"]))
-                continue
-
-            reconciled = dict(tranche)
-            if (
-                float(position.position) > 0
-                and reconciled["status"] == "entry_enqueued"
-            ):
-                reconciled["status"] = "active"
-            if float(position.position) > 0:
-                reconciled["quantity"] = self._position_quantity(position)
-            reconciled_tranches.append(reconciled)
-
-        if reconciled_tranches != state.tranches:
-            state.tranches[:] = reconciled_tranches
-            self.state_store.save(
-                state,
-                "reconciled",
-                removed_entry_ids=removed_entry_ids,
-                persistence_required=False,
+        blocked_entry_symbols = (
+            {trade.contract.symbol for trade in close_trades}
+            | working_stock_order_symbols(
+                open_trades,
+                self.config.runtime.account.number,
             )
-
-        blocked_entry_symbols = {
-            trade.contract.symbol for trade in close_trades
-        } | self._same_run_regime_trade_symbols()
-        for tranche in state.tranches:
-            con_id = int(tranche["con_id"])
-            symbol = str(tranche["symbol"])
+            | self._same_run_stock_trade_symbols()
+            | {
+                cohort.symbol
+                for cohort in state.open_cohorts
+                if cohort.has_pending_recovery
+            }
+        )
+        for cohort in state.open_cohorts:
+            con_id = cohort.con_id
+            symbol = cohort.symbol
             position = self._account_put_positions_by_con_id().get(con_id)
             if position is None:
                 continue
@@ -221,7 +212,8 @@ class TailHedgeEngine:
                 close_enqueued = await self._manage_existing_put(
                     position,
                     targets.get(symbol),
-                    tranche,
+                    cohort,
+                    state,
                 )
             except TAIL_HEDGE_ERRORS as exc:
                 blocked_entry_symbols.add(symbol)
@@ -233,7 +225,11 @@ class TailHedgeEngine:
         occupied_con_ids = set(self._account_put_positions_by_con_id())
         occupied_con_ids |= self._queued_put_con_ids()
         occupied_con_ids |= self._working_put_con_ids(open_trades)
-        working_entry_symbols = {trade.contract.symbol for trade in entry_trades}
+        working_entry_symbols = {trade.contract.symbol for trade in entry_trades} | {
+            cohort.symbol
+            for cohort in state.open_cohorts
+            if cohort.status == "entry_enqueued"
+        }
         for target in self.config.strategies.tail_hedge.targets:
             symbol = target.symbol
             if symbol in blocked_entry_symbols or symbol in working_entry_symbols:
@@ -251,6 +247,217 @@ class TailHedgeEngine:
             except TAIL_HEDGE_ERRORS as exc:
                 self._record_error(symbol, exc)
 
+    def _reconcile_state(
+        self,
+        *,
+        state: TailHedgeState,
+        entry_trades: List[Trade],
+        account_trades: List[Trade],
+        pending_close_con_ids: set[int],
+    ) -> set[int]:
+        put_positions = self._account_put_positions_by_con_id()
+        changed = False
+        for cohort in list(state.open_cohorts):
+            position = put_positions.get(cohort.con_id)
+            if position is None:
+                changed |= self._reconcile_missing_position(
+                    state=state,
+                    cohort=cohort,
+                    entry_trades=entry_trades,
+                    account_trades=account_trades,
+                    pending_close_con_ids=pending_close_con_ids,
+                )
+            else:
+                changed |= self._reconcile_live_position(
+                    cohort=cohort,
+                    position=position,
+                    entry_trades=entry_trades,
+                    account_trades=account_trades,
+                    pending_close_con_ids=pending_close_con_ids,
+                )
+        if changed:
+            self._require_state_store().save(state)
+        return {
+            cohort.con_id
+            for cohort in state.open_cohorts
+            if cohort.has_pending_recovery
+        }
+
+    def _reconcile_missing_position(
+        self,
+        *,
+        state: TailHedgeState,
+        cohort: TailHedgeCohort,
+        entry_trades: List[Trade],
+        account_trades: List[Trade],
+        pending_close_con_ids: set[int],
+    ) -> bool:
+        if cohort.status == "entry_enqueued":
+            entry_working = self._entry_is_working(cohort, entry_trades)
+            progress = self._latest_tail_order_progress(
+                account_trades,
+                con_id=cohort.con_id,
+                symbol=cohort.symbol,
+                action="BUY",
+                enqueued_at=cohort.entered_at,
+            )
+            confirmed_fill = progress is not None and (
+                progress.filled > 0 or progress.is_filled
+            )
+            confirmed_zero_fill_cancel = (
+                progress is not None and progress.is_terminal and not confirmed_fill
+            )
+            if (
+                entry_working
+                or (progress is not None and not progress.is_terminal)
+                or (
+                    self._within_reconciliation_grace(cohort.entered_at)
+                    and not confirmed_zero_fill_cancel
+                )
+            ):
+                return False
+            if confirmed_fill:
+                cohort.close()
+            else:
+                state.cohorts.remove(cohort)
+            return True
+
+        progress = self._reduction_progress(cohort, account_trades)
+        if cohort.has_pending_recovery and (
+            cohort.con_id in pending_close_con_ids
+            or (progress is not None and not progress.is_terminal)
+            or (
+                progress is None
+                and self._within_reconciliation_grace(
+                    cohort.pending_recovery_enqueued_at
+                )
+            )
+        ):
+            return False
+        if (
+            cohort.has_pending_recovery
+            and progress is not None
+            and progress.observed_at is not None
+        ):
+            confirmed_quantity = min(
+                cohort.pending_recovery_quantity or 0,
+                max(
+                    0,
+                    math.floor(progress.filled) - cohort.accounted_recovery_quantity,
+                ),
+            )
+            if progress.is_filled and math.floor(progress.filled) == 0:
+                confirmed_quantity = cohort.pending_recovery_quantity or 0
+            cohort.apply_recovery(confirmed_quantity)
+        cohort.close()
+        return True
+
+    def _reconcile_live_position(
+        self,
+        *,
+        cohort: TailHedgeCohort,
+        position: PortfolioItem,
+        entry_trades: List[Trade],
+        account_trades: List[Trade],
+        pending_close_con_ids: set[int],
+    ) -> bool:
+        entry_working = cohort.status == "entry_enqueued" and self._entry_is_working(
+            cohort, entry_trades
+        )
+        live_quantity = self._position_quantity(position)
+        if cohort.status == "entry_enqueued":
+            progress = self._latest_tail_order_progress(
+                account_trades,
+                con_id=cohort.con_id,
+                symbol=cohort.symbol,
+                action="BUY",
+                enqueued_at=cohort.entered_at,
+            )
+            confirmed_fill_quantity = (
+                math.floor(progress.filled) if progress is not None else 0
+            )
+            if (
+                entry_working
+                or (progress is not None and not progress.is_terminal)
+                or (
+                    progress is None
+                    and self._within_reconciliation_grace(cohort.entered_at)
+                )
+                or confirmed_fill_quantity > live_quantity
+            ):
+                return False
+            cohort.status = "active"
+            cohort.quantity = live_quantity
+            settled_cost = round(
+                live_quantity
+                * cohort.entry_limit_price
+                * self._multiplier(position.contract),
+                2,
+            )
+            cohort.estimated_cost = min(cohort.estimated_cost, settled_cost)
+            return True
+
+        changed = live_quantity != cohort.quantity
+        if live_quantity > cohort.quantity:
+            settled_cost = round(
+                live_quantity
+                * cohort.entry_limit_price
+                * self._multiplier(position.contract),
+                2,
+            )
+            cohort.estimated_cost = max(cohort.estimated_cost, settled_cost)
+        if live_quantity < cohort.quantity and cohort.has_pending_recovery:
+            cohort.apply_recovery(cohort.quantity - live_quantity)
+        cohort.quantity = live_quantity
+        if not cohort.has_pending_recovery:
+            return changed
+
+        progress = self._reduction_progress(cohort, account_trades)
+        broker_fill_not_observed = progress is not None and (
+            progress.filled > cohort.accounted_recovery_quantity
+            or (progress.is_filled and (cohort.pending_recovery_quantity or 0) > 0)
+        )
+        keep_recovery = (cohort.pending_recovery_quantity or 0) > 0 and (
+            cohort.con_id in pending_close_con_ids
+            or (
+                progress is None
+                and self._within_reconciliation_grace(
+                    cohort.pending_recovery_enqueued_at
+                )
+            )
+            or (
+                progress is not None
+                and (not progress.is_terminal or broker_fill_not_observed)
+            )
+        )
+        if keep_recovery:
+            return changed
+        cohort.clear_recovery()
+        return True
+
+    @staticmethod
+    def _entry_is_working(cohort: TailHedgeCohort, trades: List[Trade]) -> bool:
+        return any(
+            trade.contract.symbol == cohort.symbol
+            and (trade.contract.conId == cohort.con_id or trade.contract.conId <= 0)
+            for trade in trades
+        )
+
+    def _reduction_progress(
+        self,
+        cohort: TailHedgeCohort,
+        trades: List[Trade],
+    ) -> BrokerOrderProgress | None:
+        if not cohort.has_pending_recovery:
+            return None
+        return self._latest_tail_order_progress(
+            trades,
+            con_id=cohort.con_id,
+            symbol=cohort.symbol,
+            action="SELL",
+            enqueued_at=cohort.pending_recovery_enqueued_at,
+        )
+
     def _record_error(self, symbol: str, exc: Exception) -> None:
         self._record_evaluation(
             "evaluation_error",
@@ -264,9 +471,10 @@ class TailHedgeEngine:
         self,
         position: PortfolioItem,
         target: Optional[TailHedgeTargetConfig],
-        tranche: dict[str, Any],
+        cohort: TailHedgeCohort,
+        state: TailHedgeState,
     ) -> bool:
-        symbol = str(tranche["symbol"])
+        symbol = cohort.symbol
         if position.contract.symbol != symbol:
             raise RuntimeError(
                 f"Owned contract symbol {position.contract.symbol} does not match "
@@ -285,14 +493,15 @@ class TailHedgeEngine:
             self._record_evaluation(
                 "long_put_held",
                 symbol=symbol,
-                entry_id=tranche["entry_id"],
+                entry_id=cohort.entry_id,
                 con_id=position.contract.conId,
             )
             return False
 
         await self._close_position(
             position,
-            tranche,
+            cohort,
+            state,
             action=action,
             close_reason=reason,
         )
@@ -301,12 +510,13 @@ class TailHedgeEngine:
     async def _close_position(
         self,
         position: PortfolioItem,
-        tranche: dict[str, Any],
+        cohort: TailHedgeCohort,
+        state: TailHedgeState,
         *,
         action: str,
         close_reason: str,
     ) -> None:
-        symbol = str(tranche["symbol"])
+        symbol = cohort.symbol
         position.contract.exchange = self.order_ops.get_order_exchange()
         ticker = await self._option_ticker(position.contract)
         limit_price = round(max(self._midpoint(ticker), 0.01), 2)
@@ -324,7 +534,7 @@ class TailHedgeEngine:
             self._record_evaluation(
                 "position_changed_before_close",
                 symbol=symbol,
-                entry_id=tranche["entry_id"],
+                entry_id=cohort.entry_id,
                 con_id=position.contract.conId,
                 expected_action=action,
                 close_reason=close_reason,
@@ -333,6 +543,20 @@ class TailHedgeEngine:
         position = live_position
         quantity = self._position_quantity(position)
         position.contract.exchange = self.order_ops.get_order_exchange()
+        if action == "SELL":
+            # A reduction observed during the quote await predates this order.
+            # Sync ownership without treating it as recovered premium.
+            cohort.quantity = min(cohort.quantity, quantity)
+            quantity = cohort.quantity
+            cohort.begin_recovery(
+                quantity=quantity,
+                proceeds_per_contract=round(
+                    limit_price * self._multiplier(position.contract),
+                    2,
+                ),
+                enqueued_at=self._now(),
+            )
+            self._require_state_store().save(state)
         order = self.order_ops.create_limit_order(
             action=action,
             quantity=quantity,
@@ -345,7 +569,7 @@ class TailHedgeEngine:
         self._record_evaluation(
             "close_enqueued",
             symbol=symbol,
-            entry_id=tranche["entry_id"],
+            entry_id=cohort.entry_id,
             con_id=position.contract.conId,
             quantity=quantity,
             action=action,
@@ -362,8 +586,7 @@ class TailHedgeEngine:
         state: TailHedgeState,
         occupied_con_ids: set[int],
     ) -> None:
-        if self.state_store is None:
-            raise RuntimeError("Tail hedge requires SQLite state storage.")
+        state_store = self._require_state_store()
         symbol = target.symbol
         if not self.config.trading_is_allowed(symbol):
             self._record_evaluation("trading_disabled", symbol=symbol)
@@ -375,28 +598,27 @@ class TailHedgeEngine:
             raise RuntimeError("Net liquidation value is unavailable")
 
         now = self._now()
-        recent_history = state.recent_entries(now)
+        recent_cohorts = state.recent_cohorts(now)
         target_history = [
-            entry for entry in recent_history if entry.get("symbol") == symbol
+            cohort for cohort in recent_cohorts if cohort.symbol == symbol
         ]
-        if len(target_history) >= target.annual_tranches:
-            self._record_evaluation("annual_tranche_limit", symbol=symbol)
-            return
-
-        entered_at = [
-            value
-            for entry in target_history
-            if (value := parse_state_datetime(entry.get("entered_at"))) is not None
-        ]
+        entered_at = [cohort.entered_at for cohort in target_history]
         if (
             entered_at
-            and (now - max(entered_at)).days < target.minimum_tranche_spacing_days
+            and (now - max(entered_at)).days < target.minimum_entry_spacing_days
         ):
             self._record_evaluation("minimum_entry_spacing", symbol=symbol)
             return
 
-        global_spent = sum(float(entry["estimated_cost"]) for entry in recent_history)
-        target_spent = sum(float(entry["estimated_cost"]) for entry in target_history)
+        budget_cohorts = [
+            cohort
+            for cohort in state.cohorts
+            if cohort in recent_cohorts or cohort.is_open
+        ]
+        global_spent = sum(cohort.net_charge for cohort in budget_cohorts)
+        target_spent = sum(
+            cohort.net_charge for cohort in budget_cohorts if cohort.symbol == symbol
+        )
 
         def entry_budget(current_nlv: float) -> float:
             budget = current_nlv * float(
@@ -408,7 +630,7 @@ class TailHedgeEngine:
                 min(
                     budget - global_spent,
                     target_budget - target_spent,
-                    target_budget / target.annual_tranches,
+                    target_budget / target.entries_per_year,
                 ),
             )
 
@@ -424,25 +646,15 @@ class TailHedgeEngine:
                 self._record_evaluation("vix_above_entry_max", symbol=symbol, vix=vix)
                 return
 
-        latest_expiration = max(
-            (
-                str(tranche["expiration"])
-                for tranche in state.tranches
-                if tranche.get("symbol") == symbol
-            ),
-            default=None,
-        )
         try:
             quote, contract = await self._find_put(
                 target,
-                latest_expiration=latest_expiration,
                 exclude_con_ids=occupied_con_ids,
             )
-        except NoLaterExpirationError:
+        except NoEligibleExpirationError:
             self._record_evaluation(
-                "no_later_expiration_available",
+                "no_eligible_expiration_available",
                 symbol=symbol,
-                latest_expiration=latest_expiration,
             )
             return
 
@@ -476,40 +688,36 @@ class TailHedgeEngine:
                 if position.contract.symbol == symbol
             ]
         )
-        if live_stock_exposure <= 0 or symbol in self._same_run_regime_trade_symbols():
+        if (
+            live_stock_exposure <= 0
+            or symbol in self._same_run_stock_trade_symbols()
+            or symbol
+            in working_stock_order_symbols(
+                self._account_open_trades(),
+                self.config.runtime.account.number,
+            )
+        ):
             self._record_evaluation("protected_position_changed", symbol=symbol)
             return
         entry_cost = round(per_contract_cost * quantity, 2)
         entered_at = self._now()
         entry_id = f"{symbol}:{quote.con_id}:{entered_at.isoformat()}"
-        tranche = {
-            "entry_id": entry_id,
-            "symbol": symbol,
-            "status": "entry_enqueued",
-            "con_id": quote.con_id,
-            "local_symbol": quote.local_symbol,
-            "expiration": quote.expiration,
-            "strike": quote.strike,
-            "quantity": quantity,
-            "entry_limit_price": quote.limit_price,
-            "entry_enqueued_at": entered_at,
-        }
-        history_entry = {
-            "entry_id": entry_id,
-            "symbol": symbol,
-            "entered_at": entered_at,
-            "estimated_cost": entry_cost,
-        }
-        state.roll_entry_history(now)
-        state.tranches.append(tranche)
-        state.entry_history.append(history_entry)
-        self.state_store.save(
-            state,
-            "entry_enqueued",
-            action_symbol=symbol,
-            action_entry_id=entry_id,
-            order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
+        state.prune_closed(now)
+        state.cohorts.append(
+            TailHedgeCohort(
+                entry_id=entry_id,
+                symbol=symbol,
+                status="entry_enqueued",
+                con_id=quote.con_id,
+                expiration=quote.expiration,
+                strike=quote.strike,
+                quantity=quantity,
+                entry_limit_price=quote.limit_price,
+                entered_at=entered_at,
+                estimated_cost=entry_cost,
+            )
         )
+        state_store.save(state)
         occupied_con_ids.add(quote.con_id)
 
         order = self.order_ops.create_limit_order(
@@ -553,7 +761,6 @@ class TailHedgeEngine:
         self,
         target: TailHedgeTargetConfig,
         *,
-        latest_expiration: Optional[str],
         exclude_con_ids: set[int],
     ) -> tuple[PutQuote, Contract]:
         symbol = target.symbol
@@ -568,29 +775,16 @@ class TailHedgeEngine:
             (chain for chain in matching_chains if chain.exchange == exchange),
             matching_chains[0],
         )
-        minimum_expiration = (
-            contract_date_to_datetime(latest_expiration).date()
-            + timedelta(days=target.minimum_tranche_spacing_days)
-            if latest_expiration is not None
-            else None
-        )
+        expiration_dtes = [
+            (expiration, self._dte(expiration)) for expiration in chain.expirations
+        ]
         eligible_expirations = [
-            (expiration, self._dte(expiration))
-            for expiration in chain.expirations
-            if target.min_dte <= self._dte(expiration) <= target.max_dte
-            and (
-                minimum_expiration is None
-                or contract_date_to_datetime(expiration).date() >= minimum_expiration
-            )
+            (expiration, dte)
+            for expiration, dte in expiration_dtes
+            if target.min_dte <= dte <= target.max_dte
         ]
         if not eligible_expirations:
-            if latest_expiration is not None:
-                raise NoLaterExpirationError(
-                    "No option expiration is inside the configured DTE range "
-                    f"at least {target.minimum_tranche_spacing_days} days after "
-                    f"{latest_expiration}"
-                )
-            raise RuntimeError(
+            raise NoEligibleExpirationError(
                 "No option expiration is inside the configured DTE range"
             )
         eligible_expirations.sort(
@@ -754,6 +948,83 @@ class TailHedgeEngine:
             if getattr(getattr(trade, "order", None), "account", None) == account_number
         ]
 
+    def _account_trades(self) -> List[Trade]:
+        account_number = self.config.runtime.account.number
+        return [
+            trade
+            for trade in self.ibkr.trades()
+            if getattr(getattr(trade, "order", None), "account", None) == account_number
+        ]
+
+    def _latest_tail_order_progress(
+        self,
+        trades: List[Trade],
+        *,
+        con_id: int,
+        symbol: str,
+        action: str,
+        enqueued_at: datetime | None,
+    ) -> BrokerOrderProgress | None:
+        candidates: list[tuple[int, int, Trade]] = []
+        for index, trade in enumerate(trades):
+            order = getattr(trade, "order", None)
+            contract = getattr(trade, "contract", None)
+            order_ref = getattr(order, "orderRef", None)
+            if (
+                contract is None
+                or getattr(contract, "symbol", None) != symbol
+                or getattr(contract, "conId", 0) != con_id
+                or str(getattr(order, "action", "")).upper() != action
+                or (action == "BUY" and order_ref != TAIL_HEDGE_ENTRY_ORDER_REF)
+                or (action == "SELL" and not is_tail_reduction_ref(order_ref))
+            ):
+                continue
+            trade_time = self._trade_time(trade)
+            if (
+                enqueued_at is not None
+                and trade_time is not None
+                and trade_time < enqueued_at
+            ):
+                continue
+            order_id = int(getattr(order, "orderId", 0) or 0)
+            candidates.append((order_id, index, trade))
+        if not candidates:
+            return None
+
+        trade = max(candidates, key=lambda candidate: candidate[:2])[2]
+        order_status = getattr(trade, "orderStatus", None)
+        status = str(getattr(order_status, "status", "") or "")
+        try:
+            filled = float(getattr(order_status, "filled", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            filled = 0.0
+        if not math.isfinite(filled) or filled < 0:
+            filled = 0.0
+        return BrokerOrderProgress(
+            status=status,
+            filled=filled,
+            observed_at=self._trade_time(trade),
+        )
+
+    @staticmethod
+    def _trade_time(trade: Trade) -> datetime | None:
+        timestamps: list[datetime] = []
+        for log_entry in getattr(trade, "log", ()) or ():
+            timestamp = parse_state_datetime(getattr(log_entry, "time", None))
+            if timestamp is not None:
+                timestamps.append(timestamp)
+        for fill in getattr(trade, "fills", ()) or ():
+            execution = getattr(fill, "execution", None)
+            timestamp = parse_state_datetime(getattr(execution, "time", None))
+            if timestamp is not None:
+                timestamps.append(timestamp)
+        return max(timestamps) if timestamps else None
+
+    def _within_reconciliation_grace(self, enqueued_at: datetime | None) -> bool:
+        return enqueued_at is not None and (
+            self._now() - enqueued_at < TAIL_ORDER_RECONCILIATION_GRACE
+        )
+
     def _account_put_positions_by_con_id(self) -> Dict[int, PortfolioItem]:
         account_number = self.config.runtime.account.number
         return {
@@ -792,13 +1063,12 @@ class TailHedgeEngine:
             and is_tail_reduction_ref(getattr(order, "orderRef", None))
         }
 
-    def _same_run_regime_trade_symbols(self) -> set[str]:
+    def _same_run_stock_trade_symbols(self) -> set[str]:
         return {
             contract.symbol
             for contract, order, _intent_id in self.order_ops.orders.records()
             if isinstance(contract, Stock)
             and str(getattr(order, "action", "")).upper() in {"BUY", "SELL"}
-            and str(getattr(order, "orderRef", "")).startswith("tg:regime-rebalance:")
         }
 
     @staticmethod
@@ -828,7 +1098,7 @@ class TailHedgeEngine:
         self.data_store.record_event(
             TAIL_HEDGE_EVALUATION_EVENT,
             {
-                "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
+                "schema_version": TAIL_HEDGE_EVALUATION_SCHEMA_VERSION,
                 "account": self.config.runtime.account.number,
                 "evaluated_at": self._now(),
                 "symbol": symbol,
@@ -837,6 +1107,11 @@ class TailHedgeEngine:
             },
             symbol=symbol,
         )
+
+    def _require_state_store(self) -> TailHedgeStateStore:
+        if self.state_store is None:
+            raise RuntimeError("Tail hedge requires SQLite state storage.")
+        return self.state_store
 
     def _dte(self, expiration: str) -> int:
         return (contract_date_to_datetime(expiration).date() - self._now().date()).days

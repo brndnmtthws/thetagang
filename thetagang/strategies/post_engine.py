@@ -11,7 +11,7 @@ from thetagang.config import Config
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt
 from thetagang.ibkr import IBKR
-from thetagang.orders import Orders, order_cash_notional, working_buy_cash
+from thetagang.orders import Orders, pending_buy_cash
 from thetagang.trading_operations import (
     NoValidContractsError,
     OptionChainScanner,
@@ -24,7 +24,6 @@ from thetagang.util import (
 )
 
 from .tail_hedge_engine import TailHedgeEngine
-from .tail_hedge_state import is_tail_reduction_ref
 
 
 class PostStrategyEngine:
@@ -39,7 +38,6 @@ class PostStrategyEngine:
         qualified_contracts: Dict[int, Contract],
         data_store: Optional[DataStore] = None,
         get_reserved_cash_for_post_management: Callable[[], float] | None = None,
-        dry_run: bool = False,
     ) -> None:
         self.config = config
         self.ibkr = ibkr
@@ -55,7 +53,6 @@ class PostStrategyEngine:
             ibkr=ibkr,
             order_ops=order_ops,
             data_store=data_store,
-            dry_run=dry_run,
         )
 
     def reserved_cash_for_post_management(self) -> float:
@@ -64,26 +61,15 @@ class PostStrategyEngine:
         return max(0.0, self._get_reserved_cash_for_post_management())
 
     def calc_pending_cash_balance(self) -> float:
-        pending = -working_buy_cash(
+        pending = pending_buy_cash(
             self.ibkr.open_trades(),
+            self.orders.records(),
             account=self.config.runtime.account.number,
             qualified_contracts=self.qualified_contracts,
-        ).debit
-        for contract, order, _intent_id in self.orders.records():
-            amount = order_cash_notional(
-                contract,
-                order,
-                self.qualified_contracts,
-            )
-            if order.action == "BUY":
-                pending -= amount
-            elif order.action == "SELL" and not is_tail_reduction_ref(
-                getattr(order, "orderRef", None)
-            ):
-                # Tail-sale proceeds become ordinary cash only after IBKR reports
-                # them; an estimate must not finance or sweep same-run orders.
-                pending += amount
-        return pending
+        )
+        if pending.ambiguous:
+            raise RuntimeError("Pending BUY cash cannot be priced safely")
+        return -pending.debit
 
     def _cash_fund_order_pending(self, symbol: str) -> bool:
         account = self.config.runtime.account.number

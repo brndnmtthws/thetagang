@@ -295,12 +295,12 @@ class TailHedgeTargetConfig(BaseModel, DisplayMixin):
 
     symbol: str = Field(min_length=1)
     budget_weight: float = Field(gt=0.0, le=1.0)
-    annual_tranches: int = Field(default=4, ge=1, le=12)
+    entries_per_year: int = Field(default=6, ge=1, le=24)
     entry_gate: Literal["vix", "none"] = Field(default="vix")
     entry_vix_max: float = Field(default=20.0, ge=0.0)
     target_dte: int = Field(default=180, gt=0)
-    min_dte: int = Field(default=150, gt=0)
-    max_dte: int = Field(default=210, gt=0)
+    min_dte: int = Field(default=120, gt=0)
+    max_dte: int = Field(default=240, gt=0)
     exit_dte: int = Field(default=30, ge=0)
     strike_ratio: float = Field(default=0.60, gt=0.0, lt=1.0)
     minimum_open_interest: int = Field(default=50, ge=0)
@@ -319,19 +319,19 @@ class TailHedgeTargetConfig(BaseModel, DisplayMixin):
         return self
 
     @property
-    def minimum_tranche_spacing_days(self) -> int:
-        return max(1, 365 // self.annual_tranches)
+    def minimum_entry_spacing_days(self) -> int:
+        return max(1, math.ceil(365 / self.entries_per_year))
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
         table.add_row("", "Protected symbol", "=", self.symbol)
         table.add_row("", "Budget weight", "=", pfmt(self.budget_weight))
-        table.add_row("", "Annual tranches", "=", f"{self.annual_tranches}")
+        table.add_row("", "Entries per year", "=", f"{self.entries_per_year}")
         table.add_row(
             "",
-            "Minimum entry/expiry days",
+            "Minimum entry spacing (days)",
             "=",
-            f"{self.minimum_tranche_spacing_days}",
+            f"{self.minimum_entry_spacing_days}",
         )
         table.add_row("", "Entry gate", "=", self.entry_gate)
         if self.entry_gate == "vix":
@@ -376,7 +376,7 @@ class TailHedgeConfig(BaseModel, DisplayMixin):
         table.add_row("[spring_green1]Tail hedge long-put program")
         table.add_row("", "Enabled", "=", f"{self.enabled}")
         table.add_row(
-            "", "Annual premium budget (% NLV)", "=", pfmt(self.annual_budget)
+            "", "Annual net premium budget (% NLV)", "=", pfmt(self.annual_budget)
         )
         if not self.targets:
             table.add_row("", "Targets", "=", "-")

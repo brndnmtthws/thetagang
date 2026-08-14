@@ -70,7 +70,7 @@ class IBKR:
 
     def cached_account_value(self, account: str, tag: str) -> float:
         """Read one finite value from ib_async's synchronized account cache."""
-        candidates: list[tuple[str, float]] = []
+        candidates: list[tuple[str, str, float]] = []
         for value in self.ib.accountValues(account):
             if value.tag != tag:
                 continue
@@ -79,12 +79,35 @@ class IBKR:
             except (TypeError, ValueError):
                 continue
             if math.isfinite(numeric_value):
-                candidates.append((str(value.currency).upper(), numeric_value))
-        for currency, numeric_value in candidates:
-            if currency == "BASE":
-                return numeric_value
+                candidates.append(
+                    (
+                        str(value.currency).upper(),
+                        str(getattr(value, "modelCode", "") or ""),
+                        numeric_value,
+                    )
+                )
+
+        aggregate_base_values = [
+            numeric_value
+            for currency, model_code, numeric_value in candidates
+            if currency == "BASE" and not model_code
+        ]
+        if len(aggregate_base_values) == 1:
+            return aggregate_base_values[0]
+        if len(aggregate_base_values) > 1:
+            raise RuntimeError(f"{tag} account value is unavailable")
+
+        base_values = [
+            numeric_value
+            for currency, _model_code, numeric_value in candidates
+            if currency == "BASE"
+        ]
+        if len(base_values) == 1:
+            return base_values[0]
+        if len(base_values) > 1:
+            raise RuntimeError(f"{tag} account value is unavailable")
         if len(candidates) == 1:
-            return candidates[0][1]
+            return candidates[0][2]
         raise RuntimeError(f"{tag} account value is unavailable")
 
     async def account_summary(self, account: str) -> List[AccountValue]:
@@ -125,6 +148,10 @@ class IBKR:
     def open_trades(self) -> List[Trade]:
         return self.ib.openTrades()
 
+    def trades(self) -> List[Trade]:
+        """Return open and completed trades loaded for this broker session."""
+        return self.ib.trades()
+
     def place_order(self, contract: Contract, order: Order) -> Trade:
         return self.ib.placeOrder(contract, order)
 
@@ -148,8 +175,13 @@ class IBKR:
             return_exceptions=True,
         )
         qualified: List[Contract] = []
-        for result in results:
+        for requested_contract, result in zip(contracts, results):
             if isinstance(result, RequestError):
+                if result.code != 200:
+                    raise result
+                log.warning(
+                    f"Skipping invalid contract {requested_contract}: {result.message}"
+                )
                 continue
             if isinstance(result, BaseException):
                 raise result

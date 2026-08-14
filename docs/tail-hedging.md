@@ -1,170 +1,176 @@
 # Tail hedging
 
-ThetaGang can maintain a small ladder of long downside puts. The goal is cheap,
-recurring convexity within a fixed annual budget, not continuous coverage or a
-crash forecast. When VIX or premiums are high, waiting is intentional: buying
-expensive insurance defeats the strategy.
+ThetaGang can keep a rolling ladder of long, out-of-the-money puts for one or
+more portfolio symbols. It spreads entries through the year to reduce entry-date
+timing risk while keeping net insurance spending within an annual net premium
+budget. Each purchase is one cohort (the timing tranche). The program may leave
+a gap when puts are expensive, illiquid, or unavailable near the requested
+dates. The design is inspired by Taleb and Spitznagel's broad emphasis on owning
+limited-loss convexity without trying to predict crashes; these rules and DTE
+defaults are ThetaGang's, not a claim about either author's exact prescription.
 
-## How it works
+## Entries and exits
 
-For each configured target, the tail stage:
+On each `tail_hedge` stage, ThetaGang:
 
-1. Reconciles state-owned contracts with current IBKR positions and working
-   orders.
-2. Closes puts at or inside `exit_dte`, and closes puts whose target was removed.
-3. Applies minimum entry spacing, the annual budget, optional VIX gate, and
-   quote filters.
+1. Matches its saved cohorts to live positions and working orders.
+2. Closes an owned put when it reaches `exit_dte` or its target is removed.
+3. Considers at most one new cohort for each eligible target.
 4. Chooses an expiration near `target_dte` and a strike near
-   `spot * strike_ratio`, separated from the latest existing tranche by the
-   same minimum.
-5. Buys only the whole-contract quantity that fits every budget limit.
+   `spot * strike_ratio`.
+5. Places a midpoint-priced limit order for the whole-contract quantity that
+   fits the budget.
 
-Targets are independent. A blocked entry or quote failure for one symbol does
-not stop the others.
-
-### Budget and minimum spacing
-
-`annual_budget` caps gross entry debit across the program over a rolling 365
-days. Target `budget_weight` values must sum to `1.0`.
-
-```text
-global budget = current NLV * annual_budget
-target budget = global budget * budget_weight
-tranche budget = target budget / annual_tranches
-applicable budget = min(global remaining, target remaining, tranche budget)
-quantity = floor(applicable budget / contract cost)
+```mermaid
+flowchart TD
+    R{"Regime stage: approved stock buy still short after ordinary funding?"}
+    R -->|Yes| Q{"Profitable owned cohort available?"}
+    R -->|No or stage disabled| A["Tail stage: load SQLite cohorts"]
+    Q -->|Yes| J["Queue at most one harvest per target and defer unfunded shares"]
+    Q -->|No| A
+    J --> A
+    A --> B["Reconcile every open cohort with broker state"]
+    B --> C{"Any cohort due to exit or target removed?"}
+    C -->|Yes| X["Queue safe closes for due cohorts"]
+    C -->|No| P
+    X --> P{"Entry blocked by a working order, recovery, or same-run stock trade?"}
+    P -->|Yes| Z["Finish target"]
+    P -->|No| D{"Entry cadence due?"}
+    D -->|No| Z
+    D -->|Yes| E{"Entry gates and annual net premium budget pass?"}
+    E -->|No| Z
+    E -->|Yes| F["Scan 120-240 DTE near 180 DTE"]
+    F --> G{"Liquid contract fits one entry slice?"}
+    G -->|No| Z
+    G -->|Yes| H["Queue one cohort and anchor the next cadence"]
+    H --> Z
 ```
 
-No order is placed when one contract does not fit. Selling or losing a put does
-not refund its entry cost: the cap measures insurance purchased, not net profit.
-Each target permits at most `annual_tranches` entries in a rolling year.
-`365 // annual_tranches` is a hard minimum between entries, not a schedule:
-blocked or missed windows never accumulate, and the strategy never catches up
-with bunched purchases. A new expiration must also be at least that many days
-after the latest live tranche expiration, preventing maturity bunching when the
-scanner moves within the configured DTE range.
+The expiration must be within `min_dte` and `max_dte`; the defaults scan from
+120 through 240 DTE and prefer the expiration closest to the 180-DTE target.
+Expiration dates do not have to be evenly spaced. A later purchase may use the
+same expiration at a different strike: the primary diversification is the entry
+date, not a promise of distinct maturities. The scanner still excludes an exact
+contract already held, queued, or working. Quotes must also pass the bid,
+open-interest, spread, and premium filters.
 
-An entry requires a positive protected-stock position, trading enabled for the
-symbol, no same-run stock rebalance or tail close, a later expiration, adequate
-bid and open interest, and acceptable spread and premium ratios. The scanner
-excludes contracts already held, queued, or working.
+An entry is skipped when the account has no long stock position in the target,
+trading is disabled for the symbol, another entry is working, or the same run
+already queued any stock order or a tail close for that symbol. Targets are
+evaluated independently, so a failure for one does not stop the others.
 
-The VIX gate may create coverage gaps. Above `entry_vix_max`, the strategy waits
-instead of overpaying. `entry_gate = "none"` disables only that gate; all other
-filters still apply.
+Setting `no_trading = true` on a portfolio symbol blocks both entries and exits
+for that symbol.
 
-## Crash harvesting
+## Budget and timing
 
-Harvesting is subordinate to the ordinary volatility-adjusted rebalance. A put
-may be sold only when its protected symbol has an approved hard-underweight
-stock buy, volatility sizing succeeded, and ordinary funding cannot cover the
-buy. The put must be an active state-owned long position, have no conflicting
-order, and have a fresh sell quote above IBKR average cost. When that cost is
-unavailable, the recorded entry limit times the live contract multiplier is the
-fallback basis.
+`annual_budget` is a fraction of current net liquidation value and applies to
+all targets. Entries remain in the budget for 365 days; any unrecovered cost on
+an older open cohort continues to count until it closes. Age alone never makes
+live protection free. `budget_weight` divides the budget between targets; the
+weights must add up to `1.0`.
 
-Ordinary funding is calculated first:
+`entries_per_year` divides each target's annual net premium budget into equal
+entry slices and sets the cadence:
 
 ```text
-ordinary capacity = max(0,
-    TotalCashValue
-    - configured cash target
-    - queued BUY debits
-    + approved stock SELL value
-    + usable cash-ETF market value
-    + cash-management sell-threshold tolerance
-)
-shortfall = max(0, approved stock BUY value - ordinary capacity)
+target annual net premium budget = current NLV * annual_budget * budget_weight
+entry slice                      = target annual net premium budget / entries_per_year
+entry cadence                    = ceil(365 / entries_per_year) days
+quantity                         = floor(applicable remaining budget / contract cost)
 ```
 
-Cash-ETF value and sell-threshold tolerance count only when cash management is
-enabled and its stage will run later in the same run. This is its fixed point:
-retained buys either cause the fund sale or leave cash within configured
-hysteresis. Usable fund value is limited to whole shares at a finite live price;
-approved fund sales reduce that value so the same holding is not counted twice.
-If the stage is omitted, both terms are zero; the configured cash target remains
-reserved.
+The default of six entries per year gives a 61-day cadence. Each order is
+limited by one entry slice plus the remaining target and program budgets. No
+order is placed unless at least one whole contract fits.
 
-Shortfall is allocated among eligible buys in proportion to their dollar value,
-then rounded to whole shares with a deterministic largest-remainder allocation.
-Profitable puts are considered by shortest expiration. A tranche too small to
-fund one deferred share is preserved and the next useful tranche is considered.
-Each target monetizes at most one state tranche per run, selling the fewest whole
-contracts available toward its allocation.
+Only an entry that remains queued or fills anchors the next cadence. A canceled,
+unfilled order releases its reservation and does not delay the next attempt. If
+an entry is blocked by the gate, filters, budget, or sparse expirations,
+ThetaGang retries on a later run. It never accumulates missed slices or submits
+catch-up purchases.
 
-```text
-ordinary shares now = approved shares - deferred shares
-```
+With the default 180-DTE entry target and 30-DTE exit, a put is normally held
+for about 150 days. A 61-day cadence therefore produces roughly two to three
+live cohorts in steady state, but this is an expectation rather than a target
+count. Available expirations and entry filters determine the actual ladder.
 
-All allocated unfunded shares are deferred once a sale is queued or already
-working, even when that tranche can finance only part of them. Ordinary-funded
-shares remain in the current run. Put sales use
-`tg:tail-harvest:<symbol>:<conId>` order references. Remaining tranches stay
-invested for later runs if the drawdown and shortfall continue.
+An unfilled sell order does not restore budget. After the broker position shows
+an actual reduction, ThetaGang credits the originating cohort using a
+recorded sell-limit value, capped at that cohort's entry cost. This makes
+remaining premium from a normal DTE exit available within the rolling annual
+budget without enlarging the next entry slice. A crash gain can reduce the
+cohort's net cost to zero, but it cannot create extra hedge budget.
 
-There is no harvest plan, estimated-credit ledger, commission ledger, or custom
-tail-funded stock order. Estimated tail-reduction proceeds are excluded from
-same-run cash management. After an actual fill, IBKR reports the proceeds in
-`TotalCashValue`; a later ordinary rebalance spends that cash before another
-tranche is considered. A working harvest order prevents another sale for that
-symbol and the still-unfunded stock shares remain deferred.
+Budget accounting uses submitted limit values rather than an execution and
+commission ledger, so commissions and favorable fill-price improvement are not
+included.
 
-Profitability is gross of commission. Whole-contract sizing may realize more
-cash than the deferred stock notional; excess proceeds remain ordinary cash.
+With `entry_gate = "vix"`, ThetaGang waits while VIX is above `entry_vix_max`.
+Use `entry_gate = "none"` to disable only the VIX check; all other entry rules
+still apply.
 
-## State and safety
+## Selling puts during a drawdown
 
-File-backed SQLite is required because an IBKR position does not identify its
-owning strategy. The account-scoped `tail_hedge_state` event stores only exact
-owned tranches and rolling gross entry history. Ownership is persisted before a
-risk-increasing BUY is queued. It follows the account across config-file renames
-and is never shared with another account.
+When `regime_rebalance` is also running, ThetaGang can sell a profitable tail
+put to help fund a same-symbol stock buy. Harvesting never creates or enlarges
+the allocation: volatility and dynamic sizing must first produce an approved buy
+past the stock's hard-underweight band. Normal funding is applied first,
+including the configured cash reserve, queued buy debits, approved stock sales,
+and usable cash-fund value when cash management runs later. Only the remaining
+shortfall can trigger a harvest.
 
-Working orders are read from IBKR by account and order reference. Before
-submission, closes are capped by the live long position minus working and
-earlier same-run close commitments, preventing a stale snapshot from creating a
-short put. Harvesting and cash management re-read ib_async's synchronized
-account and position caches after quote awaits; they do not issue recurring
-refresh requests. Cash management does not stack another order on a working or
-same-run cash-ETF order.
+Only active, state-owned puts without a conflicting order are eligible. The
+live sell quote must be above the IBKR average cost; the saved entry price is
+used when that cost is unavailable. The profit check does not include
+commissions.
 
-Dry-run state is visible within that run but is never reused as live state, and
-dry runs never cancel broker orders.
+ThetaGang uses the earliest-expiring useful cohort and sells the fewest whole
+contracts needed. It sells at most one cohort per target in a run. The part of
+the stock buy covered by normal funding stays in the current run. Shares assigned
+to the shortfall are deferred, even if the chosen cohort can fund only some of
+them. Estimated put proceeds are never spent immediately. After the sale fills
+and IBKR reports the cash, a later run makes a new rebalance decision.
 
-Disabling the strategy while retaining targets freezes the ladder: no tail
-orders are created, but SQLite remains required so wheel and allocation logic
-can still recognize owned puts. To retire a target, keep the strategy enabled,
-remove that target, and let the tail stage close it. Disable the strategy and
-remove its target list only after the positions and working orders are gone.
+## State and safe shutdown
 
-## Other strategies
+Tail hedging requires a file-backed SQLite database. Each cohort is a row in a
+dedicated SQLite table, scoped to the IBKR account, with its exact contract
+ownership and entry-budget facts. It does not use a JSON state file or JSON
+state blob. Ownership is saved before a buy order is queued. Dry-run changes are
+visible during that run but are ignored by later live runs.
 
-- `net_liq_ex_options` excludes all options from the regime allocation base.
-  `net_liq` excludes exact state-owned tail puts. `managed_stocks` uses managed
-  stock value only.
-- Cash and a usable cash ETF fund rebalancing before tail puts. Unfilled tail
-  reductions never count as pending cash.
-- Wheel put counts, management, rolls, and scans exclude exact state-owned tail
-  contracts. If ownership cannot be read, put-side wheel actions stop.
+Run only one ThetaGang process for an IBKR account at a time. Order submission,
+portfolio rebalancing, and cohort reconciliation all assume one process owns the
+account's run.
+
+State-owned puts are excluded from wheel management. With regime rebalancing,
+`net_liq` excludes those puts from its allocation base, `net_liq_ex_options`
+excludes all options, and `managed_stocks` uses managed stock value only.
+If ownership state cannot be read, wheel paths that need it fail closed instead
+of treating the puts as unowned.
+
+Do not trade a state-owned put manually. IBKR combines manual and automated
+positions in the same contract, so ThetaGang cannot tell them apart.
+
+Disabling the strategy stops creating or managing tail actions and does not
+unwind the ladder. On startup, ThetaGang cancels stale tail-entry orders but
+leaves working close and harvest orders alone. To retire a target:
+
+1. Leave tail hedging enabled and ensure trading is allowed for the symbol.
+2. Remove the target and run ThetaGang until its positions and working orders
+   are gone.
+3. Then disable the strategy or remove the remaining target configuration.
 
 ## Configuration
 
-Tail entries and DTE exits require the tail strategy. Harvesting additionally
-requires regime rebalancing for the same symbol. Tail hedging is incompatible
-with `regime_rebalance.shares_only = true`.
-
 ```toml
 [run]
-strategies = ["regime_rebalance", "tail_hedge", "cash_management"]
+strategies = ["tail_hedge"]
 
 [runtime.database]
 enabled = true
 path = "data/thetagang.db"
-
-[strategies.cash_management]
-enabled = true
-cash_fund = "SGOV"
-target_cash_balance = 0
 
 [strategies.tail_hedge]
 enabled = true
@@ -173,12 +179,12 @@ annual_budget = 0.005
 [[strategies.tail_hedge.targets]]
 symbol = "QQQ"
 budget_weight = 1.0
-annual_tranches = 4
+entries_per_year = 6
 entry_gate = "vix"
 entry_vix_max = 20.0
 target_dte = 180
-min_dte = 150
-max_dte = 210
+min_dte = 120
+max_dte = 240
 exit_dte = 30
 strike_ratio = 0.60
 minimum_open_interest = 50
@@ -187,9 +193,11 @@ max_bid_ask_ratio = 0.50
 max_premium_ratio = 0.05
 ```
 
-These values show the configuration shape, not a calibrated recommendation.
-The strategy is disabled by default. Small accounts, high VIX, expensive or
-illiquid contracts, minimum spacing, budget exhaustion, or a missing later
-expiration can all create acceptable coverage gaps. Avoid manually trading a
-state-owned
-tail contract because IBKR nets manual and strategy positions together.
+When tail hedging is enabled, each target symbol must also appear in
+`portfolio.symbols`. If regime rebalancing is enabled,
+`regime_rebalance.shares_only` must be `false`. Enable
+`regime_rebalance` and add it to `run.strategies` if you want profitable puts to
+fund hard-underweight buys.
+
+The values above show the configuration shape. They are not trading advice or
+calibrated defaults for every account.

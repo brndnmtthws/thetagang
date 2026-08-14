@@ -46,9 +46,7 @@ def mock_config(mocker):
 def portfolio_manager(mock_ib, mock_config, mocker):
     """Fixture to create a PortfolioManager instance."""
     completion_future = mocker.Mock()
-    pm = PortfolioManager(mock_config, mock_ib, completion_future, dry_run=False)
-    pm.target_quantities = {}
-    return pm
+    return PortfolioManager(mock_config, mock_ib, completion_future, dry_run=False)
 
 
 def create_account_summary(net_liquidation: float) -> Dict[str, AccountValue]:
@@ -147,7 +145,7 @@ async def test_write_calls_absolute_threshold_blocks(portfolio_manager, mocker):
     portfolio_manager.get_primary_exchange = Mock(return_value="SMART")
 
     # Execute
-    _, to_write = await portfolio_manager.check_for_uncovered_positions(
+    _, to_write = await portfolio_manager.options_engine.check_for_uncovered_positions(
         account_summary, portfolio_positions
     )
 
@@ -195,7 +193,7 @@ async def test_write_calls_absolute_threshold_allows(portfolio_manager, mocker):
     portfolio_manager.get_primary_exchange = Mock(return_value="SMART")
 
     # Execute
-    _, to_write = await portfolio_manager.check_for_uncovered_positions(
+    _, to_write = await portfolio_manager.options_engine.check_for_uncovered_positions(
         account_summary, portfolio_positions
     )
 
@@ -245,7 +243,7 @@ async def test_write_calls_relative_threshold_blocks(portfolio_manager, mocker):
     portfolio_manager.get_primary_exchange = Mock(return_value="SMART")
 
     # Execute
-    _, to_write = await portfolio_manager.check_for_uncovered_positions(
+    _, to_write = await portfolio_manager.options_engine.check_for_uncovered_positions(
         account_summary, portfolio_positions
     )
 
@@ -293,7 +291,7 @@ async def test_write_calls_relative_threshold_allows(portfolio_manager, mocker):
     portfolio_manager.get_primary_exchange = Mock(return_value="SMART")
 
     # Execute
-    _, to_write = await portfolio_manager.check_for_uncovered_positions(
+    _, to_write = await portfolio_manager.options_engine.check_for_uncovered_positions(
         account_summary, portfolio_positions
     )
 
@@ -344,7 +342,7 @@ async def test_write_calls_both_thresholds(portfolio_manager, mocker):
     portfolio_manager.get_primary_exchange = Mock(return_value="SMART")
 
     # Execute
-    _, to_write = await portfolio_manager.check_for_uncovered_positions(
+    _, to_write = await portfolio_manager.options_engine.check_for_uncovered_positions(
         account_summary, portfolio_positions
     )
 
@@ -392,7 +390,7 @@ async def test_write_calls_no_thresholds(portfolio_manager, mocker):
     portfolio_manager.get_primary_exchange = Mock(return_value="SMART")
 
     # Execute
-    _, to_write = await portfolio_manager.check_for_uncovered_positions(
+    _, to_write = await portfolio_manager.options_engine.check_for_uncovered_positions(
         account_summary, portfolio_positions
     )
 
@@ -441,7 +439,7 @@ async def test_write_calls_global_defaults(portfolio_manager, mocker):
     portfolio_manager.get_primary_exchange = Mock(return_value="SMART")
 
     # Execute
-    _, to_write = await portfolio_manager.check_for_uncovered_positions(
+    _, to_write = await portfolio_manager.options_engine.check_for_uncovered_positions(
         account_summary, portfolio_positions
     )
 
@@ -488,7 +486,7 @@ async def test_write_calls_symbol_overrides_global(portfolio_manager, mocker):
     portfolio_manager.get_primary_exchange = Mock(return_value="SMART")
 
     # Execute
-    _, to_write = await portfolio_manager.check_for_uncovered_positions(
+    _, to_write = await portfolio_manager.options_engine.check_for_uncovered_positions(
         account_summary, portfolio_positions
     )
 

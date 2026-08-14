@@ -17,6 +17,9 @@ def order_cash_notional(
     qualified_contracts: Mapping[int, Contract] | None = None,
 ) -> float:
     """Return limit-price notional in contract currency."""
+    order_type = str(getattr(order, "orderType", "") or "").upper()
+    if order_type and order_type != "LMT":
+        raise ValueError("Order cash notional requires a limit order")
     multiplier = 1.0
     if contract.secType != "STK":
         raw_multiplier: Any = contract.multiplier
@@ -38,7 +41,10 @@ def order_cash_notional(
         raise ValueError(
             "Order cash notional requires finite price, size, and multiplier"
         )
-    return price * quantity * multiplier
+    notional = price * quantity * multiplier
+    if not math.isfinite(notional):
+        raise ValueError("Order cash notional must be finite")
+    return notional
 
 
 class PendingBuyCash(NamedTuple):
@@ -67,7 +73,14 @@ def working_buy_cash(
             or str(getattr(order, "action", "")).upper() != "BUY"
         ):
             continue
-        total_quantity = float(getattr(order, "totalQuantity", 0) or 0)
+        try:
+            total_quantity = float(getattr(order, "totalQuantity", 0) or 0)
+        except (TypeError, ValueError):
+            ambiguous = True
+            continue
+        if not math.isfinite(total_quantity) or total_quantity <= 0:
+            ambiguous = True
+            continue
         try:
             remaining = float(
                 getattr(getattr(trade, "orderStatus", None), "remaining", 0)
@@ -77,12 +90,66 @@ def working_buy_cash(
         if not math.isfinite(remaining) or remaining <= 0 or remaining > total_quantity:
             ambiguous = True
             remaining = total_quantity
-        debit += max(
-            0.0,
-            order_cash_notional(contract, order, qualified_contracts)
-            * (remaining / total_quantity if total_quantity > 0 else 0.0),
-        )
+        try:
+            amount = max(
+                0.0,
+                order_cash_notional(contract, order, qualified_contracts)
+                * (remaining / total_quantity),
+            )
+        except (TypeError, ValueError, OverflowError):
+            ambiguous = True
+            continue
+        if not math.isfinite(debit + amount):
+            ambiguous = True
+            continue
+        debit += amount
     return PendingBuyCash(debit, ambiguous)
+
+
+def queued_buy_cash(
+    records: Iterable[tuple[Contract, Any, Any]],
+    qualified_contracts: Mapping[int, Contract] | None = None,
+) -> PendingBuyCash:
+    """Return queued BUY debit, marking orders without a usable limit ambiguous."""
+    debit = 0.0
+    ambiguous = False
+    for contract, order, _intent_id in records:
+        if str(getattr(order, "action", "")).upper() != "BUY":
+            continue
+        try:
+            amount = max(
+                0.0,
+                order_cash_notional(contract, order, qualified_contracts),
+            )
+        except (TypeError, ValueError, OverflowError):
+            ambiguous = True
+            continue
+        if not math.isfinite(debit + amount):
+            ambiguous = True
+            continue
+        debit += amount
+    return PendingBuyCash(debit, ambiguous)
+
+
+def pending_buy_cash(
+    trades: Iterable[Any],
+    records: Iterable[tuple[Contract, Any, Any]],
+    *,
+    account: str,
+    qualified_contracts: Mapping[int, Contract] | None = None,
+) -> PendingBuyCash:
+    """Combine broker-working and locally queued BUY reservations."""
+    working = working_buy_cash(
+        trades,
+        account=account,
+        qualified_contracts=qualified_contracts,
+    )
+    queued = queued_buy_cash(records, qualified_contracts)
+    debit = working.debit + queued.debit
+    return PendingBuyCash(
+        debit if math.isfinite(debit) else 0.0,
+        working.ambiguous or queued.ambiguous or not math.isfinite(debit),
+    )
 
 
 class Orders:

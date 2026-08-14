@@ -3,11 +3,12 @@ from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
-from ib_async import IB, AccountValue
+from ib_async import IB, AccountValue, MarketOrder
 from ib_async.contract import Contract, Option, Stock
 
 from thetagang.config import Config
 from thetagang.ibkr import IBKR
+from thetagang.orders import order_cash_notional
 from thetagang.strategies.post_engine import PostStrategyEngine
 from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_CLOSE_ORDER_REF,
@@ -96,7 +97,7 @@ async def test_do_cashman_disabled_noops(mocker):
     order_ops.enqueue_order.assert_not_called()
 
 
-def test_pending_cash_ignores_all_unfilled_tail_reduction_proceeds(mocker):
+def test_pending_cash_ignores_all_unfilled_sale_proceeds(mocker):
     engine, _ibkr, _order_ops, _scanner = _make_engine(mocker)
     stock = Stock("AAA", "SMART", "USD")
     tail_put = Option("AAA", "20270115", 100.0, "P", "SMART")
@@ -144,17 +145,11 @@ def test_pending_cash_ignores_all_unfilled_tail_reduction_proceeds(mocker):
         ),
     ]
 
-    assert engine.calc_pending_cash_balance() == -50.0
+    assert engine.calc_pending_cash_balance() == -100.0
 
 
-@pytest.mark.parametrize(
-    ("remaining", "expected_debit"),
-    [(1.0, 200.0), (float("nan"), 600.0), (0.0, 600.0)],
-)
-def test_pending_cash_uses_valid_remaining_or_full_quantity(
+def test_pending_cash_uses_valid_remaining_quantity(
     mocker,
-    remaining,
-    expected_debit,
 ):
     engine, ibkr, _order_ops, _scanner = _make_engine(mocker)
     tail_put = Option("AAA", "20270115", 100.0, "P", "SMART")
@@ -169,7 +164,7 @@ def test_pending_cash_uses_valid_remaining_or_full_quantity(
                 lmtPrice=2.0,
                 totalQuantity=3,
             ),
-            orderStatus=SimpleNamespace(remaining=remaining),
+            orderStatus=SimpleNamespace(remaining=1.0),
             isDone=lambda: done,
         )
 
@@ -180,7 +175,66 @@ def test_pending_cash_uses_valid_remaining_or_full_quantity(
         trade(done=True),
     ]
 
-    assert engine.calc_pending_cash_balance() == -expected_debit
+    assert engine.calc_pending_cash_balance() == -200.0
+
+
+@pytest.mark.parametrize("remaining", [float("nan"), 0.0])
+def test_pending_cash_rejects_ambiguous_remaining_quantity(mocker, remaining):
+    engine, ibkr, _order_ops, _scanner = _make_engine(mocker)
+    tail_put = Option("AAA", "20270115", 100.0, "P", "SMART")
+    tail_put.multiplier = "100"
+    ibkr.open_trades.return_value = [
+        SimpleNamespace(
+            contract=tail_put,
+            order=SimpleNamespace(
+                account="TEST123",
+                action="BUY",
+                lmtPrice=2.0,
+                totalQuantity=3,
+            ),
+            orderStatus=SimpleNamespace(remaining=remaining),
+            isDone=lambda: False,
+        )
+    ]
+
+    with pytest.raises(RuntimeError, match="cannot be priced safely"):
+        engine.calc_pending_cash_balance()
+
+
+@pytest.mark.asyncio
+async def test_market_buy_blocks_cash_management(mocker):
+    engine, ibkr, order_ops, _scanner = _make_engine(mocker)
+    engine.config.strategies.cash_management.enabled = True
+    ibkr.open_trades.return_value = [
+        SimpleNamespace(
+            contract=Stock("AAA", "SMART", "USD"),
+            order=MarketOrder("BUY", 1, account="TEST123"),
+            orderStatus=SimpleNamespace(remaining=1),
+            isDone=lambda: False,
+        )
+    ]
+
+    await engine.do_cashman(
+        {"TotalCashValue": SimpleNamespace(value="0")},
+        {},
+    )
+
+    ibkr.get_ticker_for_stock.assert_not_called()
+    order_ops.enqueue_order.assert_not_called()
+
+
+def test_order_cash_notional_rejects_overflow():
+    option = Option("AAA", "20270115", 100.0, "P", "SMART")
+    option.multiplier = "100"
+    order = SimpleNamespace(
+        action="BUY",
+        orderType="LMT",
+        lmtPrice=1e308,
+        totalQuantity=2,
+    )
+
+    with pytest.raises(ValueError, match="finite"):
+        order_cash_notional(option, order)
 
 
 @pytest.mark.asyncio

@@ -222,22 +222,101 @@ class TestPortfolioManager:
         ]
         portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=working_trades)
         portfolio_manager.trades = mocker.Mock()
-        portfolio_manager.trades.submit_order.side_effect = [False, True]
+        portfolio_manager.trades.submit_order.return_value = False
+        update_recovery = mocker.patch.object(
+            portfolio_manager,
+            "_update_tail_recovery_submission",
+            return_value=True,
+        )
         first = tail_order(portfolio_manager, "SELL", 2, "tg:tail-harvest:SPY:123")
-        second = tail_order(portfolio_manager, "SELL", 1, "tg:tail-hedge:close")
         portfolio_manager.orders.add_order(contract, first, None)
-        portfolio_manager.orders.add_order(contract, second, None)
-        portfolio_manager.orders.add_order(contract, second, None)
 
         portfolio_manager.submit_orders()
 
-        assert portfolio_manager.trades.submit_order.call_count == 2
-        submitted_orders = [
-            call.args[1]
-            for call in portfolio_manager.trades.submit_order.call_args_list
+        portfolio_manager.trades.submit_order.assert_called_once()
+        submitted_order = portfolio_manager.trades.submit_order.call_args.args[1]
+        assert submitted_order is not first
+        assert int(submitted_order.totalQuantity) == 1
+        assert [call.args for call in update_recovery.call_args_list] == [
+            (123, 1),
+            (123, None),
         ]
-        assert submitted_orders[0] is not first
-        assert [int(order.totalQuantity) for order in submitted_orders] == [1, 1]
+        assert [call.kwargs for call in update_recovery.call_args_list] == [
+            {"live_quantity": 3},
+            {},
+        ]
+
+    def test_submit_orders_allows_one_tail_sale_per_contract(
+        self, portfolio_manager, mocker
+    ):
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            return_value=[position(portfolio_manager, contract, 3)]
+        )
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.submit_order.return_value = True
+        update_recovery = mocker.patch.object(
+            portfolio_manager,
+            "_update_tail_recovery_submission",
+            return_value=True,
+        )
+        order = tail_order(portfolio_manager, "SELL", 1, "tg:tail-hedge:close")
+        portfolio_manager.orders.add_order(contract, order, None)
+        portfolio_manager.orders.add_order(contract, order, None)
+
+        portfolio_manager.submit_orders()
+
+        portfolio_manager.trades.submit_order.assert_called_once()
+        update_recovery.assert_called_once_with(123, 1, live_quantity=3)
+
+    def test_submit_orders_releases_tail_sale_with_no_live_capacity(
+        self, portfolio_manager, mocker
+    ):
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        portfolio_manager.ibkr.portfolio = mocker.Mock(return_value=[])
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+        portfolio_manager.trades = mocker.Mock()
+        update_recovery = mocker.patch.object(
+            portfolio_manager,
+            "_update_tail_recovery_submission",
+            return_value=True,
+        )
+        portfolio_manager.orders.add_order(
+            contract,
+            tail_order(portfolio_manager, "SELL", 1, "tg:tail-hedge:close"),
+            None,
+        )
+
+        portfolio_manager.submit_orders()
+
+        update_recovery.assert_called_once_with(123, None)
+        portfolio_manager.trades.submit_order.assert_not_called()
+
+    def test_submit_orders_requires_persisted_tail_sale_quantity(
+        self, portfolio_manager, mocker
+    ):
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            return_value=[position(portfolio_manager, contract, 2)]
+        )
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+        portfolio_manager.trades = mocker.Mock()
+        update_recovery = mocker.patch.object(
+            portfolio_manager,
+            "_update_tail_recovery_submission",
+            return_value=False,
+        )
+        portfolio_manager.orders.add_order(
+            contract,
+            tail_order(portfolio_manager, "SELL", 2, "tg:tail-hedge:close"),
+            None,
+        )
+
+        portfolio_manager.submit_orders()
+
+        update_recovery.assert_called_once_with(123, 2, live_quantity=2)
+        portfolio_manager.trades.submit_order.assert_not_called()
 
     def test_submit_orders_caps_tail_buy_to_live_short_position(
         self, portfolio_manager, mocker
@@ -290,6 +369,89 @@ class TestPortfolioManager:
 
         portfolio_manager.trades.submit_order.assert_called_once()
         assert portfolio_manager.trades.submit_order.call_args.args[0].symbol == "QQQ"
+
+    def test_submit_orders_blocks_tail_entry_for_working_underlying_order(
+        self, portfolio_manager, mocker
+    ):
+        active_stock_order = SimpleNamespace(
+            contract=Stock("SPY", "SMART"),
+            order=LimitOrder(
+                "SELL",
+                1,
+                100.0,
+                account=portfolio_manager.account_number,
+            ),
+            isDone=lambda: False,
+        )
+        other_account_order = SimpleNamespace(
+            contract=Stock("QQQ", "SMART"),
+            order=LimitOrder("SELL", 1, 100.0, account="OTHER"),
+            isDone=lambda: False,
+        )
+        portfolio_manager.ibkr.open_trades = mocker.Mock(
+            return_value=[active_stock_order, other_account_order]
+        )
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            return_value=[
+                position(portfolio_manager, Stock("SPY", "SMART"), 1),
+                position(portfolio_manager, Stock("QQQ", "SMART"), 1),
+            ]
+        )
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.submit_order.return_value = True
+        for symbol, con_id in [("SPY", 100), ("QQQ", 200)]:
+            portfolio_manager.orders.add_order(
+                Option(symbol, "20271217", 300, "P", "SMART", conId=con_id),
+                tail_order(
+                    portfolio_manager,
+                    "BUY",
+                    1,
+                    "tg:tail-hedge:entry",
+                ),
+                None,
+            )
+
+        portfolio_manager.submit_orders()
+
+        portfolio_manager.trades.submit_order.assert_called_once()
+        assert portfolio_manager.trades.submit_order.call_args.args[0].symbol == "QQQ"
+
+    @pytest.mark.parametrize("tail_first", [False, True])
+    def test_submit_orders_blocks_tail_entry_for_same_run_underlying_order(
+        self, portfolio_manager, mocker, tail_first
+    ):
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            return_value=[position(portfolio_manager, Stock("SPY", "SMART"), 1)]
+        )
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.submit_order.return_value = True
+        tail = (
+            Option("SPY", "20271217", 300, "P", "SMART", conId=100),
+            tail_order(
+                portfolio_manager,
+                "BUY",
+                1,
+                "tg:tail-hedge:entry",
+            ),
+            None,
+        )
+        stock = (
+            Stock("SPY", "SMART"),
+            tail_order(portfolio_manager, "SELL", 1, "cash-management"),
+            None,
+        )
+        for contract, order, intent_id in (
+            (tail, stock) if tail_first else (stock, tail)
+        ):
+            portfolio_manager.orders.add_order(contract, order, intent_id)
+
+        portfolio_manager.submit_orders()
+
+        portfolio_manager.trades.submit_order.assert_called_once()
+        assert isinstance(
+            portfolio_manager.trades.submit_order.call_args.args[0], Stock
+        )
 
     @pytest.mark.asyncio
     async def test_get_write_threshold_with_valid_close(
@@ -364,20 +526,26 @@ class TestPortfolioManager:
         pm.initialize_account = mocker.Mock()
         pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
         pm.get_portfolio_positions = mocker.Mock(return_value={})
-        pm.check_regime_rebalance_positions = mocker.AsyncMock(return_value=(None, []))
-        pm.check_buy_only_positions = mocker.AsyncMock(return_value=(None, []))
-        pm.check_sell_only_positions = mocker.AsyncMock(return_value=(None, []))
-        pm.do_vix_hedging = mocker.AsyncMock()
-        pm.do_cashman = mocker.AsyncMock()
+        pm.equity_engine.check_regime_rebalance_positions = mocker.AsyncMock(
+            return_value=(None, [])
+        )
+        pm.equity_engine.check_buy_only_positions = mocker.AsyncMock(
+            return_value=(None, [])
+        )
+        pm.equity_engine.check_sell_only_positions = mocker.AsyncMock(
+            return_value=(None, [])
+        )
+        pm.post_engine.do_vix_hedging = mocker.AsyncMock()
+        pm.post_engine.do_cashman = mocker.AsyncMock()
         pm.orders.print_summary = mocker.Mock()
 
         await pm.manage()
 
-        pm.check_regime_rebalance_positions.assert_not_called()
-        pm.check_buy_only_positions.assert_not_called()
-        pm.check_sell_only_positions.assert_not_called()
-        pm.do_vix_hedging.assert_not_called()
-        pm.do_cashman.assert_not_called()
+        pm.equity_engine.check_regime_rebalance_positions.assert_not_called()
+        pm.equity_engine.check_buy_only_positions.assert_not_called()
+        pm.equity_engine.check_sell_only_positions.assert_not_called()
+        pm.post_engine.do_vix_hedging.assert_not_called()
+        pm.post_engine.do_cashman.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_manage_executes_stages_in_explicit_run_order(
@@ -778,7 +946,7 @@ class TestPortfolioManager:
             positions_table,
             put_actions_table,
             to_write,
-        ) = await portfolio_manager.check_if_can_write_puts(
+        ) = await portfolio_manager.options_engine.check_if_can_write_puts(
             account_summary, portfolio_positions
         )
 
@@ -914,7 +1082,10 @@ class TestPortfolioManager:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        buy_actions_table, to_buy = await portfolio_manager.check_buy_only_positions(
+        (
+            buy_actions_table,
+            to_buy,
+        ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -984,7 +1155,7 @@ class TestPortfolioManager:
         ]
 
         # Execute
-        await portfolio_manager.execute_buy_orders(buy_orders)
+        await portfolio_manager.equity_engine.execute_buy_orders(buy_orders)
 
         # Verify orders were created
         assert portfolio_manager.order_ops.enqueue_order.call_count == 2
@@ -1049,7 +1220,10 @@ class TestPortfolioManager:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        buy_actions_table, to_buy = await portfolio_manager.check_buy_only_positions(
+        (
+            buy_actions_table,
+            to_buy,
+        ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -1075,11 +1249,13 @@ class TestPortfolioManager:
         # Create mock orders
         stock_buy_order = mocker.Mock()
         stock_buy_order.action = "BUY"
+        stock_buy_order.orderType = "LMT"
         stock_buy_order.lmtPrice = 150.0
         stock_buy_order.totalQuantity = 100
 
         option_sell_order = mocker.Mock()
         option_sell_order.action = "SELL"
+        option_sell_order.orderType = "LMT"
         option_sell_order.lmtPrice = 2.50
         option_sell_order.totalQuantity = 5
 
@@ -1092,13 +1268,12 @@ class TestPortfolioManager:
         )
 
         # Calculate pending cash balance
-        pending_balance = portfolio_manager.calc_pending_cash_balance()
+        pending_balance = portfolio_manager.post_engine.calc_pending_cash_balance()
 
         # Expected:
         # Stock BUY: -150 * 100 * 1 = -15,000
-        # Option SELL: +2.50 * 5 * 100 = +1,250
-        # Total: -13,750
-        assert pending_balance == -13750.0
+        # Unfilled SELL proceeds are unavailable until IBKR reports the cash.
+        assert pending_balance == -15000.0
 
     @pytest.mark.asyncio
     async def test_buy_only_minimum_shares_threshold(self, portfolio_manager, mocker):
@@ -1144,7 +1319,10 @@ class TestPortfolioManager:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        buy_actions_table, to_buy = await portfolio_manager.check_buy_only_positions(
+        (
+            buy_actions_table,
+            to_buy,
+        ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -1196,7 +1374,10 @@ class TestPortfolioManager:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        buy_actions_table, to_buy = await portfolio_manager.check_buy_only_positions(
+        (
+            buy_actions_table,
+            to_buy,
+        ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -1250,7 +1431,10 @@ class TestPortfolioManager:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        buy_actions_table, to_buy = await portfolio_manager.check_buy_only_positions(
+        (
+            buy_actions_table,
+            to_buy,
+        ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -1307,7 +1491,10 @@ class TestPortfolioManager:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        buy_actions_table, to_buy = await portfolio_manager.check_buy_only_positions(
+        (
+            buy_actions_table,
+            to_buy,
+        ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
         )
 

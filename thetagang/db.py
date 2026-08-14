@@ -171,6 +171,34 @@ class ExecutionRecord(Base):
     exchange: Mapped[Optional[str]] = mapped_column(String)
 
 
+class TailHedgeEntry(Base):
+    __tablename__ = "tail_hedge_entries"
+
+    account: Mapped[str] = mapped_column(String, primary_key=True)
+    entry_id: Mapped[str] = mapped_column(String, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    con_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    expiration: Mapped[str] = mapped_column(String, nullable=False)
+    strike: Mapped[float] = mapped_column(Float, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_limit_price: Mapped[float] = mapped_column(Float, nullable=False)
+    entered_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    estimated_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    recovered_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    pending_recovery_quantity: Mapped[Optional[int]] = mapped_column(Integer)
+    pending_recovery_per_contract: Mapped[Optional[float]] = mapped_column(Float)
+    pending_recovery_enqueued_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    pending_recovery_initial_quantity: Mapped[Optional[int]] = mapped_column(Integer)
+
+
+TAIL_HEDGE_ENTRY_FIELDS = tuple(
+    column.name
+    for column in TailHedgeEntry.__table__.columns
+    if column.name != "account"
+)
+
+
 class HistoricalBar(Base):
     __tablename__ = "historical_bars"
     __table_args__ = (
@@ -307,6 +335,7 @@ class DataStore:
             config_path_aliases.add(f".{os.sep}{cwd_relative_path}")
         self._config_path_aliases = tuple(sorted(config_path_aliases))
         self._dry_run_event_overlay: Dict[tuple[str, Optional[str]], Optional[str]] = {}
+        self._dry_run_tail_hedge_overlay: Dict[str, list[Dict[str, Any]]] = {}
         connect_args: Dict[str, Any] = {}
         if db_url.startswith("sqlite"):
             connect_args = {"check_same_thread": False}
@@ -419,6 +448,75 @@ class DataStore:
             if raise_on_error:
                 raise RuntimeError(f"Failed to read event {event_type}") from exc
             return None
+
+    @staticmethod
+    def _tail_hedge_entry_dict(entry: TailHedgeEntry) -> Dict[str, Any]:
+        return {field: getattr(entry, field) for field in TAIL_HEDGE_ENTRY_FIELDS}
+
+    def load_tail_hedge_entries(
+        self,
+        account: str,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[Dict[str, Any]]:
+        """Load the current account-scoped tail cohorts from typed SQLite rows."""
+        try:
+            if self.dry_run and account in self._dry_run_tail_hedge_overlay:
+                return [
+                    dict(entry) for entry in self._dry_run_tail_hedge_overlay[account]
+                ]
+
+            with self.session_scope() as session:
+                entries = (
+                    session.execute(
+                        select(TailHedgeEntry)
+                        .where(TailHedgeEntry.account == account)
+                        .order_by(TailHedgeEntry.entered_at, TailHedgeEntry.entry_id)
+                    )
+                    .scalars()
+                    .all()
+                )
+                return [self._tail_hedge_entry_dict(entry) for entry in entries]
+        except Exception as exc:
+            log.warning(f"Failed to read tail-hedge state: {exc}")
+            if raise_on_error:
+                raise RuntimeError("Failed to read tail-hedge state") from exc
+            return []
+
+    def save_tail_hedge_entries(
+        self,
+        account: str,
+        entries: Iterable[Mapping[str, Any]],
+    ) -> bool:
+        """Atomically replace one account's durable tail-cohort rows."""
+        try:
+            current = [
+                {field: entry[field] for field in TAIL_HEDGE_ENTRY_FIELDS}
+                for entry in entries
+            ]
+            entry_ids = [entry["entry_id"] for entry in current]
+            if len(entry_ids) != len(set(entry_ids)):
+                raise ValueError("Tail-hedge cohort entry IDs must be unique")
+            current.sort(key=lambda entry: (entry["entered_at"], entry["entry_id"]))
+            if self.dry_run:
+                self._dry_run_tail_hedge_overlay[account] = current
+                return True
+
+            with self.session_scope() as session:
+                session.query(TailHedgeEntry).filter(
+                    TailHedgeEntry.account == account
+                ).delete(synchronize_session=False)
+                session.add_all(
+                    TailHedgeEntry(
+                        account=account,
+                        **entry,
+                    )
+                    for entry in current
+                )
+            return True
+        except Exception as exc:
+            log.warning(f"Failed to persist tail-hedge state: {exc}")
+            return False
 
     def record_account_snapshot(self, summary: Dict[str, Any]) -> None:
         try:
@@ -680,19 +778,31 @@ class DataStore:
         order_ref_prefix: str,
         start_time: datetime,
         account: str,
+        *,
+        include_legacy_unscoped: bool = False,
     ) -> Optional[datetime]:
+        symbols = list(symbols)
         with self.session_scope() as session:
-            stmt = (
+            base_stmt = (
                 select(ExecutionRecord.execution_time)
                 .where(ExecutionRecord.execution_time >= start_time)
-                .where(ExecutionRecord.account == account)
                 .where(ExecutionRecord.order_ref.like(f"{order_ref_prefix}%"))
-                .where(ExecutionRecord.symbol.in_(list(symbols)))
+                .where(ExecutionRecord.symbol.in_(symbols))
+            )
+            scoped_stmt = (
+                base_stmt.where(ExecutionRecord.account == account)
                 .order_by(ExecutionRecord.execution_time.desc())
                 .limit(1)
             )
-            result = session.execute(stmt).scalar_one_or_none()
-            return result
+            scoped = session.execute(scoped_stmt).scalar_one_or_none()
+            if scoped is not None or not include_legacy_unscoped:
+                return scoped
+            legacy_stmt = (
+                base_stmt.where(ExecutionRecord.account.is_(None))
+                .order_by(ExecutionRecord.execution_time.desc())
+                .limit(1)
+            )
+            return session.execute(legacy_stmt).scalar_one_or_none()
 
 
 def _parse_bar_time(value: Any) -> Optional[datetime]:

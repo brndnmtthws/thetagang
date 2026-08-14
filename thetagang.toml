@@ -761,61 +761,36 @@ ignore_dte = 0
   weight      = 0.00
 
 
-# Long-put tail hedging for one or more portfolio symbols. Enable SQLite and add
-# "tail_hedge" to run.strategies to manage entries and DTE exits.
+# Long-put tail hedging requires file-backed SQLite and "tail_hedge" in
+# run.strategies.
 #
-# annual_budget applies across all targets over a rolling 365-day window;
-# budget_weight values must sum to 1.0. Each target has its own minimum entry
-# and expiration spacing, gate, and contract filters. Missed windows do not
-# accumulate or create catch-up buys. Entries are skipped unless at least one
-# whole contract fits the tranche, target, and program budgets.
-# Setting no_trading = true for a target's portfolio symbol suppresses entries,
-# DTE exits, and removed-target cleanup until trading is re-enabled.
-#
-# With regime_rebalance, profitable puts can fund the residual cash shortfall
-# for a same-symbol buy only when that symbol reaches its own hard underweight
-# band. Cash, approved stock sales, and prior queued buys are accounted for
-# first. Cash-fund value and sell_threshold tolerance also count when cash
-# management will run, so retained buys either trigger a fund sale or stay within
-# that tolerance. Ordinary-funded shares remain in the current run; only unfunded
-# shares wait for actual put-sale cash and a fresh rebalance decision on a later
-# run. With wheel alone, puts remain open until exit_dte.
-# See docs/tail-hedging.md.
+# annual_budget caps net long-put cost: entries count for 365 days, and any
+# unrecovered cost on an older open cohort keeps counting until it closes.
+# Target budget_weight values must sum to 1.0. entries_per_year splits each
+# target's budget into equal entry slices and sets a ceil(365 / entries_per_year)
+# cadence. Missed entries are not made up, expirations may repeat, and no order
+# is placed unless one whole contract fits its slice. Setting no_trading = true
+# blocks tail entries and exits. See docs/tail-hedging.md for full behavior.
 #
 # [strategies.tail_hedge]
 # enabled = true
-# annual_budget = 0.005  # long-put entry debits over 365 days / net liquidation
+# annual_budget = 0.005  # net long-put cost over 365 days / net liquidation
 #
 # [[strategies.tail_hedge.targets]]
 # symbol = "QQQ"
-# budget_weight = 0.60
-# annual_tranches = 4  # max/year; derives 91-day entry/expiry minimums
+# budget_weight = 1.00
+# entries_per_year = 6  # one entry slice about every 61 days
 # entry_gate = "vix"
 # entry_vix_max = 20.0
 # target_dte = 180
-# min_dte = 150
-# max_dte = 210
+# min_dte = 120
+# max_dte = 240
 # exit_dte = 30
 # strike_ratio = 0.60
 # minimum_open_interest = 50
 # minimum_bid = 0.01
 # max_bid_ask_ratio = 0.50  # quoted width / midpoint
 # max_premium_ratio = 0.05  # put premium / underlying spot
-#
-# [[strategies.tail_hedge.targets]]
-# symbol = "IBIT"
-# budget_weight = 0.40
-# annual_tranches = 4
-# entry_gate = "none"  # VIX is not an entry gate for this target
-# target_dte = 180
-# min_dte = 150
-# max_dte = 210
-# exit_dte = 30
-# strike_ratio = 0.60
-# minimum_open_interest = 25
-# minimum_bid = 0.01
-# max_bid_ask_ratio = 0.50
-# max_premium_ratio = 0.08
 
 
 [strategies.cash_management]

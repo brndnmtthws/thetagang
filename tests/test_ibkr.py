@@ -114,6 +114,28 @@ async def test_cached_account_value_prefers_finite_base_value(ibkr, mock_ib):
     mock_ib.accountSummaryAsync.assert_not_called()
 
 
+async def test_cached_account_value_prefers_empty_model_base_aggregate(ibkr, mock_ib):
+    mock_ib.accountValues.return_value = [
+        AccountValue("ACC123", "TotalCashValue", "400", "BASE", "growth"),
+        AccountValue("ACC123", "TotalCashValue", "1000", "BASE", ""),
+        AccountValue("ACC123", "TotalCashValue", "600", "BASE", "income"),
+    ]
+
+    assert ibkr.cached_account_value("ACC123", "TotalCashValue") == 1000.0
+
+
+async def test_cached_account_value_rejects_ambiguous_model_base_values(ibkr, mock_ib):
+    mock_ib.accountValues.return_value = [
+        AccountValue("ACC123", "TotalCashValue", "400", "BASE", "growth"),
+        AccountValue("ACC123", "TotalCashValue", "600", "BASE", "income"),
+    ]
+
+    with pytest.raises(
+        RuntimeError, match="TotalCashValue account value is unavailable"
+    ):
+        ibkr.cached_account_value("ACC123", "TotalCashValue")
+
+
 async def test_qualify_contracts_isolates_request_errors(ibkr, mock_ib):
     invalid = Stock("INVALID", "SMART", "USD")
     first = Stock("FIRST", "SMART", "USD", conId=123)
@@ -131,6 +153,17 @@ async def test_qualify_contracts_isolates_request_errors(ibkr, mock_ib):
         second,
     ]
     assert mock_ib.qualifyContractsAsync.call_count == 4
+
+
+async def test_qualify_contracts_propagates_systemic_request_errors(ibkr, mock_ib):
+    contract = Stock("TEST", "SMART", "USD")
+    error = RequestError(1, 420, "Invalid real-time query")
+    mock_ib.qualifyContractsAsync.side_effect = error
+
+    with pytest.raises(RequestError) as exc_info:
+        await ibkr.qualify_contracts(contract)
+
+    assert exc_info.value is error
 
 
 async def test_get_ticker_for_contract_required_timeout(
