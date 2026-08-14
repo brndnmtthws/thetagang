@@ -40,7 +40,7 @@ def test_submit_order_successful(
     mock_ibkr: Mock,
 ) -> None:
     mock_ibkr.place_order.return_value = mock_trade
-    trades.submit_order(mock_contract, mock_order)
+    assert trades.submit_order(mock_contract, mock_order) is True
     mock_ibkr.place_order.assert_called_once_with(mock_contract, mock_order)
     assert len(trades.records()) == 1
     assert trades.records()[0] == mock_trade
@@ -66,7 +66,7 @@ def test_submit_order_failure(
     trades: Trades, mock_contract: Mock, mock_order: Mock, mock_ibkr: Mock
 ) -> None:
     mock_ibkr.place_order.side_effect = RuntimeError("Failed to place order")
-    trades.submit_order(mock_contract, mock_order)
+    assert trades.submit_order(mock_contract, mock_order) is False
     mock_ibkr.place_order.assert_called_once_with(mock_contract, mock_order)
     assert len(trades.records()) == 0
 

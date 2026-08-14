@@ -99,6 +99,7 @@ async def test_regime_engine_fails_fast_for_invalid_symbol_config_shape(mocker) 
         get_primary_exchange=lambda _symbol: "SMART",
         get_buying_power=lambda _account_summary: 0,
         now_provider=lambda: datetime.now(),
+        tail_hedge_stage_enabled=lambda: False,
     )
 
     with pytest.raises(ValueError, match="regime rebalance check"):

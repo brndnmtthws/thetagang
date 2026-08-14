@@ -16,10 +16,7 @@ from thetagang.fmt import dfmt, ifmt, pfmt
 from thetagang.ibkr import IBKR, RequiredFieldValidationError, TickerField
 from thetagang.options import option_dte
 from thetagang.strategies.runtime_services import resolve_symbol_configs
-from thetagang.strategies.tail_hedge_engine import (
-    TAIL_HEDGE_STATE_EVENT,
-    tail_hedge_owned_con_ids,
-)
+from thetagang.strategies.tail_hedge_state import TailHedgeStateStore
 from thetagang.trading_operations import (
     NoValidContractsError,
     OptionChainScanner,
@@ -94,13 +91,13 @@ class OptionsStrategyEngine:
             if ownership_required:
                 raise RuntimeError("Tail-hedge ownership state is unavailable")
             return set()
-        state = self.data_store.get_last_event_payload(
-            TAIL_HEDGE_STATE_EVENT,
-            raise_on_error=True,
-        )
-        return tail_hedge_owned_con_ids(
-            state,
-            account_number=self.config.runtime.account.number,
+        return (
+            TailHedgeStateStore(
+                self.data_store,
+                self.config.runtime.account.number,
+            )
+            .load()
+            .owned_con_ids
         )
 
     def get_symbols(self) -> List[str]:

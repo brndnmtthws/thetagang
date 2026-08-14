@@ -55,7 +55,7 @@ def test_tail_hedge_strategy_compiles_to_its_post_stage() -> None:
     assert flags["post_tail_hedge"] is True
     target = config.tail_hedge.targets[0]
     assert target.annual_tranches == 4
-    assert target.tranche_interval_days == 91
+    assert target.minimum_tranche_spacing_days == 91
     assert target.target_dte == 180
     assert target.exit_dte == 30
 
@@ -68,8 +68,80 @@ def test_enabled_tail_hedge_requires_sqlite_state() -> None:
         "targets": [_tail_target()],
     }
 
-    with pytest.raises(ValueError, match="requires runtime.database.enabled"):
+    with pytest.raises(ValueError, match="targets require runtime.database.enabled"):
         Config(**data)
+
+
+def test_retained_targets_require_state_even_while_tail_hedge_is_disabled() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["runtime"]["database"] = {"enabled": False}
+    data["strategies"]["tail_hedge"] = {
+        "enabled": False,
+        "targets": [_tail_target()],
+    }
+
+    with pytest.raises(ValueError, match="targets require runtime.database.enabled"):
+        Config(**data)
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "sqlite:///:memory:",
+        "sqlite:///file:shared?mode=memory&cache=shared&uri=true",
+        "sqlite+aiosqlite:///state.db",
+    ],
+)
+def test_enabled_tail_hedge_requires_persistent_sqlite_state(
+    database_url: str,
+) -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["runtime"]["database"] = {"enabled": True, "url": database_url}
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+    }
+
+    with pytest.raises(ValueError, match="supported file-backed SQLite URL"):
+        Config(**data)
+
+
+@pytest.mark.parametrize("driver", ["sqlite", "sqlite+pysqlite"])
+def test_enabled_tail_hedge_accepts_file_backed_sqlite_state(
+    tmp_path,
+    driver: str,
+) -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["runtime"]["database"] = {
+        "enabled": True,
+        "url": f"{driver}:///{tmp_path / 'state.db'}",
+    }
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+    }
+
+    assert Config(**data).tail_hedge.enabled is True
+
+
+def test_enabled_tail_hedge_accepts_blank_database_url_path_fallback() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["runtime"]["database"] = {
+        "enabled": True,
+        "path": "data/tail-state.db",
+        "url": "",
+    }
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+    }
+
+    config = Config(**data)
+
+    assert config.tail_hedge.enabled is True
+    resolved_url = config.runtime.database.resolve_url("/tmp/thetagang.toml")
+    assert resolved_url.startswith("sqlite:///")
+    assert resolved_url.endswith("/data/tail-state.db")
 
 
 def test_enabled_tail_hedge_requires_a_managed_symbol() -> None:
@@ -96,38 +168,6 @@ def test_tail_hedge_rejects_shares_only_regime_mode() -> None:
 
     with pytest.raises(ValueError, match="cannot be enabled when shares_only is true"):
         Config(**data)
-
-
-def test_tail_hedge_allows_shares_only_on_a_disabled_regime_strategy() -> None:
-    data = _base_config({"strategies": ["wheel", "tail_hedge"]})
-    data["strategies"]["regime_rebalance"] = {
-        "enabled": False,
-        "shares_only": True,
-    }
-    data["strategies"]["tail_hedge"] = {
-        "enabled": True,
-        "targets": [_tail_target()],
-    }
-
-    config = Config(**data)
-
-    assert config.regime_rebalance.enabled is False
-    assert config.regime_rebalance.shares_only is True
-    assert config.tail_hedge.enabled is True
-
-
-def test_long_put_tail_hedge_can_run_with_wheel_option_management() -> None:
-    data = _base_config({"strategies": ["wheel", "tail_hedge"]})
-    data["strategies"]["tail_hedge"] = {
-        "enabled": True,
-        "targets": [_tail_target()],
-    }
-
-    config = Config(**data)
-
-    flags = stage_enabled_map(config)
-    assert flags["options_roll_positions"] is True
-    assert flags["post_tail_hedge"] is True
 
 
 def test_tail_hedge_accepts_an_empty_desired_target_set_for_cleanup() -> None:

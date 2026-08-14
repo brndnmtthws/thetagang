@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional, Tuple
@@ -20,20 +19,15 @@ from thetagang.config_models import RegimeRebalanceBaseEnum
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import IBKR, TickerField
+from thetagang.orders import PendingBuyCash, order_cash_notional, working_buy_cash
 from thetagang.strategies.runtime_services import resolve_symbol_configs
-from thetagang.strategies.tail_hedge_engine import (
-    TAIL_HEDGE_ACTIVE_HARVEST_STATUSES,
+from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
-    TAIL_HEDGE_STATE_EVENT,
-    TAIL_HEDGE_STATE_SCHEMA_VERSION,
-    TAIL_HEDGE_STATE_STRATEGY,
-    active_tail_harvest_con_ids,
-    active_tail_harvest_symbols,
-    tail_hedge_owned_con_ids,
-    tail_hedge_state_collections,
+    TailHedgeStateStore,
+    is_tail_reduction_ref,
 )
 from thetagang.trading_operations import OrderOperations
-from thetagang.util import midpoint_or_market_price
+from thetagang.util import midpoint_or_market_price, portfolio_positions_to_dict
 
 AlignedClosesResult = Tuple[List[date], Dict[str, List[float]]]
 AlignedClosesFetcher = Callable[
@@ -97,6 +91,15 @@ class RatioGateResult:
         )
 
 
+@dataclass(frozen=True)
+class HarvestPut:
+    contract: Option
+    expiration: str
+    quantity: int
+    limit_price: float
+    proceeds_per_contract: float
+
+
 def _ffmt_or_dash(value: Optional[float], precision: int = 2) -> str:
     return ffmt(value, precision) if value is not None else "-"
 
@@ -136,6 +139,8 @@ class RegimeRebalanceEngine:
         get_primary_exchange: Callable[[str], str],
         get_buying_power: Callable[[Dict[str, AccountValue]], int],
         now_provider: Callable[[], datetime],
+        tail_hedge_stage_enabled: Callable[[], bool] | None = None,
+        cash_management_stage_enabled: Callable[[], bool] | None = None,
         set_reserved_cash_for_post_management: Callable[[float], None] | None = None,
     ) -> None:
         self.config = config
@@ -145,142 +150,107 @@ class RegimeRebalanceEngine:
         self._get_primary_exchange = get_primary_exchange
         self._get_buying_power = get_buying_power
         self._now = now_provider
+        self._tail_hedge_stage_enabled = tail_hedge_stage_enabled or (lambda: False)
+        self._cash_management_stage_enabled = cash_management_stage_enabled or (
+            lambda: False
+        )
         self._set_reserved_cash_for_post_management = (
             set_reserved_cash_for_post_management
         )
+        self._tail_state_store = (
+            TailHedgeStateStore(
+                data_store,
+                config.runtime.account.number,
+                now_provider=now_provider,
+            )
+            if data_store is not None
+            else None
+        )
         self.regime_rebalance_order_ref_prefix = "tg:regime-rebalance"
-        self._active_harvest_symbols: set[str] = set()
-        self._recent_execution_fills: list[Any] = []
-        self._pending_harvest_stock_buys: dict[str, dict[str, Any]] = {}
-        self._flow_reserved_cash = 0.0
-        self._approved_buy_symbols: set[str] = set()
-
-    def approved_buy_symbols(self) -> set[str]:
-        return set(self._approved_buy_symbols)
 
     def _reserve_cash_for_post_management(self, amount: float) -> None:
         if self._set_reserved_cash_for_post_management is None:
             return
         self._set_reserved_cash_for_post_management(max(0.0, amount))
 
-    def _tail_harvesting_enabled(self) -> bool:
-        return bool(
-            self.data_store is not None and self.config.strategies.tail_hedge.enabled
-        )
+    def _configured_tail_harvest_targets(self) -> set[str]:
+        if self._tail_state_store is None or not self._tail_hedge_stage_enabled():
+            return set()
+        tail_hedge = getattr(self.config.strategies, "tail_hedge", None)
+        if not bool(getattr(tail_hedge, "enabled", False)):
+            return set()
+        return {
+            str(target.symbol)
+            for target in getattr(tail_hedge, "targets", [])
+            if isinstance(getattr(target, "symbol", None), str)
+            and self.config.trading_is_allowed(str(target.symbol))
+        }
 
-    def _load_tail_state(
-        self,
-    ) -> tuple[
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-    ]:
-        if self.data_store is None:
-            return [], [], []
-        state = self.data_store.get_last_event_payload(
-            TAIL_HEDGE_STATE_EVENT,
-            raise_on_error=True,
-        )
-        tranches, entry_history, harvest_plans = tail_hedge_state_collections(
-            state,
-            account_number=self.config.runtime.account.number,
-        )
-        return tranches, entry_history, harvest_plans
-
-    def _load_reconciled_tail_state(
-        self,
-    ) -> tuple[
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-    ]:
-        tranches, entry_history, harvest_plans = self._load_tail_state()
-        if not tranches and not harvest_plans:
-            return tranches, entry_history, harvest_plans
-
-        self._supplement_harvest_fills_from_state(harvest_plans)
-        if self._reconcile_harvest_plans(harvest_plans):
-            self._record_tail_state(
-                (
-                    "proceeds_realized"
-                    if any(
-                        plan.get("status") == "proceeds_realized"
-                        for plan in harvest_plans
-                    )
-                    else "harvest_reconciled"
-                ),
-                tranches=tranches,
-                entry_history=entry_history,
-                harvest_plans=harvest_plans,
-            )
-        return tranches, entry_history, harvest_plans
-
-    @staticmethod
-    def _active_harvest_credit(harvest_plans: list[dict[str, Any]]) -> float:
-        credit = 0.0
-        for plan in harvest_plans:
-            status = plan.get("status")
-            if status == "put_sell_working":
-                credit += float(plan.get("actual_put_sale_proceeds", 0.0) or 0.0)
-            elif status in {
-                "proceeds_realized",
-                "rebalance_credit_ready",
-                "stock_buy_enqueued",
-            }:
-                credit += float(plan.get("remaining_rebalance_credit", 0.0) or 0.0)
-        return round(max(0.0, credit), 2)
+    def _load_tail_tranches(self) -> list[dict[str, Any]]:
+        if self._tail_state_store is None:
+            return []
+        return self._tail_state_store.load().tranches
 
     def _cash_fund_value(
         self,
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> float:
         cash_management = getattr(self.config.strategies, "cash_management", None)
-        if not bool(getattr(cash_management, "enabled", False)):
+        if (
+            not bool(getattr(cash_management, "enabled", False))
+            or not self._cash_management_stage_enabled()
+        ):
             return 0.0
         cash_fund = getattr(cash_management, "cash_fund", None)
         if not isinstance(cash_fund, str) or not cash_fund:
             return 0.0
 
         value = 0.0
-        for positions in portfolio_positions.values():
-            for position in positions:
-                if (
-                    not isinstance(position.contract, Stock)
-                    or position.contract.symbol != cash_fund
-                    or float(position.position) <= 0
-                ):
+        for position in portfolio_positions.get(cash_fund, []):
+            if not isinstance(position.contract, Stock) or (
+                position.contract.symbol != cash_fund
+            ):
+                continue
+            try:
+                quantity = float(position.position)
+                market_price = float(getattr(position, "marketPrice", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(quantity) or quantity <= 0:
+                continue
+            if not math.isfinite(market_price) or market_price <= 0:
+                try:
+                    market_value = float(getattr(position, "marketValue", 0.0) or 0.0)
+                except (TypeError, ValueError):
                     continue
-                market_value = float(getattr(position, "marketValue", 0.0) or 0.0)
-                if market_value <= 0:
-                    market_price = float(getattr(position, "marketPrice", 0.0) or 0.0)
-                    market_value = max(0.0, float(position.position) * market_price)
-                value += max(0.0, market_value)
+                if not math.isfinite(market_value) or market_value <= 0:
+                    continue
+                market_price = market_value / quantity
+            if not math.isfinite(market_price) or market_price <= 0:
+                continue
+            value += math.floor(quantity) * market_price
         return value
 
-    def _queued_cash_debits(self) -> float:
-        debit = 0.0
-        for contract, order, _intent_id in self.order_ops.orders.records():
-            if str(getattr(order, "action", "")).upper() != "BUY":
-                continue
-            price = float(getattr(order, "lmtPrice", 0.0) or 0.0)
-            quantity = float(getattr(order, "totalQuantity", 0.0) or 0.0)
-            multiplier = (
-                1.0
-                if isinstance(contract, Stock)
-                else float(getattr(contract, "multiplier", 0.0) or 100.0)
-            )
-            debit += max(0.0, price * quantity * multiplier)
-        return debit
+    def _queued_cash_debits(self) -> PendingBuyCash:
+        local_debit = sum(
+            max(0.0, order_cash_notional(contract, order))
+            for contract, order, _intent_id in self.order_ops.orders.records()
+            if str(getattr(order, "action", "")).upper() == "BUY"
+        )
+        working = working_buy_cash(
+            self.ibkr.open_trades(),
+            account=self.config.runtime.account.number,
+        )
+        return PendingBuyCash(local_debit + working.debit, working.ambiguous)
 
-    def _ordinary_rebalance_funding(
+    def _ordinary_rebalance_shortfall(
         self,
         *,
         orders: List[Tuple[str, str, int]],
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
         market_prices: Dict[str, float],
-        harvest_plans: list[dict[str, Any]],
-    ) -> dict[str, float]:
+    ) -> float:
         approved_buys = sum(
             quantity * market_prices[symbol]
             for symbol, _primary_exchange, quantity in orders
@@ -291,7 +261,6 @@ class RegimeRebalanceEngine:
             for symbol, _primary_exchange, quantity in orders
             if quantity < 0
         )
-        required_cash = max(0.0, approved_buys - approved_sells)
 
         cash_value = account_summary.get("TotalCashValue")
         available_cash = float(getattr(cash_value, "value", 0.0) or 0.0)
@@ -301,43 +270,52 @@ class RegimeRebalanceEngine:
             if bool(getattr(cash_management, "enabled", False))
             else 0.0
         )
-        cash_fund_value = self._cash_fund_value(portfolio_positions)
-        active_credit = self._active_harvest_credit(harvest_plans)
-        queued_cash_debits = self._queued_cash_debits()
-        existing_reservations = active_credit + queued_cash_debits
-        ordinary_liquidity = max(
-            0.0,
-            available_cash + cash_fund_value - cash_target - existing_reservations,
+        queued_cash = self._queued_cash_debits()
+        if queued_cash.ambiguous:
+            return 0.0
+        cash_management_runs = (
+            bool(getattr(cash_management, "enabled", False))
+            and self._cash_management_stage_enabled()
         )
-        funding_shortfall = max(0.0, required_cash - ordinary_liquidity)
-        return {
-            "approved_buys": round(approved_buys, 2),
-            "approved_sells": round(approved_sells, 2),
-            "required_cash": round(required_cash, 2),
-            "available_cash": round(available_cash, 2),
-            "cash_fund_value": round(cash_fund_value, 2),
-            "cash_target": round(cash_target, 2),
-            "active_harvest_credit": round(active_credit, 2),
-            "queued_cash_debits": round(queued_cash_debits, 2),
-            "existing_reservations": round(existing_reservations, 2),
-            "ordinary_liquidity": round(ordinary_liquidity, 2),
-            "funding_shortfall": round(funding_shortfall, 2),
-        }
+        sell_threshold = (
+            float(getattr(cash_management, "sell_threshold", 0.0) or 0.0)
+            if cash_management_runs
+            else 0.0
+        )
+        cash_fund_value = self._cash_fund_value(portfolio_positions)
+        cash_fund_symbol = getattr(cash_management, "cash_fund", None)
+        cash_fund_sales = sum(
+            abs(quantity) * market_prices[symbol]
+            for symbol, _primary_exchange, quantity in orders
+            if quantity < 0 and symbol == cash_fund_symbol
+        )
+        remaining_cash_fund_value = max(0.0, cash_fund_value - cash_fund_sales)
+
+        # This is cash management's fixed point: after the retained buys, it
+        # can liquidate the remaining fund and may leave at most its configured
+        # deficit tolerance. Subtracting an approved fund sale above prevents
+        # counting the same holding twice.
+        ordinary_capacity = max(
+            0.0,
+            available_cash
+            - cash_target
+            - queued_cash.debit
+            + approved_sells
+            + remaining_cash_fund_value
+            + sell_threshold,
+        )
+        return max(
+            0.0,
+            approved_buys - ordinary_capacity,
+        )
 
     def _tail_hedge_market_value(
         self,
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> float:
-        if self.data_store is None:
+        if self._tail_state_store is None:
             return 0.0
-        state = self.data_store.get_last_event_payload(
-            TAIL_HEDGE_STATE_EVENT,
-            raise_on_error=True,
-        )
-        owned_con_ids = tail_hedge_owned_con_ids(
-            state,
-            account_number=self.config.runtime.account.number,
-        )
+        owned_con_ids = self._tail_state_store.load().owned_con_ids
         return sum(
             float(position.marketValue or 0.0)
             for positions in portfolio_positions.values()
@@ -346,543 +324,252 @@ class RegimeRebalanceEngine:
             and position.contract.conId in owned_con_ids
         )
 
-    def _record_tail_state(
+    def _working_option_orders(
         self,
-        status: str,
-        *,
-        tranches: list[dict[str, Any]],
-        entry_history: list[dict[str, Any]],
-        harvest_plans: list[dict[str, Any]],
-        **payload: Any,
-    ) -> None:
-        if self.data_store is None:
-            raise RuntimeError("Tail harvesting requires SQLite state storage")
-        state = {
-            "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
-            "strategy": TAIL_HEDGE_STATE_STRATEGY,
-            "account": self.config.runtime.account.number,
-            "status": status,
-            "state_recorded_at": self._now(),
-            "tranches": tranches,
-            "entry_history": entry_history,
-            "harvest_plans": harvest_plans,
-            **payload,
-        }
-        if not self.data_store.record_event(TAIL_HEDGE_STATE_EVENT, state):
-            raise RuntimeError("Failed to persist required tail-harvest state")
-
-    @staticmethod
-    def _fill_order_ref(fill: Any) -> Optional[str]:
-        order_ref = getattr(getattr(fill, "execution", None), "orderRef", None)
-        return order_ref if isinstance(order_ref, str) and order_ref else None
-
-    @staticmethod
-    def _fill_side(fill: Any) -> str:
-        return str(getattr(getattr(fill, "execution", None), "side", "")).upper()
-
-    @staticmethod
-    def _fill_quantity(fill: Any) -> float:
-        return max(
-            0.0,
-            float(getattr(getattr(fill, "execution", None), "shares", 0.0) or 0.0),
-        )
-
-    @staticmethod
-    def _fill_price(fill: Any) -> float:
-        return max(
-            0.0,
-            float(getattr(getattr(fill, "execution", None), "price", 0.0) or 0.0),
-        )
-
-    @staticmethod
-    def _fill_commission(fill: Any) -> float:
-        raw_commission = getattr(
-            getattr(fill, "commissionReport", None), "commission", 0.0
-        )
-        if not isinstance(raw_commission, (int, float)) or isinstance(
-            raw_commission, bool
-        ):
-            return 0.0
-        commission = float(raw_commission)
-        return max(0.0, commission) if math.isfinite(commission) else 0.0
-
-    def _account_open_trade_refs(self) -> set[str]:
+        owned_con_ids: set[int] | None = None,
+    ) -> tuple[set[int], set[str]]:
         account_number = self.config.runtime.account.number
         open_trades = self.ibkr.open_trades()
         if not isinstance(open_trades, list):
-            return set()
-        return {
-            order_ref
-            for trade in open_trades
-            if getattr(getattr(trade, "order", None), "account", None) == account_number
-            and isinstance(
-                order_ref := getattr(getattr(trade, "order", None), "orderRef", None),
-                str,
-            )
-            and order_ref
-        }
-
-    def _account_working_option_con_ids(self) -> set[int]:
-        account_number = self.config.runtime.account.number
-        open_trades = self.ibkr.open_trades()
-        if not isinstance(open_trades, list):
-            return set()
-        return {
-            int(trade.contract.conId)
-            for trade in open_trades
-            if getattr(getattr(trade, "order", None), "account", None) == account_number
-            and isinstance(getattr(trade, "contract", None), Option)
-            and type(getattr(trade.contract, "conId", None)) is int
-            and trade.contract.conId > 0
-        }
-
-    def _fills_for_order_ref(self, order_ref: str, *, buy: bool) -> list[Any]:
-        accepted_sides = {"BOT", "BUY"} if buy else {"SLD", "SELL"}
-        return [
-            fill
-            for fill in self._recent_execution_fills
-            if self._fill_order_ref(fill) == order_ref
-            and self._fill_side(fill) in accepted_sides
-        ]
-
-    def _supplement_harvest_fills_from_state(
-        self,
-        harvest_plans: list[dict[str, Any]],
-    ) -> None:
-        if self.data_store is None:
-            return
-        order_refs = {
-            str(order_ref)
-            for plan in harvest_plans
-            for order_ref in [
-                *[
-                    sale.get("order_ref")
-                    for sale in plan.get("put_sales", [])
-                    if isinstance(sale, dict)
-                ],
-                (
-                    plan.get("stock_buy", {}).get("order_ref")
-                    if isinstance(plan.get("stock_buy"), dict)
-                    else None
-                ),
-            ]
-            if isinstance(order_ref, str) and order_ref
-        }
-        stored_fills = self.data_store.get_executions_for_order_refs(order_refs)
-        if not isinstance(stored_fills, list):
-            return
-
-        def fill_identity(fill: Any) -> tuple[Any, ...]:
-            execution = getattr(fill, "execution", None)
-            exec_id = getattr(execution, "execId", None)
-            if exec_id:
-                return ("exec_id", exec_id)
-            return (
-                "fill",
-                getattr(execution, "orderRef", None),
-                getattr(execution, "side", None),
-                getattr(execution, "shares", None),
-                getattr(execution, "price", None),
-                getattr(fill, "time", None) or getattr(execution, "time", None),
-            )
-
-        known = {fill_identity(fill) for fill in self._recent_execution_fills}
-        for fill in stored_fills:
-            identity = fill_identity(fill)
-            if identity in known:
-                continue
-            self._recent_execution_fills.append(fill)
-            known.add(identity)
-
-    def _reconcile_harvest_plans(
-        self,
-        harvest_plans: list[dict[str, Any]],
-    ) -> bool:
-        open_refs = self._account_open_trade_refs()
-        changed = False
-        for index, original in enumerate(harvest_plans):
-            status = original.get("status")
-            if status not in TAIL_HEDGE_ACTIVE_HARVEST_STATUSES:
-                continue
-            plan = dict(original)
-            sales = [dict(sale) for sale in plan.get("put_sales", [])]
-
-            if status == "put_sell_working":
-                total_proceeds = 0.0
-                total_gross_proceeds = 0.0
-                total_commissions = 0.0
-                all_filled = bool(sales)
-                any_working = False
-                any_filled = False
-                for sale in sales:
-                    order_ref = str(sale.get("order_ref", ""))
-                    fills = self._fills_for_order_ref(order_ref, buy=False)
-                    filled_quantity = sum(self._fill_quantity(fill) for fill in fills)
-                    multiplier = float(sale.get("multiplier", 100.0) or 100.0)
-                    gross_proceeds = sum(
-                        self._fill_quantity(fill) * self._fill_price(fill) * multiplier
-                        for fill in fills
-                    )
-                    commissions = sum(self._fill_commission(fill) for fill in fills)
-                    realized_proceeds = max(0.0, gross_proceeds - commissions)
-                    requested_quantity = int(sale.get("quantity", 0) or 0)
-                    sale["filled_quantity"] = filled_quantity
-                    sale["gross_proceeds"] = round(gross_proceeds, 2)
-                    sale["commissions"] = round(commissions, 2)
-                    sale["realized_proceeds"] = round(realized_proceeds, 2)
-                    sale["order_status"] = (
-                        "filled"
-                        if filled_quantity + 1e-9 >= requested_quantity
-                        else "working"
-                        if order_ref in open_refs
-                        else "not_working"
-                    )
-                    total_proceeds += realized_proceeds
-                    total_gross_proceeds += gross_proceeds
-                    total_commissions += commissions
-                    all_filled = all_filled and (
-                        filled_quantity + 1e-9 >= requested_quantity
-                    )
-                    any_working = any_working or order_ref in open_refs
-                    any_filled = any_filled or filled_quantity > 0
-
-                plan["put_sales"] = sales
-                plan["gross_put_sale_proceeds"] = round(total_gross_proceeds, 2)
-                plan["put_sale_commissions"] = round(total_commissions, 2)
-                plan["actual_put_sale_proceeds"] = round(total_proceeds, 2)
-                if all_filled or (any_filled and not any_working):
-                    plan["status"] = "proceeds_realized"
-                    plan["remaining_rebalance_credit"] = round(total_proceeds, 2)
-                    plan["put_sales_filled_at"] = self._now()
-                elif not any_working:
-                    plan["status"] = "canceled"
-                    plan["canceled_at"] = self._now()
-                    plan["cancel_reason"] = "put_sale_not_filled"
-                harvest_plans[index] = plan
-                changed = True
-                continue
-
-            if status != "stock_buy_enqueued":
-                continue
-            stock_buy = dict(plan.get("stock_buy", {}))
-            order_ref = str(stock_buy.get("order_ref", ""))
-            fills = self._fills_for_order_ref(order_ref, buy=True)
-            filled_quantity = sum(self._fill_quantity(fill) for fill in fills)
-            gross_cost = sum(
-                self._fill_quantity(fill) * self._fill_price(fill) for fill in fills
-            )
-            commissions = sum(self._fill_commission(fill) for fill in fills)
-            actual_cost = gross_cost + commissions
-            requested_quantity = int(stock_buy.get("quantity", 0) or 0)
-            stock_buy["filled_quantity"] = filled_quantity
-            stock_buy["gross_cost"] = round(gross_cost, 2)
-            stock_buy["commissions"] = round(commissions, 2)
-            stock_buy["actual_cost"] = round(actual_cost, 2)
-            stock_buy["order_status"] = (
-                "filled"
-                if filled_quantity + 1e-9 >= requested_quantity
-                else "working"
-                if order_ref in open_refs
-                else "not_working"
-            )
-            plan["stock_buy"] = stock_buy
-            actual_proceeds = float(plan.get("actual_put_sale_proceeds", 0.0) or 0.0)
-            plan["remaining_rebalance_credit"] = round(
-                max(0.0, actual_proceeds - actual_cost), 2
-            )
-            if filled_quantity + 1e-9 >= requested_quantity or (
-                filled_quantity > 0 and order_ref not in open_refs
+            return set(), set()
+        con_ids: set[int] = set()
+        tail_sell_symbols: set[str] = set()
+        for trade in open_trades:
+            order = getattr(trade, "order", None)
+            contract = getattr(trade, "contract", None)
+            is_done = getattr(trade, "isDone", None)
+            if (
+                (callable(is_done) and is_done())
+                or order is None
+                or getattr(order, "account", None) != account_number
+                or not isinstance(contract, Option)
+                or type(contract.conId) is not int
+                or contract.conId <= 0
             ):
-                unused_proceeds = round(max(0.0, actual_proceeds - actual_cost), 2)
-                plan["status"] = "completed"
-                plan["completed_at"] = self._now()
-                plan["remaining_rebalance_credit"] = unused_proceeds
-                plan["unused_proceeds"] = unused_proceeds
-            elif order_ref not in open_refs:
-                plan["status"] = "canceled"
-                plan["canceled_at"] = self._now()
-                plan["cancel_reason"] = "stock_buy_not_filled"
-            harvest_plans[index] = plan
-            changed = True
-        return changed
+                continue
+            con_ids.add(contract.conId)
+            if (
+                owned_con_ids is not None
+                and contract.conId in owned_con_ids
+                and str(getattr(order, "action", "")).upper() == "SELL"
+                and is_tail_reduction_ref(getattr(order, "orderRef", None))
+            ):
+                tail_sell_symbols.add(str(contract.symbol))
+        return con_ids, tail_sell_symbols
 
-    @staticmethod
-    def _position_map_by_con_id(
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> dict[int, PortfolioItem]:
+    def _tail_sale_in_progress_symbols(self, owned_con_ids: set[int]) -> set[str]:
+        _working_con_ids, symbols = self._working_option_orders(owned_con_ids)
+        account_number = self.config.runtime.account.number
+        symbols.update(
+            str(contract.symbol)
+            for contract, order, _intent_id in self.order_ops.orders.records()
+            if isinstance(contract, Option)
+            and contract.conId in owned_con_ids
+            and getattr(order, "account", None) == account_number
+            and str(getattr(order, "action", "")).upper() == "SELL"
+            and is_tail_reduction_ref(getattr(order, "orderRef", None))
+        )
+        return symbols
+
+    def _live_account_puts(self) -> dict[int, PortfolioItem]:
+        account_number = self.config.runtime.account.number
+        positions = self.ibkr.portfolio(account=account_number)
+        if not isinstance(positions, list):
+            return {}
         return {
-            position.contract.conId: position
-            for positions in portfolio_positions.values()
+            int(position.contract.conId): position
             for position in positions
-            if isinstance(position.contract, Option)
+            if getattr(position, "account", None) == account_number
+            and isinstance(position.contract, Option)
             and position.contract.right.upper().startswith("P")
+            and type(position.contract.conId) is int
             and position.contract.conId > 0
             and float(position.position) > 0
         }
 
-    def _select_profitable_put_sales(
+    async def _profitable_tail_puts(
         self,
         *,
         symbol: str,
         tranches: list[dict[str, Any]],
-        harvest_plans: list[dict[str, Any]],
         portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> list[dict[str, Any]]:
-        positions = self._position_map_by_con_id(portfolio_positions)
-        allocated_con_ids = active_tail_harvest_con_ids(harvest_plans)
-        working_con_ids = self._account_working_option_con_ids()
-        candidates: list[dict[str, Any]] = []
-        for tranche in sorted(
-            (
-                item
-                for item in tranches
-                if item.get("symbol") == symbol and item.get("status") == "active"
-            ),
-            key=lambda item: str(item.get("expiration", "")),
-        ):
-            con_id = int(tranche["con_id"])
-            if con_id in allocated_con_ids or con_id in working_con_ids:
-                continue
-            position = positions.get(con_id)
-            if position is None or position.contract.symbol != symbol:
-                continue
-            available_quantity = min(
-                int(math.floor(float(position.position))),
-                int(tranche.get("quantity", 0) or 0),
-            )
-            if available_quantity <= 0:
-                continue
-            position_quantity = max(float(position.position), 1.0)
-            market_value_per_contract = (
-                float(getattr(position, "marketValue", 0.0) or 0.0) / position_quantity
-            )
-            average_cost = float(getattr(position, "averageCost", 0.0) or 0.0)
-            if average_cost <= 0:
-                tranche_quantity = max(int(tranche.get("quantity", 1) or 1), 1)
-                average_cost = (
-                    float(tranche.get("entry_cost", 0.0) or 0.0) / tranche_quantity
-                )
-            unrealized_pnl = getattr(position, "unrealizedPNL", None)
-            profitable = (
-                float(unrealized_pnl) > 0
-                if isinstance(unrealized_pnl, (int, float))
-                and not isinstance(unrealized_pnl, bool)
-                else market_value_per_contract > average_cost
-            )
-            if not profitable or market_value_per_contract <= 0:
-                continue
-            multiplier = float(position.contract.multiplier or 100.0)
-            candidates.append(
-                {
-                    "entry_id": tranche["entry_id"],
-                    "con_id": con_id,
-                    "local_symbol": getattr(position.contract, "localSymbol", ""),
-                    "expiration": tranche["expiration"],
-                    "available_quantity": available_quantity,
-                    "estimated_proceeds_per_contract": round(
-                        market_value_per_contract, 2
-                    ),
-                    "cost_basis_per_contract": round(average_cost, 2),
-                    "multiplier": multiplier,
-                }
-            )
+    ) -> list[HarvestPut]:
+        snapshot_positions = {
+            int(position.contract.conId): position
+            for position in portfolio_positions.get(symbol, [])
+            if isinstance(position.contract, Option)
+            and position.contract.right.upper().startswith("P")
+            and type(position.contract.conId) is int
+            and position.contract.conId > 0
+            and float(position.position) > 0
+        }
+        unavailable_con_ids, _harvest_symbols = self._working_option_orders()
+        unavailable_con_ids.update(
+            int(contract.conId)
+            for contract, _order, _intent_id in self.order_ops.orders.records()
+            if isinstance(contract, Option)
+            and type(contract.conId) is int
+            and contract.conId > 0
+        )
 
-        for candidate in candidates:
-            per_contract = float(candidate["estimated_proceeds_per_contract"])
-            candidate["quantity"] = int(candidate.pop("available_quantity"))
-            candidate["estimated_proceeds"] = round(
-                per_contract * int(candidate["quantity"]), 2
-            )
-        return candidates
-
-    async def _enqueue_harvest_sales(
-        self,
-        *,
-        plan_index: int,
-        tranches: list[dict[str, Any]],
-        entry_history: list[dict[str, Any]],
-        harvest_plans: list[dict[str, Any]],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> None:
-        plan = dict(harvest_plans[plan_index])
-        positions = self._position_map_by_con_id(portfolio_positions)
-        prepared: list[tuple[Any, Any]] = []
-        updated_sales: list[dict[str, Any]] = []
-        remaining = float(plan.get("approved_buy_amount", 0.0) or 0.0)
-        for sale_index, raw_sale in enumerate(plan.get("put_sales", [])):
-            sale = dict(raw_sale)
-            con_id = int(sale["con_id"])
-            position = positions.get(con_id)
-            if position is None:
-                continue
-            contract = position.contract
-            contract.exchange = self.order_ops.get_order_exchange()
-            ticker = await self.ibkr.get_ticker_for_contract(
-                contract,
-                required_fields=[],
-                optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
-            )
-            limit_price = round(max(float(midpoint_or_market_price(ticker)), 0.01), 2)
-            multiplier = float(sale.get("multiplier", 100.0) or 100.0)
-            if limit_price * multiplier <= float(
-                sale.get("cost_basis_per_contract", 0.0) or 0.0
+        quoted: list[tuple[dict[str, Any], float]] = []
+        for tranche in tranches:
+            con_id = int(tranche.get("con_id", 0) or 0)
+            position = snapshot_positions.get(con_id)
+            if (
+                tranche.get("symbol") != symbol
+                or tranche.get("status") != "active"
+                or int(tranche.get("quantity", 0) or 0) <= 0
+                or con_id in unavailable_con_ids
+                or position is None
             ):
                 continue
-            order_ref = (
-                f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{plan['plan_id']}:{sale_index}"
-            )
-            per_contract_proceeds = limit_price * multiplier
-            quantity = min(
-                int(sale["quantity"]),
-                max(1, math.ceil(remaining / per_contract_proceeds)),
-            )
-            order = self.order_ops.create_limit_order(
-                action="SELL",
-                quantity=quantity,
-                limit_price=limit_price,
-                use_default_algo=False,
-                order_ref=order_ref,
-                transmit=True,
-            )
-            sale.update(
-                order_ref=order_ref,
-                order_status="enqueued",
-                sell_limit_price=limit_price,
-                sell_enqueued_at=self._now(),
-                quantity=quantity,
-                estimated_proceeds_per_contract=round(per_contract_proceeds, 2),
-                estimated_proceeds=round(per_contract_proceeds * quantity, 2),
-            )
-            updated_sales.append(sale)
-            prepared.append((contract, order))
-            remaining -= per_contract_proceeds * quantity
-            if remaining <= 0:
-                break
-
-        if not prepared:
-            plan["status"] = "canceled"
-            plan["canceled_at"] = self._now()
-            plan["cancel_reason"] = "profitable_put_no_longer_available"
-            harvest_plans[plan_index] = plan
-            self._record_tail_state(
-                "harvest_canceled",
-                tranches=tranches,
-                entry_history=entry_history,
-                harvest_plans=harvest_plans,
-                action_plan_id=plan["plan_id"],
-            )
-            return
-
-        plan["status"] = "put_sell_working"
-        plan["put_sales"] = updated_sales
-        plan["put_sell_enqueued_at"] = self._now()
-        harvest_plans[plan_index] = plan
-        self._record_tail_state(
-            "put_sell_working",
-            tranches=tranches,
-            entry_history=entry_history,
-            harvest_plans=harvest_plans,
-            action_plan_id=plan["plan_id"],
-        )
-        for contract, order in prepared:
-            self.order_ops.enqueue_order(contract, order)
-
-    @staticmethod
-    def _harvest_reserved_cash(harvest_plans: list[dict[str, Any]]) -> float:
-        reserved = 0.0
-        for plan in harvest_plans:
-            status = plan.get("status")
-            if status == "put_sell_working":
-                reserved += sum(
-                    float(sale.get("estimated_proceeds", 0.0) or 0.0)
-                    for sale in plan.get("put_sales", [])
-                    if isinstance(sale, dict)
+            try:
+                ticker = await self.ibkr.get_ticker_for_contract(
+                    position.contract,
+                    required_fields=[],
+                    optional_fields=[
+                        TickerField.MIDPOINT,
+                        TickerField.MARKET_PRICE,
+                    ],
                 )
-            elif status in {
-                "proceeds_realized",
-                "rebalance_credit_ready",
-                "stock_buy_enqueued",
-            }:
-                reserved += float(plan.get("remaining_rebalance_credit", 0.0) or 0.0)
-        return round(max(0.0, reserved), 2)
+            except Exception as exc:
+                log.warning(
+                    f"{symbol}: Unable to quote tail put {con_id} for harvesting "
+                    f"({type(exc).__name__})."
+                )
+                continue
+            limit_price = round(float(midpoint_or_market_price(ticker)), 2)
+            if math.isfinite(limit_price) and limit_price > 0:
+                quoted.append((tranche, limit_price))
 
-    async def _request_tail_harvest(
+        # Quote requests yield to ib_async. Re-read its cache once after all
+        # requests and before committing any close.
+        live_positions = self._live_account_puts()
+        unavailable_con_ids, _harvest_symbols = self._working_option_orders()
+        candidates: list[HarvestPut] = []
+        for tranche, limit_price in quoted:
+            con_id = int(tranche["con_id"])
+            position = live_positions.get(con_id)
+            if (
+                position is None
+                or position.contract.symbol != symbol
+                or con_id in unavailable_con_ids
+            ):
+                continue
+            contract = position.contract
+            if not isinstance(contract, Option):
+                continue
+            try:
+                multiplier = float(contract.multiplier)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(multiplier) or multiplier <= 0:
+                continue
+            quantity = min(
+                int(tranche["quantity"]),
+                math.floor(float(position.position)),
+            )
+            if quantity <= 0:
+                continue
+
+            try:
+                average_cost = float(getattr(position, "averageCost", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                average_cost = 0.0
+            if not math.isfinite(average_cost) or average_cost <= 0:
+                try:
+                    average_cost = float(tranche["entry_limit_price"]) * multiplier
+                except (KeyError, TypeError, ValueError):
+                    continue
+            proceeds = limit_price * multiplier
+            if (
+                not math.isfinite(average_cost)
+                or average_cost <= 0
+                or proceeds <= average_cost
+            ):
+                continue
+
+            contract.exchange = self.order_ops.get_order_exchange()
+            candidates.append(
+                HarvestPut(
+                    contract=contract,
+                    expiration=str(tranche["expiration"]),
+                    quantity=quantity,
+                    limit_price=limit_price,
+                    proceeds_per_contract=proceeds,
+                )
+            )
+
+        return sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.expiration,
+                -candidate.proceeds_per_contract,
+                candidate.contract.conId,
+            ),
+        )
+
+    async def _enqueue_tail_harvest(
         self,
         *,
         symbol: str,
-        approved_quantity: int,
-        ordinary_approved_quantity: int,
-        market_price: float,
-        put_sales: list[dict[str, Any]],
-        funding: dict[str, float],
+        stock_price: float,
+        deferred_shares: int,
         tranches: list[dict[str, Any]],
-        entry_history: list[dict[str, Any]],
-        harvest_plans: list[dict[str, Any]],
         portfolio_positions: Dict[str, List[PortfolioItem]],
-        summary: dict[str, Any],
-        rebalance_mode: str,
     ) -> bool:
-        approved_buy_amount = round(approved_quantity * market_price, 2)
-        plan_id = uuid.uuid4().hex[:12]
-        plan = {
-            "plan_id": plan_id,
-            "symbol": symbol,
-            "status": "harvest_requested",
-            "requested_at": self._now(),
-            "approved_buy_amount": approved_buy_amount,
-            "target_snapshot": {
-                "rebalance_mode": rebalance_mode,
-                "market_price": market_price,
-                "current_weight": summary.get("current_weight"),
-                "target_weight": summary.get("target_weight"),
-                "current_value": summary.get("current_value"),
-                "target_value": summary.get("target_value"),
-                "current_shares": summary.get("current_shares"),
-                "target_shares": summary.get("target_shares"),
-                "ordinary_approved_shares": ordinary_approved_quantity,
-                "approved_shares": approved_quantity,
-                "funding": funding,
-            },
-            "put_sales": put_sales,
-            "actual_put_sale_proceeds": 0.0,
-            "remaining_rebalance_credit": 0.0,
-        }
-        harvest_plans.append(plan)
-        plan_index = len(harvest_plans) - 1
-        self._record_tail_state(
-            "harvest_requested",
+        candidates = await self._profitable_tail_puts(
+            symbol=symbol,
             tranches=tranches,
-            entry_history=entry_history,
-            harvest_plans=harvest_plans,
-            action_plan_id=plan_id,
-            action_symbol=symbol,
+            portfolio_positions=portfolio_positions,
         )
-        try:
-            await self._enqueue_harvest_sales(
-                plan_index=plan_index,
-                tranches=tranches,
-                entry_history=entry_history,
-                harvest_plans=harvest_plans,
-                portfolio_positions=portfolio_positions,
-            )
-        except Exception as exc:
-            log.warning(
-                f"{symbol}: Unable to enqueue tail harvest "
-                f"({type(exc).__name__}); will retry on a later run."
-            )
-        if harvest_plans[plan_index].get("status") == "canceled":
+        candidate = next(
+            (
+                item
+                for item in candidates
+                if math.floor(item.quantity * item.proceeds_per_contract / stock_price)
+                > 0
+            ),
+            None,
+        )
+        if candidate is None or deferred_shares <= 0:
             return False
 
-        log.notice(
-            f"{symbol}: Tail-put harvest requested for up to "
-            f"{dfmt(approved_buy_amount)} of an ordinary-liquidity shortfall; "
-            "stock buy deferred to a later run."
+        # Monetize one useful tranche, shortest expiration first. A smaller
+        # earlier tranche remains invested rather than blocking the ladder.
+        total_proceeds = candidate.quantity * candidate.proceeds_per_contract
+        fundable_shares = min(
+            deferred_shares,
+            math.floor(total_proceeds / stock_price),
         )
-        summary["shares_to_trade"] = 0
-        summary["action"] = "[magenta]Harvest puts; defer buy"
+        required_proceeds = fundable_shares * stock_price
+        quantity = min(
+            candidate.quantity,
+            math.ceil(required_proceeds / candidate.proceeds_per_contract),
+        )
+        estimated_proceeds = quantity * candidate.proceeds_per_contract
+        if estimated_proceeds < required_proceeds:
+            return False
+
+        con_id = candidate.contract.conId
+        order = self.order_ops.create_limit_order(
+            action="SELL",
+            quantity=quantity,
+            limit_price=candidate.limit_price,
+            use_default_algo=False,
+            order_ref=(f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{symbol}:{con_id}"),
+            transmit=True,
+        )
+        self.order_ops.enqueue_order(candidate.contract, order)
+        log.notice(
+            f"{symbol}: Harvesting {quantity} profitable tail put(s) from one "
+            f"tranche for about {dfmt(estimated_proceeds)}; "
+            f"the fill can fund about {fundable_shares} deferred share(s)."
+        )
         return True
 
-    async def _apply_tail_harvest_lifecycle(
+    async def _apply_tail_harvest(
         self,
         *,
         orders: List[Tuple[str, str, int]],
@@ -890,373 +577,136 @@ class RegimeRebalanceEngine:
         portfolio_positions: Dict[str, List[PortfolioItem]],
         market_prices: Dict[str, float],
         regime_summary: List[Dict[str, Any]],
-        rebalance_mode: str,
         hard_underweight_symbols: set[str],
-        tail_state: tuple[
-            list[dict[str, Any]],
-            list[dict[str, Any]],
-            list[dict[str, Any]],
-        ],
-    ) -> tuple[List[Tuple[str, str, int]], float]:
-        self._active_harvest_symbols.clear()
-        self._pending_harvest_stock_buys.clear()
-        if self.data_store is None:
-            return orders, 0.0
+        tranches: list[dict[str, Any]],
+    ) -> List[Tuple[str, str, int]]:
+        targets = self._configured_tail_harvest_targets()
+        if not targets or not tranches or not hard_underweight_symbols:
+            return orders
 
-        tranches, entry_history, harvest_plans = tail_state
-        if not tranches and not harvest_plans:
-            return orders, 0.0
-
-        credit_ready_changed = False
-        for plan_index, raw_plan in enumerate(harvest_plans):
-            if raw_plan.get("status") != "proceeds_realized":
-                continue
-            plan = dict(raw_plan)
-            plan["status"] = "rebalance_credit_ready"
-            plan["rebalance_credit_ready_at"] = self._now()
-            harvest_plans[plan_index] = plan
-            credit_ready_changed = True
-        if credit_ready_changed:
-            self._record_tail_state(
-                "rebalance_credit_ready",
-                tranches=tranches,
-                entry_history=entry_history,
-                harvest_plans=harvest_plans,
-            )
-
-        tail_targets = (
-            {target.symbol for target in self.config.strategies.tail_hedge.targets}
-            if self._tail_harvesting_enabled()
-            else set()
+        # Re-materialize ib_async's fill-current caches after preceding awaits;
+        # no broker refresh request is needed.
+        account_number = self.config.runtime.account.number
+        try:
+            live_cash = self.ibkr.cached_account_value(account_number, "TotalCashValue")
+        except RuntimeError:
+            return orders
+        account_summary = dict(account_summary)
+        account_summary["TotalCashValue"] = AccountValue(
+            account_number, "TotalCashValue", str(live_cash), "BASE", ""
         )
-        removed_target_plan_changed = False
-        for plan_index, raw_plan in enumerate(harvest_plans):
-            if raw_plan.get("symbol") in tail_targets:
-                continue
-            status = raw_plan.get("status")
-            if status not in {"harvest_requested", "rebalance_credit_ready"}:
-                continue
-            plan = dict(raw_plan)
-            if status == "harvest_requested":
-                plan["status"] = "canceled"
-                plan["canceled_at"] = self._now()
-                plan["cancel_reason"] = "tail_target_removed"
-            else:
-                plan["status"] = "completed"
-                plan["completed_at"] = self._now()
-                plan["completion_reason"] = "tail_target_removed"
-                plan["unused_proceeds"] = float(
-                    plan.get("remaining_rebalance_credit", 0.0) or 0.0
-                )
-            harvest_plans[plan_index] = plan
-            removed_target_plan_changed = True
-        if removed_target_plan_changed:
-            self._record_tail_state(
-                "harvest_target_removed",
-                tranches=tranches,
-                entry_history=entry_history,
-                harvest_plans=harvest_plans,
-            )
-        for plan_index, plan in enumerate(harvest_plans):
-            if plan.get("status") != "harvest_requested":
-                continue
-            try:
-                await self._enqueue_harvest_sales(
-                    plan_index=plan_index,
-                    tranches=tranches,
-                    entry_history=entry_history,
-                    harvest_plans=harvest_plans,
-                    portfolio_positions=portfolio_positions,
-                )
-            except Exception as exc:
-                log.warning(
-                    f"{plan.get('symbol', 'unknown')}: Unable to enqueue pending "
-                    f"tail harvest ({type(exc).__name__}); will retry on a later run."
-                )
-        summaries = {str(item["symbol"]): item for item in regime_summary}
-        active_by_symbol = {
-            str(plan["symbol"]): (index, plan)
-            for index, plan in enumerate(harvest_plans)
-            if plan.get("status") in TAIL_HEDGE_ACTIVE_HARVEST_STATUSES
-        }
-        retained_orders: list[tuple[str, str, int]] = []
-        symbols_with_actionable_buys: set[str] = set()
-        harvest_candidates: list[dict[str, Any]] = []
+        portfolio_positions = portfolio_positions_to_dict(
+            self.ibkr.portfolio(account=account_number)
+        )
 
-        for symbol, primary_exchange, quantity in orders:
-            active = active_by_symbol.get(symbol)
-            if active is not None:
-                plan_index, raw_plan = active
-                plan = dict(raw_plan)
-                status = plan.get("status")
-                if status in {
-                    "harvest_requested",
-                    "put_sell_working",
-                    "stock_buy_enqueued",
-                }:
-                    log.notice(
-                        f"{symbol}: Tail-harvest plan is {status}; suppressing "
-                        "simultaneous stock trading."
-                    )
-                    if symbol in summaries:
-                        summaries[symbol]["shares_to_trade"] = 0
-                        summaries[symbol]["action"] = f"[magenta]Tail harvest: {status}"
-                    continue
-                if status == "rebalance_credit_ready":
-                    if quantity <= 0:
-                        plan["status"] = "completed"
-                        plan["completed_at"] = self._now()
-                        plan["completion_reason"] = "current_buy_not_actionable"
-                        plan["unused_proceeds"] = float(
-                            plan.get("remaining_rebalance_credit", 0.0) or 0.0
-                        )
-                        harvest_plans[plan_index] = plan
-                        self._record_tail_state(
-                            "harvest_completed",
-                            tranches=tranches,
-                            entry_history=entry_history,
-                            harvest_plans=harvest_plans,
-                            action_plan_id=plan["plan_id"],
-                        )
-                        retained_orders.append((symbol, primary_exchange, quantity))
-                        continue
-                    current_buy_amount = quantity * market_prices[symbol]
-                    maximum_buy_amount = min(
-                        float(plan.get("remaining_rebalance_credit", 0.0) or 0.0),
-                        float(plan.get("approved_buy_amount", 0.0) or 0.0),
-                        current_buy_amount,
-                    )
-                    funded_quantity = min(
-                        quantity,
-                        math.floor(maximum_buy_amount / market_prices[symbol]),
-                    )
-                    minimum_shares = int(
-                        summaries.get(symbol, {}).get("minimum_trade_shares", 1) or 1
-                    )
-                    minimum_amount = summaries.get(symbol, {}).get(
-                        "minimum_trade_amount"
-                    )
-                    funded_amount = funded_quantity * market_prices[symbol]
-                    if funded_quantity < minimum_shares or (
-                        isinstance(minimum_amount, (int, float))
-                        and funded_amount < float(minimum_amount)
-                    ):
-                        plan["status"] = "completed"
-                        plan["completed_at"] = self._now()
-                        plan["completion_reason"] = (
-                            "funded_buy_below_current_minimum_threshold"
-                        )
-                        plan["unused_proceeds"] = float(
-                            plan.get("remaining_rebalance_credit", 0.0) or 0.0
-                        )
-                        harvest_plans[plan_index] = plan
-                        self._record_tail_state(
-                            "harvest_completed",
-                            tranches=tranches,
-                            entry_history=entry_history,
-                            harvest_plans=harvest_plans,
-                            action_plan_id=plan["plan_id"],
-                        )
-                        continue
-                    plan["revalidated_at"] = self._now()
-                    plan["current_approved_buy_amount"] = round(current_buy_amount, 2)
-                    plan["maximum_rebalance_buy_amount"] = round(maximum_buy_amount, 2)
-                    harvest_plans[plan_index] = plan
-                    self._pending_harvest_stock_buys[symbol] = {
-                        "plan_index": plan_index,
-                        "maximum_buy_amount": maximum_buy_amount,
-                        "minimum_trade_shares": minimum_shares,
-                        "minimum_trade_amount": minimum_amount,
-                        "tranches": tranches,
-                        "entry_history": entry_history,
-                        "harvest_plans": harvest_plans,
-                    }
-                    retained_orders.append((symbol, primary_exchange, funded_quantity))
-                    if symbol in summaries:
-                        summaries[symbol]["shares_to_trade"] = funded_quantity
-                        summaries[symbol]["action"] = (
-                            f"[green]Buy {funded_quantity} from tail credit"
-                        )
-                    symbols_with_actionable_buys.add(symbol)
-                    continue
-
-            retained_orders.append((symbol, primary_exchange, quantity))
-            if (
-                quantity <= 0
-                or symbol not in tail_targets
-                or symbol not in hard_underweight_symbols
-            ):
-                continue
-            put_sales = self._select_profitable_put_sales(
-                symbol=symbol,
-                tranches=tranches,
-                harvest_plans=harvest_plans,
-                portfolio_positions=portfolio_positions,
-            )
-            if not put_sales:
-                continue
-            harvest_candidates.append(
-                {
-                    "symbol": symbol,
-                    "primary_exchange": primary_exchange,
-                    "quantity": quantity,
-                    "buy_amount": quantity * market_prices[symbol],
-                    "put_sales": put_sales,
-                }
-            )
-
-        for plan_index, raw_plan in enumerate(harvest_plans):
-            if raw_plan.get("status") != "rebalance_credit_ready":
-                continue
-            symbol = str(raw_plan["symbol"])
-            if symbol in symbols_with_actionable_buys:
-                continue
-            plan = dict(raw_plan)
-            plan["status"] = "completed"
-            plan["completed_at"] = self._now()
-            plan["completion_reason"] = "current_buy_not_actionable"
-            plan["unused_proceeds"] = float(
-                plan.get("remaining_rebalance_credit", 0.0) or 0.0
-            )
-            harvest_plans[plan_index] = plan
-            self._record_tail_state(
-                "harvest_completed",
-                tranches=tranches,
-                entry_history=entry_history,
-                harvest_plans=harvest_plans,
-                action_plan_id=plan["plan_id"],
-            )
-
-        funding = self._ordinary_rebalance_funding(
-            orders=retained_orders,
+        funding_shortfall = self._ordinary_rebalance_shortfall(
+            orders=orders,
             account_summary=account_summary,
             portfolio_positions=portfolio_positions,
             market_prices=market_prices,
-            harvest_plans=harvest_plans,
         )
-        funding_shortfall = funding["funding_shortfall"]
-        if funding_shortfall > 0 and harvest_candidates:
-            candidate_buy_total = sum(
-                float(candidate["buy_amount"]) for candidate in harvest_candidates
-            )
-            allocatable_shortfall = min(funding_shortfall, candidate_buy_total)
-            allocated_amount = 0.0
-            for index, candidate in enumerate(harvest_candidates):
-                symbol = str(candidate["symbol"])
-                quantity = int(candidate["quantity"])
-                market_price = market_prices[symbol]
-                if index == len(harvest_candidates) - 1:
-                    allocation = allocatable_shortfall - allocated_amount
-                else:
-                    allocation = allocatable_shortfall * (
-                        float(candidate["buy_amount"]) / candidate_buy_total
-                    )
-                    allocated_amount += allocation
-                approved_quantity = min(quantity, math.floor(allocation / market_price))
-                summary = summaries.get(symbol, {})
-                minimum_shares = int(summary.get("minimum_trade_shares", 1) or 1)
-                minimum_amount = summary.get("minimum_trade_amount")
-                approved_amount = approved_quantity * market_price
-                if approved_quantity < minimum_shares or (
-                    isinstance(minimum_amount, (int, float))
-                    and approved_amount < float(minimum_amount)
-                ):
-                    continue
+        if funding_shortfall <= 0:
+            return orders
 
-                requested = await self._request_tail_harvest(
-                    symbol=symbol,
-                    approved_quantity=approved_quantity,
-                    ordinary_approved_quantity=quantity,
-                    market_price=market_price,
-                    put_sales=candidate["put_sales"],
-                    funding={
-                        **funding,
-                        "candidate_buy_total": round(candidate_buy_total, 2),
-                        "allocated_shortfall": round(allocation, 2),
-                    },
-                    tranches=tranches,
-                    entry_history=entry_history,
-                    harvest_plans=harvest_plans,
-                    portfolio_positions=portfolio_positions,
-                    summary=summary,
-                    rebalance_mode=rebalance_mode,
-                )
-                if requested:
-                    retained_orders.remove(
-                        (
-                            symbol,
-                            str(candidate["primary_exchange"]),
-                            quantity,
-                        )
-                    )
-
-        self._active_harvest_symbols.update(active_tail_harvest_symbols(harvest_plans))
-        return retained_orders, self._harvest_reserved_cash(harvest_plans)
-
-    def prepare_regime_order(
-        self,
-        symbol: str,
-        quantity: int,
-        limit_price: float,
-    ) -> tuple[int, str]:
-        pending = self._pending_harvest_stock_buys.get(symbol)
-        if pending is None:
-            return quantity, f"{self.regime_rebalance_order_ref_prefix}:{symbol}"
-
-        maximum_buy_amount = float(pending["maximum_buy_amount"])
-        funded_quantity = min(quantity, math.floor(maximum_buy_amount / limit_price))
-        minimum_shares = int(pending.get("minimum_trade_shares", 1) or 1)
-        minimum_amount = pending.get("minimum_trade_amount")
-        funded_amount = funded_quantity * limit_price
-        harvest_plans = pending["harvest_plans"]
-        plan_index = int(pending["plan_index"])
-        plan = dict(harvest_plans[plan_index])
-        if funded_quantity < minimum_shares or (
-            isinstance(minimum_amount, (int, float))
-            and funded_amount < float(minimum_amount)
-        ):
-            plan["status"] = "completed"
-            plan["completed_at"] = self._now()
-            plan["completion_reason"] = "live_order_below_minimum_threshold"
-            plan["unused_proceeds"] = float(
-                plan.get("remaining_rebalance_credit", 0.0) or 0.0
-            )
-            harvest_plans[plan_index] = plan
-            self._record_tail_state(
-                "harvest_completed",
-                tranches=pending["tranches"],
-                entry_history=pending["entry_history"],
-                harvest_plans=harvest_plans,
-                action_plan_id=plan["plan_id"],
-            )
-            self._reserve_cash_for_post_management(
-                self._flow_reserved_cash + self._harvest_reserved_cash(harvest_plans)
-            )
-            return 0, ""
-
-        order_ref = f"{self.regime_rebalance_order_ref_prefix}:{plan['plan_id']}"
-        authorized_amount = round(funded_quantity * limit_price, 2)
-        plan["status"] = "stock_buy_enqueued"
-        plan["stock_buy"] = {
-            "order_ref": order_ref,
-            "order_status": "enqueued",
-            "quantity": funded_quantity,
-            "limit_price": limit_price,
-            "authorized_amount": authorized_amount,
-            "enqueued_at": self._now(),
-            "filled_quantity": 0.0,
-            "actual_cost": 0.0,
+        owned_con_ids = {
+            int(tranche["con_id"])
+            for tranche in tranches
+            if type(tranche.get("con_id")) is int
         }
-        harvest_plans[plan_index] = plan
-        self._record_tail_state(
-            "stock_buy_enqueued",
-            tranches=pending["tranches"],
-            entry_history=pending["entry_history"],
-            harvest_plans=harvest_plans,
-            action_plan_id=plan["plan_id"],
-            order_ref=order_ref,
+        blocked_symbols = self._tail_sale_in_progress_symbols(owned_con_ids)
+        summaries = {str(item["symbol"]): item for item in regime_summary}
+        eligible_buys = {
+            symbol: (quantity, quantity * market_prices[symbol])
+            for symbol, _primary_exchange, quantity in orders
+            if quantity > 0 and symbol in targets and symbol in hard_underweight_symbols
+        }
+        eligible_buy_value = sum(value for _quantity, value in eligible_buys.values())
+        if eligible_buy_value <= 0:
+            return orders
+        allocatable_shortfall = min(funding_shortfall, eligible_buy_value)
+        dollar_allocations = {
+            symbol: allocatable_shortfall * buy_value / eligible_buy_value
+            for symbol, (_quantity, buy_value) in eligible_buys.items()
+        }
+        deferred_by_symbol = {
+            symbol: min(
+                quantity,
+                math.floor(dollar_allocations[symbol] / market_prices[symbol]),
+            )
+            for symbol, (quantity, _buy_value) in eligible_buys.items()
+        }
+        deferred_value = sum(
+            quantity * market_prices[symbol]
+            for symbol, quantity in deferred_by_symbol.items()
         )
-        return funded_quantity, order_ref
+        # Largest-remainder apportionment keeps scarce cash proportional in
+        # dollars; symbol is only the deterministic tie-break for whole shares.
+        remainder_order = sorted(
+            eligible_buys,
+            key=lambda symbol: (
+                -(
+                    dollar_allocations[symbol] / market_prices[symbol]
+                    - deferred_by_symbol[symbol]
+                ),
+                symbol,
+            ),
+        )
+        for symbol in remainder_order:
+            if deferred_value >= allocatable_shortfall or math.isclose(
+                deferred_value,
+                allocatable_shortfall,
+                abs_tol=1e-6,
+            ):
+                break
+            quantity = eligible_buys[symbol][0]
+            if deferred_by_symbol[symbol] >= quantity:
+                continue
+            deferred_by_symbol[symbol] += 1
+            deferred_value += market_prices[symbol]
+
+        retained_orders: list[tuple[str, str, int]] = []
+        for symbol, primary_exchange, quantity in orders:
+            if (
+                quantity <= 0
+                or symbol not in targets
+                or symbol not in hard_underweight_symbols
+            ):
+                retained_orders.append((symbol, primary_exchange, quantity))
+                continue
+
+            stock_price = market_prices[symbol]
+            allocated_deferred_shares = deferred_by_symbol.get(symbol, 0)
+            if allocated_deferred_shares <= 0:
+                retained_orders.append((symbol, primary_exchange, quantity))
+                continue
+            if symbol in blocked_symbols:
+                # Do not spend estimated proceeds from a harvest that is still
+                # working at IBKR. Keep only the ordinary-funded stock slice;
+                # a later run will see either actual cash or an expired order.
+                harvest_pending = True
+            else:
+                harvest_pending = await self._enqueue_tail_harvest(
+                    symbol=symbol,
+                    stock_price=stock_price,
+                    deferred_shares=allocated_deferred_shares,
+                    tranches=tranches,
+                    portfolio_positions=portfolio_positions,
+                )
+            deferred_shares = allocated_deferred_shares if harvest_pending else 0
+            retained_quantity = quantity - deferred_shares
+            if retained_quantity > 0:
+                retained_orders.append((symbol, primary_exchange, retained_quantity))
+            summary = summaries.get(symbol)
+            if summary is not None and deferred_shares > 0:
+                summary["shares_to_trade"] = retained_quantity
+                summary["action"] = (
+                    f"[green]Buy {retained_quantity}; "
+                    f"[magenta]defer {deferred_shares} to tail proceeds"
+                    if retained_quantity > 0
+                    else f"[magenta]Harvest puts; defer {deferred_shares}"
+                )
+
+        return retained_orders
 
     @staticmethod
     def _as_int_or_none(value: Any) -> int | None:
@@ -1903,20 +1353,28 @@ class RegimeRebalanceEngine:
 
         lookback_days = max(regime_rebalance.order_history_lookback_days, 1)
         start_time = self._now() - timedelta(days=lookback_days)
-        exec_filter = ExecutionFilter(time=start_time.strftime("%Y%m%d %H:%M:%S"))
+        account_number = self.config.runtime.account.number
+        exec_filter = ExecutionFilter(
+            acctCode=account_number,
+            time=start_time.strftime("%Y%m%d %H:%M:%S"),
+        )
 
         if self.data_store:
-            fills = await self.ibkr.request_executions(exec_filter)
-            self._recent_execution_fills = list(fills)
-            self.data_store.record_executions(fills)
+            try:
+                await self.ibkr.request_executions(exec_filter)
+            except Exception as exc:
+                log.warning(
+                    "Unable to refresh executions for regime rebalancing "
+                    f"({type(exc).__name__}); using persisted execution history."
+                )
             return self.data_store.get_last_regime_rebalance_time(
                 symbols,
                 self.regime_rebalance_order_ref_prefix,
                 start_time,
+                account_number,
             )
 
         fills = await self.ibkr.request_executions(exec_filter)
-        self._recent_execution_fills = list(fills)
         last_rebalance: Optional[datetime] = None
         for fill in fills:
             execution = fill.execution
@@ -1971,11 +1429,6 @@ class RegimeRebalanceEngine:
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> Tuple[Table, List[Tuple[str, str, int]]]:
-        self._reserve_cash_for_post_management(0.0)
-        self._flow_reserved_cash = 0.0
-        self._recent_execution_fills = []
-        self._pending_harvest_stock_buys.clear()
-        self._approved_buy_symbols.clear()
         symbol_configs = resolve_symbol_configs(
             self.config, context="regime rebalance check"
         )
@@ -2079,14 +1532,7 @@ class RegimeRebalanceEngine:
             current_values[symbol] = current_value
 
         last_rebalance = await self._get_last_regime_rebalance_time(symbols)
-        tail_state: tuple[
-            list[dict[str, Any]],
-            list[dict[str, Any]],
-            list[dict[str, Any]],
-        ] = ([], [], [])
-        if self.data_store is not None:
-            tail_state = self._load_reconciled_tail_state()
-        active_harvest_credit = self._active_harvest_credit(tail_state[2])
+        tail_tranches = self._load_tail_tranches()
 
         weight_base = regime_rebalance.weight_base
         regime_margin_usage = self._resolve_regime_margin_usage()
@@ -2100,12 +1546,11 @@ class RegimeRebalanceEngine:
                         market_value = float(position.marketValue or 0.0)
                         excluded_value += market_value
             net_liq = float(account_summary["NetLiquidation"].value)
-            adjusted_net_liq = net_liq - excluded_value - active_harvest_credit
+            adjusted_net_liq = net_liq - excluded_value
             total_value = math.floor(adjusted_net_liq * regime_margin_usage)
             log.notice(
                 "Regime rebalancing base: mode=net_liq_ex_options "
                 f"net_liq={dfmt(net_liq)} excluded_options={dfmt(excluded_value)} "
-                f"excluded_tail_credit={dfmt(active_harvest_credit)} "
                 f"margin_usage={ffmt(regime_margin_usage)} "
                 f"base={dfmt(total_value)}"
             )
@@ -2114,15 +1559,12 @@ class RegimeRebalanceEngine:
             excluded_tail_hedge_value = self._tail_hedge_market_value(
                 portfolio_positions
             )
-            adjusted_net_liq = (
-                net_liq - excluded_tail_hedge_value - active_harvest_credit
-            )
+            adjusted_net_liq = net_liq - excluded_tail_hedge_value
             total_value = math.floor(adjusted_net_liq * regime_margin_usage)
             log.notice(
                 "Regime rebalancing base: mode=net_liq "
                 f"net_liq={dfmt(net_liq)} "
                 f"excluded_tail_hedges={dfmt(excluded_tail_hedge_value)} "
-                f"excluded_tail_credit={dfmt(active_harvest_credit)} "
                 f"margin_usage={ffmt(regime_margin_usage)} "
                 f"base={dfmt(total_value)}"
             )
@@ -2137,6 +1579,18 @@ class RegimeRebalanceEngine:
             symbol_configs,
             history_cache,
         )
+        harvest_risk_ready_symbols = {
+            symbol
+            for symbol in symbols
+            if not bool(
+                getattr(
+                    getattr(symbol_configs[symbol], "volatility_weight", None),
+                    "enabled",
+                    False,
+                )
+            )
+            or symbol in volatility_details
+        }
         total_effective_weight = sum(effective_weights.values())
         if total_effective_weight <= 0:
             log.error("Regime-aware rebalancing effective weights sum to zero.")
@@ -2825,20 +2279,17 @@ class RegimeRebalanceEngine:
                 }
             )
 
-        to_trade, harvest_reserved_cash = await self._apply_tail_harvest_lifecycle(
+        to_trade = await self._apply_tail_harvest(
             orders=to_trade,
             account_summary=account_summary,
             portfolio_positions=portfolio_positions,
             market_prices=market_prices,
             regime_summary=regime_summary,
-            rebalance_mode=rebalance_mode,
-            hard_underweight_symbols=hard_underweight_symbols,
-            tail_state=tail_state,
+            hard_underweight_symbols=(
+                hard_underweight_symbols & harvest_risk_ready_symbols
+            ),
+            tranches=tail_tranches,
         )
-        self._approved_buy_symbols.update(
-            symbol for symbol, _primary_exchange, quantity in to_trade if quantity > 0
-        )
-
         for details in regime_summary:
             symbol = str(details["symbol"])
             table.add_row(
@@ -2886,7 +2337,6 @@ class RegimeRebalanceEngine:
                     * market_prices[symbol]
                     for symbol in symbols
                     if symbol in actionable_flow_buy_symbols
-                    and symbol not in self._active_harvest_symbols
                 )
                 reserved_cash_for_post_management = min(
                     remaining_capacity, remaining_target_gap_value
@@ -2898,8 +2348,6 @@ class RegimeRebalanceEngine:
                     "from cash management for remaining inferred-capacity "
                     "target gaps."
                 )
-        self._flow_reserved_cash = reserved_cash_for_post_management
-        reserved_cash_for_post_management += harvest_reserved_cash
         self._reserve_cash_for_post_management(reserved_cash_for_post_management)
 
         ratio_gate_log = ""

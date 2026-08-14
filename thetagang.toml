@@ -765,17 +765,22 @@ ignore_dte = 0
 # "tail_hedge" to run.strategies to manage entries and DTE exits.
 #
 # annual_budget applies across all targets over a rolling 365-day window;
-# budget_weight values must sum to 1.0. Each target has its own cadence, entry
-# gate, contract filters, and expiration ladder. Eligible entries buy at least
-# one contract. Additional contracts must fit the tranche, target, and program
-# budgets; one-contract overruns are recorded.
+# budget_weight values must sum to 1.0. Each target has its own minimum entry
+# and expiration spacing, gate, and contract filters. Missed windows do not
+# accumulate or create catch-up buys. Entries are skipped unless at least one
+# whole contract fits the tranche, target, and program budgets.
+# Setting no_trading = true for a target's portfolio symbol suppresses entries,
+# DTE exits, and removed-target cleanup until trading is re-enabled.
 #
 # With regime_rebalance, profitable puts can fund the residual cash shortfall
 # for a same-symbol buy only when that symbol reaches its own hard underweight
-# band. Deposited cash, enabled cash-fund holdings, approved stock sales, and
-# existing reservations are accounted for first. The stock purchase is deferred
-# until actual proceeds and the current target are revalidated on a later run.
-# With wheel alone, puts remain open until exit_dte. See docs/tail-hedging.md.
+# band. Cash, approved stock sales, and prior queued buys are accounted for
+# first. Cash-fund value and sell_threshold tolerance also count when cash
+# management will run, so retained buys either trigger a fund sale or stay within
+# that tolerance. Ordinary-funded shares remain in the current run; only unfunded
+# shares wait for actual put-sale cash and a fresh rebalance decision on a later
+# run. With wheel alone, puts remain open until exit_dte.
+# See docs/tail-hedging.md.
 #
 # [strategies.tail_hedge]
 # enabled = true
@@ -784,7 +789,7 @@ ignore_dte = 0
 # [[strategies.tail_hedge.targets]]
 # symbol = "QQQ"
 # budget_weight = 0.60
-# annual_tranches = 4  # derives a 91-day minimum interval between entries
+# annual_tranches = 4  # max/year; derives 91-day entry/expiry minimums
 # entry_gate = "vix"
 # entry_vix_max = 20.0
 # target_dte = 180

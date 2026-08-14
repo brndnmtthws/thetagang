@@ -1,13 +1,10 @@
 import asyncio
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
-from ib_async import IB, PortfolioItem, Stock, Ticker
+from ib_async import IB, LimitOrder, Option, Stock, Ticker
 
-from thetagang.ibkr import IBKRRequestTimeout
 from thetagang.portfolio_manager import PortfolioManager
-from thetagang.strategies.tail_hedge_engine import TAIL_HEDGE_STATE_SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -16,6 +13,7 @@ def mock_ib(mocker):
     mock = mocker.Mock(spec=IB)
     mock.orderStatusEvent = mocker.Mock()
     mock.orderStatusEvent.__iadd__ = mocker.Mock(return_value=None)
+    mock.openTrades.return_value = []
     return mock
 
 
@@ -39,6 +37,47 @@ def portfolio_manager(mock_ib, mock_config, mocker):
     """Fixture to create a PortfolioManager instance."""
     completion_future = mocker.Mock()
     return PortfolioManager(mock_config, mock_ib, completion_future, dry_run=False)
+
+
+def position(portfolio_manager, contract, quantity, account=None):
+    return SimpleNamespace(
+        account=account or portfolio_manager.account_number,
+        contract=contract,
+        position=quantity,
+    )
+
+
+def tail_order(portfolio_manager, action, quantity, order_ref):
+    return LimitOrder(
+        action,
+        quantity,
+        1.0,
+        account=portfolio_manager.account_number,
+        orderRef=order_ref,
+    )
+
+
+def working_trade(mocker, portfolio_manager, *, order_ref="", account=None):
+    order = LimitOrder(
+        "BUY",
+        1,
+        1.0,
+        account=account or portfolio_manager.account_number,
+        orderRef=order_ref,
+    )
+    trade = mocker.Mock(contract=mocker.Mock(symbol="SPY"), order=order)
+    trade.isDone.return_value = False
+    return trade
+
+
+def prepare_initialization(portfolio_manager, mocker, trades):
+    portfolio_manager.config.runtime.account.market_data_type = 1
+    portfolio_manager.config.runtime.account.cancel_orders = True
+    portfolio_manager.config.strategies.vix_call_hedge.enabled = False
+    portfolio_manager.config.strategies.cash_management.enabled = False
+    portfolio_manager.get_symbols = mocker.Mock(return_value=["SPY"])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=trades)
+    portfolio_manager.ibkr.cancel_order = mocker.Mock()
 
 
 class TestPortfolioManager:
@@ -83,6 +122,174 @@ class TestPortfolioManager:
         result = PortfolioManager.get_close_price(ticker)
         assert result == 101.00
         ticker.marketPrice.assert_called_once()
+
+    def test_initialize_account_only_cancels_orders_for_active_account(
+        self, portfolio_manager, mocker
+    ):
+        active = working_trade(mocker, portfolio_manager)
+        other = working_trade(
+            mocker,
+            portfolio_manager,
+            account="OTHER123",
+        )
+        prepare_initialization(portfolio_manager, mocker, [active, other])
+
+        portfolio_manager.initialize_account()
+
+        portfolio_manager.ibkr.cancel_order.assert_called_once_with(active.order)
+
+    def test_initialize_account_dry_run_does_not_cancel_broker_orders(
+        self, mock_ib, mock_config, mocker
+    ):
+        portfolio_manager = PortfolioManager(
+            mock_config,
+            mock_ib,
+            mocker.Mock(),
+            dry_run=True,
+        )
+        trade = working_trade(mocker, portfolio_manager)
+        prepare_initialization(portfolio_manager, mocker, [trade])
+        cancel_order = mocker.Mock()
+        portfolio_manager.ibkr.cancel_order = cancel_order
+
+        portfolio_manager.initialize_account()
+
+        cancel_order.assert_not_called()
+
+    def test_initialize_account_cancels_tail_entry_and_preserves_reductions(
+        self, portfolio_manager, mocker
+    ):
+        refs = [
+            "tg:tail-hedge:entry",
+            "tg:tail-hedge:close",
+            "tg:tail-harvest:SPY:123",
+            "tg:regime-rebalance:SPY",
+        ]
+        trades = [
+            working_trade(mocker, portfolio_manager, order_ref=order_ref)
+            for order_ref in refs
+        ]
+        prepare_initialization(portfolio_manager, mocker, trades)
+
+        portfolio_manager.initialize_account()
+
+        canceled_refs = {
+            call.args[0].orderRef
+            for call in portfolio_manager.ibkr.cancel_order.call_args_list
+        }
+        assert canceled_refs == {
+            "tg:tail-hedge:entry",
+            "tg:regime-rebalance:SPY",
+        }
+
+    def test_initialize_account_cancels_tail_entry_when_cancel_orders_disabled(
+        self, portfolio_manager, mocker
+    ):
+        entry = working_trade(
+            mocker,
+            portfolio_manager,
+            order_ref="tg:tail-hedge:entry",
+        )
+        close = working_trade(
+            mocker,
+            portfolio_manager,
+            order_ref="tg:tail-hedge:close",
+        )
+        prepare_initialization(portfolio_manager, mocker, [entry, close])
+        portfolio_manager.config.runtime.account.cancel_orders = False
+
+        portfolio_manager.initialize_account()
+
+        portfolio_manager.ibkr.cancel_order.assert_called_once_with(entry.order)
+
+    def test_submit_orders_caps_tail_sales_to_uncommitted_live_position(
+        self, portfolio_manager, mocker
+    ):
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            return_value=[position(portfolio_manager, contract, 3)]
+        )
+        working_trades = [
+            SimpleNamespace(
+                contract=contract,
+                order=LimitOrder("SELL", quantity, 1.0, account=account),
+                isDone=lambda: False,
+            )
+            for account, quantity in [
+                (portfolio_manager.account_number, 2),
+                ("OTHER", 99),
+            ]
+        ]
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=working_trades)
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.submit_order.side_effect = [False, True]
+        first = tail_order(portfolio_manager, "SELL", 2, "tg:tail-harvest:SPY:123")
+        second = tail_order(portfolio_manager, "SELL", 1, "tg:tail-hedge:close")
+        portfolio_manager.orders.add_order(contract, first, None)
+        portfolio_manager.orders.add_order(contract, second, None)
+        portfolio_manager.orders.add_order(contract, second, None)
+
+        portfolio_manager.submit_orders()
+
+        assert portfolio_manager.trades.submit_order.call_count == 2
+        submitted_orders = [
+            call.args[1]
+            for call in portfolio_manager.trades.submit_order.call_args_list
+        ]
+        assert submitted_orders[0] is not first
+        assert [int(order.totalQuantity) for order in submitted_orders] == [1, 1]
+
+    def test_submit_orders_caps_tail_buy_to_live_short_position(
+        self, portfolio_manager, mocker
+    ):
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=789)
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            return_value=[position(portfolio_manager, contract, -1)]
+        )
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.submit_order.return_value = True
+        portfolio_manager.orders.add_order(
+            contract,
+            tail_order(portfolio_manager, "BUY", 1, "tg:tail-harvest:SPY:789"),
+            None,
+        )
+        portfolio_manager.orders.add_order(
+            contract,
+            tail_order(portfolio_manager, "BUY", 2, "tg:tail-hedge:close"),
+            None,
+        )
+
+        portfolio_manager.submit_orders()
+
+        portfolio_manager.trades.submit_order.assert_called_once()
+        submitted_order = portfolio_manager.trades.submit_order.call_args.args[1]
+        assert submitted_order.orderRef == "tg:tail-hedge:close"
+        assert int(submitted_order.totalQuantity) == 1
+
+    def test_submit_orders_requires_live_underlying_for_tail_entry(
+        self, portfolio_manager, mocker
+    ):
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            return_value=[
+                position(portfolio_manager, Stock("QQQ", "SMART"), 1),
+                position(portfolio_manager, Stock("SPY", "SMART"), 1, "OTHER"),
+            ]
+        )
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.submit_order.return_value = True
+        for symbol, con_id in [("QQQ", 100), ("SPY", 200)]:
+            portfolio_manager.orders.add_order(
+                Option(symbol, "20271217", 300, "P", "SMART", conId=con_id),
+                tail_order(portfolio_manager, "BUY", 1, "tg:tail-hedge:entry"),
+                None,
+            )
+
+        portfolio_manager.submit_orders()
+
+        portfolio_manager.trades.submit_order.assert_called_once()
+        assert portfolio_manager.trades.submit_order.call_args.args[0].symbol == "QQQ"
 
     @pytest.mark.asyncio
     async def test_get_write_threshold_with_valid_close(
@@ -156,7 +363,7 @@ class TestPortfolioManager:
         pm.options_trading_enabled = mocker.Mock(return_value=False)
         pm.initialize_account = mocker.Mock()
         pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
-        pm.get_portfolio_positions = mocker.AsyncMock(return_value={})
+        pm.get_portfolio_positions = mocker.Mock(return_value={})
         pm.check_regime_rebalance_positions = mocker.AsyncMock(return_value=(None, []))
         pm.check_buy_only_positions = mocker.AsyncMock(return_value=(None, []))
         pm.check_sell_only_positions = mocker.AsyncMock(return_value=(None, []))
@@ -192,7 +399,7 @@ class TestPortfolioManager:
         pm.options_trading_enabled = mocker.Mock(return_value=True)
         pm.initialize_account = mocker.Mock()
         pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
-        pm.get_portfolio_positions = mocker.AsyncMock(return_value={})
+        pm.get_portfolio_positions = mocker.Mock(return_value={})
         pm.orders.print_summary = mocker.Mock()
 
         calls: list[tuple[str, set[str]]] = []
@@ -231,81 +438,7 @@ class TestPortfolioManager:
             ("write", {"options_write_puts"}),
             ("post", {"post_cash_management"}),
         ]
-        pm.get_portfolio_positions.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_tail_hedge_stage_receives_untracked_positions(
-        self, mock_ib, mock_config, mocker
-    ):
-        pm = PortfolioManager(
-            mock_config,
-            mock_ib,
-            mocker.Mock(),
-            dry_run=True,
-            run_stage_order=["post_tail_hedge"],
-        )
-        tracked = cast(
-            PortfolioItem,
-            SimpleNamespace(contract=SimpleNamespace(symbol="QQQ")),
-        )
-        removed_target = cast(
-            PortfolioItem,
-            SimpleNamespace(contract=SimpleNamespace(symbol="OLD")),
-        )
-        pm.initialize_account = mocker.Mock()
-        pm.summarize_account = mocker.AsyncMock(return_value=({}, {"QQQ": [tracked]}))
-        pm.last_untracked_positions = {"OLD": [removed_target]}
-        pm.orders.print_summary = mocker.Mock()
-        run_post = mocker.patch(
-            "thetagang.portfolio_manager.run_post_stages",
-            new=mocker.AsyncMock(),
-        )
-
-        await pm.manage()
-
-        await_args = run_post.await_args
-        assert await_args is not None
-        assert await_args.args[2] == {
-            "QQQ": [tracked],
-            "OLD": [removed_target],
-        }
-
-    @pytest.mark.asyncio
-    async def test_regime_stage_receives_untracked_tail_positions(
-        self, mock_ib, mock_config, mocker
-    ):
-        pm = PortfolioManager(
-            mock_config,
-            mock_ib,
-            mocker.Mock(),
-            dry_run=True,
-            run_stage_order=["equity_regime_rebalance"],
-        )
-        tracked = cast(
-            PortfolioItem,
-            SimpleNamespace(contract=SimpleNamespace(symbol="QQQ")),
-        )
-        removed_target = cast(
-            PortfolioItem,
-            SimpleNamespace(contract=SimpleNamespace(symbol="OLD")),
-        )
-        pm.initialize_account = mocker.Mock()
-        pm.summarize_account = mocker.AsyncMock(return_value=({}, {"QQQ": [tracked]}))
-        pm.last_untracked_positions = {"OLD": [removed_target]}
-        pm.orders.print_summary = mocker.Mock()
-        run_equity = mocker.patch(
-            "thetagang.portfolio_manager.run_equity_rebalance_stages",
-            new=mocker.AsyncMock(),
-        )
-
-        await pm.manage()
-
-        await_args = run_equity.await_args
-        assert await_args is not None
-        assert await_args.args[2] == {
-            "QQQ": [tracked],
-            "OLD": [removed_target],
-        }
+        pm.get_portfolio_positions.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_manage_continues_if_order_submission_wait_times_out(
@@ -322,7 +455,7 @@ class TestPortfolioManager:
 
         pm.initialize_account = mocker.Mock()
         pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
-        pm.get_portfolio_positions = mocker.AsyncMock(return_value={})
+        pm.get_portfolio_positions = mocker.Mock(return_value={})
         pm.orders.print_summary = mocker.Mock()
         pm.submit_orders = mocker.Mock()
         pm.adjust_prices = mocker.AsyncMock()
@@ -358,7 +491,7 @@ class TestPortfolioManager:
 
         pm.initialize_account = mocker.Mock()
         pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
-        pm.get_portfolio_positions = mocker.AsyncMock(return_value={})
+        pm.get_portfolio_positions = mocker.Mock(return_value={})
         pm.orders.print_summary = mocker.Mock()
         pm.submit_orders = mocker.Mock()
         pm.adjust_prices = mocker.AsyncMock()
@@ -447,6 +580,89 @@ class TestPortfolioManager:
         await portfolio_manager.adjust_prices()
 
         portfolio_manager.ibkr.get_ticker_for_contract.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_adjust_prices_skips_tail_managed_orders(
+        self, portfolio_manager, mocker
+    ):
+        portfolio_manager.config.runtime.orders.price_update_delay = (1, 2)
+        portfolio_manager.config.portfolio.symbols = {
+            "SPY": mocker.Mock(adjust_price_after_delay=True)
+        }
+        trade = mocker.Mock(
+            contract=mocker.Mock(symbol="SPY", secType="OPT"),
+            order=LimitOrder(
+                "BUY",
+                1,
+                1.0,
+                account=portfolio_manager.account_number,
+                orderRef="tg:tail-harvest:SPY:123",
+            ),
+        )
+        trade.isDone.return_value = False
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.is_empty.return_value = False
+        portfolio_manager.trades.records.return_value = [trade]
+        portfolio_manager.ibkr.wait_for_orders_complete = mocker.AsyncMock()
+        portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock()
+
+        await portfolio_manager.adjust_prices()
+
+        portfolio_manager.ibkr.get_ticker_for_contract.assert_not_awaited()
+        portfolio_manager.trades.submit_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_adjust_prices_preserves_order_metadata(
+        self, portfolio_manager, mocker
+    ):
+        portfolio_manager.config.runtime.orders.price_update_delay = (1, 2)
+        portfolio_manager.config.runtime.orders.minimum_credit = 0.01
+        portfolio_manager.config.portfolio.symbols = {
+            "SPY": mocker.Mock(adjust_price_after_delay=True)
+        }
+        original_order = LimitOrder(
+            "SELL",
+            2,
+            1.0,
+            account=portfolio_manager.account_number,
+            orderRef="tg:regime-rebalance:SPY",
+            tif="GTC",
+            transmit=False,
+        )
+        contract = mocker.Mock(symbol="SPY", secType="OPT")
+        trade = mocker.Mock(contract=contract, order=original_order)
+        trade.isDone.return_value = False
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.is_empty.return_value = False
+        portfolio_manager.trades.records.return_value = [trade]
+        portfolio_manager.ibkr.wait_for_orders_complete = mocker.AsyncMock()
+        ticker = mocker.Mock()
+        ticker.midpoint.return_value = 0.8
+        portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(
+            return_value=ticker
+        )
+
+        await portfolio_manager.adjust_prices()
+
+        portfolio_manager.trades.submit_order.assert_called_once()
+        submitted_contract, submitted_order, submitted_idx = (
+            portfolio_manager.trades.submit_order.call_args.args
+        )
+        assert submitted_contract is contract
+        assert submitted_idx == 0
+        assert submitted_order is not original_order
+        assert submitted_order.lmtPrice == pytest.approx(0.9)
+        assert (
+            submitted_order.account,
+            submitted_order.orderRef,
+            submitted_order.tif,
+            submitted_order.transmit,
+        ) == (
+            portfolio_manager.account_number,
+            "tg:regime-rebalance:SPY",
+            "GTC",
+            False,
+        )
 
     @pytest.mark.asyncio
     async def test_write_calls_respects_can_write_when_green_with_nan_close(
@@ -575,18 +791,15 @@ class TestPortfolioManager:
             assert symbol != "AAPL"
 
     @pytest.mark.asyncio
-    async def test_get_portfolio_positions_success(self, portfolio_manager, mocker):
-        """Returns filtered positions when both portfolio and snapshot succeed."""
+    async def test_initial_portfolio_load_waits_for_synchronized_caches(
+        self, portfolio_manager, mocker
+    ):
         portfolio_manager.config.portfolio.symbols = {"AAPL": mocker.Mock()}
 
         portfolio_item = SimpleNamespace(
             account="TEST123",
             contract=SimpleNamespace(symbol="AAPL", conId=1),
             position=5,
-            averageCost=100.0,
-            marketPrice=105.0,
-            marketValue=525.0,
-            unrealizedPNL=25.0,
         )
         snapshot_position = SimpleNamespace(
             account="TEST123",
@@ -594,194 +807,49 @@ class TestPortfolioManager:
             position=5,
         )
 
-        portfolio_manager.ibkr.refresh_account_updates = mocker.AsyncMock()
-        portfolio_manager.ibkr.portfolio = mocker.Mock(return_value=[portfolio_item])
-        portfolio_manager.ibkr.refresh_positions = mocker.AsyncMock(
-            return_value=[snapshot_position]
-        )
-
-        result = await portfolio_manager.get_portfolio_positions()
-
-        assert result == {"AAPL": [portfolio_item]}
-        portfolio_manager.ibkr.refresh_account_updates.assert_awaited_once_with(
-            "TEST123"
-        )
-        portfolio_manager.ibkr.refresh_positions.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_get_portfolio_positions_retries_for_state_owned_removed_target(
-        self, portfolio_manager, mocker
-    ):
-        """Does not drop a removed target when the portfolio view is stale."""
-        portfolio_manager.config.portfolio.symbols = {"QQQ": mocker.Mock()}
-        portfolio_manager.config.strategies.tail_hedge.enabled = True
-        portfolio_manager.run_stage_flags["post_tail_hedge"] = True
-        portfolio_manager.data_store = mocker.Mock()
-        portfolio_manager.data_store.get_last_event_payload.return_value = {
-            "schema_version": TAIL_HEDGE_STATE_SCHEMA_VERSION,
-            "strategy": "long_put",
-            "account": "TEST123",
-            "tranches": [
-                {
-                    "entry_id": "OLD:2:2026-08-01T12:00:00",
-                    "symbol": "OLD",
-                    "con_id": 2,
-                    "expiration": "20270219",
-                }
-            ],
-        }
-
-        tracked_item = SimpleNamespace(
-            account="TEST123",
-            contract=SimpleNamespace(symbol="QQQ", conId=1),
-            position=5,
-        )
-        removed_tail_item = SimpleNamespace(
-            account="TEST123",
-            contract=SimpleNamespace(symbol="OLD", conId=2),
-            position=1,
-        )
-        tracked_snapshot = SimpleNamespace(
-            account="TEST123",
-            contract=SimpleNamespace(symbol="QQQ", conId=1),
-            position=5,
-        )
-        removed_tail_snapshot = SimpleNamespace(
-            account="TEST123",
-            contract=SimpleNamespace(symbol="OLD", conId=2),
-            position=1,
-        )
-
-        portfolio_manager.ibkr.refresh_account_updates = mocker.AsyncMock()
         portfolio_manager.ibkr.portfolio = mocker.Mock(
-            side_effect=[
-                [tracked_item],
-                [tracked_item, removed_tail_item],
-            ]
+            side_effect=[[], [portfolio_item]]
         )
-        portfolio_manager.ibkr.refresh_positions = mocker.AsyncMock(
-            return_value=[tracked_snapshot, removed_tail_snapshot]
-        )
+        portfolio_manager.ibkr.positions = mocker.Mock(return_value=[snapshot_position])
         sleep_mock = mocker.patch(
             "thetagang.portfolio_manager.asyncio.sleep", new=mocker.AsyncMock()
         )
 
-        result = await portfolio_manager.get_portfolio_positions()
-
-        assert result == {"QQQ": [tracked_item]}
-        assert portfolio_manager.last_untracked_positions == {
-            "OLD": [removed_tail_item]
-        }
-        assert portfolio_manager.ibkr.portfolio.call_count == 2
-        sleep_mock.assert_awaited_once_with(1)
-
-    @pytest.mark.asyncio
-    async def test_get_portfolio_positions_fails_closed_when_tail_state_is_unreadable(
-        self, portfolio_manager, mocker
-    ):
-        portfolio_manager.config.portfolio.symbols = {}
-        portfolio_manager.config.strategies.tail_hedge.enabled = True
-        portfolio_manager.run_stage_flags["post_tail_hedge"] = True
-        portfolio_manager.data_store = mocker.Mock()
-        portfolio_manager.data_store.get_last_event_payload.side_effect = RuntimeError(
-            "database unavailable"
-        )
-        portfolio_manager.ibkr.portfolio = mocker.Mock()
-
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            await portfolio_manager.get_portfolio_positions()
-
-        portfolio_manager.ibkr.portfolio.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_get_portfolio_positions_retries_on_account_timeout(
-        self, portfolio_manager, mocker
-    ):
-        """Retries when account update snapshot times out, then returns data."""
-        portfolio_manager.config.portfolio.symbols = {}
-
-        sleep_mock = mocker.patch(
-            "thetagang.portfolio_manager.asyncio.sleep", new=mocker.AsyncMock()
-        )
-
-        portfolio_manager.ibkr.refresh_account_updates = mocker.AsyncMock(
-            side_effect=[
-                IBKRRequestTimeout("account updates", 1),
-                None,
-            ]
-        )
-        portfolio_manager.ibkr.portfolio = mocker.Mock(return_value=[])
-        portfolio_manager.ibkr.refresh_positions = mocker.AsyncMock(return_value=[])
-
-        result = await portfolio_manager.get_portfolio_positions()
-
-        assert result == {}
-        assert portfolio_manager.ibkr.refresh_account_updates.await_count == 2
-        sleep_mock.assert_awaited()
-
-    @pytest.mark.asyncio
-    async def test_get_portfolio_positions_falls_back_after_account_timeouts(
-        self, portfolio_manager, mocker
-    ):
-        """Continues with cached portfolio data after repeated account timeouts."""
-        portfolio_manager.config.portfolio.symbols = {"AAPL": mocker.Mock()}
-
-        portfolio_item = SimpleNamespace(
-            account="TEST123",
-            contract=SimpleNamespace(symbol="AAPL", conId=1),
-            position=5,
-            averageCost=100.0,
-            marketPrice=105.0,
-            marketValue=525.0,
-            unrealizedPNL=25.0,
-        )
-        snapshot_position = SimpleNamespace(
-            account="TEST123",
-            contract=SimpleNamespace(symbol="AAPL", conId=1),
-            position=5,
-        )
-
-        portfolio_manager.ibkr.refresh_account_updates = mocker.AsyncMock(
-            side_effect=[IBKRRequestTimeout("account updates", 1) for _ in range(3)]
-        )
-        portfolio_manager.ibkr.portfolio = mocker.Mock(return_value=[portfolio_item])
-        portfolio_manager.ibkr.refresh_positions = mocker.AsyncMock(
-            return_value=[snapshot_position]
-        )
-
-        result = await portfolio_manager.get_portfolio_positions()
+        result = await portfolio_manager.load_initial_portfolio_positions()
 
         assert result == {"AAPL": [portfolio_item]}
-        assert portfolio_manager.ibkr.refresh_account_updates.await_count == 3
+        assert portfolio_manager.ibkr.positions.call_count == 2
+        sleep_mock.assert_awaited_once_with(1)
+        portfolio_manager.ibkr.ib.reqAccountUpdatesAsync.assert_not_called()
+        portfolio_manager.ibkr.ib.reqPositionsAsync.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_get_portfolio_positions_raises_after_missing_positions(
+    def test_get_portfolio_positions_rematerializes_live_cache_only(
         self, portfolio_manager, mocker
     ):
-        """Raises when portfolio snapshot never includes tracked positions."""
         portfolio_manager.config.portfolio.symbols = {"AAPL": mocker.Mock()}
 
-        sleep_mock = mocker.patch(
-            "thetagang.portfolio_manager.asyncio.sleep", new=mocker.AsyncMock()
-        )
-
-        portfolio_manager.ibkr.refresh_account_updates = mocker.AsyncMock()
-        portfolio_manager.ibkr.portfolio = mocker.Mock(return_value=[])
-
-        tracked_position = SimpleNamespace(
+        old_item = SimpleNamespace(
             account="TEST123",
             contract=SimpleNamespace(symbol="AAPL", conId=1),
             position=5,
         )
-        portfolio_manager.ibkr.refresh_positions = mocker.AsyncMock(
-            return_value=[tracked_position]
+        new_item = SimpleNamespace(
+            account="TEST123",
+            contract=SimpleNamespace(symbol="AAPL", conId=1),
+            position=3,
         )
 
-        with pytest.raises(RuntimeError):
-            await portfolio_manager.get_portfolio_positions()
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            side_effect=[[old_item], [new_item]]
+        )
 
-        assert portfolio_manager.ibkr.refresh_positions.await_count == 3
-        sleep_mock.assert_awaited()
+        first = portfolio_manager.get_portfolio_positions()
+        second = portfolio_manager.get_portfolio_positions()
+
+        assert first == {"AAPL": [old_item]}
+        assert second == {"AAPL": [new_item]}
+        portfolio_manager.ibkr.ib.reqAccountUpdatesAsync.assert_not_called()
+        portfolio_manager.ibkr.ib.reqPositionsAsync.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_check_buy_only_positions(self, portfolio_manager, mocker):

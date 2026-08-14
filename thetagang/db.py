@@ -27,6 +27,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine.url import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from alembic import command
@@ -159,13 +160,13 @@ class ExecutionRecord(Base):
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     exec_id: Mapped[Optional[str]] = mapped_column(String, unique=True)
+    account: Mapped[Optional[str]] = mapped_column(String)
     order_id: Mapped[Optional[int]] = mapped_column(Integer)
     order_ref: Mapped[Optional[str]] = mapped_column(String)
     symbol: Mapped[Optional[str]] = mapped_column(String)
     side: Mapped[Optional[str]] = mapped_column(String)
     shares: Mapped[Optional[float]] = mapped_column(Float)
     price: Mapped[Optional[float]] = mapped_column(Float)
-    commission: Mapped[Optional[float]] = mapped_column(Float)
     execution_time: Mapped[Optional[datetime]] = mapped_column(DateTime)
     exchange: Mapped[Optional[str]] = mapped_column(String)
 
@@ -191,12 +192,33 @@ class HistoricalBar(Base):
 
 
 def sqlite_db_path(db_url: str) -> Optional[Path]:
-    url = make_url(db_url)
-    if not url.drivername.startswith("sqlite"):
+    try:
+        url = make_url(db_url)
+    except ArgumentError:
         return None
-    if url.database in (None, "", ":memory:"):
+    if url.drivername not in {"sqlite", "sqlite+pysqlite"}:
         return None
-    return Path(url.database)
+    try:
+        authority = (url.username, url.password, url.host, url.port)
+    except ValueError:
+        return None
+    if any(component is not None for component in authority):
+        return None
+    database = url.database
+    if database in (None, "", ":memory:"):
+        return None
+    if database.lower().startswith("file:"):
+        return None
+    if "uri" in url.query:
+        return None
+    if str(url.query.get("mode", "")).lower() == "memory":
+        return None
+    return Path(database)
+
+
+def is_persistent_sqlite_url(db_url: str) -> bool:
+    """Return whether a SQLAlchemy URL names file-backed SQLite storage."""
+    return sqlite_db_path(db_url) is not None
 
 
 def make_alembic_config(db_url: str) -> AlembicConfig:
@@ -265,7 +287,26 @@ class DataStore:
         if not db_url.startswith("sqlite"):
             raise ValueError("Only sqlite database URLs are supported.")
         self.db_url = db_url
-        self.config_path = config_path
+        raw_config_path = str(config_path)
+        canonical_config_path = Path(raw_config_path).expanduser().resolve()
+        self.config_path = str(canonical_config_path)
+        config_path_aliases = {
+            self.config_path,
+            raw_config_path,
+            str(Path(raw_config_path).expanduser()),
+        }
+        try:
+            cwd_relative_path = os.path.relpath(
+                canonical_config_path,
+                start=Path.cwd().resolve(),
+            )
+        except ValueError:
+            pass
+        else:
+            config_path_aliases.add(cwd_relative_path)
+            config_path_aliases.add(f".{os.sep}{cwd_relative_path}")
+        self._config_path_aliases = tuple(sorted(config_path_aliases))
+        self._dry_run_event_overlay: Dict[tuple[str, Optional[str]], Optional[str]] = {}
         connect_args: Dict[str, Any] = {}
         if db_url.startswith("sqlite"):
             connect_args = {"check_same_thread": False}
@@ -273,7 +314,7 @@ class DataStore:
         self.Session = sessionmaker(bind=self.engine, future=True)
         run_migrations(db_url)
         self.dry_run = dry_run
-        self.run_id = self._create_run(config_path, dry_run, config_text)
+        self.run_id = self._create_run(self.config_path, dry_run, config_text)
 
     @contextmanager
     def session_scope(self) -> Iterator[Any]:
@@ -328,6 +369,8 @@ class DataStore:
                         payload=payload_json,
                     )
                 )
+            if self.dry_run:
+                self._dry_run_event_overlay[(event_type, symbol)] = payload_json
             return True
         except Exception as exc:
             log.warning(f"Failed to record event {event_type}: {exc}")
@@ -337,19 +380,33 @@ class DataStore:
         self,
         event_type: str,
         *,
+        symbol: Optional[str] = None,
+        config_scoped: bool = True,
         raise_on_error: bool = False,
     ) -> Optional[Dict[str, Any]]:
         try:
+            overlay_key = (event_type, symbol)
+            if self.dry_run and overlay_key in self._dry_run_event_overlay:
+                payload = self._dry_run_event_overlay[overlay_key]
+                if not payload:
+                    return None
+                decoded = json.loads(payload)
+                if not isinstance(decoded, dict):
+                    raise ValueError(f"Event {event_type} payload is not an object")
+                return decoded
+
             with self.session_scope() as session:
-                event = (
+                query = (
                     session.query(Event)
                     .join(Run, Event.run_id == Run.id)
                     .filter(Event.event_type == event_type)
-                    .filter(Run.config_path == self.config_path)
                     .filter(Run.dry_run.is_(False))
-                    .order_by(Event.created_at.desc(), Event.id.desc())
-                    .first()
                 )
+                if symbol is not None:
+                    query = query.filter(Event.symbol == symbol)
+                if config_scoped:
+                    query = query.filter(Run.config_path.in_(self._config_path_aliases))
+                event = query.order_by(Event.id.desc()).first()
                 payload = event.payload if event else None
             if not payload:
                 return None
@@ -513,17 +570,13 @@ class DataStore:
                     dict(
                         run_id=self.run_id,
                         exec_id=getattr(execution, "execId", None),
+                        account=getattr(execution, "acctNumber", None),
                         order_id=getattr(execution, "orderId", None),
                         order_ref=getattr(execution, "orderRef", None),
                         symbol=getattr(contract, "symbol", None),
                         side=getattr(execution, "side", None),
                         shares=getattr(execution, "shares", None),
                         price=getattr(execution, "price", None),
-                        commission=getattr(
-                            getattr(fill, "commissionReport", None),
-                            "commission",
-                            None,
-                        ),
                         execution_time=exec_time,
                         exchange=getattr(execution, "exchange", None),
                     )
@@ -534,10 +587,10 @@ class DataStore:
                     stmt = stmt.on_conflict_do_update(
                         index_elements=["exec_id"],
                         set_={
-                            "commission": func.coalesce(
-                                stmt.excluded.commission,
-                                ExecutionRecord.commission,
-                            )
+                            "account": func.coalesce(
+                                stmt.excluded.account,
+                                ExecutionRecord.account,
+                            ),
                         },
                     )
                     session.execute(stmt)
@@ -626,11 +679,13 @@ class DataStore:
         symbols: Iterable[str],
         order_ref_prefix: str,
         start_time: datetime,
+        account: str,
     ) -> Optional[datetime]:
         with self.session_scope() as session:
             stmt = (
                 select(ExecutionRecord.execution_time)
                 .where(ExecutionRecord.execution_time >= start_time)
+                .where(ExecutionRecord.account == account)
                 .where(ExecutionRecord.order_ref.like(f"{order_ref_prefix}%"))
                 .where(ExecutionRecord.symbol.in_(list(symbols)))
                 .order_by(ExecutionRecord.execution_time.desc())
@@ -638,44 +693,6 @@ class DataStore:
             )
             result = session.execute(stmt).scalar_one_or_none()
             return result
-
-    def get_executions_for_order_refs(
-        self,
-        order_refs: Iterable[str],
-    ) -> list[Any]:
-        refs = [order_ref for order_ref in order_refs if order_ref]
-        if not refs:
-            return []
-        with self.session_scope() as session:
-            rows = (
-                session.execute(
-                    select(ExecutionRecord)
-                    .where(ExecutionRecord.order_ref.in_(refs))
-                    .order_by(
-                        ExecutionRecord.execution_time.asc(), ExecutionRecord.id.asc()
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            return [
-                SimpleNamespace(
-                    time=row.execution_time,
-                    contract=SimpleNamespace(symbol=row.symbol),
-                    execution=SimpleNamespace(
-                        execId=row.exec_id,
-                        orderId=row.order_id,
-                        orderRef=row.order_ref,
-                        side=row.side,
-                        shares=row.shares,
-                        price=row.price,
-                        time=row.execution_time,
-                        exchange=row.exchange,
-                    ),
-                    commissionReport=SimpleNamespace(commission=row.commission),
-                )
-                for row in rows
-            ]
 
 
 def _parse_bar_time(value: Any) -> Optional[datetime]:

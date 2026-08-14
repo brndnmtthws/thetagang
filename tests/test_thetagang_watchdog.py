@@ -88,12 +88,13 @@ def _run_start(monkeypatch, tmp_path, *, max_startup_retries=None, event_script=
             self.terminated = True
 
     class FakeWatchdog:
-        def __init__(self, *_args, **_kwargs):
+        def __init__(self, *_args, **kwargs):
             self.started = False
             self.stopped = False
             self.startedEvent = DummyEvent()
             self.stoppedEvent = DummyEvent()
             captured["watchdog"] = self
+            captured["watchdog_kwargs"] = kwargs
 
         def start(self):
             assert asyncio.get_running_loop() is loop
@@ -168,6 +169,7 @@ def test_watchdog_runs_inside_task(monkeypatch, tmp_path):
     assert captured["watchdog"].stopped is True
     assert captured["ibc"].terminated is True
     assert captured["ibc"].twsVersion == 1045
+    assert captured["watchdog_kwargs"]["account"] == "DU1234567"
 
 
 def test_consecutive_startup_failures_give_up(monkeypatch, tmp_path):

@@ -13,11 +13,11 @@ from ib_async import (
     Ticker,
     Trade,
 )
+from ib_async.wrapper import RequestError
 
 from thetagang import log
 from thetagang.ibkr import (
     IBKR,
-    IBKRRequestTimeout,
     RequiredFieldValidationError,
     TickerField,
 )
@@ -90,6 +90,47 @@ async def test_get_ticker_for_contract_success(ibkr, mock_ib, mock_ticker, mocke
     assert result == mock_ticker
     # Check that the wait was attempted (indirectly, via the handler logic patch)
     ibkr.__market_data_streaming_handler__.assert_awaited_once()
+
+
+async def test_cached_net_liquidation_materializes_account_values(ibkr, mock_ib):
+    value = AccountValue("ACC123", "NetLiquidation", "100000", "USD", "")
+    mock_ib.accountValues.return_value = [value]
+
+    assert ibkr.cached_net_liquidation("ACC123") == 100_000.0
+    mock_ib.accountValues.assert_called_once_with("ACC123")
+    mock_ib.accountSummaryAsync.assert_not_called()
+    mock_ib.reqPositionsAsync.assert_not_called()
+
+
+async def test_cached_account_value_prefers_finite_base_value(ibkr, mock_ib):
+    mock_ib.accountValues.return_value = [
+        AccountValue("ACC123", "TotalCashValue", "900", "USD", ""),
+        AccountValue("ACC123", "TotalCashValue", "1000", "BASE", ""),
+        AccountValue("ACC123", "TotalCashValue", "nan", "BASE", ""),
+    ]
+
+    assert ibkr.cached_account_value("ACC123", "TotalCashValue") == 1000.0
+    mock_ib.accountValues.assert_called_once_with("ACC123")
+    mock_ib.accountSummaryAsync.assert_not_called()
+
+
+async def test_qualify_contracts_isolates_request_errors(ibkr, mock_ib):
+    invalid = Stock("INVALID", "SMART", "USD")
+    first = Stock("FIRST", "SMART", "USD", conId=123)
+    unknown = Stock("UNKNOWN", "SMART", "USD")
+    second = Stock("SECOND", "SMART", "USD", conId=456)
+    mock_ib.qualifyContractsAsync.side_effect = [
+        RequestError(1, 200, "No security definition"),
+        [first],
+        [None],
+        [second],
+    ]
+
+    assert await ibkr.qualify_contracts(invalid, first, unknown, second) == [
+        first,
+        second,
+    ]
+    assert mock_ib.qualifyContractsAsync.call_count == 4
 
 
 async def test_get_ticker_for_contract_required_timeout(
@@ -203,6 +244,21 @@ async def test_get_ticker_for_stock_falls_back_to_index(ibkr, mock_ticker, mocke
     assert isinstance(called_contract, Index)
     assert called_contract.symbol == "SPX"
     assert called_contract.conId == 123
+
+
+async def test_request_executions_records_returned_fills(mock_ib, mocker):
+    fills = [SimpleNamespace(execution=SimpleNamespace(execId="exec-1"))]
+    mock_ib.reqExecutionsAsync = mocker.AsyncMock(return_value=fills)
+    data_store = mocker.Mock()
+    ibkr = IBKR(
+        ib=mock_ib,
+        api_response_wait_time=1,
+        default_order_exchange="SMART",
+        data_store=data_store,
+    )
+
+    assert await ibkr.request_executions() == fills
+    data_store.record_executions.assert_called_once_with(fills)
 
 
 async def test_market_data_streaming_handler_requires_conid(ibkr, mock_ib, mocker):
@@ -339,174 +395,15 @@ async def test_wait_for_orders_complete_timeout(ibkr, mock_trade, mocker):
     assert "PASS (OrderId: 1)" not in mock_log_info.call_args[0][0]
 
 
-async def test_refresh_account_updates_uses_timeout_wrapper(ibkr, mocker):
-    """refresh_account_updates delegates to _await_with_timeout."""
-    req_future: asyncio.Future = asyncio.get_running_loop().create_future()
-    req_future.set_result(None)
-    ibkr.ib.reqAccountUpdatesAsync = mocker.Mock(return_value=req_future)
-    mocker.patch.object(ibkr, "_account_snapshot_ready", side_effect=[False, True])
-    await_wrapper = mocker.patch.object(
-        ibkr, "_await_with_timeout", new=mocker.AsyncMock(return_value=None)
+async def test_cancel_order_is_blocked_in_dry_run(mock_ib):
+    ibkr = IBKR(
+        ib=mock_ib,
+        api_response_wait_time=1,
+        default_order_exchange="SMART",
+        dry_run=True,
     )
+    order = Order()
 
-    await ibkr.refresh_account_updates("ACC123")
+    ibkr.cancel_order(order)
 
-    ibkr.ib.reqAccountUpdatesAsync.assert_called_once_with("ACC123")
-    assert await_wrapper.await_count == 1
-    await_args = await_wrapper.await_args
-    assert await_args.args[0] is req_future
-    assert await_args.args[1] == "account updates"
-
-
-async def test_refresh_positions_uses_timeout_wrapper(ibkr, mocker):
-    """refresh_positions delegates to _await_with_timeout."""
-    req_future: asyncio.Future = asyncio.get_running_loop().create_future()
-    req_future.set_result([])
-    ibkr.ib.reqPositionsAsync = mocker.Mock(return_value=req_future)
-    await_wrapper = mocker.patch.object(
-        ibkr, "_await_with_timeout", new=mocker.AsyncMock(return_value=[])
-    )
-
-    result = await ibkr.refresh_positions()
-
-    assert result == []
-    ibkr.ib.reqPositionsAsync.assert_called_once_with()
-    assert await_wrapper.await_count == 1
-    await_args = await_wrapper.await_args
-    assert await_args.args[0] is req_future
-    assert await_args.args[1] == "positions snapshot"
-
-
-async def test_refresh_account_updates_propagates_timeout(ibkr, mocker):
-    """refresh_account_updates re-raises IBKRRequestTimeout."""
-    ibkr.ib.reqAccountUpdatesAsync = mocker.Mock(return_value=object())
-    mocker.patch.object(
-        ibkr,
-        "_await_with_timeout",
-        new=mocker.AsyncMock(
-            side_effect=IBKRRequestTimeout(
-                "account updates", ibkr.api_response_wait_time
-            )
-        ),
-    )
-
-    with pytest.raises(IBKRRequestTimeout):
-        await ibkr.refresh_account_updates("ACC123")
-
-
-async def test_refresh_account_updates_skips_when_snapshot_ready(ibkr, mocker):
-    """No request issued when account snapshot already populated."""
-    mocker.patch.object(ibkr, "_account_snapshot_ready", return_value=True)
-
-    await ibkr.refresh_account_updates("ACC123")
-
-    ibkr.ib.reqAccountUpdatesAsync.assert_not_called()
-
-
-async def test_refresh_account_updates_allows_timeout_if_data_ready(ibkr, mocker):
-    """A timeout is ignored when snapshot becomes ready while waiting."""
-    mocker.patch.object(ibkr, "_account_snapshot_ready", side_effect=[False, True])
-    ibkr.ib.reqAccountUpdatesAsync = mocker.Mock(return_value=object())
-    mocker.patch.object(
-        ibkr,
-        "_await_with_timeout",
-        new=mocker.AsyncMock(
-            side_effect=IBKRRequestTimeout(
-                "account updates", ibkr.api_response_wait_time
-            )
-        ),
-    )
-
-    await ibkr.refresh_account_updates("ACC123")
-
-    assert ibkr._account_snapshot_ready.call_count == 2
-
-
-async def test_refresh_account_updates_raises_when_snapshot_never_populates(
-    ibkr, mocker
-):
-    """If data never arrives, an IBKRRequestTimeout is raised."""
-    mocker.patch.object(ibkr, "_account_snapshot_ready", return_value=False)
-    ibkr.ib.reqAccountUpdatesAsync = mocker.Mock(return_value=object())
-    mocker.patch.object(
-        ibkr, "_await_with_timeout", new=mocker.AsyncMock(return_value=None)
-    )
-
-    with pytest.raises(IBKRRequestTimeout) as excinfo:
-        await ibkr.refresh_account_updates("ACC123")
-
-    assert "no usable account values" in str(excinfo.value)
-
-
-async def test_account_snapshot_ready_checks_for_non_zero_account_values(ibkr, mock_ib):
-    """Helper returns True only when tracked tags have non-zero data."""
-    mock_ib.wrapper.accountValues = {
-        ("ACC123", "NetLiquidation", "USD", ""): AccountValue(
-            "ACC123", "NetLiquidation", "0", "USD", ""
-        )
-    }
-
-    assert ibkr._account_snapshot_ready("ACC123") is False
-
-    mock_ib.wrapper.accountValues = {
-        ("ACC123", "NetLiquidation", "USD", ""): AccountValue(
-            "ACC123", "NetLiquidation", "100000", "USD", ""
-        )
-    }
-
-    assert ibkr._account_snapshot_ready("ACC123") is True
-
-
-async def test_account_snapshot_ready_ignores_other_accounts_and_tags(ibkr, mock_ib):
-    """Values for other accounts or untracked tags should not mark snapshot ready."""
-    mock_ib.wrapper.accountValues = {
-        ("OTHER", "NetLiquidation", "USD", ""): AccountValue(
-            "OTHER", "NetLiquidation", "100000", "USD", ""
-        ),
-        ("ACC123", "GrossPositionValue", "USD", ""): AccountValue(
-            "ACC123", "GrossPositionValue", "5000", "USD", ""
-        ),
-    }
-
-    assert ibkr._account_snapshot_ready("ACC123") is False
-
-
-async def test_account_snapshot_ready_handles_missing_wrapper_or_values(ibkr, mock_ib):
-    """Return False when wrapper or accountValues are absent."""
-    mock_ib.wrapper.accountValues = {}
-    assert ibkr._account_snapshot_ready("ACC123") is False
-
-    mock_ib.wrapper = None
-    assert ibkr._account_snapshot_ready("ACC123") is False
-
-
-async def test_account_value_has_data_true_for_non_zero_numeric(ibkr):
-    """Helper treats any non-zero numeric string as usable data."""
-    value = AccountValue("ACC123", "NetLiquidation", "123.45", "USD", "")
-    assert ibkr._account_value_has_data(value) is True
-
-
-@pytest.mark.parametrize("raw_value", ["0", "0.0", "", None, "abc"])
-async def test_account_value_has_data_false_for_invalid_inputs(ibkr, raw_value):
-    """Helper rejects zero, empty, None, and non-numeric values."""
-    value = SimpleNamespace(value=raw_value)
-
-    assert ibkr._account_value_has_data(value) is False
-
-
-async def test_await_with_timeout_wraps_timeout_error(ibkr, mocker):
-    """_await_with_timeout raises IBKRRequestTimeout on asyncio timeout."""
-
-    async def dummy() -> None:
-        return None
-
-    async def fake_wait_for(awaitable, timeout):
-        await awaitable
-        raise asyncio.TimeoutError()
-
-    mocker.patch("thetagang.ibkr.asyncio.wait_for", new=fake_wait_for)
-
-    with pytest.raises(IBKRRequestTimeout) as excinfo:
-        await ibkr._await_with_timeout(dummy(), "positions snapshot")
-
-    assert "positions snapshot" in str(excinfo.value)
+    mock_ib.cancelOrder.assert_not_called()

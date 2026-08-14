@@ -32,6 +32,7 @@ from thetagang.config_models import (
     WatchdogConfig,
     WriteWhenConfig,
 )
+from thetagang.db import is_persistent_sqlite_url
 from thetagang.fmt import dfmt, ffmt, pfmt
 
 STAGE_KIND_BY_ID: dict[str, str] = {
@@ -477,6 +478,19 @@ class Config(BaseModel, DisplayMixin):
     @model_validator(mode="after")
     def validate_tail_hedge(self) -> "Config":
         tail_hedge = self.strategies.tail_hedge
+        if not tail_hedge.enabled and not tail_hedge.targets:
+            return self
+        if not self.runtime.database.enabled:
+            raise ValueError(
+                "tail_hedge targets require runtime.database.enabled = true"
+            )
+        database_url = self.runtime.database.url
+        if database_url and not is_persistent_sqlite_url(database_url):
+            raise ValueError(
+                "tail_hedge requires a supported file-backed SQLite URL such as "
+                "sqlite:///path/to/state.db; in-memory, URI, authority, "
+                "non-SQLite, and unrecognized SQLite-driver URLs are unsupported"
+            )
         if not tail_hedge.enabled:
             return self
         missing_symbols = [
@@ -489,8 +503,6 @@ class Config(BaseModel, DisplayMixin):
                 "tail_hedge target symbols must be in portfolio.symbols: "
                 + ", ".join(missing_symbols)
             )
-        if not self.runtime.database.enabled:
-            raise ValueError("tail_hedge requires runtime.database.enabled = true")
         regime_rebalance = self.strategies.regime_rebalance
         if regime_rebalance.enabled and regime_rebalance.shares_only:
             raise ValueError("tail_hedge cannot be enabled when shares_only is true")

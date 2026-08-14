@@ -319,7 +319,7 @@ class TailHedgeTargetConfig(BaseModel, DisplayMixin):
         return self
 
     @property
-    def tranche_interval_days(self) -> int:
+    def minimum_tranche_spacing_days(self) -> int:
         return max(1, 365 // self.annual_tranches)
 
     def add_to_table(self, table: Table, section: str = "") -> None:
@@ -328,7 +328,10 @@ class TailHedgeTargetConfig(BaseModel, DisplayMixin):
         table.add_row("", "Budget weight", "=", pfmt(self.budget_weight))
         table.add_row("", "Annual tranches", "=", f"{self.annual_tranches}")
         table.add_row(
-            "", "Minimum days between entries", "=", f"{self.tranche_interval_days}"
+            "",
+            "Minimum entry/expiry days",
+            "=",
+            f"{self.minimum_tranche_spacing_days}",
         )
         table.add_row("", "Entry gate", "=", self.entry_gate)
         if self.entry_gate == "vix":

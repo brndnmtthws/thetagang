@@ -129,7 +129,11 @@ def start(
         ib.RaiseRequestErrors = ibc_config.RaiseRequestErrors
 
         watchdog = Watchdog(
-            ibc, ib, probeContract=probeContract, **watchdog_config.to_dict()
+            ibc,
+            ib,
+            account=config.runtime.account.number,
+            probeContract=probeContract,
+            **watchdog_config.to_dict(),
         )
 
         max_retries = watchdog_config.maxStartupRetries
