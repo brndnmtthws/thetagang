@@ -117,6 +117,7 @@ class TailHedgeEngine:
             else None
         )
         self._cached_vix: Optional[float] = None
+        self._run_outcomes: dict[str, str] = {}
 
     async def manage(
         self,
@@ -132,6 +133,7 @@ class TailHedgeEngine:
 
         log.notice("Evaluating tail-hedge long-put program...")
         self._cached_vix = None
+        self._run_outcomes = {}
         try:
             await self._manage_program(
                 portfolio_positions,
@@ -197,6 +199,21 @@ class TailHedgeEngine:
                 if cohort.has_pending_recovery
             }
         )
+        entry_blockers: dict[str, set[str]] = {}
+        for trade in close_trades:
+            entry_blockers.setdefault(trade.contract.symbol, set()).add(
+                "working_tail_close"
+            )
+        for symbol in working_stock_order_symbols(
+            open_trades,
+            self.config.runtime.account.number,
+        ):
+            entry_blockers.setdefault(symbol, set()).add("working_stock_order")
+        for symbol in self._same_run_stock_trade_symbols():
+            entry_blockers.setdefault(symbol, set()).add("same_run_stock_order")
+        for cohort in state.open_cohorts:
+            if cohort.has_pending_recovery:
+                entry_blockers.setdefault(cohort.symbol, set()).add("pending_recovery")
         for cohort in state.open_cohorts:
             con_id = cohort.con_id
             symbol = cohort.symbol
@@ -207,6 +224,12 @@ class TailHedgeEngine:
                 symbol
             ):
                 blocked_entry_symbols.add(symbol)
+                blocker = (
+                    "working_tail_close"
+                    if con_id in pending_close_con_ids
+                    else "trading_disabled"
+                )
+                entry_blockers.setdefault(symbol, set()).add(blocker)
                 continue
             try:
                 close_enqueued = await self._manage_existing_put(
@@ -221,6 +244,7 @@ class TailHedgeEngine:
             else:
                 if close_enqueued:
                     blocked_entry_symbols.add(symbol)
+                    entry_blockers.setdefault(symbol, set()).add("close_enqueued")
 
         occupied_con_ids = set(self._account_put_positions_by_con_id())
         occupied_con_ids |= self._queued_put_con_ids()
@@ -235,6 +259,11 @@ class TailHedgeEngine:
             if symbol in blocked_entry_symbols or symbol in working_entry_symbols:
                 if symbol in working_entry_symbols:
                     self._record_evaluation("working_order_present", symbol=symbol)
+                else:
+                    blockers = ",".join(
+                        sorted(entry_blockers.get(symbol, {"tail_action_in_progress"}))
+                    )
+                    self._run_outcomes[symbol] = f"entry_blocked:{blockers}"
                 continue
             try:
                 await self._evaluate_entry(
@@ -246,6 +275,7 @@ class TailHedgeEngine:
                 )
             except TAIL_HEDGE_ERRORS as exc:
                 self._record_error(symbol, exc)
+        self._log_program_summary(state, net_liquidation=net_liquidation)
 
     def _reconcile_state(
         self,
@@ -318,8 +348,16 @@ class TailHedgeEngine:
                 return False
             if confirmed_fill:
                 cohort.close()
+                log.notice(
+                    f"{cohort.symbol}: Reconciled tail entry {cohort.con_id} as "
+                    "closed because no live position remains."
+                )
             else:
                 state.cohorts.remove(cohort)
+                log.info(
+                    f"{cohort.symbol}: Tail entry {cohort.con_id} ended without a "
+                    "fill; released its cadence and budget reservation."
+                )
             return True
 
         progress = self._reduction_progress(cohort, account_trades)
@@ -348,8 +386,17 @@ class TailHedgeEngine:
             )
             if progress.is_filled and math.floor(progress.filled) == 0:
                 confirmed_quantity = cohort.pending_recovery_quantity or 0
-            cohort.apply_recovery(confirmed_quantity)
+            credited = cohort.apply_recovery(confirmed_quantity)
+            if credited > 0:
+                log.notice(
+                    f"{cohort.symbol}: Credited {dfmt(credited)} of recovered tail "
+                    f"premium for conId {cohort.con_id}."
+                )
         cohort.close()
+        log.notice(
+            f"{cohort.symbol}: Closed tail cohort for conId {cohort.con_id}; "
+            "the position is no longer present."
+        )
         return True
 
     def _reconcile_live_position(
@@ -395,9 +442,15 @@ class TailHedgeEngine:
                 2,
             )
             cohort.estimated_cost = min(cohort.estimated_cost, settled_cost)
+            log.notice(
+                f"{cohort.symbol}: Tail entry is active for conId {cohort.con_id}: "
+                f"{live_quantity} contract(s), estimated cost "
+                f"{dfmt(cohort.estimated_cost)}."
+            )
             return True
 
         changed = live_quantity != cohort.quantity
+        recovery_credited = 0.0
         if live_quantity > cohort.quantity:
             settled_cost = round(
                 live_quantity
@@ -407,7 +460,13 @@ class TailHedgeEngine:
             )
             cohort.estimated_cost = max(cohort.estimated_cost, settled_cost)
         if live_quantity < cohort.quantity and cohort.has_pending_recovery:
-            cohort.apply_recovery(cohort.quantity - live_quantity)
+            recovery_credited = cohort.apply_recovery(cohort.quantity - live_quantity)
+            if recovery_credited > 0:
+                log.notice(
+                    f"{cohort.symbol}: Credited {dfmt(recovery_credited)} of "
+                    "recovered tail "
+                    f"premium for conId {cohort.con_id}."
+                )
         cohort.quantity = live_quantity
         if not cohort.has_pending_recovery:
             return changed
@@ -433,6 +492,11 @@ class TailHedgeEngine:
         if keep_recovery:
             return changed
         cohort.clear_recovery()
+        if recovery_credited <= 0:
+            log.info(
+                f"{cohort.symbol}: Tail reduction for conId {cohort.con_id} ended "
+                "without an observed position change; it can be retried."
+            )
         return True
 
     @staticmethod
@@ -575,6 +639,11 @@ class TailHedgeEngine:
             action=action,
             limit_price=limit_price,
             close_reason=close_reason,
+        )
+        log.notice(
+            f"{symbol}: Enqueued tail close for {quantity} contract(s), "
+            f"conId {position.contract.conId}, at {dfmt(limit_price)}; "
+            f"reason={close_reason}."
         )
 
     async def _evaluate_entry(
@@ -1093,6 +1162,8 @@ class TailHedgeEngine:
         symbol: Optional[str] = None,
         **payload: Any,
     ) -> None:
+        if symbol is not None:
+            self._run_outcomes[symbol] = outcome
         if self.data_store is None:
             return
         self.data_store.record_event(
@@ -1107,6 +1178,61 @@ class TailHedgeEngine:
             },
             symbol=symbol,
         )
+
+    def _log_program_summary(
+        self,
+        state: TailHedgeState,
+        *,
+        net_liquidation: float,
+    ) -> None:
+        now = self._now()
+        recent_ids = {cohort.entry_id for cohort in state.recent_cohorts(now)}
+        budget_cohorts = [
+            cohort
+            for cohort in state.cohorts
+            if cohort.entry_id in recent_ids or cohort.is_open
+        ]
+        global_budget = net_liquidation * float(
+            self.config.strategies.tail_hedge.annual_budget
+        )
+        global_spent = sum(cohort.net_charge for cohort in budget_cohorts)
+
+        for target in self.config.strategies.tail_hedge.targets:
+            symbol_cohorts = [
+                cohort
+                for cohort in state.open_cohorts
+                if cohort.symbol == target.symbol
+            ]
+            pending_entries = sum(
+                cohort.status == "entry_enqueued" for cohort in symbol_cohorts
+            )
+            target_spent = sum(
+                cohort.net_charge
+                for cohort in budget_cohorts
+                if cohort.symbol == target.symbol
+            )
+            target_budget = global_budget * target.budget_weight
+            entered_at = [
+                cohort.entered_at
+                for cohort in state.cohorts
+                if cohort.symbol == target.symbol
+            ]
+            next_entry = "now"
+            if entered_at:
+                eligible_at = max(entered_at) + timedelta(
+                    days=target.minimum_entry_spacing_days
+                )
+                if eligible_at > now:
+                    next_entry = eligible_at.date().isoformat()
+            outcome = self._run_outcomes.get(target.symbol, "no_action")
+            log.info(
+                f"{target.symbol}: Tail hedge summary: outcome={outcome}; "
+                f"open_cohorts={len(symbol_cohorts)} "
+                f"(entry_pending={pending_entries}); "
+                f"annual_net_premium={dfmt(target_spent)}/{dfmt(target_budget)} "
+                f"target, {dfmt(global_spent)}/{dfmt(global_budget)} global; "
+                f"next_entry={next_entry}."
+            )
 
     def _require_state_store(self) -> TailHedgeStateStore:
         if self.state_store is None:
