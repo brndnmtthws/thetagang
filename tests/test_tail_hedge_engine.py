@@ -937,6 +937,28 @@ async def test_due_and_removed_puts_are_closed(mocker, removed, dte, reason):
 
 
 @pytest.mark.asyncio
+async def test_required_close_allows_zero_estimated_net_proceeds(mocker):
+    engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    engine.config.runtime.orders = SimpleNamespace(estimated_fee_per_contract=1.0)
+    contract = _put_contract(dte=30)
+    data_store.load_tail_hedge_entries.return_value = _state_rows(
+        _state(_entry(contract))
+    )
+    ibkr.get_ticker_for_contract = AsyncMock(
+        return_value=_put_ticker(contract, bid=0.01, ask=0.01)
+    )
+
+    await _manage(engine, {"QQQ": [_stock_position(), _put_position(contract)]})
+
+    pending = _saved_states(data_store)[-1].open_cohorts[0]
+    assert pending.pending_recovery_per_contract == 0.0
+    order_ops.enqueue_order.assert_called_once()
+    event = _events(data_store, TAIL_HEDGE_EVALUATION_EVENT)[-1]
+    assert event["estimated_fee_per_contract"] == 1.0
+    assert event["estimated_net_proceeds_per_contract"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_exit_recovery_waits_for_observed_reduction_and_never_overcredits(
     mocker,
 ):
@@ -1359,7 +1381,10 @@ async def test_put_selection_is_deterministic_and_allows_same_expiry(mocker):
     )
 
     assert quote.dte == 180
-    assert contract.strike == 60.0
+    assert contract.strike == 65.0
+    assert quote.catastrophe_drawdowns == (0.40, 0.50, 0.60)
+    assert quote.catastrophe_payouts == (500.0, 1500.0, 2500.0)
+    assert quote.catastrophe_payout_multiple == 30.0
 
     same_expiry_quote, same_expiry_contract = await engine._find_put(
         _target(),
@@ -1368,7 +1393,41 @@ async def test_put_selection_is_deterministic_and_allows_same_expiry(mocker):
 
     assert same_expiry_quote.expiration == quote.expiration
     assert same_expiry_contract.conId != contract.conId
-    assert same_expiry_contract.strike == 59.0
+    assert same_expiry_contract.strike == 60.0
+
+
+@pytest.mark.asyncio
+async def test_entry_budget_includes_broker_fee_and_logs_large_order(mocker):
+    engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    engine.config.runtime.orders = SimpleNamespace(estimated_fee_per_contract=1.0)
+    engine.config.strategies.tail_hedge.targets = [_target(minimum_open_interest=1)]
+    contract = _put_contract()
+    quote = engine._build_quote(
+        100.0,
+        _put_ticker(contract, bid=0.01, ask=0.01, open_interest=20),
+    )
+    engine._find_put = AsyncMock(return_value=(quote, contract))
+    ibkr.get_ticker_for_contract = AsyncMock(
+        return_value=SimpleNamespace(marketPrice=lambda: 15.0)
+    )
+
+    await _manage(engine, {"QQQ": [_stock_position()]})
+
+    order_ops.create_limit_order.assert_called_once_with(
+        action="BUY",
+        quantity=41,
+        limit_price=0.01,
+        use_default_algo=False,
+        order_ref=TAIL_HEDGE_ENTRY_ORDER_REF,
+        transmit=True,
+    )
+    state = _saved_states(data_store)[-1]
+    assert state.open_cohorts[0].estimated_cost == 82.0
+    event = _events(data_store, TAIL_HEDGE_EVALUATION_EVENT)[-1]
+    assert event["premium_cost"] == 41.0
+    assert event["estimated_fees"] == 41.0
+    assert event["quantity_to_open_interest"] == pytest.approx(2.05)
+    assert event["order_exceeds_open_interest"] is True
 
 
 @pytest.mark.asyncio

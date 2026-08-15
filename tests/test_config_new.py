@@ -60,6 +60,30 @@ def test_tail_hedge_strategy_compiles_to_its_post_stage() -> None:
     assert target.min_dte == 120
     assert target.max_dte == 240
     assert target.exit_dte == 30
+    assert target.catastrophe_drawdowns == [0.40, 0.50, 0.60]
+    assert config.runtime.orders.estimated_fee_per_contract == 1.0
+
+
+@pytest.mark.parametrize(
+    "drawdowns",
+    [[0.50, 0.40], [0.40, 0.40], [0.0, 0.50], [0.50, 1.0]],
+)
+def test_tail_hedge_catastrophe_drawdowns_are_ordered_fractions(
+    drawdowns,
+) -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [
+            {
+                **_tail_target(),
+                "catastrophe_drawdowns": drawdowns,
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="catastrophe_drawdowns"):
+        Config(**data)
 
 
 def test_enabled_tail_hedge_requires_sqlite_state() -> None:

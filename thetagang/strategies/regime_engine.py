@@ -41,6 +41,8 @@ TRADING_DAYS_PER_YEAR = 252
 REGIME_HISTORY_TIMEFRAME = "1 day"
 REGIME_HISTORY_MAX_ATTEMPTS = 3
 REGIME_HISTORY_RETRY_DELAY_SECONDS = 0.25
+TAIL_HEDGE_HARVEST_EVENT = "tail_hedge_harvest"
+TAIL_HEDGE_HARVEST_SCHEMA_VERSION = 1
 
 
 class RegimeHistoryValidationError(ValueError):
@@ -101,7 +103,10 @@ class HarvestPut:
     expiration: str
     quantity: int
     limit_price: float
-    proceeds_per_contract: float
+    gross_proceeds_per_contract: float
+    estimated_fee_per_contract: float
+    net_proceeds_per_contract: float
+    cost_basis_per_contract: float
 
 
 def _ffmt_or_dash(value: Optional[float], precision: int = 2) -> str:
@@ -173,6 +178,38 @@ class RegimeRebalanceEngine:
         if self._set_reserved_cash_for_post_management is None:
             return
         self._set_reserved_cash_for_post_management(max(0.0, amount))
+
+    def _estimated_tail_fee_per_contract(self) -> float:
+        orders = getattr(self.config.runtime, "orders", None)
+        return float(
+            getattr(
+                orders,
+                "estimated_fee_per_contract",
+                0.0,
+            )
+        )
+
+    def _record_tail_harvest(
+        self,
+        outcome: str,
+        *,
+        symbol: str,
+        **payload: Any,
+    ) -> None:
+        if self.data_store is None:
+            return
+        self.data_store.record_event(
+            TAIL_HEDGE_HARVEST_EVENT,
+            {
+                "schema_version": TAIL_HEDGE_HARVEST_SCHEMA_VERSION,
+                "account": self.config.runtime.account.number,
+                "evaluated_at": self._now(),
+                "symbol": symbol,
+                "outcome": outcome,
+                **payload,
+            },
+            symbol=symbol,
+        )
 
     def _configured_tail_harvest_targets(self) -> set[str]:
         if self._tail_state_store is None or not self._tail_hedge_stage_enabled():
@@ -471,14 +508,36 @@ class RegimeRebalanceEngine:
                 average_cost = float(getattr(position, "averageCost", 0.0) or 0.0)
             except (TypeError, ValueError):
                 average_cost = 0.0
+            configured_entry_basis = (
+                cohort.entry_limit_price * multiplier
+                + self._estimated_tail_fee_per_contract()
+            )
             if not math.isfinite(average_cost) or average_cost <= 0:
-                average_cost = cohort.entry_limit_price * multiplier
-            proceeds = limit_price * multiplier
+                average_cost = configured_entry_basis
+            else:
+                average_cost = max(average_cost, configured_entry_basis)
+            gross_proceeds = limit_price * multiplier
+            estimated_fee = self._estimated_tail_fee_per_contract()
+            net_proceeds = max(0.0, gross_proceeds - estimated_fee)
             if (
                 not math.isfinite(average_cost)
                 or average_cost <= 0
-                or proceeds <= average_cost
+                or net_proceeds <= average_cost
             ):
+                self._record_tail_harvest(
+                    "candidate_not_net_profitable",
+                    symbol=symbol,
+                    entry_id=cohort.entry_id,
+                    con_id=con_id,
+                    gross_proceeds_per_contract=gross_proceeds,
+                    estimated_fee_per_contract=estimated_fee,
+                    net_proceeds_per_contract=net_proceeds,
+                    cost_basis_per_contract=average_cost,
+                )
+                log.info(
+                    f"{symbol}: Tail put conId={con_id} is not profitable after "
+                    "its estimated sell fee."
+                )
                 continue
 
             contract.exchange = self.order_ops.get_order_exchange()
@@ -489,7 +548,10 @@ class RegimeRebalanceEngine:
                     expiration=cohort.expiration,
                     quantity=quantity,
                     limit_price=limit_price,
-                    proceeds_per_contract=proceeds,
+                    gross_proceeds_per_contract=gross_proceeds,
+                    estimated_fee_per_contract=estimated_fee,
+                    net_proceeds_per_contract=net_proceeds,
+                    cost_basis_per_contract=average_cost,
                 )
             )
 
@@ -497,7 +559,7 @@ class RegimeRebalanceEngine:
             candidates,
             key=lambda candidate: (
                 candidate.expiration,
-                -candidate.proceeds_per_contract,
+                -candidate.net_proceeds_per_contract,
                 candidate.contract.conId,
             ),
         )
@@ -520,17 +582,25 @@ class RegimeRebalanceEngine:
             (
                 item
                 for item in candidates
-                if math.floor(item.quantity * item.proceeds_per_contract / stock_price)
+                if math.floor(
+                    item.quantity * item.net_proceeds_per_contract / stock_price
+                )
                 > 0
             ),
             None,
         )
         if candidate is None or deferred_shares <= 0:
+            self._record_tail_harvest(
+                "no_eligible_cohort",
+                symbol=symbol,
+                deferred_shares=deferred_shares,
+                stock_price=stock_price,
+            )
             return False
 
         # Monetize one useful tranche, shortest expiration first. A smaller
         # earlier tranche remains invested rather than blocking the ladder.
-        total_proceeds = candidate.quantity * candidate.proceeds_per_contract
+        total_proceeds = candidate.quantity * candidate.net_proceeds_per_contract
         fundable_shares = min(
             deferred_shares,
             math.floor(total_proceeds / stock_price),
@@ -538,11 +608,14 @@ class RegimeRebalanceEngine:
         required_proceeds = fundable_shares * stock_price
         quantity = min(
             candidate.quantity,
-            math.ceil(required_proceeds / candidate.proceeds_per_contract),
+            math.ceil(required_proceeds / candidate.net_proceeds_per_contract),
         )
-        estimated_proceeds = quantity * candidate.proceeds_per_contract
-        if estimated_proceeds < required_proceeds:
+        estimated_net_proceeds = quantity * candidate.net_proceeds_per_contract
+        if estimated_net_proceeds < required_proceeds:
             return False
+        estimated_gross_proceeds = quantity * candidate.gross_proceeds_per_contract
+        estimated_fees = quantity * candidate.estimated_fee_per_contract
+        excess_proceeds = estimated_net_proceeds - required_proceeds
 
         con_id = candidate.contract.conId
         if self._tail_state_store is None:
@@ -562,7 +635,7 @@ class RegimeRebalanceEngine:
         state_cohort.quantity = min(state_cohort.quantity, candidate.quantity)
         state_cohort.begin_recovery(
             quantity=quantity,
-            proceeds_per_contract=round(candidate.proceeds_per_contract, 2),
+            proceeds_per_contract=round(candidate.net_proceeds_per_contract, 2),
             enqueued_at=self._now(),
         )
         try:
@@ -586,10 +659,29 @@ class RegimeRebalanceEngine:
             transmit=True,
         )
         self.order_ops.enqueue_order(candidate.contract, order)
+        self._record_tail_harvest(
+            "harvest_enqueued",
+            symbol=symbol,
+            entry_id=candidate.entry_id,
+            con_id=con_id,
+            expiration=candidate.expiration,
+            quantity=quantity,
+            limit_price=candidate.limit_price,
+            cost_basis_per_contract=candidate.cost_basis_per_contract,
+            gross_proceeds=estimated_gross_proceeds,
+            estimated_fees=estimated_fees,
+            net_proceeds=estimated_net_proceeds,
+            required_proceeds=required_proceeds,
+            excess_proceeds=excess_proceeds,
+            stock_price=stock_price,
+            deferred_shares=deferred_shares,
+            fundable_shares=fundable_shares,
+        )
         log.notice(
             f"{symbol}: Harvesting {quantity} profitable tail put(s) from one "
-            f"tranche for about {dfmt(estimated_proceeds)}; "
-            f"the fill can fund about {fundable_shares} deferred share(s)."
+            f"tranche for about {dfmt(estimated_net_proceeds)} net of estimated "
+            f"fees; excess over this rebalance slice={dfmt(excess_proceeds)}, "
+            f"fundable deferred shares={fundable_shares}."
         )
         return True
 
@@ -633,7 +725,11 @@ class RegimeRebalanceEngine:
             return orders
 
         owned_con_ids = {cohort.con_id for cohort in cohorts}
-        blocked_symbols = self._tail_sale_in_progress_symbols(owned_con_ids)
+        working_sale_symbols = self._tail_sale_in_progress_symbols(owned_con_ids)
+        pending_recovery_symbols = {
+            cohort.symbol for cohort in cohorts if cohort.has_pending_recovery
+        }
+        blocked_symbols = working_sale_symbols | pending_recovery_symbols
         summaries = {str(item["symbol"]): item for item in regime_summary}
         eligible_buys = {
             symbol: (quantity, quantity * market_prices[symbol])
@@ -701,9 +797,27 @@ class RegimeRebalanceEngine:
                 continue
             if symbol in blocked_symbols:
                 # Do not spend estimated proceeds from a harvest that is still
-                # working at IBKR. Keep only the ordinary-funded stock slice;
-                # a later run will see either actual cash or an expired order.
+                # working or awaiting reconciliation. Keep only the
+                # ordinary-funded stock slice; a later invocation starts from a
+                # newly synchronized broker snapshot.
                 harvest_pending = True
+                reason = (
+                    "pending_recovery"
+                    if symbol in pending_recovery_symbols
+                    else "working_tail_sale"
+                )
+                self._record_tail_harvest(
+                    "harvest_deferred",
+                    symbol=symbol,
+                    reason=reason,
+                    deferred_shares=allocated_deferred_shares,
+                    funding_shortfall=funding_shortfall,
+                    live_cash=live_cash,
+                )
+                log.info(
+                    f"{symbol}: Deferring {allocated_deferred_shares} stock "
+                    f"share(s); tail harvest blocked by {reason}."
+                )
             else:
                 harvest_pending = await self._enqueue_tail_harvest(
                     symbol=symbol,

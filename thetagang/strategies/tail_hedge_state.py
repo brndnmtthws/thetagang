@@ -250,7 +250,7 @@ class TailHedgeCohort:
             or quantity > self.quantity
             or not isinstance(proceeds, (int, float))
             or not math.isfinite(proceeds)
-            or proceeds <= 0
+            or proceeds < 0
             or type(initial_quantity) is not int
             or initial_quantity < quantity
         ):

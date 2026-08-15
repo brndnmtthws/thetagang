@@ -84,6 +84,7 @@ class AlgoSettingsConfig(BaseModel):
 
 class OrdersConfig(BaseModel, DisplayMixin):
     minimum_credit: float = Field(default=0.0, ge=0.0)
+    estimated_fee_per_contract: float = Field(default=1.0, ge=0.0)
     exchange: str = Field(default="SMART")
     algo: AlgoSettingsConfig = Field(
         default=AlgoSettingsConfig(
@@ -101,6 +102,12 @@ class OrdersConfig(BaseModel, DisplayMixin):
         table.add_row("", "Params", "=", f"{self.algo.params}")
         table.add_row("", "Price update delay", "=", f"{self.price_update_delay}")
         table.add_row("", "Minimum credit", "=", f"{dfmt(self.minimum_credit)}")
+        table.add_row(
+            "",
+            "Estimated fees per contract",
+            "=",
+            dfmt(self.estimated_fee_per_contract),
+        )
 
 
 class IBAsyncConfig(BaseModel):
@@ -307,6 +314,10 @@ class TailHedgeTargetConfig(BaseModel, DisplayMixin):
     minimum_bid: float = Field(default=0.01, gt=0.0)
     max_bid_ask_ratio: float = Field(default=0.50, ge=0.0)
     max_premium_ratio: float = Field(default=0.05, gt=0.0, le=1.0)
+    catastrophe_drawdowns: List[float] = Field(
+        default_factory=lambda: [0.40, 0.50, 0.60],
+        min_length=1,
+    )
 
     @model_validator(mode="after")
     def validate_put_program(self) -> Self:
@@ -316,6 +327,14 @@ class TailHedgeTargetConfig(BaseModel, DisplayMixin):
             )
         if self.exit_dte >= self.min_dte:
             raise ValueError("tail_hedge.exit_dte must be less than min_dte")
+        if any(not 0.0 < drawdown < 1.0 for drawdown in self.catastrophe_drawdowns):
+            raise ValueError(
+                "tail_hedge.catastrophe_drawdowns values must be between 0 and 1"
+            )
+        if self.catastrophe_drawdowns != sorted(set(self.catastrophe_drawdowns)):
+            raise ValueError(
+                "tail_hedge.catastrophe_drawdowns values must be unique and sorted"
+            )
         return self
 
     @property
@@ -349,6 +368,12 @@ class TailHedgeTargetConfig(BaseModel, DisplayMixin):
             "=",
             pfmt(self.max_premium_ratio),
         )
+        table.add_row(
+            "",
+            "Catastrophe drawdowns",
+            "=",
+            ", ".join(pfmt(drawdown) for drawdown in self.catastrophe_drawdowns),
+        )
 
 
 class TailHedgeConfig(BaseModel, DisplayMixin):
@@ -376,7 +401,10 @@ class TailHedgeConfig(BaseModel, DisplayMixin):
         table.add_row("[spring_green1]Tail hedge long-put program")
         table.add_row("", "Enabled", "=", f"{self.enabled}")
         table.add_row(
-            "", "Annual net premium budget (% NLV)", "=", pfmt(self.annual_budget)
+            "",
+            "Annual estimated-cost budget (% NLV)",
+            "=",
+            pfmt(self.annual_budget),
         )
         if not self.targets:
             table.add_row("", "Targets", "=", "-")

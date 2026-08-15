@@ -2,8 +2,10 @@
 
 ThetaGang can keep a rolling ladder of long, out-of-the-money puts for one or
 more portfolio symbols. It spreads entries through the year to reduce entry-date
-timing risk while keeping net insurance spending within an annual net premium
-budget. Each purchase is one cohort (the timing tranche). The program may leave
+timing risk while keeping estimated insurance spending within an annual budget.
+Among otherwise eligible contracts in the preferred expiration, it favors the
+best configured catastrophe-payout multiple. Each purchase is one cohort (the
+timing tranche). The program may leave
 a gap when puts are expensive, illiquid, or unavailable near the requested
 dates. The design is inspired by Taleb and Spitznagel's broad emphasis on owning
 limited-loss convexity without trying to predict crashes; these rules and DTE
@@ -16,8 +18,8 @@ On each `tail_hedge` stage, ThetaGang:
 1. Matches its saved cohorts to live positions and working orders.
 2. Closes an owned put when it reaches `exit_dte` or its target is removed.
 3. Considers at most one new cohort for each eligible target.
-4. Chooses an expiration near `target_dte` and a strike near
-   `spot * strike_ratio`.
+4. Chooses an expiration near `target_dte`, then ranks nearby strikes by
+   catastrophe payout per estimated all-in dollar.
 5. Places a midpoint-priced limit order for the whole-contract quantity that
    fits the budget.
 
@@ -37,7 +39,7 @@ flowchart TD
     P -->|Yes| Z["Finish target"]
     P -->|No| D{"Entry cadence due?"}
     D -->|No| Z
-    D -->|Yes| E{"Entry gates and annual net premium budget pass?"}
+    D -->|Yes| E{"Entry gates and annual estimated-cost budget pass?"}
     E -->|No| Z
     E -->|Yes| F["Scan 120-240 DTE near 180 DTE"]
     F --> G{"Liquid contract fits one entry slice?"}
@@ -65,19 +67,22 @@ for that symbol.
 ## Budget and timing
 
 `annual_budget` is a fraction of current net liquidation value and applies to
-all targets. Entries remain in the budget for 365 days; any unrecovered cost on
-an older open cohort continues to count until it closes. Age alone never makes
+all targets. Entry cost includes the submitted limit premium plus
+`runtime.orders.estimated_fee_per_contract`. Entries remain in the budget for
+365 days; any unrecovered cost on an older open cohort continues to count until
+it closes. Age alone never makes
 live protection free. `budget_weight` divides the budget between targets; the
 weights must add up to `1.0`.
 
-`entries_per_year` divides each target's annual net premium budget into equal
+`entries_per_year` divides each target's annual cost budget into equal
 entry slices and sets the cadence:
 
 ```text
-target annual net premium budget = current NLV * annual_budget * budget_weight
-entry slice                      = target annual net premium budget / entries_per_year
-entry cadence                    = ceil(365 / entries_per_year) days
-quantity                         = floor(applicable remaining budget / contract cost)
+target annual cost budget = current NLV * annual_budget * budget_weight
+entry slice               = target annual cost budget / entries_per_year
+entry cadence             = ceil(365 / entries_per_year) days
+all-in contract cost      = limit premium * multiplier + estimated fee
+quantity                  = floor(applicable remaining budget / all-in contract cost)
 ```
 
 The default of six entries per year gives a 61-day cadence. Each order is
@@ -102,9 +107,15 @@ remaining premium from a normal DTE exit available within the rolling annual
 budget without enlarging the next entry slice. A crash gain can reduce the
 cohort's net cost to zero, but it cannot create extra hedge budget.
 
-Budget accounting uses submitted limit values rather than an execution and
-commission ledger, so commissions and favorable fill-price improvement are not
-included.
+Budget accounting uses submitted limit values and the configured fee estimate
+rather than an execution and commission ledger. Actual commissions and favorable
+fill-price improvement are therefore not reconciled after execution.
+
+Within the nearest eligible expiration, each liquid candidate receives a
+model-free catastrophe score. For every configured drawdown, ThetaGang computes
+the put's intrinsic payout at that shocked underlying price. The score is the
+average payout divided by the estimated all-in contract cost. This is a ranking
+heuristic, not a probability or expected-return estimate.
 
 With `entry_gate = "vix"`, ThetaGang waits while VIX is above `entry_vix_max`.
 Use `entry_gate = "none"` to disable only the VIX check; all other entry rules
@@ -121,9 +132,9 @@ and usable cash-fund value when cash management runs later. Only the remaining
 shortfall can trigger a harvest.
 
 Only active, state-owned puts without a conflicting order are eligible. The
-live sell quote must be above the IBKR average cost; the saved entry price is
-used when that cost is unavailable. The profit check does not include
-commissions.
+live sell quote, after the configured estimated sell fee, must exceed both the
+IBKR average cost and the configured all-in entry basis. Estimated net proceeds
+are used for funding and budget recovery.
 
 ThetaGang uses the earliest-expiring useful cohort and sells the fewest whole
 contracts needed. It sells at most one cohort per target in a run. The part of
@@ -131,6 +142,16 @@ the stock buy covered by normal funding stays in the current run. Shares assigne
 to the shortfall are deferred, even if the chosen cohort can fund only some of
 them. Estimated put proceeds are never spent immediately. After the sale fills
 and IBKR reports the cash, a later run makes a new rebalance decision.
+
+If any cohort for the symbol still has unresolved recovery state, a new harvest
+is deferred for that invocation. The later tail stage reconciles the prior sale;
+a subsequent invocation may sell another cohort if a fresh broker snapshot still
+shows both a hard-underweight allocation and a cash shortfall.
+
+Entry evaluations record premium, estimated fees, catastrophe payouts and
+score, order size, open interest, and the quantity/open-interest ratio. Harvest
+events record blocks, estimated gross and net proceeds, fees, required proceeds,
+and excess proceeds. The same details are included in concise run logs.
 
 ## State and safe shutdown
 
@@ -172,6 +193,9 @@ strategies = ["tail_hedge"]
 enabled = true
 path = "data/thetagang.db"
 
+[runtime.orders]
+estimated_fee_per_contract = 1.0
+
 [strategies.tail_hedge]
 enabled = true
 annual_budget = 0.005
@@ -191,6 +215,7 @@ minimum_open_interest = 50
 minimum_bid = 0.01
 max_bid_ask_ratio = 0.50
 max_premium_ratio = 0.05
+catastrophe_drawdowns = [0.40, 0.50, 0.60]
 ```
 
 When tail hedging is enabled, each target symbol must also appear in

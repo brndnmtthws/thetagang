@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
@@ -32,7 +32,7 @@ from thetagang.trading_operations import OrderOperations
 from thetagang.util import midpoint_or_market_price, working_stock_order_symbols
 
 TAIL_HEDGE_EVALUATION_EVENT = "tail_hedge_evaluation"
-TAIL_HEDGE_EVALUATION_SCHEMA_VERSION = 1
+TAIL_HEDGE_EVALUATION_SCHEMA_VERSION = 2
 TAIL_ORDER_RECONCILIATION_GRACE = timedelta(minutes=5)
 TAIL_HEDGE_ERRORS = (
     IndexError,
@@ -59,6 +59,11 @@ class PutQuote:
     limit_price: float
     premium_ratio: float
     bid_ask_ratio: float
+    catastrophe_drawdowns: tuple[float, ...] = ()
+    catastrophe_payouts: tuple[float, ...] = ()
+    catastrophe_payout_multiple: float = 0.0
+    estimated_fee_per_contract: float = 0.0
+    all_in_cost_per_contract: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -121,6 +126,22 @@ class TailHedgeEngine:
         )
         self._cached_vix: Optional[float] = None
         self._run_outcomes: dict[str, str] = {}
+
+    def _estimated_fee_per_contract(self) -> float:
+        orders = getattr(self.config.runtime, "orders", None)
+        return float(
+            getattr(
+                orders,
+                "estimated_fee_per_contract",
+                0.0,
+            )
+        )
+
+    def _all_in_contract_cost(self, limit_price: float, multiplier: float) -> float:
+        return round(
+            limit_price * multiplier + self._estimated_fee_per_contract(),
+            2,
+        )
 
     async def manage(
         self,
@@ -440,8 +461,10 @@ class TailHedgeEngine:
             cohort.quantity = live_quantity
             settled_cost = round(
                 live_quantity
-                * cohort.entry_limit_price
-                * self._multiplier(position.contract),
+                * self._all_in_contract_cost(
+                    cohort.entry_limit_price,
+                    self._multiplier(position.contract),
+                ),
                 2,
             )
             cohort.estimated_cost = min(cohort.estimated_cost, settled_cost)
@@ -457,8 +480,10 @@ class TailHedgeEngine:
         if live_quantity > cohort.quantity:
             settled_cost = round(
                 live_quantity
-                * cohort.entry_limit_price
-                * self._multiplier(position.contract),
+                * self._all_in_contract_cost(
+                    cohort.entry_limit_price,
+                    self._multiplier(position.contract),
+                ),
                 2,
             )
             cohort.estimated_cost = max(cohort.estimated_cost, settled_cost)
@@ -610,6 +635,14 @@ class TailHedgeEngine:
         position = live_position
         quantity = self._position_quantity(position)
         position.contract.exchange = self.order_ops.get_order_exchange()
+        estimated_fee = self._estimated_fee_per_contract()
+        estimated_net_proceeds = max(
+            0.0,
+            round(
+                limit_price * self._multiplier(position.contract) - estimated_fee,
+                2,
+            ),
+        )
         if action == "SELL":
             # A reduction observed during the quote await predates this order.
             # Sync ownership without treating it as recovered premium.
@@ -617,10 +650,7 @@ class TailHedgeEngine:
             quantity = cohort.quantity
             cohort.begin_recovery(
                 quantity=quantity,
-                proceeds_per_contract=round(
-                    limit_price * self._multiplier(position.contract),
-                    2,
-                ),
+                proceeds_per_contract=estimated_net_proceeds,
                 enqueued_at=self._now(),
             )
             self._require_state_store().save(state)
@@ -649,12 +679,15 @@ class TailHedgeEngine:
             quantity=quantity,
             action=action,
             limit_price=limit_price,
+            estimated_fee_per_contract=estimated_fee,
+            estimated_net_proceeds_per_contract=estimated_net_proceeds,
             close_reason=close_reason,
         )
         log.notice(
             f"{symbol}: Enqueued tail close for {quantity} contract(s), "
             f"conId {position.contract.conId}, at {dfmt(limit_price)}; "
-            f"reason={close_reason}."
+            f"estimated net proceeds={dfmt(estimated_net_proceeds)}/contract "
+            f"after {dfmt(estimated_fee)} fee; reason={close_reason}."
         )
 
     async def _evaluate_entry(
@@ -750,13 +783,24 @@ class TailHedgeEngine:
             self._record_evaluation("annual_budget_exhausted", symbol=symbol)
             return
 
-        per_contract_cost = round(quote.limit_price * self._multiplier(contract), 2)
+        premium_per_contract = round(
+            quote.limit_price * self._multiplier(contract),
+            2,
+        )
+        per_contract_cost = self._all_in_contract_cost(
+            quote.limit_price,
+            self._multiplier(contract),
+        )
         quantity = math.floor(applicable_budget / per_contract_cost)
         if quantity < 1:
             self._record_evaluation(
                 "contract_exceeds_applicable_budget",
                 symbol=symbol,
+                applicable_budget=applicable_budget,
+                premium_per_contract=premium_per_contract,
+                estimated_fee_per_contract=self._estimated_fee_per_contract(),
                 per_contract_cost=per_contract_cost,
+                quote=asdict(quote),
             )
             return
         account_number = self.config.runtime.account.number
@@ -799,6 +843,16 @@ class TailHedgeEngine:
             )
             return
         entry_cost = round(per_contract_cost * quantity, 2)
+        estimated_fees = round(self._estimated_fee_per_contract() * quantity, 2)
+        quantity_to_open_interest = (
+            quantity / quote.open_interest if quote.open_interest > 0 else None
+        )
+        if quantity_to_open_interest is not None and quantity_to_open_interest > 1.0:
+            log.warning(
+                f"{symbol}: Tail entry quantity {quantity} exceeds quoted open "
+                f"interest {quote.open_interest:g}; "
+                f"ratio={quantity_to_open_interest:.2f}."
+            )
         entered_at = self._now()
         entry_id = f"{symbol}:{quote.con_id}:{entered_at.isoformat()}"
         state.prune_closed(now)
@@ -834,11 +888,22 @@ class TailHedgeEngine:
             entry_id=entry_id,
             quantity=quantity,
             entry_cost=entry_cost,
+            premium_cost=round(premium_per_contract * quantity, 2),
+            estimated_fees=estimated_fees,
+            applicable_budget=applicable_budget,
+            quantity_to_open_interest=quantity_to_open_interest,
+            order_exceeds_open_interest=(
+                quantity_to_open_interest is not None
+                and quantity_to_open_interest > 1.0
+            ),
             quote=asdict(quote),
         )
         log.notice(
             f"{symbol}: Enqueued {quantity}x {quote.strike:g} puts expiring "
-            f"{quote.expiration} at {dfmt(quote.limit_price)} each."
+            f"{quote.expiration} at {dfmt(quote.limit_price)} each; "
+            f"estimated fees={dfmt(estimated_fees)}, "
+            f"catastrophe payout multiple="
+            f"{quote.catastrophe_payout_multiple:.2f}x."
         )
 
     @staticmethod
@@ -957,6 +1022,7 @@ class TailHedgeEngine:
             for ticker in tickers
             if ticker.contract is not None and ticker.contract.conId > 0
         }
+        eligible_quotes: list[tuple[PutQuote, Contract]] = []
         rejected_quotes: list[tuple[PutQuote, Contract]] = []
         for contract in contracts:
             ticker = tickers_by_con_id.get(contract.conId)
@@ -966,12 +1032,70 @@ class TailHedgeEngine:
                 quote = self._build_quote(underlying.price, ticker)
             except (RuntimeError, TypeError, ValueError):
                 continue
+            quote = self._with_catastrophe_metrics(target, quote, contract)
             if self._quote_rejection(target, quote) is None:
-                return quote, contract
-            rejected_quotes.append((quote, contract))
+                eligible_quotes.append((quote, contract))
+            else:
+                rejected_quotes.append((quote, contract))
+        if eligible_quotes:
+            eligible_quotes.sort(
+                key=lambda item: (
+                    expiration_rank.get(
+                        item[1].lastTradeDateOrContractMonth,
+                        len(expiration_rank),
+                    ),
+                    -item[0].catastrophe_payout_multiple,
+                    item[0].bid_ask_ratio,
+                    -item[0].open_interest,
+                    abs(item[0].strike - strike_target),
+                    item[0].con_id,
+                )
+            )
+            quote, contract = eligible_quotes[0]
+            log.info(
+                f"{symbol}: Selected tail put conId={quote.con_id} "
+                f"expiry={quote.expiration} strike={quote.strike:g} "
+                f"catastrophe_multiple="
+                f"{quote.catastrophe_payout_multiple:.2f}x "
+                f"drawdowns={quote.catastrophe_drawdowns} "
+                f"payouts={quote.catastrophe_payouts}."
+            )
+            return quote, contract
         if rejected_quotes:
             return rejected_quotes[0]
         raise RuntimeError("No target put contract has a usable quote")
+
+    def _with_catastrophe_metrics(
+        self,
+        target: TailHedgeTargetConfig,
+        quote: PutQuote,
+        contract: Contract,
+    ) -> PutQuote:
+        multiplier = self._multiplier(contract)
+        drawdowns = tuple(float(value) for value in target.catastrophe_drawdowns)
+        payouts = tuple(
+            round(
+                max(
+                    quote.strike - quote.underlying_price * (1.0 - drawdown),
+                    0.0,
+                )
+                * multiplier,
+                2,
+            )
+            for drawdown in drawdowns
+        )
+        all_in_cost = self._all_in_contract_cost(quote.limit_price, multiplier)
+        payout_multiple = (
+            sum(payouts) / len(payouts) / all_in_cost if all_in_cost > 0 else 0.0
+        )
+        return replace(
+            quote,
+            catastrophe_drawdowns=drawdowns,
+            catastrophe_payouts=payouts,
+            catastrophe_payout_multiple=round(payout_multiple, 6),
+            estimated_fee_per_contract=self._estimated_fee_per_contract(),
+            all_in_cost_per_contract=all_in_cost,
+        )
 
     async def _underlying_quote(
         self,
@@ -1283,7 +1407,7 @@ class TailHedgeEngine:
                 f"{target.symbol}: Tail hedge summary: outcome={outcome}; "
                 f"open_cohorts={len(symbol_cohorts)} "
                 f"(entry_pending={pending_entries}); "
-                f"annual_net_premium={dfmt(target_spent)}/{dfmt(target_budget)} "
+                f"annual_estimated_cost={dfmt(target_spent)}/{dfmt(target_budget)} "
                 f"target, {dfmt(global_spent)}/{dfmt(global_budget)} global; "
                 f"next_entry={next_entry}."
             )
