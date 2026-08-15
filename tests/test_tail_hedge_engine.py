@@ -10,6 +10,7 @@ from ib_async.wrapper import RequestError
 from thetagang.config import Config
 from thetagang.config_models import TailHedgeTargetConfig
 from thetagang.db import DataStore
+from thetagang.ibkr import TickerField
 from thetagang.strategies.options_engine import (
     OptionsRuntimeServices,
     OptionsStrategyEngine,
@@ -131,6 +132,7 @@ def _put_ticker(
     bid: float = 0.45,
     ask: float = 0.55,
     open_interest: float = 100,
+    model_greeks=None,
 ):
     return SimpleNamespace(
         contract=contract,
@@ -139,7 +141,7 @@ def _put_ticker(
         putOpenInterest=open_interest,
         midpoint=lambda: (bid + ask) / 2,
         marketPrice=lambda: (bid + ask) / 2,
-        modelGreeks=None,
+        modelGreeks=model_greeks,
     )
 
 
@@ -1334,7 +1336,7 @@ async def test_close_does_not_credit_a_pre_submission_position_change(mocker):
 
 @pytest.mark.asyncio
 async def test_put_selection_is_deterministic_and_allows_same_expiry(mocker):
-    engine, ibkr, _order_ops, _data_store = _make_engine(mocker)
+    engine, ibkr, _order_ops, data_store = _make_engine(mocker)
     underlying = Stock("QQQ", "SMART", "USD")
     underlying.conId = 10
     ibkr.get_ticker_for_stock = AsyncMock(
@@ -1352,7 +1354,7 @@ async def test_put_selection_is_deterministic_and_allows_same_expiry(mocker):
                 tradingClass="QQQ",
                 multiplier="100",
                 expirations=[_expiration(160), _expiration(180), _expiration(200)],
-                strikes=[55.0, 59.0, 60.0, 65.0],
+                strikes=[35.0, 40.0, 45.0, 55.0, 59.0, 60.0, 65.0],
             )
         ]
     )
@@ -1362,6 +1364,16 @@ async def test_put_selection_is_deterministic_and_allows_same_expiry(mocker):
             contract.tradingClass == "QQQ" and contract.multiplier == "100"
             for contract in contracts
         )
+        assert {contract.lastTradeDateOrContractMonth for contract in contracts} == {
+            _expiration(180)
+        }
+        assert {contract.strike for contract in contracts} == {
+            45.0,
+            55.0,
+            59.0,
+            60.0,
+            65.0,
+        }
         for con_id, contract in enumerate(contracts, start=1):
             contract.conId = con_id
             contract.multiplier = "100"
@@ -1369,31 +1381,77 @@ async def test_put_selection_is_deterministic_and_allows_same_expiry(mocker):
         return list(contracts)
 
     ibkr.qualify_contracts = AsyncMock(side_effect=qualify)
-    ibkr.get_tickers_for_contracts = AsyncMock(
-        side_effect=lambda _symbol, contracts, **_kwargs: [
-            _put_ticker(contract) for contract in reversed(contracts)
+
+    def tickers(_symbol, contracts, **kwargs):
+        assert TickerField.GREEKS in kwargs["optional_fields"]
+        prices = {45.0: 0.05, 60.0: 0.36, 65.0: 0.52}
+        return [
+            _put_ticker(
+                contract,
+                bid=prices.get(contract.strike, 0.50),
+                ask=prices.get(contract.strike, 0.50),
+                model_greeks=(
+                    SimpleNamespace(
+                        impliedVol=1.2,
+                        delta=-0.02,
+                        gamma=0.001,
+                        vega=0.03,
+                        theta=-0.01,
+                        optPrice=0.05,
+                    )
+                    if contract.strike == 45.0
+                    else None
+                ),
+            )
+            for contract in reversed(contracts)
         ]
-    )
+
+    ibkr.get_tickers_for_contracts = AsyncMock(side_effect=tickers)
 
     quote, contract = await engine._find_put(
         _target(),
         exclude_con_ids=set(),
+        applicable_budget=100.0,
     )
 
     assert quote.dte == 180
-    assert contract.strike == 65.0
+    assert contract.strike == 45.0
     assert quote.catastrophe_drawdowns == (0.40, 0.50, 0.60)
-    assert quote.catastrophe_payouts == (500.0, 1500.0, 2500.0)
-    assert quote.catastrophe_payout_multiple == 30.0
+    assert quote.catastrophe_payouts == (0.0, 0.0, 500.0)
+    assert quote.average_catastrophe_payout == pytest.approx(166.67)
+    assert quote.catastrophe_payout_multiple == pytest.approx(33.333333)
+    assert quote.affordable_quantity == 20
+    assert quote.budget_utilization == 1.0
+    assert quote.budget_payout_multiple == pytest.approx(33.333333)
+    assert quote.model_implied_volatility == 1.2
+    assert quote.model_delta == -0.02
+    assert quote.model_gamma == 0.001
+    assert quote.model_vega == 0.03
+    assert quote.model_theta == -0.01
+    assert quote.model_price == 0.05
+    selection = _events(data_store, TAIL_HEDGE_EVALUATION_EVENT)[-1]
+    assert selection["outcome"] == "strike_selected"
+    assert selection["eligible_candidate_count"] == 5
+    assert selection["selected_quote"]["strike"] == 45.0
+    assert [candidate["strike"] for candidate in selection["top_quotes"]] == [
+        45.0,
+        60.0,
+        59.0,
+        65.0,
+        55.0,
+    ]
 
     same_expiry_quote, same_expiry_contract = await engine._find_put(
         _target(),
         exclude_con_ids={contract.conId},
+        applicable_budget=100.0,
     )
 
     assert same_expiry_quote.expiration == quote.expiration
     assert same_expiry_contract.conId != contract.conId
     assert same_expiry_contract.strike == 60.0
+    assert same_expiry_quote.catastrophe_payout_multiple == pytest.approx(27.777778)
+    assert same_expiry_quote.budget_payout_multiple == 20.0
 
 
 @pytest.mark.asyncio

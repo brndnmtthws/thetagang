@@ -60,8 +60,20 @@ def test_tail_hedge_strategy_compiles_to_its_post_stage() -> None:
     assert target.min_dte == 120
     assert target.max_dte == 240
     assert target.exit_dte == 30
+    assert not hasattr(target, "strike_ratio")
     assert target.catastrophe_drawdowns == [0.40, 0.50, 0.60]
     assert config.runtime.orders.estimated_fee_per_contract == 1.0
+
+
+def test_tail_hedge_rejects_removed_strike_ratio() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [{**_tail_target(), "strike_ratio": 0.60}],
+    }
+
+    with pytest.raises(ValueError, match="strike_ratio"):
+        Config(**data)
 
 
 @pytest.mark.parametrize(

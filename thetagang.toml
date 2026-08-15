@@ -790,7 +790,6 @@ ignore_dte = 0
 # min_dte = 120
 # max_dte = 240
 # exit_dte = 30
-# strike_ratio = 0.60
 # minimum_open_interest = 50
 # minimum_bid = 0.01
 # max_bid_ask_ratio = 0.50  # quoted width / midpoint

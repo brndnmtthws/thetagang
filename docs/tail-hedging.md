@@ -18,8 +18,8 @@ On each `tail_hedge` stage, ThetaGang:
 1. Matches its saved cohorts to live positions and working orders.
 2. Closes an owned put when it reaches `exit_dte` or its target is removed.
 3. Considers at most one new cohort for each eligible target.
-4. Chooses an expiration near `target_dte`, then ranks nearby strikes by
-   catastrophe payout per estimated all-in dollar.
+4. Chooses an expiration near `target_dte`, then ranks every relevant OTM strike
+   by catastrophe payout per estimated all-in dollar and entry-budget dollar.
 5. Places a midpoint-priced limit order for the whole-contract quantity that
    fits the budget.
 
@@ -41,7 +41,7 @@ flowchart TD
     D -->|No| Z
     D -->|Yes| E{"Entry gates and annual estimated-cost budget pass?"}
     E -->|No| Z
-    E -->|Yes| F["Scan 120-240 DTE near 180 DTE"]
+    E -->|Yes| F["Choose DTE near 180, then scan stress-relevant OTM strikes"]
     F --> G{"Liquid contract fits one entry slice?"}
     G -->|No| Z
     G -->|Yes| H["Queue one cohort and anchor the next cadence"]
@@ -52,9 +52,11 @@ The expiration must be within `min_dte` and `max_dte`; the defaults scan from
 120 through 240 DTE and prefer the expiration closest to the 180-DTE target.
 Expiration dates do not have to be evenly spaced. A later purchase may use the
 same expiration at a different strike: the primary diversification is the entry
-date, not a promise of distinct maturities. The scanner still excludes an exact
-contract already held, queued, or working. Quotes must also pass the bid,
-open-interest, spread, and premium filters.
+date, not a promise of distinct maturities. Within each expiration, the scanner
+considers every OTM strike with positive intrinsic payout in at least one
+configured catastrophe scenario. It excludes an exact contract already held,
+queued, or working. Quotes must also pass the bid, open-interest, spread,
+premium, and whole-contract budget filters.
 
 An entry is skipped when the account has no long stock position in the target,
 trading is disabled for the symbol, another entry is working, or the same run
@@ -111,11 +113,21 @@ Budget accounting uses submitted limit values and the configured fee estimate
 rather than an execution and commission ledger. Actual commissions and favorable
 fill-price improvement are therefore not reconciled after execution.
 
-Within the nearest eligible expiration, each liquid candidate receives a
-model-free catastrophe score. For every configured drawdown, ThetaGang computes
-the put's intrinsic payout at that shocked underlying price. The score is the
-average payout divided by the estimated all-in contract cost. This is a ranking
-heuristic, not a probability or expected-return estimate.
+Within the nearest eligible expiration, each liquid and affordable candidate
+receives two model-free catastrophe scores. For every configured drawdown,
+ThetaGang computes the put's intrinsic payout at that shocked underlying price.
+The raw score divides the average payout by the estimated all-in contract cost.
+The primary score divides the payout from all whole contracts that fit by the
+available entry budget, accounting for unusable cash left by contract rounding.
+The highest primary score wins; raw score, spread, open interest, contract cost,
+and conId provide deterministic tie-breaks.
+
+IBKR model implied volatility, price, delta, gamma, vega, and theta are recorded
+when available. They are diagnostics rather than ranking inputs: the catastrophe
+score uses contractual intrinsic payout and the executable limit price, without
+assuming that local model sensitivities extrapolate to a discontinuous shock.
+Selection telemetry stores the chosen quote and the five highest-ranked
+alternatives so real runs can be compared and refined later.
 
 With `entry_gate = "vix"`, ThetaGang waits while VIX is above `entry_vix_max`.
 Use `entry_gate = "none"` to disable only the VIX check; all other entry rules
@@ -210,7 +222,6 @@ target_dte = 180
 min_dte = 120
 max_dte = 240
 exit_dte = 30
-strike_ratio = 0.60
 minimum_open_interest = 50
 minimum_bid = 0.01
 max_bid_ask_ratio = 0.50

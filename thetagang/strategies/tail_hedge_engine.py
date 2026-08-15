@@ -32,7 +32,7 @@ from thetagang.trading_operations import OrderOperations
 from thetagang.util import midpoint_or_market_price, working_stock_order_symbols
 
 TAIL_HEDGE_EVALUATION_EVENT = "tail_hedge_evaluation"
-TAIL_HEDGE_EVALUATION_SCHEMA_VERSION = 2
+TAIL_HEDGE_EVALUATION_SCHEMA_VERSION = 3
 TAIL_ORDER_RECONCILIATION_GRACE = timedelta(minutes=5)
 TAIL_HEDGE_ERRORS = (
     IndexError,
@@ -61,9 +61,19 @@ class PutQuote:
     bid_ask_ratio: float
     catastrophe_drawdowns: tuple[float, ...] = ()
     catastrophe_payouts: tuple[float, ...] = ()
+    average_catastrophe_payout: float = 0.0
     catastrophe_payout_multiple: float = 0.0
+    affordable_quantity: int = 0
+    budget_utilization: float = 0.0
+    budget_payout_multiple: float = 0.0
     estimated_fee_per_contract: float = 0.0
     all_in_cost_per_contract: float = 0.0
+    model_implied_volatility: float | None = None
+    model_delta: float | None = None
+    model_gamma: float | None = None
+    model_vega: float | None = None
+    model_theta: float | None = None
+    model_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -763,6 +773,7 @@ class TailHedgeEngine:
             quote, contract = await self._find_put(
                 target,
                 exclude_con_ids=occupied_con_ids,
+                applicable_budget=applicable_budget,
             )
         except NoEligibleExpirationError:
             self._record_evaluation(
@@ -782,6 +793,12 @@ class TailHedgeEngine:
         if applicable_budget <= 0:
             self._record_evaluation("annual_budget_exhausted", symbol=symbol)
             return
+        quote = self._with_catastrophe_metrics(
+            target,
+            quote,
+            contract,
+            applicable_budget=applicable_budget,
+        )
 
         premium_per_contract = round(
             quote.limit_price * self._multiplier(contract),
@@ -902,8 +919,9 @@ class TailHedgeEngine:
             f"{symbol}: Enqueued {quantity}x {quote.strike:g} puts expiring "
             f"{quote.expiration} at {dfmt(quote.limit_price)} each; "
             f"estimated fees={dfmt(estimated_fees)}, "
-            f"catastrophe payout multiple="
-            f"{quote.catastrophe_payout_multiple:.2f}x."
+            f"catastrophe payout={quote.catastrophe_payout_multiple:.2f}x "
+            f"per dollar spent, {quote.budget_payout_multiple:.2f}x per "
+            "entry-budget dollar."
         )
 
     @staticmethod
@@ -919,6 +937,10 @@ class TailHedgeEngine:
             return "bid_ask_too_wide"
         if quote.premium_ratio > target.max_premium_ratio:
             return "put_too_expensive"
+        if quote.catastrophe_drawdowns and quote.average_catastrophe_payout <= 0:
+            return "no_catastrophe_payout"
+        if quote.catastrophe_drawdowns and quote.affordable_quantity < 1:
+            return "contract_exceeds_applicable_budget"
         return None
 
     async def _find_put(
@@ -926,6 +948,7 @@ class TailHedgeEngine:
         target: TailHedgeTargetConfig,
         *,
         exclude_con_ids: set[int],
+        applicable_budget: float,
     ) -> tuple[PutQuote, Contract]:
         symbol = target.symbol
         exchange = self.order_ops.get_order_exchange()
@@ -958,111 +981,146 @@ class TailHedgeEngine:
             )
         )
 
-        strike_target = underlying.price * target.strike_ratio
-        otm_strikes = [
+        # A strike at or below the lowest configured shocked spot has no
+        # intrinsic payout in any selected catastrophe scenario. Excluding it
+        # is lossless for this objective and avoids unnecessary market-data
+        # requests while every economically relevant OTM strike remains in the
+        # search.
+        lowest_shocked_spot = underlying.price * (
+            1.0 - max(target.catastrophe_drawdowns)
+        )
+        candidate_strikes = sorted(
             float(strike)
             for strike in chain.strikes
-            if 0 < float(strike) < underlying.price
-        ]
-        if not otm_strikes:
-            raise RuntimeError("No out-of-the-money put strikes are available")
-        candidate_strikes = sorted(
-            otm_strikes,
-            key=lambda strike: abs(strike - strike_target),
-        )[:5]
-        contracts = await self.ibkr.qualify_contracts(
-            *[
-                Option(
-                    symbol,
-                    expiration,
-                    strike,
-                    "P",
-                    exchange,
-                    multiplier=chain.multiplier,
-                    currency="USD",
-                    tradingClass=chain.tradingClass,
-                )
-                for expiration, _dte in eligible_expirations
-                for strike in candidate_strikes
-            ]
+            if lowest_shocked_spot < float(strike) < underlying.price
         )
-        contracts = [
-            contract
-            for contract in contracts
-            if contract.conId > 0 and contract.conId not in exclude_con_ids
-        ]
-        if not contracts:
-            raise RuntimeError("No unoccupied target put contract could be qualified")
-        expiration_rank = {
-            expiration: rank
-            for rank, (expiration, _dte) in enumerate(eligible_expirations)
-        }
-        contracts.sort(
-            key=lambda candidate: (
-                expiration_rank.get(
-                    candidate.lastTradeDateOrContractMonth,
-                    len(expiration_rank),
-                ),
-                abs(float(candidate.strike) - strike_target),
+        if not candidate_strikes:
+            raise RuntimeError(
+                "No out-of-the-money put strike pays in a catastrophe scenario"
             )
-        )
-        tickers = await self.ibkr.get_tickers_for_contracts(
-            symbol,
-            contracts,
-            generic_tick_list="101",
-            required_fields=[],
-            optional_fields=[
-                TickerField.MARKET_PRICE,
-                TickerField.MIDPOINT,
-                TickerField.OPEN_INTEREST,
-            ],
-        )
-        tickers_by_con_id = {
-            ticker.contract.conId: ticker
-            for ticker in tickers
-            if ticker.contract is not None and ticker.contract.conId > 0
-        }
-        eligible_quotes: list[tuple[PutQuote, Contract]] = []
-        rejected_quotes: list[tuple[PutQuote, Contract]] = []
-        for contract in contracts:
-            ticker = tickers_by_con_id.get(contract.conId)
-            if ticker is None:
+
+        first_rejected: tuple[PutQuote, Contract] | None = None
+        qualified_any = False
+        for expiration, _dte in eligible_expirations:
+            contracts = await self.ibkr.qualify_contracts(
+                *(
+                    Option(
+                        symbol,
+                        expiration,
+                        strike,
+                        "P",
+                        exchange,
+                        multiplier=chain.multiplier,
+                        currency="USD",
+                        tradingClass=chain.tradingClass,
+                    )
+                    for strike in candidate_strikes
+                )
+            )
+            contracts = [
+                contract
+                for contract in contracts
+                if contract.conId > 0 and contract.conId not in exclude_con_ids
+            ]
+            if not contracts:
                 continue
-            try:
-                quote = self._build_quote(underlying.price, ticker)
-            except (RuntimeError, TypeError, ValueError):
+            qualified_any = True
+            contracts.sort(
+                key=lambda contract: (float(contract.strike), contract.conId)
+            )
+            tickers = await self.ibkr.get_tickers_for_contracts(
+                symbol,
+                contracts,
+                generic_tick_list="101",
+                required_fields=[],
+                optional_fields=[
+                    TickerField.MARKET_PRICE,
+                    TickerField.MIDPOINT,
+                    TickerField.OPEN_INTEREST,
+                    TickerField.GREEKS,
+                ],
+            )
+            tickers_by_con_id = {
+                ticker.contract.conId: ticker
+                for ticker in tickers
+                if ticker.contract is not None and ticker.contract.conId > 0
+            }
+            eligible_quotes: list[tuple[PutQuote, Contract]] = []
+            rejected_quotes: list[tuple[PutQuote, Contract]] = []
+            for contract in contracts:
+                ticker = tickers_by_con_id.get(contract.conId)
+                if ticker is None:
+                    continue
+                try:
+                    quote = self._build_quote(underlying.price, ticker)
+                except (RuntimeError, TypeError, ValueError):
+                    continue
+                quote = self._with_catastrophe_metrics(
+                    target,
+                    quote,
+                    contract,
+                    applicable_budget=applicable_budget,
+                )
+                if self._quote_rejection(target, quote) is None:
+                    eligible_quotes.append((quote, contract))
+                else:
+                    rejected_quotes.append((quote, contract))
+            if not eligible_quotes:
+                if first_rejected is None and rejected_quotes:
+                    rejected_quotes.sort(
+                        key=lambda item: (
+                            -item[0].budget_payout_multiple,
+                            -item[0].catastrophe_payout_multiple,
+                            item[0].con_id,
+                        )
+                    )
+                    first_rejected = rejected_quotes[0]
                 continue
-            quote = self._with_catastrophe_metrics(target, quote, contract)
-            if self._quote_rejection(target, quote) is None:
-                eligible_quotes.append((quote, contract))
-            else:
-                rejected_quotes.append((quote, contract))
-        if eligible_quotes:
             eligible_quotes.sort(
                 key=lambda item: (
-                    expiration_rank.get(
-                        item[1].lastTradeDateOrContractMonth,
-                        len(expiration_rank),
-                    ),
+                    -item[0].budget_payout_multiple,
                     -item[0].catastrophe_payout_multiple,
                     item[0].bid_ask_ratio,
                     -item[0].open_interest,
-                    abs(item[0].strike - strike_target),
+                    item[0].all_in_cost_per_contract,
                     item[0].con_id,
                 )
             )
             quote, contract = eligible_quotes[0]
+            self._record_evaluation(
+                "strike_selected",
+                symbol=symbol,
+                expiration=expiration,
+                applicable_budget=applicable_budget,
+                eligible_candidate_count=len(eligible_quotes),
+                selected_quote=asdict(quote),
+                top_quotes=[
+                    asdict(candidate_quote)
+                    for candidate_quote, _candidate_contract in eligible_quotes[:5]
+                ],
+            )
             log.info(
                 f"{symbol}: Selected tail put conId={quote.con_id} "
                 f"expiry={quote.expiration} strike={quote.strike:g} "
-                f"catastrophe_multiple="
+                f"raw_catastrophe_multiple="
                 f"{quote.catastrophe_payout_multiple:.2f}x "
+                f"budget_catastrophe_multiple="
+                f"{quote.budget_payout_multiple:.2f}x "
+                f"budget_utilization={quote.budget_utilization:.2%} "
                 f"drawdowns={quote.catastrophe_drawdowns} "
-                f"payouts={quote.catastrophe_payouts}."
+                f"payouts={quote.catastrophe_payouts} "
+                f"model_iv={quote.model_implied_volatility} "
+                f"model_delta={quote.model_delta} "
+                f"model_gamma={quote.model_gamma} "
+                f"model_vega={quote.model_vega} "
+                f"model_theta={quote.model_theta} "
+                f"model_price={quote.model_price}."
             )
             return quote, contract
-        if rejected_quotes:
-            return rejected_quotes[0]
+        if first_rejected is not None:
+            return first_rejected
+        if not qualified_any:
+            raise RuntimeError("No unoccupied target put contract could be qualified")
         raise RuntimeError("No target put contract has a usable quote")
 
     def _with_catastrophe_metrics(
@@ -1070,6 +1128,8 @@ class TailHedgeEngine:
         target: TailHedgeTargetConfig,
         quote: PutQuote,
         contract: Contract,
+        *,
+        applicable_budget: float,
     ) -> PutQuote:
         multiplier = self._multiplier(contract)
         drawdowns = tuple(float(value) for value in target.catastrophe_drawdowns)
@@ -1085,14 +1145,29 @@ class TailHedgeEngine:
             for drawdown in drawdowns
         )
         all_in_cost = self._all_in_contract_cost(quote.limit_price, multiplier)
-        payout_multiple = (
-            sum(payouts) / len(payouts) / all_in_cost if all_in_cost > 0 else 0.0
+        average_payout = sum(payouts) / len(payouts)
+        payout_multiple = average_payout / all_in_cost if all_in_cost > 0 else 0.0
+        affordable_quantity = (
+            math.floor(applicable_budget / all_in_cost) if all_in_cost > 0 else 0
+        )
+        deployed_cost = affordable_quantity * all_in_cost
+        budget_utilization = (
+            deployed_cost / applicable_budget if applicable_budget > 0 else 0.0
+        )
+        budget_payout_multiple = (
+            affordable_quantity * average_payout / applicable_budget
+            if applicable_budget > 0
+            else 0.0
         )
         return replace(
             quote,
             catastrophe_drawdowns=drawdowns,
             catastrophe_payouts=payouts,
+            average_catastrophe_payout=round(average_payout, 2),
             catastrophe_payout_multiple=round(payout_multiple, 6),
+            affordable_quantity=affordable_quantity,
+            budget_utilization=round(budget_utilization, 6),
+            budget_payout_multiple=round(budget_payout_multiple, 6),
             estimated_fee_per_contract=self._estimated_fee_per_contract(),
             all_in_cost_per_contract=all_in_cost,
         )
@@ -1147,6 +1222,7 @@ class TailHedgeEngine:
         limit_price = round(midpoint, 2)
         if limit_price <= 0:
             raise RuntimeError("Put midpoint is below the minimum price tick")
+        model_greeks = getattr(ticker, "modelGreeks", None)
         return PutQuote(
             expiration=ticker.contract.lastTradeDateOrContractMonth,
             dte=self._dte(ticker.contract.lastTradeDateOrContractMonth),
@@ -1161,6 +1237,14 @@ class TailHedgeEngine:
             limit_price=limit_price,
             premium_ratio=limit_price / underlying_price,
             bid_ask_ratio=self._bid_ask_ratio(bid, ask),
+            model_implied_volatility=self._optional_finite(
+                getattr(model_greeks, "impliedVol", None)
+            ),
+            model_delta=self._optional_finite(getattr(model_greeks, "delta", None)),
+            model_gamma=self._optional_finite(getattr(model_greeks, "gamma", None)),
+            model_vega=self._optional_finite(getattr(model_greeks, "vega", None)),
+            model_theta=self._optional_finite(getattr(model_greeks, "theta", None)),
+            model_price=self._optional_finite(getattr(model_greeks, "optPrice", None)),
         )
 
     def _account_open_trades(self) -> List[Trade]:
@@ -1464,6 +1548,14 @@ class TailHedgeEngine:
     @staticmethod
     def _is_finite(value: float) -> bool:
         return math.isfinite(value) and not util.isNan(value)
+
+    @staticmethod
+    def _optional_finite(value: Any) -> float | None:
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return None
+        return result if TailHedgeEngine._is_finite(result) else None
 
     @staticmethod
     def _is_positive(value: float) -> bool:
