@@ -28,6 +28,8 @@ from thetagang.db import DataStore
 
 console = Console()
 
+MAX_CONCURRENT_MARKET_DATA_STREAMS = 50
+
 
 class TickerField(Enum):
     MIDPOINT = "midpoint"
@@ -57,6 +59,9 @@ class IBKR:
         self.default_order_exchange = default_order_exchange
         self.data_store = data_store
         self.dry_run = dry_run
+        self.__market_data_semaphore = asyncio.Semaphore(
+            MAX_CONCURRENT_MARKET_DATA_STREAMS
+        )
 
     def portfolio(self, account: str) -> List[PortfolioItem]:
         return self.ib.portfolio(account)
@@ -381,9 +386,37 @@ class IBKR:
             raise ValueError(
                 f"Contract {contract} can't be qualified because no 'conId' value exists."
             )
-        ticker = self.ib.reqMktData(contract, genericTickList=generic_tick_list)
-        await handler(ticker)
-        return ticker
+
+        def active_ticker() -> Optional[Ticker]:
+            ticker = self.ib.ticker(contract)
+            if ticker is None:
+                return None
+
+            request_id = self.ib.wrapper.ticker2ReqId.get("mktData", {}).get(ticker)
+            return ticker if request_id is not None else None
+
+        # Reuse a subscription owned elsewhere without canceling it. ib_async keeps
+        # canceled tickers in its cache, so the request-id mapping is the source of
+        # truth for whether a cached ticker still has an active stream.
+        ticker = active_ticker()
+        if ticker is not None:
+            await handler(ticker)
+            return ticker
+
+        async with self.__market_data_semaphore:
+            # Another caller may have opened the stream while this task waited for
+            # capacity. Check again to avoid replacing its request-id mapping.
+            ticker = active_ticker()
+            if ticker is not None:
+                await handler(ticker)
+                return ticker
+
+            ticker = self.ib.reqMktData(contract, genericTickList=generic_tick_list)
+            try:
+                await handler(ticker)
+                return ticker
+            finally:
+                self.ib.cancelMktData(contract)
 
     async def __ticker_wait_for_condition__(
         self, ticker: Ticker, condition: Callable[[Ticker], bool], timeout: float

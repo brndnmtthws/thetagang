@@ -19,9 +19,11 @@ from thetagang.options import contract_date_to_datetime
 from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_CLOSE_ORDER_REF,
     TAIL_HEDGE_ENTRY_ORDER_REF,
+    TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
     TailHedgeCohort,
     TailHedgeState,
     TailHedgeStateStore,
+    build_tail_reduction_order_ref,
     is_tail_order_ref,
     is_tail_reduction_ref,
     parse_state_datetime,
@@ -70,6 +72,7 @@ class BrokerOrderProgress:
     status: str
     filled: float
     observed_at: datetime | None
+    intent_specific: bool = False
 
     @property
     def is_filled(self) -> bool:
@@ -375,7 +378,7 @@ class TailHedgeEngine:
         if (
             cohort.has_pending_recovery
             and progress is not None
-            and progress.observed_at is not None
+            and (progress.observed_at is not None or progress.intent_specific)
         ):
             confirmed_quantity = min(
                 cohort.pending_recovery_quantity or 0,
@@ -625,7 +628,15 @@ class TailHedgeEngine:
             action=action,
             quantity=quantity,
             limit_price=limit_price,
-            order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
+            order_ref=(
+                build_tail_reduction_order_ref(
+                    TAIL_HEDGE_CLOSE_ORDER_REF,
+                    cohort.con_id,
+                    cohort.pending_recovery_enqueued_at,
+                )
+                if action == "SELL"
+                else TAIL_HEDGE_CLOSE_ORDER_REF
+            ),
             transmit=True,
         )
         self.order_ops.enqueue_order(position.contract, order)
@@ -748,12 +759,13 @@ class TailHedgeEngine:
                 per_contract_cost=per_contract_cost,
             )
             return
+        account_number = self.config.runtime.account.number
+        live_positions = self.ibkr.portfolio(account=account_number)
+        live_open_trades = self._account_open_trades()
         live_stock_exposure = self._stock_exposure(
             [
                 position
-                for position in self.ibkr.portfolio(
-                    account=self.config.runtime.account.number
-                )
+                for position in live_positions
                 if position.contract.symbol == symbol
             ]
         )
@@ -762,11 +774,29 @@ class TailHedgeEngine:
             or symbol in self._same_run_stock_trade_symbols()
             or symbol
             in working_stock_order_symbols(
-                self._account_open_trades(),
-                self.config.runtime.account.number,
+                live_open_trades,
+                account_number,
             )
         ):
             self._record_evaluation("protected_position_changed", symbol=symbol)
+            return
+        live_put_con_ids = {
+            position.contract.conId
+            for position in live_positions
+            if isinstance(position.contract, Option)
+            and position.contract.right.upper().startswith("P")
+            and position.contract.conId > 0
+            and not math.isclose(float(position.position), 0.0)
+        }
+        currently_occupied_con_ids = live_put_con_ids
+        currently_occupied_con_ids |= self._working_put_con_ids(live_open_trades)
+        currently_occupied_con_ids |= self._queued_put_con_ids()
+        if quote.con_id in currently_occupied_con_ids:
+            self._record_evaluation(
+                "target_put_became_occupied",
+                symbol=symbol,
+                con_id=quote.con_id,
+            )
             return
         entry_cost = round(per_contract_cost * quantity, 2)
         entered_at = self._now()
@@ -1034,7 +1064,7 @@ class TailHedgeEngine:
         action: str,
         enqueued_at: datetime | None,
     ) -> BrokerOrderProgress | None:
-        candidates: list[tuple[int, int, Trade]] = []
+        candidates: list[tuple[int, int, Trade, bool]] = []
         for index, trade in enumerate(trades):
             order = getattr(trade, "order", None)
             contract = getattr(trade, "contract", None)
@@ -1049,18 +1079,41 @@ class TailHedgeEngine:
             ):
                 continue
             trade_time = self._trade_time(trade)
-            if (
-                enqueued_at is not None
-                and trade_time is not None
-                and trade_time < enqueued_at
-            ):
-                continue
+            intent_specific = False
+            if enqueued_at is not None:
+                if action == "SELL":
+                    expected_refs = {
+                        build_tail_reduction_order_ref(
+                            TAIL_HEDGE_CLOSE_ORDER_REF,
+                            con_id,
+                            enqueued_at,
+                        ),
+                        build_tail_reduction_order_ref(
+                            f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{symbol}",
+                            con_id,
+                            enqueued_at,
+                        ),
+                    }
+                    legacy_refs = {
+                        TAIL_HEDGE_CLOSE_ORDER_REF,
+                        f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{symbol}:{con_id}",
+                    }
+                    intent_specific = order_ref in expected_refs
+                    if not intent_specific and (
+                        order_ref not in legacy_refs
+                        or trade_time is None
+                        or trade_time < enqueued_at
+                    ):
+                        continue
+                elif trade_time is not None and trade_time < enqueued_at:
+                    continue
             order_id = int(getattr(order, "orderId", 0) or 0)
-            candidates.append((order_id, index, trade))
+            candidates.append((order_id, index, trade, intent_specific))
         if not candidates:
             return None
 
-        trade = max(candidates, key=lambda candidate: candidate[:2])[2]
+        selected = max(candidates, key=lambda candidate: candidate[:2])
+        trade = selected[2]
         order_status = getattr(trade, "orderStatus", None)
         status = str(getattr(order_status, "status", "") or "")
         try:
@@ -1073,6 +1126,7 @@ class TailHedgeEngine:
             status=status,
             filled=filled,
             observed_at=self._trade_time(trade),
+            intent_specific=selected[3],
         )
 
     @staticmethod

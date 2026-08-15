@@ -925,6 +925,22 @@ class PortfolioManager:
             return False
         return math.isfinite(shares) and shares > 0
 
+    def _has_live_contract(self, con_id: int) -> bool:
+        """Fail closed when an entry contract's live occupancy is ambiguous."""
+        try:
+            for item in self.ibkr.portfolio(account=self.account_number):
+                if (
+                    getattr(item, "account", None) != self.account_number
+                    or getattr(getattr(item, "contract", None), "conId", None) != con_id
+                ):
+                    continue
+                quantity = float(item.position)
+                if not math.isfinite(quantity) or not math.isclose(quantity, 0.0):
+                    return True
+        except (AttributeError, TypeError, ValueError):
+            return True
+        return False
+
     def _update_tail_recovery_submission(
         self,
         con_id: int,
@@ -951,9 +967,40 @@ class PortfolioManager:
             log.error(f"No pending tail-reduction state found for conId {con_id}.")
         return updated
 
+    def _release_tail_entry_submission(self, con_id: int) -> bool:
+        if self.data_store is None:
+            log.error("Cannot release a skipped tail entry without durable state.")
+            return False
+        try:
+            released = TailHedgeStateStore(
+                self.data_store,
+                self.account_number,
+            ).release_entry_submission(con_id)
+        except RuntimeError as exc:
+            log.error(f"Failed to release skipped tail-entry state: {exc}")
+            return False
+        if not released:
+            log.error(f"No pending tail-entry state found for conId {con_id}.")
+        return released
+
     def submit_orders(self) -> None:
         open_trades = self.ibkr.open_trades()
         commitments = self._working_option_commitments(open_trades)
+        working_option_con_ids = {con_id for con_id, _action in commitments}
+        working_tail_entry_con_ids = {
+            int(trade.contract.conId)
+            for trade in open_trades
+            if not trade.isDone()
+            and getattr(getattr(trade, "order", None), "account", None)
+            == self.account_number
+            and getattr(getattr(trade, "order", None), "orderRef", None)
+            == TAIL_HEDGE_ENTRY_ORDER_REF
+            and str(getattr(getattr(trade, "order", None), "action", "")).upper()
+            == "BUY"
+            and getattr(getattr(trade, "contract", None), "secType", None) == "OPT"
+            and type(getattr(trade.contract, "conId", None)) is int
+            and trade.contract.conId > 0
+        }
         order_records = self.orders.records()
         working_stock_symbols = working_stock_order_symbols(
             open_trades,
@@ -967,23 +1014,59 @@ class PortfolioManager:
             and str(getattr(order, "action", "")).upper() in {"BUY", "SELL"}
         }
         submitted_tail_sells: set[int] = set()
+        submitted_tail_entries: set[int] = set()
         for contract, order, intent_id in order_records:
             order_ref = getattr(order, "orderRef", None)
             submitted_order = order
             reduction_con_id: int | None = None
 
-            if order_ref == TAIL_HEDGE_ENTRY_ORDER_REF and (
-                getattr(order, "account", None) != self.account_number
-                or str(getattr(order, "action", "")).upper() != "BUY"
-                or getattr(contract, "secType", None) != "OPT"
-                or not self._has_live_stock(contract.symbol)
-                or contract.symbol in working_stock_symbols
-            ):
-                log.warning(
-                    f"{contract.symbol}: Skipping tail entry without stable live "
-                    "underlying ownership."
+            if order_ref == TAIL_HEDGE_ENTRY_ORDER_REF:
+                entry_con_id = getattr(contract, "conId", 0)
+                entry_submitted_this_batch = (
+                    type(entry_con_id) is int and entry_con_id in submitted_tail_entries
                 )
-                continue
+                entry_owned_by_working_order = (
+                    type(entry_con_id) is int
+                    and entry_con_id in working_tail_entry_con_ids
+                )
+                entry_is_valid = not (
+                    getattr(order, "account", None) != self.account_number
+                    or str(getattr(order, "action", "")).upper() != "BUY"
+                    or getattr(contract, "secType", None) != "OPT"
+                    or type(entry_con_id) is not int
+                    or entry_con_id <= 0
+                )
+                entry_is_occupied = entry_is_valid and (
+                    entry_con_id in working_option_con_ids
+                    or entry_submitted_this_batch
+                    or self._has_live_contract(entry_con_id)
+                )
+                if (
+                    not entry_is_valid
+                    or not self._has_live_stock(contract.symbol)
+                    or contract.symbol in working_stock_symbols
+                    or entry_is_occupied
+                ):
+                    reason = (
+                        "selected put contract is already occupied"
+                        if entry_is_occupied
+                        else "live underlying ownership is unstable"
+                    )
+                    log.warning(
+                        f"{contract.symbol}: Skipping tail entry because {reason}."
+                    )
+                    # A same-batch duplicate or matching working entry shares
+                    # this reservation with an order that may already be live.
+                    # Every other skipped intent must release it so later
+                    # reconciliation cannot adopt a foreign position.
+                    if (
+                        type(entry_con_id) is int
+                        and entry_con_id > 0
+                        and not entry_submitted_this_batch
+                        and not entry_owned_by_working_order
+                    ):
+                        self._release_tail_entry_submission(entry_con_id)
+                    continue
 
             if is_tail_reduction_ref(order_ref):
                 con_id = getattr(contract, "conId", 0)
@@ -1003,14 +1086,16 @@ class PortfolioManager:
                     or requested <= 0
                     or not requested.is_integer()
                 )
+                live_capacity = 0
                 if not valid_reduction:
                     capacity = 0
                 else:
                     live_position = self._live_position(con_id)
                     closable = live_position if action == "SELL" else -live_position
+                    live_capacity = max(0, math.floor(closable))
                     capacity = max(
                         0,
-                        math.floor(closable) - commitments[(con_id, action)],
+                        live_capacity - commitments[(con_id, action)],
                     )
                 if action == "SELL" and con_id in submitted_tail_sells:
                     log.warning(
@@ -1018,7 +1103,7 @@ class PortfolioManager:
                     )
                     continue
                 if capacity == 0:
-                    if valid_reduction and action == "SELL":
+                    if valid_reduction and action == "SELL" and live_capacity == 0:
                         self._update_tail_recovery_submission(con_id, None)
                     log.warning(
                         f"{contract.symbol}: Skipping tail close with no live capacity."
@@ -1058,6 +1143,8 @@ class PortfolioManager:
                 commitments[key] += int(float(submitted_order.totalQuantity))
                 if reduction_con_id is not None:
                     submitted_tail_sells.add(reduction_con_id)
+            elif submitted and order_ref == TAIL_HEDGE_ENTRY_ORDER_REF:
+                submitted_tail_entries.add(int(contract.conId))
         self.trades.print_summary()
 
     async def adjust_prices(self) -> None:

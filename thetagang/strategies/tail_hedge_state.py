@@ -12,13 +12,16 @@ TAIL_HEDGE_ENTRY_ORDER_REF = "tg:tail-hedge:entry"
 TAIL_HEDGE_CLOSE_ORDER_REF = "tg:tail-hedge:close"
 TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX = "tg:tail-harvest"
 
+_ORDER_REF_EPOCH = datetime(1970, 1, 1)
+
 TailHedgeStatus = Literal["entry_enqueued", "active", "closed"]
 
 
 def is_tail_reduction_ref(order_ref: Any) -> bool:
-    return order_ref == TAIL_HEDGE_CLOSE_ORDER_REF or (
-        isinstance(order_ref, str)
-        and order_ref.startswith(f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:")
+    return isinstance(order_ref, str) and (
+        order_ref == TAIL_HEDGE_CLOSE_ORDER_REF
+        or order_ref.startswith(f"{TAIL_HEDGE_CLOSE_ORDER_REF}:")
+        or order_ref.startswith(f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:")
     )
 
 
@@ -37,6 +40,25 @@ def parse_state_datetime(value: Any) -> datetime | None:
     if value.tzinfo is not None:
         value = value.astimezone()
     return value.replace(tzinfo=None)
+
+
+def build_tail_reduction_order_ref(
+    prefix: str,
+    con_id: int,
+    enqueued_at: datetime | None,
+) -> str:
+    """Build a broker ref that identifies one persisted recovery intent."""
+    parsed = parse_state_datetime(enqueued_at)
+    if (
+        not isinstance(prefix, str)
+        or not prefix
+        or type(con_id) is not int
+        or con_id <= 0
+        or parsed is None
+    ):
+        raise ValueError("Tail reduction requires a valid persisted intent")
+    elapsed_microseconds = (parsed - _ORDER_REF_EPOCH) // timedelta(microseconds=1)
+    return f"{prefix}:{con_id:x}:{elapsed_microseconds:x}"
 
 
 @dataclass(slots=True)
@@ -337,6 +359,16 @@ class TailHedgeStateStore:
         )
         if not recorded:
             raise RuntimeError("Failed to persist required tail-hedge state")
+
+    def release_entry_submission(self, con_id: int) -> bool:
+        """Release one still-pending entry that will not reach the broker."""
+        state = self.load()
+        cohort = state.find_open_by_con_id(con_id)
+        if cohort is None or cohort.status != "entry_enqueued":
+            return False
+        state.cohorts.remove(cohort)
+        self.save(state)
+        return True
 
     def update_recovery_submission(
         self,

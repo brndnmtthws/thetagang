@@ -26,6 +26,7 @@ from thetagang.strategies.tail_hedge_state import (
     TailHedgeState,
     TailHedgeStateStore,
     TailHedgeStatus,
+    build_tail_reduction_order_ref,
     parse_state_datetime,
 )
 
@@ -316,6 +317,29 @@ def test_state_store_matches_recovery_to_final_submission_quantity(tmp_path) -> 
 
     assert store.update_recovery_submission(60, None)
     assert not store.load().open_cohorts[0].has_pending_recovery
+
+
+def test_state_store_releases_only_matching_pending_entry(tmp_path) -> None:
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'release-entry.db'}",
+        str(tmp_path / "config.toml"),
+        dry_run=False,
+        config_text="config",
+    )
+    pending_contract = _put_contract(con_id=60)
+    active_contract = _put_contract(con_id=61)
+    store = TailHedgeStateStore(data_store, "TEST123")
+    store.save(
+        _state(
+            _entry(pending_contract, status="entry_enqueued"),
+            _entry(active_contract),
+        )
+    )
+
+    assert store.release_entry_submission(60)
+    assert {cohort.con_id for cohort in store.load().cohorts} == {61}
+    assert not store.release_entry_submission(61)
+    assert {cohort.con_id for cohort in store.load().cohorts} == {61}
 
 
 def test_broker_timestamps_are_normalized_to_local_state_time() -> None:
@@ -699,6 +723,25 @@ async def test_entry_rechecks_live_stock_after_market_data_awaits(mocker):
 
 
 @pytest.mark.asyncio
+async def test_entry_rechecks_selected_contract_occupancy_after_quote(mocker):
+    engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    contract = _configure_entry(engine, ibkr)
+    stock = _stock_position()
+    occupied_put = _put_position(contract)
+    ibkr.portfolio.side_effect = [
+        [stock],
+        [stock],
+        [stock, occupied_put],
+    ]
+
+    await _manage(engine, {"QQQ": [stock]})
+
+    data_store.save_tail_hedge_entries.assert_not_called()
+    order_ops.enqueue_order.assert_not_called()
+    assert _outcomes(data_store) == ["target_put_became_occupied"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("action", "order_ref"),
     [("BUY", None), ("SELL", "ordinary-stock-order")],
@@ -881,7 +924,11 @@ async def test_due_and_removed_puts_are_closed(mocker, removed, dte, reason):
         action="SELL",
         quantity=1,
         limit_price=0.5,
-        order_ref=TAIL_HEDGE_CLOSE_ORDER_REF,
+        order_ref=build_tail_reduction_order_ref(
+            TAIL_HEDGE_CLOSE_ORDER_REF,
+            contract.conId,
+            NOW,
+        ),
         transmit=True,
     )
     assert (
@@ -1003,6 +1050,80 @@ async def test_completed_exit_fill_waits_for_portfolio_cache(mocker):
     closed_state = _saved_states(data_store)[-1]
     assert closed_state.open_cohorts == []
     assert closed_state.cohorts[0].recovered_cost == 200.0
+
+
+@pytest.mark.asyncio
+async def test_restored_timestamp_less_fill_matches_persisted_recovery_ref(mocker):
+    engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    contract = _put_contract(dte=30)
+    recovery_enqueued_at = NOW - timedelta(days=1)
+    pending = _entry(
+        contract,
+        days_ago=1,
+        cost=250.0,
+        quantity=2,
+        pending_recovery_quantity=2,
+        pending_recovery_per_contract=100.0,
+        pending_recovery_enqueued_at=recovery_enqueued_at,
+        pending_recovery_initial_quantity=2,
+    )
+    data_store.load_tail_hedge_entries.return_value = _state_rows(_state(pending))
+    ibkr.trades.return_value = [
+        _working_trade(
+            contract,
+            build_tail_reduction_order_ref(
+                TAIL_HEDGE_CLOSE_ORDER_REF,
+                contract.conId,
+                recovery_enqueued_at,
+            ),
+            status="Filled",
+            filled=0,
+            remaining=0,
+            observed_at=None,
+        )
+    ]
+
+    await _manage(engine, {"QQQ": [_stock_position()]})
+
+    order_ops.enqueue_order.assert_not_called()
+    closed = _saved_states(data_store)[-1].cohorts[0]
+    assert closed.status == "closed"
+    assert closed.recovered_cost == 200.0
+
+
+@pytest.mark.asyncio
+async def test_timestamp_less_legacy_fill_cannot_credit_new_recovery(mocker):
+    engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    contract = _put_contract(dte=30)
+    recovery_enqueued_at = NOW - timedelta(days=1)
+    pending = _entry(
+        contract,
+        days_ago=1,
+        cost=250.0,
+        quantity=2,
+        pending_recovery_quantity=2,
+        pending_recovery_per_contract=100.0,
+        pending_recovery_enqueued_at=recovery_enqueued_at,
+        pending_recovery_initial_quantity=2,
+    )
+    data_store.load_tail_hedge_entries.return_value = _state_rows(_state(pending))
+    ibkr.trades.return_value = [
+        _working_trade(
+            contract,
+            TAIL_HEDGE_CLOSE_ORDER_REF,
+            status="Filled",
+            filled=0,
+            remaining=0,
+            observed_at=None,
+        )
+    ]
+
+    await _manage(engine, {"QQQ": [_stock_position()]})
+
+    order_ops.enqueue_order.assert_not_called()
+    closed = _saved_states(data_store)[-1].cohorts[0]
+    assert closed.status == "closed"
+    assert closed.recovered_cost == 0.0
 
 
 @pytest.mark.asyncio

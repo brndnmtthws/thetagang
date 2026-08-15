@@ -1,10 +1,17 @@
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
 from ib_async import IB, LimitOrder, Option, Stock, Ticker
 
+from thetagang.db import DataStore
 from thetagang.portfolio_manager import PortfolioManager
+from thetagang.strategies.tail_hedge_state import (
+    TailHedgeCohort,
+    TailHedgeState,
+    TailHedgeStateStore,
+)
 
 
 @pytest.fixture
@@ -55,6 +62,39 @@ def tail_order(portfolio_manager, action, quantity, order_ref):
         account=portfolio_manager.account_number,
         orderRef=order_ref,
     )
+
+
+def persist_tail_entry(portfolio_manager, tmp_path, contract):
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'tail-entry.db'}",
+        str(tmp_path / "config.toml"),
+        dry_run=False,
+        config_text="config",
+    )
+    portfolio_manager.data_store = data_store
+    store = TailHedgeStateStore(data_store, portfolio_manager.account_number)
+    entered_at = datetime(2026, 8, 15, 12)
+    store.save(
+        TailHedgeState(
+            [
+                TailHedgeCohort(
+                    entry_id=(
+                        f"{contract.symbol}:{contract.conId}:{entered_at.isoformat()}"
+                    ),
+                    symbol=contract.symbol,
+                    status="entry_enqueued",
+                    con_id=contract.conId,
+                    expiration=contract.lastTradeDateOrContractMonth,
+                    strike=float(contract.strike),
+                    quantity=1,
+                    entry_limit_price=1.0,
+                    entered_at=entered_at,
+                    estimated_cost=100.0,
+                )
+            ]
+        )
+    )
+    return store
 
 
 def working_trade(mocker, portfolio_manager, *, order_ref="", account=None):
@@ -293,6 +333,41 @@ class TestPortfolioManager:
         update_recovery.assert_called_once_with(123, None)
         portfolio_manager.trades.submit_order.assert_not_called()
 
+    def test_submit_orders_preserves_tail_sale_consumed_by_working_order(
+        self, portfolio_manager, mocker
+    ):
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            return_value=[position(portfolio_manager, contract, 1)]
+        )
+        working = SimpleNamespace(
+            contract=contract,
+            order=LimitOrder(
+                "SELL",
+                1,
+                1.0,
+                account=portfolio_manager.account_number,
+            ),
+            isDone=lambda: False,
+        )
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[working])
+        portfolio_manager.trades = mocker.Mock()
+        update_recovery = mocker.patch.object(
+            portfolio_manager,
+            "_update_tail_recovery_submission",
+            return_value=True,
+        )
+        portfolio_manager.orders.add_order(
+            contract,
+            tail_order(portfolio_manager, "SELL", 1, "tg:tail-hedge:close"),
+            None,
+        )
+
+        portfolio_manager.submit_orders()
+
+        update_recovery.assert_not_called()
+        portfolio_manager.trades.submit_order.assert_not_called()
+
     def test_submit_orders_requires_persisted_tail_sale_quantity(
         self, portfolio_manager, mocker
     ):
@@ -370,6 +445,28 @@ class TestPortfolioManager:
         portfolio_manager.trades.submit_order.assert_called_once()
         assert portfolio_manager.trades.submit_order.call_args.args[0].symbol == "QQQ"
 
+    def test_submit_orders_releases_tail_entry_without_live_underlying(
+        self,
+        portfolio_manager,
+        mocker,
+        tmp_path,
+    ):
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        store = persist_tail_entry(portfolio_manager, tmp_path, contract)
+        portfolio_manager.ibkr.portfolio = mocker.Mock(return_value=[])
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.orders.add_order(
+            contract,
+            tail_order(portfolio_manager, "BUY", 1, "tg:tail-hedge:entry"),
+            None,
+        )
+
+        portfolio_manager.submit_orders()
+
+        portfolio_manager.trades.submit_order.assert_not_called()
+        assert store.load().cohorts == []
+
     def test_submit_orders_blocks_tail_entry_for_working_underlying_order(
         self, portfolio_manager, mocker
     ):
@@ -415,6 +512,108 @@ class TestPortfolioManager:
 
         portfolio_manager.trades.submit_order.assert_called_once()
         assert portfolio_manager.trades.submit_order.call_args.args[0].symbol == "QQQ"
+
+    @pytest.mark.parametrize("occupancy", ["live", "working"])
+    def test_submit_orders_blocks_occupied_tail_entry_contract(
+        self,
+        portfolio_manager,
+        mocker,
+        occupancy,
+        tmp_path,
+    ):
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        store = persist_tail_entry(portfolio_manager, tmp_path, contract)
+        stock = position(portfolio_manager, Stock("SPY", "SMART"), 1)
+        portfolio = [stock]
+        open_trades = []
+        if occupancy == "live":
+            portfolio.append(position(portfolio_manager, contract, 1))
+        else:
+            open_trades.append(
+                SimpleNamespace(
+                    contract=contract,
+                    order=LimitOrder(
+                        "BUY",
+                        1,
+                        1.0,
+                        account=portfolio_manager.account_number,
+                        orderRef="wheel-entry",
+                    ),
+                    isDone=lambda: False,
+                )
+            )
+        portfolio_manager.ibkr.portfolio = mocker.Mock(return_value=portfolio)
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=open_trades)
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.orders.add_order(
+            contract,
+            tail_order(portfolio_manager, "BUY", 1, "tg:tail-hedge:entry"),
+            None,
+        )
+
+        portfolio_manager.submit_orders()
+
+        portfolio_manager.trades.submit_order.assert_not_called()
+        assert store.load().cohorts == []
+
+    def test_submit_orders_preserves_matching_working_tail_entry_state(
+        self,
+        portfolio_manager,
+        mocker,
+        tmp_path,
+    ):
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        store = persist_tail_entry(portfolio_manager, tmp_path, contract)
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            return_value=[position(portfolio_manager, Stock("SPY", "SMART"), 1)]
+        )
+        working = SimpleNamespace(
+            contract=contract,
+            order=tail_order(
+                portfolio_manager,
+                "BUY",
+                1,
+                "tg:tail-hedge:entry",
+            ),
+            isDone=lambda: False,
+        )
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[working])
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.orders.add_order(
+            contract,
+            tail_order(portfolio_manager, "BUY", 1, "tg:tail-hedge:entry"),
+            None,
+        )
+
+        portfolio_manager.submit_orders()
+
+        portfolio_manager.trades.submit_order.assert_not_called()
+        assert len(store.load().cohorts) == 1
+
+    def test_submit_orders_preserves_first_same_batch_tail_entry_state(
+        self,
+        portfolio_manager,
+        mocker,
+        tmp_path,
+    ):
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        store = persist_tail_entry(portfolio_manager, tmp_path, contract)
+        portfolio_manager.ibkr.portfolio = mocker.Mock(
+            return_value=[position(portfolio_manager, Stock("SPY", "SMART"), 1)]
+        )
+        portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.submit_order.return_value = True
+        order = tail_order(portfolio_manager, "BUY", 1, "tg:tail-hedge:entry")
+        portfolio_manager.orders.add_order(contract, order, None)
+        portfolio_manager.orders.add_order(contract, order, None)
+
+        portfolio_manager.submit_orders()
+
+        portfolio_manager.trades.submit_order.assert_called_once()
+        remaining = store.load().cohorts
+        assert len(remaining) == 1
+        assert remaining[0].status == "entry_enqueued"
 
     @pytest.mark.parametrize("tail_first", [False, True])
     def test_submit_orders_blocks_tail_entry_for_same_run_underlying_order(

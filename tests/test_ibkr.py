@@ -18,6 +18,7 @@ from ib_async.wrapper import RequestError
 from thetagang import log
 from thetagang.ibkr import (
     IBKR,
+    MAX_CONCURRENT_MARKET_DATA_STREAMS,
     RequiredFieldValidationError,
     TickerField,
 )
@@ -38,6 +39,9 @@ def mock_ib(mocker):
     )  # Allow += operation
     mock.wrapper = mocker.Mock()
     mock.wrapper.accountValues = {}
+    mock.wrapper.ticker2ReqId = {"mktData": {}}
+    mock.ticker.return_value = None
+    mock.cancelMktData.return_value = True
     return mock
 
 
@@ -312,6 +316,100 @@ async def test_market_data_streaming_handler_requires_conid(ibkr, mock_ib, mocke
 
     assert "no 'conId' value exists" in str(excinfo.value)
     mock_ib.reqMktData.assert_not_called()
+
+
+async def test_market_data_streaming_handler_cancels_owned_stream(
+    ibkr, mock_ib, mock_ticker, mocker
+):
+    contract = Stock("TEST", "SMART", "USD", conId=1)
+    # ib_async retains canceled tickers in its cache; without an active request-id
+    # mapping this ticker must be treated as stale and subscribed again.
+    mock_ib.ticker.return_value = mock_ticker
+    mock_ib.reqMktData.return_value = mock_ticker
+    handler = mocker.AsyncMock()
+
+    result = await ibkr.__market_data_streaming_handler__(contract, "101", handler)
+
+    assert result is mock_ticker
+    mock_ib.reqMktData.assert_called_once_with(contract, genericTickList="101")
+    handler.assert_awaited_once_with(mock_ticker)
+    mock_ib.cancelMktData.assert_called_once_with(contract)
+
+
+async def test_market_data_streaming_handler_cancels_owned_stream_on_error(
+    ibkr, mock_ib, mock_ticker, mocker
+):
+    contract = Stock("TEST", "SMART", "USD", conId=1)
+    mock_ib.reqMktData.return_value = mock_ticker
+    handler = mocker.AsyncMock(side_effect=RuntimeError("market data failed"))
+
+    with pytest.raises(RuntimeError, match="market data failed"):
+        await ibkr.__market_data_streaming_handler__(contract, "", handler)
+
+    mock_ib.cancelMktData.assert_called_once_with(contract)
+
+
+async def test_market_data_streaming_handler_preserves_shared_stream(
+    ibkr, mock_ib, mock_ticker, mocker
+):
+    contract = Stock("TEST", "SMART", "USD", conId=1)
+    mock_ib.ticker.return_value = mock_ticker
+    mock_ib.wrapper.ticker2ReqId = {"mktData": {mock_ticker: 123}}
+    handler = mocker.AsyncMock()
+
+    result = await ibkr.__market_data_streaming_handler__(contract, "", handler)
+
+    assert result is mock_ticker
+    handler.assert_awaited_once_with(mock_ticker)
+    mock_ib.reqMktData.assert_not_called()
+    mock_ib.cancelMktData.assert_not_called()
+
+
+async def test_market_data_streaming_handler_bounds_concurrent_streams(
+    ibkr, mock_ib, mocker
+):
+    active_streams = 0
+    max_active_streams = 0
+    capacity_reached = asyncio.Event()
+    release_streams = asyncio.Event()
+
+    def request_market_data(contract, **_kwargs):
+        ticker = mocker.Mock(spec=Ticker)
+        ticker.contract = contract
+        return ticker
+
+    async def handler(_ticker):
+        nonlocal active_streams, max_active_streams
+        active_streams += 1
+        max_active_streams = max(max_active_streams, active_streams)
+        if active_streams == MAX_CONCURRENT_MARKET_DATA_STREAMS:
+            capacity_reached.set()
+        try:
+            await release_streams.wait()
+        finally:
+            active_streams -= 1
+
+    mock_ib.reqMktData.side_effect = request_market_data
+    contracts = [
+        Stock(f"TEST{i}", "SMART", "USD", conId=i + 1)
+        for i in range(MAX_CONCURRENT_MARKET_DATA_STREAMS + 1)
+    ]
+    tasks = [
+        asyncio.create_task(
+            ibkr.__market_data_streaming_handler__(contract, "", handler)
+        )
+        for contract in contracts
+    ]
+
+    await asyncio.wait_for(capacity_reached.wait(), timeout=5)
+    await asyncio.sleep(0)
+    assert max_active_streams == MAX_CONCURRENT_MARKET_DATA_STREAMS
+    assert mock_ib.reqMktData.call_count == MAX_CONCURRENT_MARKET_DATA_STREAMS
+
+    release_streams.set()
+    await asyncio.gather(*tasks)
+    assert mock_ib.reqMktData.call_count == len(contracts)
+    assert mock_ib.cancelMktData.call_count == len(contracts)
 
 
 async def test_wait_for_submitting_orders_success(ibkr, mock_trade, mocker):

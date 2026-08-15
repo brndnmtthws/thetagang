@@ -132,6 +132,10 @@ def start(
             ibc,
             ib,
             account=config.runtime.account.number,
+            # IB can otherwise emit connectedEvent after startup position or
+            # account synchronization times out, leaving empty caches that look
+            # indistinguishable from a genuinely empty account.
+            raiseSyncErrors=True,
             probeContract=probeContract,
             **watchdog_config.to_dict(),
         )
@@ -192,6 +196,7 @@ def start(
             clientId=watchdog_config.clientId,
             timeout=watchdog_config.probeTimeout,
             account=config.runtime.account.number,
+            raiseSyncErrors=True,
         )
         cast(_IBRunner, ib).run(completion_future)
         ib.disconnect()

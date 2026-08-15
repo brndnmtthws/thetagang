@@ -25,6 +25,7 @@ from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
     TailHedgeCohort,
     TailHedgeStateStore,
+    build_tail_reduction_order_ref,
     is_tail_reduction_ref,
     parse_state_datetime,
 )
@@ -577,7 +578,11 @@ class RegimeRebalanceEngine:
             quantity=quantity,
             limit_price=candidate.limit_price,
             use_default_algo=False,
-            order_ref=(f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{symbol}:{con_id}"),
+            order_ref=build_tail_reduction_order_ref(
+                f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{symbol}",
+                con_id,
+                state_cohort.pending_recovery_enqueued_at,
+            ),
             transmit=True,
         )
         self.order_ops.enqueue_order(candidate.contract, order)
