@@ -321,6 +321,35 @@ def test_state_store_matches_recovery_to_final_submission_quantity(tmp_path) -> 
     assert not store.load().open_cohorts[0].has_pending_recovery
 
 
+def test_state_store_rejects_recovery_above_owned_quantity(tmp_path) -> None:
+    contract = _put_contract()
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'owned-quantity.db'}",
+        str(tmp_path / "config.toml"),
+        dry_run=False,
+        config_text="config",
+    )
+    pending = _entry(
+        contract,
+        cost=100.0,
+        quantity=1,
+        pending_recovery_quantity=1,
+        pending_recovery_per_contract=100.0,
+    )
+    store = TailHedgeStateStore(data_store, "TEST123")
+    store.save(_state(pending))
+
+    with pytest.raises(
+        RuntimeError,
+        match="Tail reduction exceeds state-owned quantity",
+    ):
+        store.update_recovery_submission(60, 2, live_quantity=2)
+
+    unchanged = store.load().open_cohorts[0]
+    assert unchanged.quantity == 1
+    assert unchanged.pending_recovery_quantity == 1
+
+
 def test_state_store_releases_only_matching_pending_entry(tmp_path) -> None:
     data_store = DataStore(
         f"sqlite:///{tmp_path / 'release-entry.db'}",

@@ -62,6 +62,7 @@ class IBKR:
         self.__market_data_semaphore = asyncio.Semaphore(
             MAX_CONCURRENT_MARKET_DATA_STREAMS
         )
+        self.__market_data_contract_locks: dict[int, asyncio.Lock] = {}
 
     def portfolio(self, account: str) -> List[PortfolioItem]:
         return self.ib.portfolio(account)
@@ -395,28 +396,38 @@ class IBKR:
             request_id = self.ib.wrapper.ticker2ReqId.get("mktData", {}).get(ticker)
             return ticker if request_id is not None else None
 
-        # Reuse a subscription owned elsewhere without canceling it. ib_async keeps
-        # canceled tickers in its cache, so the request-id mapping is the source of
-        # truth for whether a cached ticker still has an active stream.
-        ticker = active_ticker()
-        if ticker is not None:
-            await handler(ticker)
-            return ticker
-
-        async with self.__market_data_semaphore:
-            # Another caller may have opened the stream while this task waited for
-            # capacity. Check again to avoid replacing its request-id mapping.
+        # Serialize same-contract access so a helper-owned stream cannot be reused
+        # by another caller and then canceled while that caller is still handling it.
+        contract_lock = self.__market_data_contract_locks.setdefault(
+            contract.conId,
+            asyncio.Lock(),
+        )
+        async with contract_lock:
+            # Reuse a subscription owned elsewhere without canceling it. ib_async
+            # keeps canceled tickers in its cache, so the request-id mapping is the
+            # source of truth for whether a cached ticker still has an active stream.
             ticker = active_ticker()
             if ticker is not None:
                 await handler(ticker)
                 return ticker
 
-            ticker = self.ib.reqMktData(contract, genericTickList=generic_tick_list)
-            try:
-                await handler(ticker)
-                return ticker
-            finally:
-                self.ib.cancelMktData(contract)
+            async with self.__market_data_semaphore:
+                # Another contract may have freed stream capacity while this task
+                # waited. Recheck in case an external owner subscribed meanwhile.
+                ticker = active_ticker()
+                if ticker is not None:
+                    await handler(ticker)
+                    return ticker
+
+                ticker = self.ib.reqMktData(
+                    contract,
+                    genericTickList=generic_tick_list,
+                )
+                try:
+                    await handler(ticker)
+                    return ticker
+                finally:
+                    self.ib.cancelMktData(contract)
 
     async def __ticker_wait_for_condition__(
         self, ticker: Ticker, condition: Callable[[Ticker], bool], timeout: float

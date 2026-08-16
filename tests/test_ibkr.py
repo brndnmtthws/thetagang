@@ -365,6 +365,54 @@ async def test_market_data_streaming_handler_preserves_shared_stream(
     mock_ib.cancelMktData.assert_not_called()
 
 
+async def test_market_data_streaming_handler_serializes_same_contract(
+    ibkr, mock_ib, mock_ticker
+):
+    contract = Stock("TEST", "SMART", "USD", conId=1)
+    first_handler_started = asyncio.Event()
+    release_first_handler = asyncio.Event()
+    second_handler_started = asyncio.Event()
+    handler_calls = 0
+
+    def request_market_data(_contract, **_kwargs):
+        mock_ib.ticker.return_value = mock_ticker
+        mock_ib.wrapper.ticker2ReqId["mktData"][mock_ticker] = 123
+        return mock_ticker
+
+    def cancel_market_data(_contract):
+        mock_ib.wrapper.ticker2ReqId["mktData"].pop(mock_ticker, None)
+
+    async def handler(_ticker):
+        nonlocal handler_calls
+        handler_calls += 1
+        if handler_calls == 1:
+            first_handler_started.set()
+            await release_first_handler.wait()
+        else:
+            second_handler_started.set()
+
+    mock_ib.reqMktData.side_effect = request_market_data
+    mock_ib.cancelMktData.side_effect = cancel_market_data
+
+    first_task = asyncio.create_task(
+        ibkr.__market_data_streaming_handler__(contract, "", handler)
+    )
+    await first_handler_started.wait()
+    second_task = asyncio.create_task(
+        ibkr.__market_data_streaming_handler__(contract, "", handler)
+    )
+    await asyncio.sleep(0)
+    second_started_before_release = second_handler_started.is_set()
+
+    release_first_handler.set()
+    await asyncio.gather(first_task, second_task)
+
+    assert not second_started_before_release
+    assert handler_calls == 2
+    assert mock_ib.reqMktData.call_count == 2
+    assert mock_ib.cancelMktData.call_count == 2
+
+
 async def test_market_data_streaming_handler_bounds_concurrent_streams(
     ibkr, mock_ib, mocker
 ):

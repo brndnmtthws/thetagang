@@ -391,6 +391,11 @@ class TailHedgeStateStore:
                 or quantity > live_quantity
             ):
                 raise RuntimeError("Tail reduction has invalid live quantity")
+            if quantity > cohort.quantity:
+                # Do not silently resize only the state: the caller would still
+                # submit the larger order and could sell contracts not owned by
+                # this cohort.
+                raise RuntimeError("Tail reduction exceeds state-owned quantity")
             # A change before broker submission cannot have come from this order,
             # so update ownership without crediting estimated sale proceeds.
             cohort.quantity = min(cohort.quantity, live_quantity)
