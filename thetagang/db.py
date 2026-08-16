@@ -22,10 +22,12 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    func,
     select,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine.url import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from alembic import command
@@ -158,6 +160,7 @@ class ExecutionRecord(Base):
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     exec_id: Mapped[Optional[str]] = mapped_column(String, unique=True)
+    account: Mapped[Optional[str]] = mapped_column(String)
     order_id: Mapped[Optional[int]] = mapped_column(Integer)
     order_ref: Mapped[Optional[str]] = mapped_column(String)
     symbol: Mapped[Optional[str]] = mapped_column(String)
@@ -166,6 +169,34 @@ class ExecutionRecord(Base):
     price: Mapped[Optional[float]] = mapped_column(Float)
     execution_time: Mapped[Optional[datetime]] = mapped_column(DateTime)
     exchange: Mapped[Optional[str]] = mapped_column(String)
+
+
+class TailHedgeEntry(Base):
+    __tablename__ = "tail_hedge_entries"
+
+    account: Mapped[str] = mapped_column(String, primary_key=True)
+    entry_id: Mapped[str] = mapped_column(String, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    con_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    expiration: Mapped[str] = mapped_column(String, nullable=False)
+    strike: Mapped[float] = mapped_column(Float, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_limit_price: Mapped[float] = mapped_column(Float, nullable=False)
+    entered_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    estimated_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    recovered_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    pending_recovery_quantity: Mapped[Optional[int]] = mapped_column(Integer)
+    pending_recovery_per_contract: Mapped[Optional[float]] = mapped_column(Float)
+    pending_recovery_enqueued_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    pending_recovery_initial_quantity: Mapped[Optional[int]] = mapped_column(Integer)
+
+
+TAIL_HEDGE_ENTRY_FIELDS = tuple(
+    column.name
+    for column in TailHedgeEntry.__table__.columns
+    if column.name != "account"
+)
 
 
 class HistoricalBar(Base):
@@ -189,12 +220,33 @@ class HistoricalBar(Base):
 
 
 def sqlite_db_path(db_url: str) -> Optional[Path]:
-    url = make_url(db_url)
-    if not url.drivername.startswith("sqlite"):
+    try:
+        url = make_url(db_url)
+    except ArgumentError:
         return None
-    if url.database in (None, "", ":memory:"):
+    if url.drivername not in {"sqlite", "sqlite+pysqlite"}:
         return None
-    return Path(url.database)
+    try:
+        authority = (url.username, url.password, url.host, url.port)
+    except ValueError:
+        return None
+    if any(component is not None for component in authority):
+        return None
+    database = url.database
+    if database in (None, "", ":memory:"):
+        return None
+    if database.lower().startswith("file:"):
+        return None
+    if "uri" in url.query:
+        return None
+    if str(url.query.get("mode", "")).lower() == "memory":
+        return None
+    return Path(database)
+
+
+def is_persistent_sqlite_url(db_url: str) -> bool:
+    """Return whether a SQLAlchemy URL names file-backed SQLite storage."""
+    return sqlite_db_path(db_url) is not None
 
 
 def make_alembic_config(db_url: str) -> AlembicConfig:
@@ -263,7 +315,27 @@ class DataStore:
         if not db_url.startswith("sqlite"):
             raise ValueError("Only sqlite database URLs are supported.")
         self.db_url = db_url
-        self.config_path = config_path
+        raw_config_path = str(config_path)
+        canonical_config_path = Path(raw_config_path).expanduser().resolve()
+        self.config_path = str(canonical_config_path)
+        config_path_aliases = {
+            self.config_path,
+            raw_config_path,
+            str(Path(raw_config_path).expanduser()),
+        }
+        try:
+            cwd_relative_path = os.path.relpath(
+                canonical_config_path,
+                start=Path.cwd().resolve(),
+            )
+        except ValueError:
+            pass
+        else:
+            config_path_aliases.add(cwd_relative_path)
+            config_path_aliases.add(f".{os.sep}{cwd_relative_path}")
+        self._config_path_aliases = tuple(sorted(config_path_aliases))
+        self._dry_run_event_overlay: Dict[tuple[str, Optional[str]], Optional[str]] = {}
+        self._dry_run_tail_hedge_overlay: Dict[str, list[Dict[str, Any]]] = {}
         connect_args: Dict[str, Any] = {}
         if db_url.startswith("sqlite"):
             connect_args = {"check_same_thread": False}
@@ -271,7 +343,7 @@ class DataStore:
         self.Session = sessionmaker(bind=self.engine, future=True)
         run_migrations(db_url)
         self.dry_run = dry_run
-        self.run_id = self._create_run(config_path, dry_run, config_text)
+        self.run_id = self._create_run(self.config_path, dry_run, config_text)
 
     @contextmanager
     def session_scope(self) -> Iterator[Any]:
@@ -314,7 +386,7 @@ class DataStore:
         event_type: str,
         payload: Optional[Dict[str, Any]] = None,
         symbol: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         try:
             payload_json = json.dumps(payload, default=str) if payload else None
             with self.session_scope() as session:
@@ -326,28 +398,125 @@ class DataStore:
                         payload=payload_json,
                     )
                 )
+            if self.dry_run:
+                self._dry_run_event_overlay[(event_type, symbol)] = payload_json
+            return True
         except Exception as exc:
             log.warning(f"Failed to record event {event_type}: {exc}")
+            return False
 
-    def get_last_event_payload(self, event_type: str) -> Optional[Dict[str, Any]]:
+    def get_last_event_payload(
+        self,
+        event_type: str,
+        *,
+        symbol: Optional[str] = None,
+        config_scoped: bool = True,
+        raise_on_error: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         try:
+            overlay_key = (event_type, symbol)
+            if self.dry_run and overlay_key in self._dry_run_event_overlay:
+                payload = self._dry_run_event_overlay[overlay_key]
+                if not payload:
+                    return None
+                decoded = json.loads(payload)
+                if not isinstance(decoded, dict):
+                    raise ValueError(f"Event {event_type} payload is not an object")
+                return decoded
+
             with self.session_scope() as session:
-                event = (
+                query = (
                     session.query(Event)
                     .join(Run, Event.run_id == Run.id)
                     .filter(Event.event_type == event_type)
-                    .filter(Run.config_path == self.config_path)
                     .filter(Run.dry_run.is_(False))
-                    .order_by(Event.created_at.desc())
-                    .first()
                 )
+                if symbol is not None:
+                    query = query.filter(Event.symbol == symbol)
+                if config_scoped:
+                    query = query.filter(Run.config_path.in_(self._config_path_aliases))
+                event = query.order_by(Event.id.desc()).first()
                 payload = event.payload if event else None
             if not payload:
                 return None
-            return json.loads(payload)
+            decoded = json.loads(payload)
+            if not isinstance(decoded, dict):
+                raise ValueError(f"Event {event_type} payload is not an object")
+            return decoded
         except Exception as exc:
             log.warning(f"Failed to read event {event_type}: {exc}")
+            if raise_on_error:
+                raise RuntimeError(f"Failed to read event {event_type}") from exc
             return None
+
+    @staticmethod
+    def _tail_hedge_entry_dict(entry: TailHedgeEntry) -> Dict[str, Any]:
+        return {field: getattr(entry, field) for field in TAIL_HEDGE_ENTRY_FIELDS}
+
+    def load_tail_hedge_entries(
+        self,
+        account: str,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[Dict[str, Any]]:
+        """Load the current account-scoped tail cohorts from typed SQLite rows."""
+        try:
+            if self.dry_run and account in self._dry_run_tail_hedge_overlay:
+                return [
+                    dict(entry) for entry in self._dry_run_tail_hedge_overlay[account]
+                ]
+
+            with self.session_scope() as session:
+                entries = (
+                    session.execute(
+                        select(TailHedgeEntry)
+                        .where(TailHedgeEntry.account == account)
+                        .order_by(TailHedgeEntry.entered_at, TailHedgeEntry.entry_id)
+                    )
+                    .scalars()
+                    .all()
+                )
+                return [self._tail_hedge_entry_dict(entry) for entry in entries]
+        except Exception as exc:
+            log.warning(f"Failed to read tail-hedge state: {exc}")
+            if raise_on_error:
+                raise RuntimeError("Failed to read tail-hedge state") from exc
+            return []
+
+    def save_tail_hedge_entries(
+        self,
+        account: str,
+        entries: Iterable[Mapping[str, Any]],
+    ) -> bool:
+        """Atomically replace one account's durable tail-cohort rows."""
+        try:
+            current = [
+                {field: entry[field] for field in TAIL_HEDGE_ENTRY_FIELDS}
+                for entry in entries
+            ]
+            entry_ids = [entry["entry_id"] for entry in current]
+            if len(entry_ids) != len(set(entry_ids)):
+                raise ValueError("Tail-hedge cohort entry IDs must be unique")
+            current.sort(key=lambda entry: (entry["entered_at"], entry["entry_id"]))
+            if self.dry_run:
+                self._dry_run_tail_hedge_overlay[account] = current
+                return True
+
+            with self.session_scope() as session:
+                session.query(TailHedgeEntry).filter(
+                    TailHedgeEntry.account == account
+                ).delete(synchronize_session=False)
+                session.add_all(
+                    TailHedgeEntry(
+                        account=account,
+                        **entry,
+                    )
+                    for entry in current
+                )
+            return True
+        except Exception as exc:
+            log.warning(f"Failed to persist tail-hedge state: {exc}")
+            return False
 
     def record_account_snapshot(self, summary: Dict[str, Any]) -> None:
         try:
@@ -499,6 +668,7 @@ class DataStore:
                     dict(
                         run_id=self.run_id,
                         exec_id=getattr(execution, "execId", None),
+                        account=getattr(execution, "acctNumber", None),
                         order_id=getattr(execution, "orderId", None),
                         order_ref=getattr(execution, "orderRef", None),
                         symbol=getattr(contract, "symbol", None),
@@ -512,7 +682,15 @@ class DataStore:
             if rows:
                 with self.session_scope() as session:
                     stmt = sqlite_insert(ExecutionRecord).values(rows)
-                    stmt = stmt.on_conflict_do_nothing(index_elements=["exec_id"])
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["exec_id"],
+                        set_={
+                            "account": func.coalesce(
+                                stmt.excluded.account,
+                                ExecutionRecord.account,
+                            ),
+                        },
+                    )
                     session.execute(stmt)
         except Exception as exc:
             log.warning(f"Failed to record executions: {exc}")
@@ -599,18 +777,32 @@ class DataStore:
         symbols: Iterable[str],
         order_ref_prefix: str,
         start_time: datetime,
+        account: str,
+        *,
+        include_legacy_unscoped: bool = False,
     ) -> Optional[datetime]:
+        symbols = list(symbols)
         with self.session_scope() as session:
-            stmt = (
+            base_stmt = (
                 select(ExecutionRecord.execution_time)
                 .where(ExecutionRecord.execution_time >= start_time)
                 .where(ExecutionRecord.order_ref.like(f"{order_ref_prefix}%"))
-                .where(ExecutionRecord.symbol.in_(list(symbols)))
+                .where(ExecutionRecord.symbol.in_(symbols))
+            )
+            scoped_stmt = (
+                base_stmt.where(ExecutionRecord.account == account)
                 .order_by(ExecutionRecord.execution_time.desc())
                 .limit(1)
             )
-            result = session.execute(stmt).scalar_one_or_none()
-            return result
+            scoped = session.execute(scoped_stmt).scalar_one_or_none()
+            if scoped is not None or not include_legacy_unscoped:
+                return scoped
+            legacy_stmt = (
+                base_stmt.where(ExecutionRecord.account.is_(None))
+                .order_by(ExecutionRecord.execution_time.desc())
+                .limit(1)
+            )
+            return session.execute(legacy_stmt).scalar_one_or_none()
 
 
 def _parse_bar_time(value: Any) -> Optional[datetime]:

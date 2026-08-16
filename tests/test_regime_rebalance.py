@@ -2,14 +2,15 @@ import math
 from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
-from ib_async import IB, Option, Stock
+from ib_async import IB, AccountValue, MarketOrder, Option, Stock
 
 import thetagang.portfolio_manager as pm_module
 import thetagang.strategies.regime_engine as regime_engine_module
 from thetagang.config import Config
-from thetagang.db import DataStore
+from thetagang.db import DataStore, ExecutionRecord
 from thetagang.legacy_config import (
     RatioGateConfig,
     RegimeRebalanceBaseEnum,
@@ -20,6 +21,13 @@ from thetagang.portfolio_manager import PortfolioManager
 from thetagang.strategies.regime_engine import (
     REGIME_HISTORY_MAX_ATTEMPTS,
     REGIME_HISTORY_TIMEFRAME,
+    TAIL_HEDGE_HARVEST_EVENT,
+)
+from thetagang.strategies.tail_hedge_state import (
+    TAIL_HEDGE_CLOSE_ORDER_REF,
+    TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
+    TailHedgeCohort,
+    TailHedgeState,
 )
 
 REGIME_HISTORY_START = datetime(2024, 1, 2)
@@ -55,6 +63,7 @@ def portfolio_manager(mock_ib, mocker):
         ),
         strategies=SimpleNamespace(
             cash_management=SimpleNamespace(cash_fund="SHV"),
+            tail_hedge=SimpleNamespace(enabled=False, targets=[]),
             regime_rebalance=SimpleNamespace(
                 enabled=True,
                 symbols=["AAA", "BBB"],
@@ -105,6 +114,7 @@ def portfolio_manager_with_db(mock_ib, mocker, tmp_path):
         ),
         strategies=SimpleNamespace(
             cash_management=SimpleNamespace(cash_fund="SHV"),
+            tail_hedge=SimpleNamespace(enabled=False, targets=[]),
             regime_rebalance=SimpleNamespace(
                 enabled=True,
                 symbols=["AAA", "BBB"],
@@ -232,16 +242,33 @@ def _mock_regime_broker(portfolio_manager, mocker, **history_mock_kwargs) -> Non
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
 
-def _stock_position(symbol: str, position: int, market_value: float | None = None):
+def _enable_tail_hedge_stage(portfolio_manager) -> None:
+    portfolio_manager.run_stage_flags["equity_regime_rebalance"] = True
+    portfolio_manager.run_stage_flags["post_tail_hedge"] = True
+
+
+def _enable_cash_management_stage(portfolio_manager, enabled: bool = True) -> None:
+    portfolio_manager.run_stage_flags["post_cash_management"] = enabled
+
+
+def _stock_position(
+    symbol: str,
+    position: int | float,
+    market_value: float | None = None,
+):
     return SimpleNamespace(
+        account="TEST123",
         contract=Stock(symbol, "SMART", "USD"),
         position=position,
         marketValue=market_value,
     )
 
 
-def _regime_account_summary(value: str = "400"):
-    return {"NetLiquidation": SimpleNamespace(value=value)}
+def _regime_account_summary(value: str = "400", *, cash: str | None = None):
+    summary = {"NetLiquidation": SimpleNamespace(value=value)}
+    if cash is not None:
+        summary["TotalCashValue"] = SimpleNamespace(value=cash)
+    return summary
 
 
 def _regime_stock_positions(aaa: int = 3, bbb: int = 1):
@@ -304,18 +331,79 @@ def _option_position(
     strike: float = 100.0,
     right: str = "C",
     expiry: str = "20270115",
+    con_id: int = 0,
+    average_cost: float | None = None,
+    unrealized_pnl: float | None = None,
 ):
+    contract = Option(
+        symbol=symbol,
+        lastTradeDateOrContractMonth=expiry,
+        strike=strike,
+        right=right,
+        exchange="SMART",
+        currency="USD",
+    )
+    contract.conId = con_id
     return SimpleNamespace(
-        contract=Option(
-            symbol=symbol,
-            lastTradeDateOrContractMonth=expiry,
-            strike=strike,
-            right=right,
-            exchange="SMART",
-            currency="USD",
-        ),
+        account="TEST123",
+        contract=contract,
         position=position,
         marketValue=market_value,
+        averageCost=average_cost,
+        unrealizedPNL=unrealized_pnl,
+    )
+
+
+def _tail_state(
+    *,
+    symbol: str = "BBB",
+    puts: list[SimpleNamespace] | None = None,
+) -> TailHedgeState:
+    positions = puts or []
+    cohorts = []
+    for index, position in enumerate(positions):
+        entry_id = f"{symbol}-tail-{position.contract.conId}"
+        entered_at = datetime(2026, 1, 1) + timedelta(days=index)
+        quantity = int(position.position)
+        average_cost = float(position.averageCost or 0.0)
+        if not math.isfinite(average_cost) or average_cost <= 0:
+            average_cost = 50.0
+        cohorts.append(
+            TailHedgeCohort(
+                entry_id=entry_id,
+                symbol=symbol,
+                status="active",
+                con_id=position.contract.conId,
+                expiration=position.contract.lastTradeDateOrContractMonth,
+                strike=float(position.contract.strike),
+                quantity=quantity,
+                entry_limit_price=average_cost / 100.0,
+                entered_at=entered_at,
+                estimated_cost=average_cost * quantity,
+            )
+        )
+    return TailHedgeState(cohorts=cohorts)
+
+
+def _save_tail_state(portfolio_manager, *states: TailHedgeState) -> None:
+    store = portfolio_manager.regime_engine._tail_state_store
+    assert store is not None
+    store.save(
+        TailHedgeState(
+            cohorts=[cohort for state in states for cohort in state.cohorts],
+        )
+    )
+
+
+def _tail_target(symbol: str = "BBB") -> SimpleNamespace:
+    return SimpleNamespace(symbol=symbol)
+
+
+def _option_ticker(price: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        midpoint=lambda: price,
+        marketPrice=lambda: price,
+        modelGreeks=None,
     )
 
 
@@ -413,7 +501,7 @@ async def test_regime_rebalance_generates_orders(portfolio_manager, mocker):
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -439,7 +527,7 @@ async def test_regime_rebalance_retries_empty_history(
 
     _mock_regime_broker(portfolio_manager, mocker, side_effect=_get_history)
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -461,7 +549,10 @@ async def test_regime_rebalance_uses_fresh_cached_history_when_api_empty(
 
     _mock_regime_broker(portfolio_manager_with_db, mocker, return_value=[])
 
-    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    (
+        _,
+        orders,
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -490,7 +581,10 @@ async def test_regime_rebalance_uses_fresh_cache_when_api_history_is_stale(
 
     _mock_regime_broker(portfolio_manager_with_db, mocker, return_value=stale_bars)
 
-    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    (
+        _,
+        orders,
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -548,7 +642,7 @@ async def test_regime_rebalance_rejects_incomplete_cached_history(
     _mock_regime_broker(portfolio_manager_with_db, mocker, return_value=[])
 
     with pytest.raises(ValueError, match="fresh historical data"):
-        await portfolio_manager_with_db.check_regime_rebalance_positions(
+        await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
 
@@ -575,7 +669,7 @@ async def test_regime_rebalance_rejects_unreadable_cached_history(
     )
 
     with pytest.raises(ValueError, match="readable history cache"):
-        await portfolio_manager_with_db.check_regime_rebalance_positions(
+        await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
 
@@ -613,7 +707,10 @@ async def test_regime_rebalance_volatility_weight_scales_down_without_renormaliz
         return_value=[]
     )
 
-    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    (
+        _,
+        orders,
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -648,7 +745,7 @@ async def test_regime_rebalance_volatility_weight_restores_only_to_base_weight(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 101.0, 102.0, 103.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -690,7 +787,10 @@ async def test_regime_rebalance_volatility_weight_can_scale_above_base(
         return_value=[]
     )
 
-    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    (
+        _,
+        orders,
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -727,7 +827,7 @@ async def test_regime_rebalance_rejects_effective_weights_above_100(
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
     with pytest.raises(ValueError, match="must not exceed 100%"):
-        await portfolio_manager.check_regime_rebalance_positions(
+        await portfolio_manager.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
 
@@ -758,7 +858,7 @@ async def test_regime_rebalance_managed_stocks_rejects_unallocated_weight(
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
     with pytest.raises(ValueError, match="weight_base is managed_stocks"):
-        await portfolio_manager.check_regime_rebalance_positions(
+        await portfolio_manager.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
 
@@ -797,7 +897,7 @@ async def test_regime_rebalance_volatility_weight_smooths_from_previous_state(
         return_value=[]
     )
 
-    await portfolio_manager_with_db.check_regime_rebalance_positions(
+    await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -873,7 +973,7 @@ async def test_regime_rebalance_volatility_weight_uses_increase_smoothing_factor
         return_value=[]
     )
 
-    await portfolio_manager_with_db.check_regime_rebalance_positions(
+    await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -908,7 +1008,7 @@ async def test_regime_rebalance_empty_proxy_fallback_uses_effective_weights(
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
     proxy_spy = mocker.spy(portfolio_manager.regime_engine, "_get_regime_proxy_series")
 
-    await portfolio_manager.check_regime_rebalance_positions(
+    await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary,
         portfolio_positions,
     )
@@ -955,7 +1055,7 @@ async def test_regime_rebalance_volatility_weight_band_does_not_block_smoothing(
         return_value=[]
     )
 
-    await portfolio_manager_with_db.check_regime_rebalance_positions(
+    await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -992,7 +1092,7 @@ async def test_regime_rebalance_volatility_weight_without_db_starts_from_base(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 200.0, 100.0, 200.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    await portfolio_manager.check_regime_rebalance_positions(
+    await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1027,7 +1127,7 @@ async def test_regime_rebalance_volatility_weight_falls_back_on_zero_vol(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 100.0, 100.0, 100.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1125,7 +1225,7 @@ async def test_regime_rebalance_volatility_weight_state_payload_fields(
         return_value=[]
     )
 
-    await portfolio_manager_with_db.check_regime_rebalance_positions(
+    await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1165,10 +1265,62 @@ async def test_regime_rebalance_excludes_options_and_cash_fund_from_base(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
+    assert orders == [("AAA", "NYSE", 40), ("BBB", "NYSE", 240)]
+
+
+@pytest.mark.asyncio
+async def test_net_liq_base_also_excludes_state_owned_tail_puts(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.runtime.account.margin_usage = 1.2
+    regime_config = portfolio_manager.config.strategies.regime_rebalance
+    regime_config.weight_base = RegimeRebalanceBaseEnum.net_liq
+    regime_config.soft_band = 0.0
+    regime_config.choppiness_min = 0.0
+    regime_config.efficiency_max = 1.0
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=False,
+        targets=[_tail_target("AAA")],
+    )
+    tail_put = _option_position(
+        "AAA",
+        1,
+        market_value=10_000.0,
+        right="P",
+        con_id=701,
+        average_cost=10_001.0,
+        unrealized_pnl=-1.0,
+    )
+    _save_tail_state(
+        portfolio_manager,
+        _tail_state(symbol="AAA", puts=[tail_put]),
+    )
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 500), tail_put],
+        "BBB": [_stock_position("BBB", 300)],
+        "OTHER_OPT": [_option_position("AAA", 1, market_value=5_000.0, con_id=702)],
+    }
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+        _regime_account_summary("100000"),
+        portfolio_positions,
+    )
+
+    # Only the $10k state-owned tail put is removed in net_liq mode; the
+    # unrelated $5k option remains in the selected base by configuration.
     assert orders == [("AAA", "NYSE", 40), ("BBB", "NYSE", 240)]
 
 
@@ -1213,7 +1365,7 @@ async def test_regime_rebalance_box_spread_borrowing_excluded_from_base(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1235,7 +1387,7 @@ async def test_regime_rebalance_respects_regime_gate(portfolio_manager, mocker):
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1263,7 +1415,7 @@ async def test_regime_rebalance_ratio_gate_shadow_metrics_emitted(
         return_value=[]
     )
 
-    await portfolio_manager_with_db.check_regime_rebalance_positions(
+    await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1294,7 +1446,7 @@ async def test_regime_rebalance_ratio_gate_blocks_soft_rebalance(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 100.0, 100.0, 100.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1320,7 +1472,7 @@ async def test_regime_rebalance_hard_band_ignores_ratio_gate(portfolio_manager, 
     _mock_regime_history(portfolio_manager, mocker, [100.0, 100.0, 100.0, 100.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1361,7 +1513,7 @@ async def test_regime_rebalance_ratio_gate_handles_uninvested_rest_symbol(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 100.0, 100.0, 100.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1500,7 +1652,7 @@ async def test_regime_rebalance_ratio_gate_uses_effective_rest_weights(
         return_value=[]
     )
 
-    await portfolio_manager_with_db.check_regime_rebalance_positions(
+    await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary,
         portfolio_positions,
     )
@@ -1543,7 +1695,7 @@ async def test_regime_rebalance_cooldown_blocks_trades(
         ]
     )
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1580,7 +1732,7 @@ async def test_regime_rebalance_cooldown_allows_after_window(
         ]
     )
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1614,7 +1766,7 @@ async def test_regime_rebalance_cooldown_blocks_same_day_missing_bar(
         ]
     )
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1650,11 +1802,15 @@ async def test_regime_rebalance_ignores_non_matching_order_refs(
     ]
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=fills)
 
-    last_rebalance = await portfolio_manager._get_last_regime_rebalance_time(
-        ["AAA", "BBB"]
+    last_rebalance = (
+        await portfolio_manager.regime_engine._get_last_regime_rebalance_time(
+            ["AAA", "BBB"]
+        )
     )
 
     assert last_rebalance == datetime(2024, 1, 7)
+    exec_filter = portfolio_manager.ibkr.request_executions.await_args.args[0]
+    assert exec_filter.acctCode == "TEST123"
 
 
 @pytest.mark.asyncio
@@ -1665,6 +1821,7 @@ async def test_regime_rebalance_uses_db_for_cooldown(
         SimpleNamespace(
             execution=SimpleNamespace(
                 execId="1",
+                acctNumber="TEST123",
                 orderRef="tg:regime-rebalance:AAA",
                 time=datetime(2024, 1, 5, 12, 0, 0),
             ),
@@ -1674,6 +1831,7 @@ async def test_regime_rebalance_uses_db_for_cooldown(
         SimpleNamespace(
             execution=SimpleNamespace(
                 execId="2",
+                acctNumber="TEST123",
                 orderRef="tg:regime-rebalance:BBB",
                 time=datetime(2024, 1, 7, 12, 0, 0),
             ),
@@ -1687,11 +1845,93 @@ async def test_regime_rebalance_uses_db_for_cooldown(
     )
     _freeze_now(monkeypatch, datetime(2024, 1, 10, 12, 0, 0))
 
-    last_rebalance = await portfolio_manager_with_db._get_last_regime_rebalance_time(
-        ["AAA", "BBB"]
+    last_rebalance = (
+        await portfolio_manager_with_db.regime_engine._get_last_regime_rebalance_time(
+            ["AAA", "BBB"]
+        )
     )
 
     assert last_rebalance == datetime(2024, 1, 7, 12, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_regime_cooldown_uses_live_fill_when_persistence_drops_it(
+    portfolio_manager_with_db, mocker, monkeypatch
+):
+    portfolio_manager = portfolio_manager_with_db
+    _freeze_now(monkeypatch, datetime(2024, 1, 10, 12))
+    fill = SimpleNamespace(
+        execution=SimpleNamespace(
+            execId="live-only",
+            acctNumber="TEST123",
+            orderRef="tg:regime-rebalance:AAA",
+            time=datetime(2024, 1, 9, 12),
+        ),
+        contract=SimpleNamespace(symbol="AAA"),
+        time=datetime(2024, 1, 9, 12),
+    )
+    portfolio_manager.ibkr.ib.reqExecutionsAsync = mocker.AsyncMock(return_value=[fill])
+    record_executions = mocker.patch.object(
+        portfolio_manager.data_store,
+        "record_executions",
+        return_value=None,
+    )
+
+    last_rebalance = (
+        await portfolio_manager.regime_engine._get_last_regime_rebalance_time(["AAA"])
+    )
+
+    assert last_rebalance == datetime(2024, 1, 9, 12)
+    record_executions.assert_called_once_with([fill])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refresh_fails", [False, True])
+async def test_regime_cooldown_uses_legacy_history_without_scoped_rows(
+    portfolio_manager_with_db, mocker, monkeypatch, refresh_fails
+):
+    portfolio_manager = portfolio_manager_with_db
+    _freeze_now(monkeypatch, datetime(2024, 1, 10, 12))
+    with portfolio_manager.data_store.session_scope() as session:
+        session.add(
+            ExecutionRecord(
+                run_id=portfolio_manager.data_store.run_id,
+                exec_id="legacy",
+                account=None,
+                order_ref="tg:regime-rebalance:AAA",
+                symbol="AAA",
+                execution_time=datetime(2024, 1, 9, 12),
+            )
+        )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(
+        side_effect=ConnectionError("offline") if refresh_fails else None,
+        return_value=[],
+    )
+
+    last_rebalance = (
+        await portfolio_manager.regime_engine._get_last_regime_rebalance_time(["AAA"])
+    )
+
+    assert last_rebalance == datetime(2024, 1, 9, 12)
+
+
+@pytest.mark.asyncio
+async def test_regime_cooldown_fails_closed_when_history_is_unavailable(
+    portfolio_manager_with_db, mocker, monkeypatch
+):
+    fixed = datetime(2024, 1, 10, 12)
+    _freeze_now(monkeypatch, fixed)
+    portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
+        side_effect=ConnectionError("offline")
+    )
+
+    last_rebalance = (
+        await portfolio_manager_with_db.regime_engine._get_last_regime_rebalance_time(
+            ["AAA"]
+        )
+    )
+
+    assert last_rebalance == fixed
 
 
 @pytest.mark.asyncio
@@ -1708,7 +1948,7 @@ async def test_regime_rebalance_insufficient_history(portfolio_manager, mocker):
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
     with pytest.raises(ValueError, match="fresh historical data"):
-        await portfolio_manager.check_regime_rebalance_positions(
+        await portfolio_manager.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
 
@@ -1730,7 +1970,7 @@ async def test_regime_rebalance_band_thresholds(portfolio_manager, mocker):
         "AAA": [SimpleNamespace(contract=Stock("AAA", "SMART", "USD"), position=10)],
         "BBB": [SimpleNamespace(contract=Stock("BBB", "SMART", "USD"), position=19)],
     }
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, below_band_positions
     )
     assert orders == []
@@ -1740,7 +1980,7 @@ async def test_regime_rebalance_band_thresholds(portfolio_manager, mocker):
         "AAA": [SimpleNamespace(contract=Stock("AAA", "SMART", "USD"), position=12)],
         "BBB": [SimpleNamespace(contract=Stock("BBB", "SMART", "USD"), position=16)],
     }
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, at_band_positions
     )
     assert orders == [("AAA", "NYSE", -2), ("BBB", "NYSE", 4)]
@@ -1780,7 +2020,7 @@ async def test_regime_rebalance_hard_band_ignores_regime_and_cooldown(
         ]
     )
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1805,7 +2045,7 @@ async def test_regime_rebalance_hard_band_partial_rebalance(portfolio_manager, m
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1829,7 +2069,7 @@ async def test_regime_rebalance_soft_band_blocked_by_regime(portfolio_manager, m
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1868,7 +2108,10 @@ async def test_regime_rebalance_positive_flow_bypasses_regime_gate(
     )
     info_mock = mocker.patch.object(regime_engine_module.log, "info")
 
-    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    (
+        _,
+        orders,
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -1974,7 +2217,7 @@ async def test_regime_rebalance_positive_flow_fills_unequal_price_target_gaps(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2006,7 +2249,7 @@ async def test_regime_rebalance_positive_flow_scales_to_available_capacity(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2045,7 +2288,10 @@ async def test_regime_rebalance_directional_gate_uses_dollar_gaps(
         return_value=[]
     )
 
-    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    (
+        _,
+        orders,
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2091,7 +2337,7 @@ async def test_regime_rebalance_negative_flow_sells_by_excess_value(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2127,7 +2373,7 @@ async def test_regime_rebalance_positive_flow_uses_volatility_adjusted_target(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 200.0, 100.0, 200.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2164,7 +2410,7 @@ async def test_regime_rebalance_cooldown_blocks_positive_flow(
         ]
     )
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2193,7 +2439,10 @@ async def test_regime_rebalance_directional_gate_blocks_positive_flow(
         return_value=[]
     )
 
-    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    (
+        _,
+        orders,
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2234,7 +2483,10 @@ async def test_regime_rebalance_negative_flow_retains_regime_gate(
         return_value=[]
     )
 
-    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    (
+        _,
+        orders,
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2266,7 +2518,7 @@ async def test_regime_rebalance_ratio_gate_blocks_flow_rebalance(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2306,7 +2558,7 @@ async def test_regime_rebalance_blocked_flow_preserves_hysteresis(
     (
         _,
         blocked_orders,
-    ) = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary,
         {
             "AAA": [_stock_position("AAA", 7)],
@@ -2333,7 +2585,7 @@ async def test_regime_rebalance_blocked_flow_preserves_hysteresis(
     (
         _,
         resumed_orders,
-    ) = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary,
         {
             "AAA": [_stock_position("AAA", 8)],
@@ -2456,7 +2708,7 @@ async def test_regime_rebalance_respects_no_trading(portfolio_manager, mocker):
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2482,7 +2734,7 @@ async def test_regime_rebalance_cash_added_triggers_buys(portfolio_manager, mock
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2514,7 +2766,7 @@ async def test_regime_rebalance_cash_flow_does_not_reserve_disabled_target_gaps(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2545,7 +2797,7 @@ async def test_regime_rebalance_cash_flow_reserves_actionable_rounding_remainder
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2575,7 +2827,7 @@ async def test_regime_rebalance_flow_gate_without_buys_does_not_reserve_cash(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2604,7 +2856,7 @@ async def test_regime_rebalance_cash_withdrawn_triggers_sells(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2643,7 +2895,10 @@ async def test_regime_rebalance_flow_hysteresis_uses_db_state(
         return_value=[]
     )
 
-    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    (
+        _,
+        orders,
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2683,7 +2938,10 @@ async def test_regime_rebalance_deficit_rail_sells_overweights(
         return_value=[]
     )
 
-    _, orders = await portfolio_manager_with_db.check_regime_rebalance_positions(
+    (
+        _,
+        orders,
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2716,7 +2974,7 @@ async def test_regime_rebalance_deficit_rail_sells_pro_rata(portfolio_manager, m
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2750,7 +3008,7 @@ async def test_regime_rebalance_deficit_rail_sells_by_overweight_value(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2778,7 +3036,7 @@ async def test_regime_rebalance_deficit_rail_sells_from_initial_amount(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2807,7 +3065,7 @@ async def test_regime_rebalance_deficit_cleanup_uses_stop_band(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2836,7 +3094,7 @@ async def test_regime_rebalance_no_trading_blocks_deficit_and_hard(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.check_regime_rebalance_positions(
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
         account_summary, portfolio_positions
     )
 
@@ -2856,7 +3114,7 @@ async def test_regime_rebalance_invalid_market_price_raises(portfolio_manager, m
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
     with pytest.raises(ValueError, match="valid market prices"):
-        await portfolio_manager.check_regime_rebalance_positions(
+        await portfolio_manager.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
 
@@ -2874,7 +3132,7 @@ async def test_regime_rebalance_invalid_close_raises(portfolio_manager, mocker):
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
     with pytest.raises(ValueError, match="invalid historical closes"):
-        await portfolio_manager.check_regime_rebalance_positions(
+        await portfolio_manager.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
 
@@ -2910,7 +3168,7 @@ async def test_regime_rebalance_no_common_dates_raises(portfolio_manager, mocker
     )
 
     with pytest.raises(ValueError, match="aligned history"):
-        await portfolio_manager.check_regime_rebalance_positions(
+        await portfolio_manager.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
 
@@ -2926,7 +3184,7 @@ async def test_regime_rebalance_empty_history_stays_hard_failure(
     _mock_regime_broker(portfolio_manager, mocker, return_value=[])
 
     with pytest.raises(ValueError, match="aligned history"):
-        await portfolio_manager.check_regime_rebalance_positions(
+        await portfolio_manager.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
 
@@ -2951,6 +3209,1206 @@ async def test_regime_rebalance_zero_weights_raises(portfolio_manager, mocker):
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
     with pytest.raises(ValueError, match="positive target weights"):
-        await portfolio_manager.check_regime_rebalance_positions(
+        await portfolio_manager.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
+
+
+def _configure_tail_harvest(
+    portfolio_manager,
+    *symbols: str,
+) -> None:
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=True,
+        targets=[_tail_target(symbol) for symbol in symbols],
+    )
+    _enable_tail_hedge_stage(portfolio_manager)
+
+
+def _set_live_tail_positions(
+    portfolio_manager, positions, *, cash: float = 0.0
+) -> None:
+    puts_by_symbol: dict[str, list[SimpleNamespace]] = {}
+    for position in positions:
+        contract = getattr(position, "contract", None)
+        if (
+            isinstance(contract, Option)
+            and contract.right.upper().startswith("P")
+            and float(position.position) > 0
+        ):
+            puts_by_symbol.setdefault(contract.symbol, []).append(position)
+    _save_tail_state(
+        portfolio_manager,
+        *(
+            _tail_state(symbol=symbol, puts=symbol_puts)
+            for symbol, symbol_puts in sorted(puts_by_symbol.items())
+        ),
+    )
+    portfolio_manager.ibkr.ib.portfolio.return_value = list(positions)
+    portfolio_manager.ibkr.ib.openTrades.return_value = []
+    portfolio_manager.ibkr.ib.accountValues.return_value = [
+        AccountValue("TEST123", "TotalCashValue", str(cash), "BASE", "")
+    ]
+    portfolio_manager.ibkr.ib.accountSummaryAsync = AsyncMock(return_value=[])
+
+
+def _set_tail_quotes(portfolio_manager, mocker, prices: dict[int, float]) -> None:
+    async def quote(contract, **_kwargs):
+        return _option_ticker(prices[int(contract.conId)])
+
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(side_effect=quote)
+
+
+@pytest.mark.asyncio
+async def test_harvest_persists_recovery_intent(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    payload = _tail_state(symbol="BBB", puts=[tail_put])
+    _save_tail_state(portfolio_manager, payload)
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [tail_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=payload.open_cohorts,
+    )
+
+    assert orders == []
+    store = portfolio_manager.regime_engine._tail_state_store
+    assert store is not None
+    state = store.load()
+    assert state.open_cohorts[0].pending_recovery_quantity == 1
+    assert state.open_cohorts[0].pending_recovery_per_contract == 120.0
+    assert isinstance(state.open_cohorts[0].pending_recovery_enqueued_at, datetime)
+    assert state.open_cohorts[0].pending_recovery_initial_quantity == 1
+    telemetry = portfolio_manager.data_store.get_last_event_payload(
+        TAIL_HEDGE_HARVEST_EVENT,
+        symbol="BBB",
+    )
+    assert telemetry is not None
+    assert telemetry["outcome"] == "harvest_enqueued"
+    assert telemetry["gross_proceeds"] == 120.0
+    assert telemetry["estimated_fees"] == 0.0
+    assert telemetry["net_proceeds"] == 120.0
+    assert telemetry["required_proceeds"] == 100.0
+    assert telemetry["excess_proceeds"] == 20.0
+
+
+@pytest.mark.asyncio
+async def test_pending_recovery_serializes_same_symbol_harvests(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    first_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    next_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261218",
+        con_id=802,
+        average_cost=50.0,
+    )
+    first_put.contract.multiplier = next_put.contract.multiplier = "100"
+    state = _tail_state(symbol="BBB", puts=[first_put, next_put])
+    state.cohorts[0].begin_recovery(
+        quantity=1,
+        proceeds_per_contract=120.0,
+        enqueued_at=datetime.now() - timedelta(minutes=10),
+    )
+    _save_tail_state(portfolio_manager, state)
+    portfolio_manager.ibkr.ib.portfolio.return_value = [next_put]
+    portfolio_manager.ibkr.ib.openTrades.return_value = []
+    portfolio_manager.ibkr.ib.accountValues.return_value = [
+        AccountValue("TEST123", "TotalCashValue", "0", "BASE", "")
+    ]
+    _set_tail_quotes(portfolio_manager, mocker, {802: 1.20})
+
+    store = portfolio_manager.regime_engine._tail_state_store
+    assert store is not None
+    first_orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [next_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=store.load().open_cohorts,
+    )
+
+    assert first_orders == []
+    assert portfolio_manager.orders.records() == []
+    telemetry = portfolio_manager.data_store.get_last_event_payload(
+        TAIL_HEDGE_HARVEST_EVENT,
+        symbol="BBB",
+    )
+    assert telemetry is not None
+    assert telemetry["outcome"] == "harvest_deferred"
+    assert telemetry["reason"] == "pending_recovery"
+
+    reconciled = store.load()
+    portfolio_manager.post_engine.tail_hedge_engine._reconcile_state(
+        state=reconciled,
+        entry_trades=[],
+        account_trades=[],
+        pending_close_con_ids=set(),
+    )
+    assert {cohort.con_id for cohort in store.load().open_cohorts} == {802}
+
+    next_orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [next_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=store.load().open_cohorts,
+    )
+
+    assert next_orders == []
+    assert [
+        contract.conId
+        for contract, _order, _intent_id in portfolio_manager.orders.records()
+    ] == [802]
+
+
+@pytest.mark.asyncio
+async def test_harvest_profitability_includes_estimated_broker_fee(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    portfolio_manager.config.runtime.orders.estimated_fee_per_contract = 1.0
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=51.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    _set_tail_quotes(portfolio_manager, mocker, {801: 0.51})
+    record_harvest = mocker.spy(
+        portfolio_manager.regime_engine,
+        "_record_tail_harvest",
+    )
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [tail_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert portfolio_manager.orders.records() == []
+    assert any(
+        call.args[0] == "candidate_not_net_profitable"
+        for call in record_harvest.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_harvest_does_not_credit_a_pre_submission_position_change(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    stale_put = _option_position(
+        "BBB",
+        3,
+        market_value=360.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    live_put = _option_position(
+        "BBB",
+        2,
+        market_value=240.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    stale_put.contract.multiplier = "100"
+    live_put.contract.multiplier = "100"
+    payload = _tail_state(symbol="BBB", puts=[stale_put])
+    _save_tail_state(portfolio_manager, payload)
+    portfolio_manager.ibkr.ib.portfolio.return_value = [live_put]
+    portfolio_manager.ibkr.ib.openTrades.return_value = []
+    portfolio_manager.ibkr.ib.accountValues.return_value = [
+        AccountValue("TEST123", "TotalCashValue", "0", "BASE", "")
+    ]
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [live_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=payload.open_cohorts,
+    )
+
+    assert orders == []
+    await portfolio_manager.post_engine.tail_hedge_engine.manage(
+        {"BBB": [live_put]},
+        net_liquidation=200.0,
+    )
+
+    store = portfolio_manager.regime_engine._tail_state_store
+    assert store is not None
+    cohort = store.load().open_cohorts[0]
+    assert cohort.quantity == 2
+    assert cohort.recovered_cost == 0.0
+    assert cohort.pending_recovery_quantity == 1
+
+
+@pytest.mark.asyncio
+async def test_harvest_requires_fresh_persisted_ownership(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    stale_state = _tail_state(symbol="BBB", puts=[tail_put])
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    _save_tail_state(portfolio_manager)
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [tail_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=stale_state.open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert portfolio_manager.orders.records() == []
+
+
+@pytest.mark.asyncio
+async def test_harvest_does_not_queue_sell_when_recovery_intent_cannot_persist(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    payload = _tail_state(symbol="BBB", puts=[tail_put])
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
+    store = portfolio_manager.regime_engine._tail_state_store
+    assert store is not None
+    mocker.patch.object(
+        store,
+        "save",
+        side_effect=RuntimeError("Failed to persist required tail-hedge state"),
+    )
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [tail_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=payload.open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert portfolio_manager.orders.records() == []
+
+
+def test_partial_broker_working_buy_reserves_only_remaining_debit(
+    portfolio_manager_with_db,
+):
+    portfolio_manager = portfolio_manager_with_db
+    working_put = Option("AAA", "20270115", 50.0, "P", "SMART")
+    working_put.multiplier = "100"
+    portfolio_manager.ibkr.ib.openTrades.return_value = [
+        SimpleNamespace(
+            contract=working_put,
+            order=SimpleNamespace(
+                account="TEST123",
+                action="BUY",
+                lmtPrice=1.0,
+                totalQuantity=1,
+            ),
+            orderStatus=SimpleNamespace(remaining=0.25),
+            isDone=lambda: False,
+        )
+    ]
+
+    shortfall = portfolio_manager.regime_engine._ordinary_rebalance_shortfall(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("500", cash="100"),
+        portfolio_positions={},
+        market_prices={"BBB": 100.0},
+    )
+
+    assert shortfall == 25.0
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_working_buy_skips_tail_harvest(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    portfolio_manager.ibkr.ib.openTrades.return_value = [
+        SimpleNamespace(
+            contract=Stock("AAA", "SMART", "USD"),
+            order=SimpleNamespace(
+                account="TEST123",
+                action="BUY",
+                lmtPrice=100.0,
+                totalQuantity=1,
+            ),
+            orderStatus=SimpleNamespace(remaining=0),
+            isDone=lambda: False,
+        )
+    ]
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock()
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [tail_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert portfolio_manager.orders.records() == []
+
+
+@pytest.mark.asyncio
+async def test_market_buy_skips_tail_harvest(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    portfolio_manager.ibkr.ib.openTrades.return_value = [
+        SimpleNamespace(
+            contract=Stock("AAA", "SMART", "USD"),
+            order=MarketOrder("BUY", 1, account="TEST123"),
+            orderStatus=SimpleNamespace(remaining=1),
+            isDone=lambda: False,
+        )
+    ]
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock()
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [tail_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert portfolio_manager.orders.records() == []
+    portfolio_manager.ibkr.get_ticker_for_contract.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_harvest_rereads_replacement_ib_async_cache_objects(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    _enable_cash_management_stage(portfolio_manager)
+    portfolio_manager.config.strategies.cash_management = SimpleNamespace(
+        enabled=True,
+        cash_fund="SHV",
+        target_cash_balance=0.0,
+    )
+
+    live_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=802,
+        average_cost=50.0,
+    )
+    live_put.contract.multiplier = "100"
+    live_state = _tail_state(symbol="BBB", puts=[live_put])
+    _save_tail_state(portfolio_manager, live_state)
+    stale_put = _option_position(
+        "BBB",
+        1,
+        market_value=60.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    cash_fund = _stock_position("SHV", 1, market_value=50.0)
+    cash_fund.contract.conId = 901
+
+    live_ib = IB()
+    live_ib.wrapper.accountValues[("TEST123", "TotalCashValue", "BASE", "")] = (
+        AccountValue("TEST123", "TotalCashValue", "50", "BASE", "")
+    )
+    live_ib.wrapper.portfolio["TEST123"][802] = live_put
+    live_ib.wrapper.portfolio["TEST123"][901] = cash_fund
+    account_values = mocker.spy(live_ib, "accountValues")
+    account_summary_async = mocker.spy(live_ib, "accountSummaryAsync")
+    request_positions = mocker.spy(live_ib, "reqPositionsAsync")
+    portfolio_manager.ibkr.ib = live_ib
+    _set_tail_quotes(portfolio_manager, mocker, {802: 1.20})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 2)],
+        account_summary=_regime_account_summary("500", cash="0"),
+        portfolio_positions={"BBB": [stale_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=live_state.open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert [
+        contract.conId
+        for contract, _order, _intent_id in portfolio_manager.orders.records()
+    ] == [802]
+    account_values.assert_called_once_with("TEST123")
+    account_summary_async.assert_not_called()
+    request_positions.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_harvest_stages_one_shortest_tranche_during_large_shortfall(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    short_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    later_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261218",
+        con_id=802,
+        average_cost=50.0,
+    )
+    latest_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20270115",
+        con_id=803,
+        average_cost=50.0,
+    )
+    for position in (short_put, later_put, latest_put):
+        position.contract.multiplier = "100"
+    positions = {"BBB": [short_put, later_put, latest_put]}
+    _set_live_tail_positions(portfolio_manager, positions["BBB"])
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20, 802: 1.20, 803: 1.20})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 3)],
+        account_summary=_regime_account_summary("500", cash="0"),
+        portfolio_positions=positions,
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=_tail_state(
+            symbol="BBB",
+            puts=[latest_put, later_put, short_put],
+        ).open_cohorts,
+    )
+
+    assert orders == []
+    queued = portfolio_manager.orders.records()
+    assert [contract.conId for contract, _order, _intent_id in queued] == [801]
+    assert [int(order.totalQuantity) for _contract, order, _intent_id in queued] == [1]
+    assert all(
+        order.orderRef.startswith(f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:BBB:")
+        for _contract, order, _intent_id in queued
+    )
+
+
+@pytest.mark.asyncio
+async def test_harvest_defers_all_unfunded_shares_when_tranche_covers_only_part(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        6,
+        market_value=600.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    _set_live_tail_positions(portfolio_manager, [tail_put], cash=200.0)
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.0})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 20)],
+        account_summary=_regime_account_summary("2500", cash="200"),
+        portfolio_positions={"BBB": [tail_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 2)]
+    assert [
+        int(order.totalQuantity)
+        for _contract, order, _intent_id in portfolio_manager.orders.records()
+    ] == [6]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "first_price",
+        "next_cash",
+        "still_hard",
+        "expected_orders",
+        "expected_sale",
+    ),
+    [
+        (3.0, "300", True, [("BBB", "NYSE", 3)], []),
+        (1.0, "100", True, [("BBB", "NYSE", 1)], [802]),
+        (1.0, "0", False, [("BBB", "NYSE", 3)], []),
+    ],
+)
+async def test_harvest_next_run_uses_cash_then_rechecks_remaining_shortfall(
+    portfolio_manager_with_db,
+    mocker,
+    first_price,
+    next_cash,
+    still_hard,
+    expected_orders,
+    expected_sale,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    first_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    next_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261218",
+        con_id=802,
+        average_cost=50.0,
+    )
+    first_put.contract.multiplier = next_put.contract.multiplier = "100"
+    cohorts = _tail_state(symbol="BBB", puts=[first_put, next_put]).open_cohorts
+    _set_live_tail_positions(portfolio_manager, [first_put, next_put])
+    _set_tail_quotes(portfolio_manager, mocker, {801: first_price, 802: 1.2})
+
+    first_orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 3)],
+        account_summary=_regime_account_summary("500", cash="0"),
+        portfolio_positions={"BBB": [first_put, next_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=cohorts,
+    )
+    assert first_orders == []
+    assert [
+        contract.conId
+        for contract, _order, _intent_id in portfolio_manager.orders.records()
+    ] == [801]
+
+    portfolio_manager.orders.records().clear()
+    _set_live_tail_positions(portfolio_manager, [next_put], cash=float(next_cash))
+    next_orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 3)],
+        account_summary=_regime_account_summary("500", cash=next_cash),
+        portfolio_positions={"BBB": [next_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"} if still_hard else set(),
+        cohorts=cohorts,
+    )
+
+    assert next_orders == expected_orders
+    assert [
+        contract.conId
+        for contract, _order, _intent_id in portfolio_manager.orders.records()
+    ] == expected_sale
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "cash_fund_value",
+        "sell_threshold",
+        "cash_stage_enabled",
+        "expected_stock_quantity",
+        "put_sales",
+    ),
+    [
+        (250.0, 100.0, True, 2, 0),
+        (50.0, 100.0, True, 1, 1),
+        (50.0, 200.0, True, 2, 0),
+        (250.0, 100.0, False, 0, 2),
+    ],
+)
+async def test_cash_fund_and_tolerance_bound_harvest_shortfall(
+    portfolio_manager_with_db,
+    mocker,
+    cash_fund_value,
+    sell_threshold,
+    cash_stage_enabled,
+    expected_stock_quantity,
+    put_sales,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    _enable_cash_management_stage(portfolio_manager, cash_stage_enabled)
+    portfolio_manager.config.strategies.cash_management = SimpleNamespace(
+        enabled=True,
+        cash_fund="SHV",
+        target_cash_balance=50.0,
+        sell_threshold=sell_threshold,
+    )
+    tail_put = _option_position(
+        "BBB",
+        2,
+        market_value=240.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    positions = {
+        "BBB": [tail_put],
+        "SHV": [_stock_position("SHV", 2, market_value=cash_fund_value)],
+    }
+    _set_live_tail_positions(
+        portfolio_manager,
+        [
+            position
+            for symbol_positions in positions.values()
+            for position in symbol_positions
+        ],
+    )
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 2)],
+        account_summary=_regime_account_summary("500", cash="0"),
+        portfolio_positions=positions,
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
+    )
+
+    expected_orders = (
+        [("BBB", "NYSE", expected_stock_quantity)] if expected_stock_quantity else []
+    )
+    assert orders == expected_orders
+    queued_harvests = [
+        order
+        for contract, order, _intent_id in portfolio_manager.orders.records()
+        if isinstance(contract, Option)
+    ]
+    assert sum(int(order.totalQuantity) for order in queued_harvests) == put_sales
+
+
+@pytest.mark.asyncio
+async def test_cash_fund_capacity_excludes_fractional_unsellable_share(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    _enable_cash_management_stage(portfolio_manager)
+    portfolio_manager.config.strategies.cash_management = SimpleNamespace(
+        enabled=True,
+        cash_fund="SHV",
+        target_cash_balance=0.0,
+        sell_threshold=0.0,
+    )
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    cash_fund = _stock_position("SHV", 1.5, market_value=150.0)
+    positions = {"BBB": [tail_put], "SHV": [cash_fund]}
+    _set_live_tail_positions(portfolio_manager, [tail_put, cash_fund], cash=50.0)
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.2})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 2)],
+        account_summary=_regime_account_summary("500", cash="50"),
+        portfolio_positions=positions,
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert len(portfolio_manager.orders.records()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "order_ref"),
+    [
+        ("broker", f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:BBB:801"),
+        ("broker", TAIL_HEDGE_CLOSE_ORDER_REF),
+        ("local", TAIL_HEDGE_CLOSE_ORDER_REF),
+    ],
+)
+async def test_working_tail_sale_keeps_unfunded_shares_deferred(
+    portfolio_manager_with_db,
+    mocker,
+    source,
+    order_ref,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    _set_live_tail_positions(portfolio_manager, [tail_put], cash=100.0)
+    working_order = SimpleNamespace(
+        account="TEST123",
+        action="SELL",
+        lmtPrice=1.2,
+        totalQuantity=1,
+        orderRef=order_ref,
+    )
+    if source == "broker":
+        portfolio_manager.ibkr.ib.openTrades.return_value = [
+            SimpleNamespace(
+                contract=tail_put.contract,
+                order=working_order,
+                isDone=lambda: False,
+            )
+        ]
+    else:
+        portfolio_manager.orders.add_order(tail_put.contract, working_order, None)
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock()
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 2)],
+        account_summary=_regime_account_summary("500", cash="100"),
+        portfolio_positions={"BBB": [tail_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert len(portfolio_manager.orders.records()) == (1 if source == "local" else 0)
+    portfolio_manager.ibkr.get_ticker_for_contract.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("entry_limit_price", "expected_orders", "put_sales"),
+    [
+        (0.5, [], 1),
+        (float("nan"), [("BBB", "NYSE", 1)], 0),
+    ],
+)
+async def test_nan_live_cost_uses_only_a_finite_entry_limit_basis(
+    portfolio_manager_with_db,
+    mocker,
+    entry_limit_price,
+    expected_orders,
+    put_sales,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=float("nan"),
+    )
+    tail_put.contract.multiplier = "100"
+    cohorts = _tail_state(symbol="BBB", puts=[tail_put]).open_cohorts
+    cohorts[0].entry_limit_price = entry_limit_price
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [tail_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=cohorts,
+    )
+
+    assert orders == expected_orders
+    assert len(portfolio_manager.orders.records()) == put_sales
+
+
+@pytest.mark.asyncio
+async def test_harvest_keeps_buy_when_puts_cannot_fund_one_whole_share(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=60.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    _set_tail_quotes(portfolio_manager, mocker, {801: 0.60})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [tail_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert portfolio_manager.orders.records() == []
+
+
+@pytest.mark.asyncio
+async def test_harvest_skips_too_small_shortest_tranche_for_later_useful_one(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    shortest_put = _option_position(
+        "BBB",
+        1,
+        market_value=60.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    later_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261218",
+        con_id=802,
+        average_cost=50.0,
+    )
+    shortest_put.contract.multiplier = later_put.contract.multiplier = "100"
+    positions = {"BBB": [shortest_put, later_put]}
+    _set_live_tail_positions(portfolio_manager, positions["BBB"])
+    _set_tail_quotes(portfolio_manager, mocker, {801: 0.6, 802: 1.2})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions=positions,
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=_tail_state(symbol="BBB", puts=[shortest_put, later_put]).open_cohorts,
+    )
+
+    assert orders == []
+    assert [
+        contract.conId
+        for contract, _order, _intent_id in portfolio_manager.orders.records()
+    ] == [802]
+
+
+@pytest.mark.asyncio
+async def test_harvest_rounding_cannot_over_defer_across_symbols(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "AAA", "BBB")
+    aaa_put = _option_position(
+        "AAA",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    bbb_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=802,
+        average_cost=50.0,
+    )
+    aaa_put.contract.multiplier = bbb_put.contract.multiplier = "100"
+    _set_live_tail_positions(portfolio_manager, [aaa_put, bbb_put], cash=150.0)
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20, 802: 1.20})
+    cohorts = [
+        *_tail_state(symbol="AAA", puts=[aaa_put]).open_cohorts,
+        *_tail_state(symbol="BBB", puts=[bbb_put]).open_cohorts,
+    ]
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("AAA", "NYSE", 1), ("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("500", cash="150"),
+        portfolio_positions={"AAA": [aaa_put], "BBB": [bbb_put]},
+        market_prices={"AAA": 100.0, "BBB": 100.0},
+        regime_summary=[{"symbol": "AAA"}, {"symbol": "BBB"}],
+        hard_underweight_symbols={"AAA", "BBB"},
+        cohorts=cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert [
+        contract.symbol
+        for contract, _order, _intent_id in portfolio_manager.orders.records()
+    ] == ["AAA"]
+    portfolio_manager.ibkr.get_ticker_for_contract.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_harvest_requires_same_symbol_hard_underweight(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock()
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        account_summary=_regime_account_summary("200", cash="0"),
+        portfolio_positions={"BBB": [tail_put]},
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"AAA"},
+        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert portfolio_manager.orders.records() == []
+    portfolio_manager.ibkr.get_ticker_for_contract.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_volatility_sizing_failure_blocks_harvest_but_not_regime_order(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    portfolio_manager.config.portfolio.symbols[
+        "BBB"
+    ].volatility_weight = _volatility_weight(
+        lookback_days=5,
+        min_weight=0.10,
+        max_weight=0.25,
+    )
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    _save_tail_state(
+        portfolio_manager,
+        _tail_state(symbol="BBB", puts=[tail_put]),
+    )
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 3)],
+        "BBB": [_stock_position("BBB", 0), tail_put],
+        "OTHER": [_stock_position("OTHER", 1, market_value=100.0)],
+    }
+    _mock_regime_tickers(portfolio_manager, mocker)
+    closes = [100.0, 110.0, 100.0, 110.0]
+    dates = _required_regime_history_dates(len(closes))
+
+    async def aligned_closes(symbols, lookback_days, _cooldown_days):
+        if symbols == ["BBB"] and lookback_days == 5:
+            raise RuntimeError("volatility history unavailable")
+        return dates, {symbol: closes for symbol in symbols}
+
+    portfolio_manager.regime_engine._get_regime_aligned_closes = mocker.AsyncMock(
+        side_effect=aligned_closes
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    portfolio_manager.ibkr.ib.openTrades.return_value = []
+    portfolio_manager.ibkr.ib.portfolio.return_value = [
+        position for positions in portfolio_positions.values() for position in positions
+    ]
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock()
+
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+        _regime_account_summary("580"),
+        portfolio_positions,
+    )
+
+    assert orders == [("AAA", "NYSE", -1), ("BBB", "NYSE", 2)]
+    assert portfolio_manager.orders.records() == []
+    portfolio_manager.ibkr.get_ticker_for_contract.assert_not_awaited()

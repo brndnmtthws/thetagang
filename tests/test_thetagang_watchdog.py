@@ -52,7 +52,14 @@ def _write_config(tmp_path, *, max_startup_retries=None):
     return config_path
 
 
-def _run_start(monkeypatch, tmp_path, *, max_startup_retries=None, event_script=()):
+def _run_start(
+    monkeypatch,
+    tmp_path,
+    *,
+    max_startup_retries=None,
+    event_script=(),
+    without_ibc=False,
+):
     """Run ``thetagang.start`` with a fake IB stack.
 
     ``event_script`` is a sequence of ``"started"``/``"stopped"`` strings that
@@ -88,12 +95,13 @@ def _run_start(monkeypatch, tmp_path, *, max_startup_retries=None, event_script=
             self.terminated = True
 
     class FakeWatchdog:
-        def __init__(self, *_args, **_kwargs):
+        def __init__(self, *_args, **kwargs):
             self.started = False
             self.stopped = False
             self.startedEvent = DummyEvent()
             self.stoppedEvent = DummyEvent()
             captured["watchdog"] = self
+            captured["watchdog_kwargs"] = kwargs
 
         def start(self):
             assert asyncio.get_running_loop() is loop
@@ -116,14 +124,24 @@ def _run_start(monkeypatch, tmp_path, *, max_startup_retries=None, event_script=
         def __init__(self):
             self.connectedEvent = DummyEvent()
             self.RaiseRequestErrors = False
+            self.disconnected = False
+
+        def connect(self, *args, **kwargs):
+            captured["connect_args"] = args
+            captured["connect_kwargs"] = kwargs
 
         def run(self, awaitable):
-            assert asyncio.iscoroutine(awaitable)
+            assert asyncio.iscoroutine(awaitable) or asyncio.isfuture(awaitable)
+            if asyncio.isfuture(awaitable) and not awaitable.done():
+                awaitable.set_result(True)
             try:
                 loop.run_until_complete(awaitable)
             finally:
                 loop.stop()
                 loop.close()
+
+        def disconnect(self):
+            self.disconnected = True
 
     class FakePortfolioManager:
         def __init__(
@@ -150,7 +168,7 @@ def _run_start(monkeypatch, tmp_path, *, max_startup_retries=None, event_script=
     try:
         tg.start(
             str(config_path),
-            without_ibc=False,
+            without_ibc=without_ibc,
             dry_run=True,
             auto_approve_migration=False,
         )
@@ -168,6 +186,16 @@ def test_watchdog_runs_inside_task(monkeypatch, tmp_path):
     assert captured["watchdog"].stopped is True
     assert captured["ibc"].terminated is True
     assert captured["ibc"].twsVersion == 1045
+    assert captured["watchdog_kwargs"]["account"] == "DU1234567"
+    assert captured["watchdog_kwargs"]["raiseSyncErrors"] is True
+
+
+def test_direct_connection_requires_complete_startup_sync(monkeypatch, tmp_path):
+    captured, error = _run_start(monkeypatch, tmp_path, without_ibc=True)
+
+    assert error is None
+    assert captured["connect_kwargs"]["account"] == "DU1234567"
+    assert captured["connect_kwargs"]["raiseSyncErrors"] is True
 
 
 def test_consecutive_startup_failures_give_up(monkeypatch, tmp_path):

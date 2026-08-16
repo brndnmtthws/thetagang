@@ -1,3 +1,4 @@
+import math
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
@@ -83,6 +84,7 @@ class AlgoSettingsConfig(BaseModel):
 
 class OrdersConfig(BaseModel, DisplayMixin):
     minimum_credit: float = Field(default=0.0, ge=0.0)
+    estimated_fee_per_contract: float = Field(default=1.0, ge=0.0)
     exchange: str = Field(default="SMART")
     algo: AlgoSettingsConfig = Field(
         default=AlgoSettingsConfig(
@@ -100,6 +102,12 @@ class OrdersConfig(BaseModel, DisplayMixin):
         table.add_row("", "Params", "=", f"{self.algo.params}")
         table.add_row("", "Price update delay", "=", f"{self.price_update_delay}")
         table.add_row("", "Minimum credit", "=", f"{dfmt(self.minimum_credit)}")
+        table.add_row(
+            "",
+            "Estimated fees per contract",
+            "=",
+            dfmt(self.estimated_fee_per_contract),
+        )
 
 
 class IBAsyncConfig(BaseModel):
@@ -287,6 +295,120 @@ class VIXCallHedgeConfig(BaseModel, DisplayMixin):
                         "<=",
                         f"{alloc.upper_bound}",
                     )
+
+
+class TailHedgeTargetConfig(BaseModel, DisplayMixin):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1)
+    budget_weight: float = Field(gt=0.0, le=1.0)
+    entries_per_year: int = Field(default=6, ge=1, le=24)
+    entry_gate: Literal["vix", "none"] = Field(default="vix")
+    entry_vix_max: float = Field(default=20.0, ge=0.0)
+    target_dte: int = Field(default=180, gt=0)
+    min_dte: int = Field(default=120, gt=0)
+    max_dte: int = Field(default=240, gt=0)
+    exit_dte: int = Field(default=30, ge=0)
+    minimum_open_interest: int = Field(default=50, ge=0)
+    minimum_bid: float = Field(default=0.01, gt=0.0)
+    max_bid_ask_ratio: float = Field(default=0.50, ge=0.0)
+    max_premium_ratio: float = Field(default=0.05, gt=0.0, le=1.0)
+    catastrophe_drawdowns: List[float] = Field(
+        default_factory=lambda: [0.40, 0.50, 0.60],
+        min_length=1,
+    )
+
+    @model_validator(mode="after")
+    def validate_put_program(self) -> Self:
+        if not self.min_dte <= self.target_dte <= self.max_dte:
+            raise ValueError(
+                "tail_hedge.target_dte must be between min_dte and max_dte"
+            )
+        if self.exit_dte >= self.min_dte:
+            raise ValueError("tail_hedge.exit_dte must be less than min_dte")
+        if any(not 0.0 < drawdown < 1.0 for drawdown in self.catastrophe_drawdowns):
+            raise ValueError(
+                "tail_hedge.catastrophe_drawdowns values must be between 0 and 1"
+            )
+        if self.catastrophe_drawdowns != sorted(set(self.catastrophe_drawdowns)):
+            raise ValueError(
+                "tail_hedge.catastrophe_drawdowns values must be unique and sorted"
+            )
+        return self
+
+    @property
+    def minimum_entry_spacing_days(self) -> int:
+        return max(1, math.ceil(365 / self.entries_per_year))
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_section()
+        table.add_row("", "Protected symbol", "=", self.symbol)
+        table.add_row("", "Budget weight", "=", pfmt(self.budget_weight))
+        table.add_row("", "Entries per year", "=", f"{self.entries_per_year}")
+        table.add_row(
+            "",
+            "Minimum entry spacing (days)",
+            "=",
+            f"{self.minimum_entry_spacing_days}",
+        )
+        table.add_row("", "Entry gate", "=", self.entry_gate)
+        if self.entry_gate == "vix":
+            table.add_row("", "Entry VIX maximum", "=", f"{ffmt(self.entry_vix_max)}")
+        table.add_row("", "Target DTE", "=", f"{self.target_dte}")
+        table.add_row("", "DTE range", "=", f"{self.min_dte}-{self.max_dte}")
+        table.add_row("", "Exit DTE", "=", f"{self.exit_dte}")
+        table.add_row("", "Minimum open interest", "=", f"{self.minimum_open_interest}")
+        table.add_row("", "Minimum quoted bid", "=", f"{dfmt(self.minimum_bid)}")
+        table.add_row("", "Maximum bid/ask ratio", "=", pfmt(self.max_bid_ask_ratio))
+        table.add_row(
+            "",
+            "Maximum premium / spot",
+            "=",
+            pfmt(self.max_premium_ratio),
+        )
+        table.add_row(
+            "",
+            "Catastrophe drawdowns",
+            "=",
+            ", ".join(pfmt(drawdown) for drawdown in self.catastrophe_drawdowns),
+        )
+
+
+class TailHedgeConfig(BaseModel, DisplayMixin):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False)
+    annual_budget: float = Field(default=0.005, gt=0.0, le=1.0)
+    targets: List[TailHedgeTargetConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_targets(self) -> Self:
+        symbols = [target.symbol for target in self.targets]
+        if len(set(symbols)) != len(symbols):
+            raise ValueError("tail_hedge.targets symbols must be unique")
+        if self.targets and not math.isclose(
+            sum(target.budget_weight for target in self.targets),
+            1.0,
+            abs_tol=1e-9,
+        ):
+            raise ValueError("tail_hedge.targets budget_weight values must sum to 1")
+        return self
+
+    def add_to_table(self, table: Table, section: str = "") -> None:
+        table.add_section()
+        table.add_row("[spring_green1]Tail hedge long-put program")
+        table.add_row("", "Enabled", "=", f"{self.enabled}")
+        table.add_row(
+            "",
+            "Annual estimated-cost budget (% NLV)",
+            "=",
+            pfmt(self.annual_budget),
+        )
+        if not self.targets:
+            table.add_row("", "Targets", "=", "-")
+            return
+        for target in self.targets:
+            target.add_to_table(table)
 
 
 class WriteWhenConfig(BaseModel, DisplayMixin):

@@ -8,15 +8,22 @@ from ib_async.contract import Contract, Index, Option, Stock
 
 from thetagang import log
 from thetagang.config import Config
+from thetagang.db import DataStore
 from thetagang.fmt import dfmt
 from thetagang.ibkr import IBKR
-from thetagang.orders import Orders
+from thetagang.orders import Orders, pending_buy_cash
 from thetagang.trading_operations import (
     NoValidContractsError,
     OptionChainScanner,
     OrderOperations,
 )
-from thetagang.util import get_lower_price, net_option_positions
+from thetagang.util import (
+    get_lower_price,
+    net_option_positions,
+    portfolio_positions_to_dict,
+)
+
+from .tail_hedge_engine import TailHedgeEngine
 
 
 class PostStrategyEngine:
@@ -29,6 +36,7 @@ class PostStrategyEngine:
         option_scanner: OptionChainScanner,
         orders: Orders,
         qualified_contracts: Dict[int, Contract],
+        data_store: Optional[DataStore] = None,
         get_reserved_cash_for_post_management: Callable[[], float] | None = None,
     ) -> None:
         self.config = config
@@ -40,6 +48,12 @@ class PostStrategyEngine:
         self._get_reserved_cash_for_post_management = (
             get_reserved_cash_for_post_management
         )
+        self.tail_hedge_engine = TailHedgeEngine(
+            config=config,
+            ibkr=ibkr,
+            order_ops=order_ops,
+            data_store=data_store,
+        )
 
     def reserved_cash_for_post_management(self) -> float:
         if self._get_reserved_cash_for_post_management is None:
@@ -47,31 +61,37 @@ class PostStrategyEngine:
         return max(0.0, self._get_reserved_cash_for_post_management())
 
     def calc_pending_cash_balance(self) -> float:
-        def get_multiplier(contract: Contract) -> float:
-            if contract.secType == "BAG":
-                return float(
-                    self.qualified_contracts[contract.comboLegs[0].conId].multiplier
-                )
-            if contract.secType == "STK":
-                return 1.0
-            return float(contract.multiplier or 100)
+        pending = pending_buy_cash(
+            self.ibkr.open_trades(),
+            self.orders.records(),
+            account=self.config.runtime.account.number,
+            qualified_contracts=self.qualified_contracts,
+        )
+        if pending.ambiguous:
+            raise RuntimeError("Pending BUY cash cannot be priced safely")
+        return -pending.debit
 
-        return sum(
-            [
-                float(order.lmtPrice or 0)
-                * order.totalQuantity
-                * get_multiplier(contract)
-                for (contract, order, _intent_id) in self.orders.records()
-                if order.action == "SELL"
-            ]
-        ) - sum(
-            [
-                float(order.lmtPrice or 0)
-                * order.totalQuantity
-                * get_multiplier(contract)
-                for (contract, order, _intent_id) in self.orders.records()
-                if order.action == "BUY"
-            ]
+    def _cash_fund_order_pending(self, symbol: str) -> bool:
+        account = self.config.runtime.account.number
+
+        def matches(contract: object, order: object) -> bool:
+            return (
+                isinstance(contract, Stock)
+                and contract.symbol == symbol
+                and getattr(order, "account", None) == account
+                and str(getattr(order, "action", "")).upper() in {"BUY", "SELL"}
+            )
+
+        for trade in self.ibkr.open_trades():
+            is_done = getattr(trade, "isDone", None)
+            if not (callable(is_done) and is_done()) and matches(
+                getattr(trade, "contract", None),
+                getattr(trade, "order", None),
+            ):
+                return True
+        return any(
+            matches(contract, order)
+            for contract, order, _intent_id in self.orders.records()
         )
 
     async def do_vix_hedging(
@@ -193,6 +213,16 @@ class PostStrategyEngine:
         except (RuntimeError, NoValidContractsError):
             log.error("VIX: Error occurred when VIX call hedging. Continuing anyway...")
 
+    async def do_tail_hedging(
+        self,
+        account_summary: Dict[str, AccountValue],
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+    ) -> None:
+        await self.tail_hedge_engine.manage(
+            portfolio_positions,
+            net_liquidation=float(account_summary["NetLiquidation"].value),
+        )
+
     async def do_cashman(
         self,
         account_summary: Dict[str, AccountValue],
@@ -206,32 +236,55 @@ class PostStrategyEngine:
         target_cash_balance = self.config.strategies.cash_management.target_cash_balance
         buy_threshold = self.config.strategies.cash_management.buy_threshold
         sell_threshold = self.config.strategies.cash_management.sell_threshold
-        cash_balance = math.floor(float(account_summary["TotalCashValue"].value))
-        pending_balance = self.calc_pending_cash_balance()
-        effective_cash_balance = cash_balance + pending_balance
+        symbol = self.config.strategies.cash_management.cash_fund
+        if self._cash_fund_order_pending(symbol):
+            return
+
+        def amount_to_manage(summary: Dict[str, AccountValue]) -> float:
+            cash_balance = math.floor(float(summary["TotalCashValue"].value))
+            effective_cash_balance = cash_balance + self.calc_pending_cash_balance()
+            sweepable_cash_balance = (
+                effective_cash_balance - self.reserved_cash_for_post_management()
+            )
+            if sweepable_cash_balance > target_cash_balance + buy_threshold:
+                return sweepable_cash_balance - target_cash_balance
+            if effective_cash_balance < target_cash_balance - sell_threshold:
+                return effective_cash_balance - target_cash_balance
+            return 0.0
+
         reserved_cash = self.reserved_cash_for_post_management()
-        sweepable_cash_balance = effective_cash_balance - reserved_cash
         if reserved_cash > 0:
             log.notice(
                 "Cash management: reserving "
-                f"{dfmt(reserved_cash)} for remaining inferred-capacity "
-                "target gaps."
+                f"{dfmt(reserved_cash)} for regime rebalancing."
             )
         try:
-            amount = 0.0
-            if sweepable_cash_balance > target_cash_balance + buy_threshold:
-                amount = sweepable_cash_balance - target_cash_balance
-            elif effective_cash_balance < target_cash_balance - sell_threshold:
-                amount = effective_cash_balance - target_cash_balance
-            else:
+            amount = amount_to_manage(account_summary)
+            if amount == 0:
                 return
 
-            symbol = self.config.strategies.cash_management.cash_fund
             primary_exchange = self.config.strategies.cash_management.primary_exchange
             order_exchange = self.config.strategies.cash_management.orders.exchange
             ticker = await self.ibkr.get_ticker_for_stock(
                 symbol, primary_exchange, order_exchange
             )
+
+            # Re-materialize ib_async's fill-current caches after the quote
+            # await, then size and enqueue without another await.
+            account_number = self.config.runtime.account.number
+            live_cash = self.ibkr.cached_account_value(account_number, "TotalCashValue")
+            account_summary = dict(account_summary)
+            account_summary["TotalCashValue"] = AccountValue(
+                account_number, "TotalCashValue", str(live_cash), "BASE", ""
+            )
+            portfolio_positions = portfolio_positions_to_dict(
+                self.ibkr.portfolio(account=account_number)
+            )
+            if self._cash_fund_order_pending(symbol):
+                return
+            amount = amount_to_manage(account_summary)
+            if amount == 0:
+                return
 
             algo = (
                 self.config.strategies.cash_management.orders.algo
@@ -240,11 +293,12 @@ class PostStrategyEngine:
             )
             price = ticker.ask if amount > 0 else ticker.bid
             qty = amount // price
-            if util.isNan(qty):
+            if util.isNan(qty) or not math.isfinite(float(qty)):
                 raise RuntimeError("ERROR: qty is NaN")
+            if qty == 0:
+                return
 
             if qty < 0:
-                qty -= 1
                 if symbol not in portfolio_positions:
                     return
                 positions = [

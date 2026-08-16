@@ -99,6 +99,10 @@ price_update_delay = [30, 60]
 # order price. This doesn't apply to debit orders.
 minimum_credit = 0.05
 
+# Conservative broker-level estimate used when a strategy needs all-in order
+# economics before the actual commission report exists.
+estimated_fee_per_contract = 1.00
+
   [runtime.orders.algo]
   # By default we use adaptive orders with patient priority which gives reasonable
   # results. You can also experiment with TWAP or other options, however the
@@ -617,7 +621,7 @@ daily_stddev_window = "30 D"
 #
 # [strategies.regime_rebalance]
 # enabled = true
-# symbols = ["TQQQ", "BTAL"]
+# symbols = ["QQQ", "BTAL"]
 # [strategies.regime_rebalance.risk]
 # margin_usage = 0.8
 # lookback_days = 40
@@ -759,6 +763,38 @@ ignore_dte = 0
   [[strategies.vix_call_hedge.allocation]]
   lower_bound = 50.0
   weight      = 0.00
+
+
+# Long-put tail hedging requires file-backed SQLite and "tail_hedge" in
+# run.strategies.
+#
+# annual_budget caps estimated all-in long-put cost: entries count for 365 days,
+# and any unrecovered cost on an older open cohort keeps counting until it closes.
+# Target budget_weight values must sum to 1.0. entries_per_year splits each
+# target's budget into equal entry slices and sets a ceil(365 / entries_per_year)
+# cadence. Missed entries are not made up, expirations may repeat, and no order
+# is placed unless one whole contract fits its slice. Setting no_trading = true
+# blocks tail entries and exits. See docs/tail-hedging.md for full behavior.
+#
+# [strategies.tail_hedge]
+# enabled = true
+# annual_budget = 0.005  # estimated all-in cost over 365 days / net liquidation
+#
+# [[strategies.tail_hedge.targets]]
+# symbol = "QQQ"
+# budget_weight = 1.00
+# entries_per_year = 6  # one entry slice about every 61 days
+# entry_gate = "vix"
+# entry_vix_max = 20.0
+# target_dte = 180
+# min_dte = 120
+# max_dte = 240
+# exit_dte = 30
+# minimum_open_interest = 50
+# minimum_bid = 0.01
+# max_bid_ask_ratio = 0.50  # quoted width / midpoint
+# max_premium_ratio = 0.05  # put premium / underlying spot
+# catastrophe_drawdowns = [0.40, 0.50, 0.60]  # intrinsic payout score scenarios
 
 
 [strategies.cash_management]

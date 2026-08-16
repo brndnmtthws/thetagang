@@ -23,17 +23,24 @@ class Trades:
         order: LimitOrder,
         idx: Optional[int] = None,
         intent_id: Optional[int] = None,
-    ) -> None:
+    ) -> bool:
+        """Submit an order, returning whether local placement succeeded."""
         try:
             trade = self.ibkr.place_order(contract, order)
-            if self.data_store:
-                self.data_store.record_order(contract, order, intent_id=intent_id)
-            if idx is not None:
-                self.__replace_trade(trade, idx)
-            else:
-                self.__add_trade(trade)
-        except RuntimeError:
-            log.error(f"{contract.symbol}: Failed to submit contract, order={order}")
+        except Exception as exc:
+            log.error(
+                f"{contract.symbol}: Failed to submit contract, order={order}, "
+                f"error={type(exc).__name__}: {exc}"
+            )
+            return False
+
+        if self.data_store:
+            self.data_store.record_order(contract, order, intent_id=intent_id)
+        if idx is not None:
+            self.__replace_trade(trade, idx)
+        else:
+            self.__add_trade(trade)
+        return True
 
     def records(self) -> List[Trade]:
         return self.__records

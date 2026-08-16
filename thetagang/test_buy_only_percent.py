@@ -79,7 +79,10 @@ class TestBuyOnlyPercentageThreshold:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        buy_actions_table, to_buy = await portfolio_manager.check_buy_only_positions(
+        (
+            buy_actions_table,
+            to_buy,
+        ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -133,7 +136,10 @@ class TestBuyOnlyPercentageThreshold:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        buy_actions_table, to_buy = await portfolio_manager.check_buy_only_positions(
+        (
+            buy_actions_table,
+            to_buy,
+        ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -188,7 +194,10 @@ class TestBuyOnlyPercentageThreshold:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        buy_actions_table, to_buy = await portfolio_manager.check_buy_only_positions(
+        (
+            buy_actions_table,
+            to_buy,
+        ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
         )
 
@@ -242,7 +251,10 @@ class TestBuyOnlyPercentageThreshold:
         mocker.patch("thetagang.log.track_async", side_effect=mock_track_async)
 
         # Call the method
-        buy_actions_table, to_buy = await portfolio_manager.check_buy_only_positions(
+        (
+            buy_actions_table,
+            to_buy,
+        ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
         )
 

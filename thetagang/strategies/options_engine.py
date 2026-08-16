@@ -11,10 +11,12 @@ from rich.table import Table
 
 from thetagang import log
 from thetagang.config import Config
+from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ifmt, pfmt
 from thetagang.ibkr import IBKR, RequiredFieldValidationError, TickerField
 from thetagang.options import option_dte
 from thetagang.strategies.runtime_services import resolve_symbol_configs
+from thetagang.strategies.tail_hedge_state import TailHedgeStateStore
 from thetagang.trading_operations import (
     NoValidContractsError,
     OptionChainScanner,
@@ -69,6 +71,7 @@ class OptionsStrategyEngine:
         has_excess_puts: set[str],
         has_excess_calls: set[str],
         qualified_contracts: Dict[int, Contract],
+        data_store: Optional[DataStore] = None,
     ) -> None:
         self.config = config
         self.ibkr = ibkr
@@ -79,6 +82,23 @@ class OptionsStrategyEngine:
         self.has_excess_puts = has_excess_puts
         self.has_excess_calls = has_excess_calls
         self.qualified_contracts = qualified_contracts
+        self.data_store = data_store
+
+    def _tail_hedge_owned_con_ids(self) -> set[int]:
+        tail_config = self.config.strategies.tail_hedge
+        ownership_required = bool(tail_config.enabled or tail_config.targets)
+        if self.data_store is None:
+            if ownership_required:
+                raise RuntimeError("Tail-hedge ownership state is unavailable")
+            return set()
+        return (
+            TailHedgeStateStore(
+                self.data_store,
+                self.config.runtime.account.number,
+            )
+            .load()
+            .owned_con_ids
+        )
 
     def get_symbols(self) -> List[str]:
         return self.services.get_symbols()
@@ -383,6 +403,13 @@ class OptionsStrategyEngine:
     async def write_puts(
         self, puts: List[Tuple[str, str, int, Optional[float]]]
     ) -> None:
+        try:
+            tail_hedge_con_ids = self._tail_hedge_owned_con_ids() if puts else set()
+        except RuntimeError:
+            log.error(
+                "Tail-hedge ownership state is unavailable; skipping wheel put writes."
+            )
+            return
         for symbol, primary_exchange, quantity, strike_limit in puts:
             try:
                 sell_ticker = await self.option_scanner.find_eligible_contracts(
@@ -395,6 +422,7 @@ class OptionsStrategyEngine:
                     "P",
                     strike_limit,
                     minimum_price=lambda: self.config.runtime.orders.minimum_credit,
+                    exclude_con_ids=tail_hedge_con_ids,
                 )
             except (RuntimeError, NoValidContractsError):
                 log.error(
@@ -442,7 +470,6 @@ class OptionsStrategyEngine:
         calculate_net_contracts = (
             self.config.strategies.wheel.defaults.write_when.calculate_net_contracts
         )
-
         positions_summary_table = Table(title="Positions summary", show_edge=False)
         positions_summary_table.add_column("Symbol")
         positions_summary_table.add_column("Shares", justify="right")
@@ -463,6 +490,16 @@ class OptionsStrategyEngine:
         put_actions_table.add_column("Symbol")
         put_actions_table.add_column("Action")
         put_actions_table.add_column("Detail")
+
+        try:
+            tail_hedge_con_ids = (
+                self._tail_hedge_owned_con_ids() if calculate_net_contracts else set()
+            )
+        except RuntimeError:
+            log.error(
+                "Tail-hedge ownership state is unavailable; skipping wheel put writes."
+            )
+            return positions_summary_table, put_actions_table, []
 
         symbol_configs = resolve_symbol_configs(
             self.config, context="options put write check"
@@ -495,37 +532,30 @@ class OptionsStrategyEngine:
                 position_values[symbol] = current_position * market_price
 
             if symbol in portfolio_positions:
+                wheel_positions = [
+                    position
+                    for position in portfolio_positions[symbol]
+                    if position.contract.conId not in tail_hedge_con_ids
+                ]
                 net_short_put_count = short_put_count = count_short_option_positions(
-                    portfolio_positions[symbol], "P"
+                    wheel_positions, "P"
                 )
-                short_put_avg_strike = weighted_avg_short_strike(
-                    portfolio_positions[symbol], "P"
-                )
-                long_put_count = count_long_option_positions(
-                    portfolio_positions[symbol], "P"
-                )
-                long_put_avg_strike = weighted_avg_long_strike(
-                    portfolio_positions[symbol], "P"
-                )
+                short_put_avg_strike = weighted_avg_short_strike(wheel_positions, "P")
+                long_put_count = count_long_option_positions(wheel_positions, "P")
+                long_put_avg_strike = weighted_avg_long_strike(wheel_positions, "P")
                 net_short_call_count = short_call_count = count_short_option_positions(
-                    portfolio_positions[symbol], "C"
+                    wheel_positions, "C"
                 )
-                short_call_avg_strike = weighted_avg_short_strike(
-                    portfolio_positions[symbol], "C"
-                )
-                long_call_count = count_long_option_positions(
-                    portfolio_positions[symbol], "C"
-                )
-                long_call_avg_strike = weighted_avg_long_strike(
-                    portfolio_positions[symbol], "C"
-                )
+                short_call_avg_strike = weighted_avg_short_strike(wheel_positions, "C")
+                long_call_count = count_long_option_positions(wheel_positions, "C")
+                long_call_avg_strike = weighted_avg_long_strike(wheel_positions, "C")
 
                 if calculate_net_contracts:
                     net_short_put_count = calculate_net_short_positions(
-                        portfolio_positions[symbol], "P"
+                        wheel_positions, "P"
                     )
                     net_short_call_count = calculate_net_short_positions(
-                        portfolio_positions[symbol], "C"
+                        wheel_positions, "C"
                     )
             else:
                 net_short_put_count = short_put_count = long_put_count = 0
@@ -742,9 +772,23 @@ class OptionsStrategyEngine:
     def get_short_contracts(
         self, portfolio_positions: Dict[str, List[PortfolioItem]], right: str
     ) -> List[PortfolioItem]:
+        try:
+            excluded_con_ids = (
+                self._tail_hedge_owned_con_ids() if right.startswith("P") else set()
+            )
+        except RuntimeError:
+            log.error(
+                "Tail-hedge ownership state is unavailable; skipping wheel put "
+                "management."
+            )
+            return []
         ret: List[PortfolioItem] = []
         for symbol in portfolio_positions:
-            ret = ret + get_short_positions(portfolio_positions[symbol], right)
+            ret.extend(
+                position
+                for position in get_short_positions(portfolio_positions[symbol], right)
+                if position.contract.conId not in excluded_con_ids
+            )
         return ret
 
     def get_short_calls(
@@ -1108,6 +1152,17 @@ class OptionsStrategyEngine:
     ) -> List[PortfolioItem]:
         closeable_positions: List[PortfolioItem] = []
         log.notice(f"Rolling {right} positions...")
+        try:
+            tail_hedge_con_ids = (
+                self._tail_hedge_owned_con_ids()
+                if positions and right.startswith("P")
+                else set()
+            )
+        except RuntimeError:
+            log.error(
+                "Tail-hedge ownership state is unavailable; skipping wheel put rolls."
+            )
+            return closeable_positions
 
         for position in positions:
             try:
@@ -1187,6 +1242,7 @@ class OptionsStrategyEngine:
                         position.contract.strike,
                         position.contract.lastTradeDateOrContractMonth,
                     ),
+                    exclude_con_ids=tail_hedge_con_ids,
                     minimum_price=minimum_price,
                     fallback_minimum_price=fallback_minimum_price,
                 )

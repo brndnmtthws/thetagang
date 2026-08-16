@@ -26,11 +26,13 @@ from thetagang.config_models import (
     RegimeRebalanceConfig,
     RollWhenConfig,
     SymbolConfig,
+    TailHedgeConfig,
     TargetConfig,
     VIXCallHedgeConfig,
     WatchdogConfig,
     WriteWhenConfig,
 )
+from thetagang.db import is_persistent_sqlite_url
 from thetagang.fmt import dfmt, ffmt, pfmt
 
 STAGE_KIND_BY_ID: dict[str, str] = {
@@ -42,6 +44,7 @@ STAGE_KIND_BY_ID: dict[str, str] = {
     "options_roll_positions": "options.roll_positions",
     "options_close_positions": "options.close_positions",
     "post_vix_call_hedge": "post.vix_call_hedge",
+    "post_tail_hedge": "post.tail_hedge",
     "post_cash_management": "post.cash_management",
 }
 
@@ -54,6 +57,7 @@ CANONICAL_STAGE_ORDER: list[str] = [
     "options_roll_positions",
     "options_close_positions",
     "post_vix_call_hedge",
+    "post_tail_hedge",
     "post_cash_management",
 ]
 
@@ -68,6 +72,7 @@ RUN_STRATEGY_IDS = {
     "wheel",
     "regime_rebalance",
     "vix_call_hedge",
+    "tail_hedge",
     "cash_management",
 }
 
@@ -82,6 +87,7 @@ STRATEGY_STAGE_IDS: dict[str, set[str]] = {
     },
     "regime_rebalance": {"equity_regime_rebalance"},
     "vix_call_hedge": {"post_vix_call_hedge"},
+    "tail_hedge": {"post_tail_hedge"},
     "cash_management": {"post_cash_management"},
 }
 
@@ -94,6 +100,14 @@ EXPLICIT_STAGE_PREREQUISITES: dict[str, set[str]] = {
     # Call writing relies on target share quantities computed in put-write planning.
     "options_write_calls": {"options_write_puts"},
 }
+
+EXPLICIT_STAGE_ORDER_REQUIREMENTS: tuple[tuple[str, str], ...] = (
+    ("equity_regime_rebalance", "post_tail_hedge"),
+    ("equity_buy_rebalance", "post_tail_hedge"),
+    ("equity_sell_rebalance", "post_tail_hedge"),
+    ("equity_regime_rebalance", "post_cash_management"),
+    ("post_tail_hedge", "post_cash_management"),
+)
 
 
 class ConfigMeta(BaseModel):
@@ -201,6 +215,14 @@ class RunConfig(BaseModel):
             dfs(stage_id)
 
         enabled_stage_ids = {stage.id for stage in self.stages if stage.enabled}
+        for earlier_stage, later_stage in EXPLICIT_STAGE_ORDER_REQUIREMENTS:
+            if {earlier_stage, later_stage} <= enabled_stage_ids and (
+                index_by_id[earlier_stage] >= index_by_id[later_stage]
+            ):
+                raise ValueError(
+                    f"run.stages.{earlier_stage} must appear before "
+                    f"run.stages.{later_stage}"
+                )
         for stage_id, required_ids in EXPLICIT_STAGE_PREREQUISITES.items():
             if stage_id not in enabled_stage_ids:
                 continue
@@ -403,6 +425,7 @@ class StrategiesConfig(BaseModel):
         default_factory=RegimeRebalanceStrategyConfig
     )
     vix_call_hedge: VIXCallHedgeConfig = Field(default_factory=VIXCallHedgeConfig)
+    tail_hedge: TailHedgeConfig = Field(default_factory=TailHedgeConfig)
     cash_management: CashManagementConfig = Field(default_factory=CashManagementConfig)
 
 
@@ -452,6 +475,39 @@ class Config(BaseModel, DisplayMixin):
             WHEEL_SYMBOL_OVERRIDE_KEYS,
         )
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_tail_hedge(self) -> "Config":
+        tail_hedge = self.strategies.tail_hedge
+        if not tail_hedge.enabled and not tail_hedge.targets:
+            return self
+        if not self.runtime.database.enabled:
+            raise ValueError(
+                "tail_hedge targets require runtime.database.enabled = true"
+            )
+        database_url = self.runtime.database.url
+        if database_url and not is_persistent_sqlite_url(database_url):
+            raise ValueError(
+                "tail_hedge requires a supported file-backed SQLite URL such as "
+                "sqlite:///path/to/state.db; in-memory, URI, authority, "
+                "non-SQLite, and unrecognized SQLite-driver URLs are unsupported"
+            )
+        if not tail_hedge.enabled:
+            return self
+        missing_symbols = [
+            target.symbol
+            for target in tail_hedge.targets
+            if target.symbol not in self.portfolio.symbols
+        ]
+        if missing_symbols:
+            raise ValueError(
+                "tail_hedge target symbols must be in portfolio.symbols: "
+                + ", ".join(missing_symbols)
+            )
+        regime_rebalance = self.strategies.regime_rebalance
+        if regime_rebalance.enabled and regime_rebalance.shares_only:
+            raise ValueError("tail_hedge cannot be enabled when shares_only is true")
         return self
 
     @property
@@ -513,6 +569,10 @@ class Config(BaseModel, DisplayMixin):
     @property
     def vix_call_hedge(self) -> VIXCallHedgeConfig:
         return self.strategies.vix_call_hedge
+
+    @property
+    def tail_hedge(self) -> TailHedgeConfig:
+        return self.strategies.tail_hedge
 
     @property
     def regime_rebalance(self) -> RegimeRebalanceStrategyConfig:
@@ -743,6 +803,7 @@ class Config(BaseModel, DisplayMixin):
         self.target.add_to_table(config_table)
         self.cash_management.add_to_table(config_table)
         self.vix_call_hedge.add_to_table(config_table)
+        self.tail_hedge.add_to_table(config_table)
         self.regime_rebalance.add_to_table(config_table)
 
         tree = Tree(":control_knobs:")

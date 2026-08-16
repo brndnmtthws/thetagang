@@ -1,6 +1,7 @@
 import asyncio
+import math
 from enum import Enum
-from typing import Any, Awaitable, Callable, Coroutine, List, Optional, TypeVar, cast
+from typing import Any, Awaitable, Callable, Coroutine, List, Optional, cast
 
 from ib_async import (
     IB,
@@ -19,12 +20,15 @@ from ib_async import (
     Trade,
     util,
 )
+from ib_async.wrapper import RequestError
 from rich.console import Console
 
 from thetagang import log
 from thetagang.db import DataStore
 
 console = Console()
+
+MAX_CONCURRENT_MARKET_DATA_STREAMS = 50
 
 
 class TickerField(Enum):
@@ -40,36 +44,77 @@ class RequiredFieldValidationError(Exception):
         super().__init__(self.message)
 
 
-class IBKRRequestTimeout(RuntimeError):
-    """Raised when an IBKR request does not complete within the configured timeout."""
-
-    def __init__(self, description: str, timeout_seconds: int) -> None:
-        super().__init__(
-            f"Timed out waiting for {description} after {timeout_seconds} seconds"
-        )
-
-
-T = TypeVar("T")
-
-
 class IBKR:
-    ACCOUNT_VALUE_HEALTH_TAGS = {"NetLiquidation", "TotalCashValue", "BuyingPower"}
-
     def __init__(
         self,
         ib: IB,
         api_response_wait_time: int,
         default_order_exchange: str,
         data_store: Optional[DataStore] = None,
+        dry_run: bool = False,
     ) -> None:
         self.ib = ib
         self.ib.orderStatusEvent += self.orderStatusEvent
         self.api_response_wait_time = api_response_wait_time
         self.default_order_exchange = default_order_exchange
         self.data_store = data_store
+        self.dry_run = dry_run
+        self.__market_data_semaphore = asyncio.Semaphore(
+            MAX_CONCURRENT_MARKET_DATA_STREAMS
+        )
+        self.__market_data_contract_locks: dict[int, asyncio.Lock] = {}
 
     def portfolio(self, account: str) -> List[PortfolioItem]:
         return self.ib.portfolio(account)
+
+    def cached_net_liquidation(self, account: str) -> float:
+        """Read NLV from a newly materialized synchronized account-value cache."""
+        net_liquidation = self.cached_account_value(account, "NetLiquidation")
+        if net_liquidation > 0:
+            return net_liquidation
+        raise RuntimeError("Net liquidation value is unavailable")
+
+    def cached_account_value(self, account: str, tag: str) -> float:
+        """Read one finite value from ib_async's synchronized account cache."""
+        candidates: list[tuple[str, str, float]] = []
+        for value in self.ib.accountValues(account):
+            if value.tag != tag:
+                continue
+            try:
+                numeric_value = float(value.value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(numeric_value):
+                candidates.append(
+                    (
+                        str(value.currency).upper(),
+                        str(getattr(value, "modelCode", "") or ""),
+                        numeric_value,
+                    )
+                )
+
+        aggregate_base_values = [
+            numeric_value
+            for currency, model_code, numeric_value in candidates
+            if currency == "BASE" and not model_code
+        ]
+        if len(aggregate_base_values) == 1:
+            return aggregate_base_values[0]
+        if len(aggregate_base_values) > 1:
+            raise RuntimeError(f"{tag} account value is unavailable")
+
+        base_values = [
+            numeric_value
+            for currency, _model_code, numeric_value in candidates
+            if currency == "BASE"
+        ]
+        if len(base_values) == 1:
+            return base_values[0]
+        if len(base_values) > 1:
+            raise RuntimeError(f"{tag} account value is unavailable")
+        if len(candidates) == 1:
+            return candidates[0][2]
+        raise RuntimeError(f"{tag} account value is unavailable")
 
     async def account_summary(self, account: str) -> List[AccountValue]:
         return await self.ib.accountSummaryAsync(account)
@@ -109,41 +154,18 @@ class IBKR:
     def open_trades(self) -> List[Trade]:
         return self.ib.openTrades()
 
+    def trades(self) -> List[Trade]:
+        """Return open and completed trades loaded for this broker session."""
+        return self.ib.trades()
+
     def place_order(self, contract: Contract, order: Order) -> Trade:
         return self.ib.placeOrder(contract, order)
 
     def cancel_order(self, order: Order) -> None:
-        self.ib.cancelOrder(order)
-
-    async def refresh_account_updates(self, account: str) -> None:
-        if self._account_snapshot_ready(account):
-            log.info(
-                f"{account}: Account snapshot already populated, skipping refresh wait."
-            )
+        if self.dry_run:
+            log.warning("Dry run enabled, skipping broker order cancellation.")
             return
-
-        try:
-            await self._await_with_timeout(
-                self.ib.reqAccountUpdatesAsync(account), "account updates"
-            )
-        except IBKRRequestTimeout:
-            if self._account_snapshot_ready(account):
-                log.info(
-                    f"{account}: Account snapshot populated while waiting for account updates."
-                )
-                return
-            raise
-
-        if not self._account_snapshot_ready(account):
-            raise IBKRRequestTimeout(
-                "account updates (no usable account values)",
-                self.api_response_wait_time,
-            )
-
-    async def refresh_positions(self) -> List[Position]:
-        return await self._await_with_timeout(
-            self.ib.reqPositionsAsync(), "positions snapshot"
-        )
+        self.ib.cancelOrder(order)
 
     def positions(self, account: str) -> List[Position]:
         return self.ib.positions(account)
@@ -154,18 +176,24 @@ class IBKR:
         )
 
     async def qualify_contracts(self, *contracts: Contract) -> List[Contract]:
-        results = await self.ib.qualifyContractsAsync(*contracts)
-        # Filter out None values and flatten any nested lists
+        results = await asyncio.gather(
+            *(self.ib.qualifyContractsAsync(contract) for contract in contracts),
+            return_exceptions=True,
+        )
         qualified: List[Contract] = []
-        for result in results:
-            if result is None:
+        for requested_contract, result in zip(contracts, results):
+            if isinstance(result, RequestError):
+                if result.code != 200:
+                    raise result
+                log.warning(
+                    f"Skipping invalid contract {requested_contract}: {result.message}"
+                )
                 continue
-            elif isinstance(result, list):
-                for contract in result:
-                    if contract is not None:
-                        qualified.append(cast(Contract, contract))
-            else:
-                qualified.append(result)
+            if isinstance(result, BaseException):
+                raise result
+            qualified.extend(
+                cast(Contract, contract) for contract in result if contract is not None
+            )
         return qualified
 
     async def get_ticker_for_stock(
@@ -330,47 +358,6 @@ class IBKR:
         if self.data_store:
             self.data_store.record_order_status(trade)
 
-    async def _await_with_timeout(self, awaitable: Awaitable[T], description: str) -> T:
-        try:
-            return await asyncio.wait_for(
-                awaitable, timeout=self.api_response_wait_time
-            )
-        except asyncio.TimeoutError as exc:
-            raise IBKRRequestTimeout(description, self.api_response_wait_time) from exc
-
-    def _account_snapshot_ready(self, account: str) -> bool:
-        """Return True if IB has populated non-zero account values for account."""
-        wrapper = getattr(self.ib, "wrapper", None)
-        if wrapper is None:
-            return False
-
-        values_dict = getattr(wrapper, "accountValues", None)
-        if not values_dict:
-            return False
-
-        for value in values_dict.values():
-            if (
-                value.account != account
-                or value.tag not in self.ACCOUNT_VALUE_HEALTH_TAGS
-            ):
-                continue
-
-            if self._account_value_has_data(value):
-                return True
-
-        return False
-
-    @staticmethod
-    def _account_value_has_data(value: AccountValue) -> bool:
-        raw_value = getattr(value, "value", None)
-        if raw_value in (None, ""):
-            return False
-
-        try:
-            return float(raw_value) != 0.0
-        except (TypeError, ValueError):
-            return False
-
     async def __market_data_streaming_handler__(
         self,
         contract: Contract,
@@ -400,9 +387,47 @@ class IBKR:
             raise ValueError(
                 f"Contract {contract} can't be qualified because no 'conId' value exists."
             )
-        ticker = self.ib.reqMktData(contract, genericTickList=generic_tick_list)
-        await handler(ticker)
-        return ticker
+
+        def active_ticker() -> Optional[Ticker]:
+            ticker = self.ib.ticker(contract)
+            if ticker is None:
+                return None
+
+            request_id = self.ib.wrapper.ticker2ReqId.get("mktData", {}).get(ticker)
+            return ticker if request_id is not None else None
+
+        # Serialize same-contract access so a helper-owned stream cannot be reused
+        # by another caller and then canceled while that caller is still handling it.
+        contract_lock = self.__market_data_contract_locks.setdefault(
+            contract.conId,
+            asyncio.Lock(),
+        )
+        async with contract_lock:
+            # Reuse a subscription owned elsewhere without canceling it. ib_async
+            # keeps canceled tickers in its cache, so the request-id mapping is the
+            # source of truth for whether a cached ticker still has an active stream.
+            ticker = active_ticker()
+            if ticker is not None:
+                await handler(ticker)
+                return ticker
+
+            async with self.__market_data_semaphore:
+                # Another contract may have freed stream capacity while this task
+                # waited. Recheck in case an external owner subscribed meanwhile.
+                ticker = active_ticker()
+                if ticker is not None:
+                    await handler(ticker)
+                    return ticker
+
+                ticker = self.ib.reqMktData(
+                    contract,
+                    genericTickList=generic_tick_list,
+                )
+                try:
+                    await handler(ticker)
+                    return ticker
+                finally:
+                    self.ib.cancelMktData(contract)
 
     async def __ticker_wait_for_condition__(
         self, ticker: Ticker, condition: Callable[[Ticker], bool], timeout: float
@@ -413,14 +438,17 @@ class IBKR:
             if condition(ticker):
                 event.set()
 
-        ticker.updateEvent += onTicker
+        update_event = ticker.updateEvent
+        if update_event is None:
+            raise RuntimeError("Ticker update event is unavailable")
+        update_event += onTicker
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
             return True
         except asyncio.TimeoutError:
             return False
         finally:
-            ticker.updateEvent -= onTicker
+            update_event -= onTicker
 
     async def wait_for_submitting_orders(
         self, trades: List[Trade], timetout: int = 60

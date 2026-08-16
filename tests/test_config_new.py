@@ -28,6 +28,10 @@ def _base_config(run):
     }
 
 
+def _tail_target(symbol="AAA", budget_weight=1.0):
+    return {"symbol": symbol, "budget_weight": budget_weight}
+
+
 def test_stage_enabled_map_reflects_compiled_strategy_flags() -> None:
     config = Config(**_base_config({"strategies": ["wheel", "cash_management"]}))
     flags = stage_enabled_map(config)
@@ -35,6 +39,203 @@ def test_stage_enabled_map_reflects_compiled_strategy_flags() -> None:
     assert flags["equity_regime_rebalance"] is False
     assert flags["post_cash_management"] is True
     assert flags["post_vix_call_hedge"] is False
+
+
+def test_tail_hedge_strategy_compiles_to_its_post_stage() -> None:
+    data = _base_config({"strategies": ["regime_rebalance", "tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+    }
+
+    config = Config(**data)
+
+    flags = stage_enabled_map(config)
+    assert flags["equity_regime_rebalance"] is True
+    assert flags["post_tail_hedge"] is True
+    target = config.tail_hedge.targets[0]
+    assert target.entries_per_year == 6
+    assert target.minimum_entry_spacing_days == 61
+    assert target.target_dte == 180
+    assert target.min_dte == 120
+    assert target.max_dte == 240
+    assert target.exit_dte == 30
+    assert not hasattr(target, "strike_ratio")
+    assert target.catastrophe_drawdowns == [0.40, 0.50, 0.60]
+    assert config.runtime.orders.estimated_fee_per_contract == 1.0
+
+
+def test_tail_hedge_rejects_removed_strike_ratio() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [{**_tail_target(), "strike_ratio": 0.60}],
+    }
+
+    with pytest.raises(ValueError, match="strike_ratio"):
+        Config(**data)
+
+
+@pytest.mark.parametrize(
+    "drawdowns",
+    [[0.50, 0.40], [0.40, 0.40], [0.0, 0.50], [0.50, 1.0]],
+)
+def test_tail_hedge_catastrophe_drawdowns_are_ordered_fractions(
+    drawdowns,
+) -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [
+            {
+                **_tail_target(),
+                "catastrophe_drawdowns": drawdowns,
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="catastrophe_drawdowns"):
+        Config(**data)
+
+
+def test_enabled_tail_hedge_requires_sqlite_state() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["runtime"]["database"] = {"enabled": False}
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+    }
+
+    with pytest.raises(ValueError, match="targets require runtime.database.enabled"):
+        Config(**data)
+
+
+def test_retained_targets_require_state_even_while_tail_hedge_is_disabled() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["runtime"]["database"] = {"enabled": False}
+    data["strategies"]["tail_hedge"] = {
+        "enabled": False,
+        "targets": [_tail_target()],
+    }
+
+    with pytest.raises(ValueError, match="targets require runtime.database.enabled"):
+        Config(**data)
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "sqlite:///:memory:",
+        "sqlite:///file:shared?mode=memory&cache=shared&uri=true",
+        "sqlite+aiosqlite:///state.db",
+    ],
+)
+def test_enabled_tail_hedge_requires_persistent_sqlite_state(
+    database_url: str,
+) -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["runtime"]["database"] = {"enabled": True, "url": database_url}
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+    }
+
+    with pytest.raises(ValueError, match="supported file-backed SQLite URL"):
+        Config(**data)
+
+
+@pytest.mark.parametrize("driver", ["sqlite", "sqlite+pysqlite"])
+def test_enabled_tail_hedge_accepts_file_backed_sqlite_state(
+    tmp_path,
+    driver: str,
+) -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["runtime"]["database"] = {
+        "enabled": True,
+        "url": f"{driver}:///{tmp_path / 'state.db'}",
+    }
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+    }
+
+    assert Config(**data).tail_hedge.enabled is True
+
+
+def test_enabled_tail_hedge_accepts_blank_database_url_path_fallback() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["runtime"]["database"] = {
+        "enabled": True,
+        "path": "data/tail-state.db",
+        "url": "",
+    }
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+    }
+
+    config = Config(**data)
+
+    assert config.tail_hedge.enabled is True
+    resolved_url = config.runtime.database.resolve_url("/tmp/thetagang.toml")
+    assert resolved_url.startswith("sqlite:///")
+    assert resolved_url.endswith("/data/tail-state.db")
+
+
+def test_enabled_tail_hedge_requires_a_managed_symbol() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target("ZZZ")],
+    }
+
+    with pytest.raises(ValueError, match="target symbols must be in portfolio.symbols"):
+        Config(**data)
+
+
+def test_tail_hedge_rejects_shares_only_regime_mode() -> None:
+    data = _base_config({"strategies": ["regime_rebalance", "tail_hedge"]})
+    data["strategies"]["regime_rebalance"] = {
+        "enabled": True,
+        "shares_only": True,
+    }
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+    }
+
+    with pytest.raises(ValueError, match="cannot be enabled when shares_only is true"):
+        Config(**data)
+
+
+def test_tail_hedge_accepts_an_empty_desired_target_set_for_cleanup() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {"enabled": True}
+
+    config = Config(**data)
+
+    assert config.tail_hedge.targets == []
+    assert stage_enabled_map(config)["post_tail_hedge"] is True
+
+
+def test_tail_hedge_targets_require_unique_symbols_and_complete_budget() -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["portfolio"]["symbols"]["BBB"] = {"weight": 0.0}
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target("AAA", 0.5), _tail_target("BBB", 0.5)],
+    }
+
+    config = Config(**data)
+    assert [target.symbol for target in config.tail_hedge.targets] == ["AAA", "BBB"]
+
+    data["strategies"]["tail_hedge"]["targets"][1]["symbol"] = "AAA"
+    with pytest.raises(ValueError, match="symbols must be unique"):
+        Config(**data)
+
+    data["strategies"]["tail_hedge"]["targets"][1] = _tail_target("BBB", 0.4)
+    with pytest.raises(ValueError, match="budget_weight values must sum to 1"):
+        Config(**data)
 
 
 def test_run_config_rejects_unknown_strategy_id() -> None:
@@ -102,6 +303,51 @@ def test_explicit_run_stages_still_supported_for_advanced_mode() -> None:
     flags = stage_enabled_map_from_run(config.run)
     assert flags["equity_regime_rebalance"] is True
     assert flags["post_cash_management"] is True
+
+
+@pytest.mark.parametrize(
+    ("earlier", "later"),
+    [
+        ("equity_regime_rebalance", "post_tail_hedge"),
+        ("equity_buy_rebalance", "post_tail_hedge"),
+        ("equity_sell_rebalance", "post_tail_hedge"),
+        ("equity_regime_rebalance", "post_cash_management"),
+        ("post_tail_hedge", "post_cash_management"),
+    ],
+)
+def test_explicit_run_stages_reject_unsafe_tail_and_cash_ordering(
+    earlier: str,
+    later: str,
+) -> None:
+    stage_kinds = {
+        "equity_regime_rebalance": "equity.regime_rebalance",
+        "equity_buy_rebalance": "equity.buy_rebalance",
+        "equity_sell_rebalance": "equity.sell_rebalance",
+        "post_tail_hedge": "post.tail_hedge",
+        "post_cash_management": "post.cash_management",
+    }
+    with pytest.raises(
+        ValueError,
+        match=rf"{earlier} must appear before run\.stages\.{later}",
+    ):
+        Config(
+            **_base_config(
+                {
+                    "stages": [
+                        {
+                            "id": later,
+                            "kind": stage_kinds[later],
+                            "enabled": True,
+                        },
+                        {
+                            "id": earlier,
+                            "kind": stage_kinds[earlier],
+                            "enabled": True,
+                        },
+                    ]
+                }
+            )
+        )
 
 
 def test_explicit_run_config_rejects_enabled_stage_with_disabled_dependency() -> None:
