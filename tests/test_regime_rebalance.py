@@ -1325,51 +1325,215 @@ async def test_net_liq_base_also_excludes_state_owned_tail_puts(
 
 
 @pytest.mark.asyncio
-async def test_regime_rebalance_box_spread_borrowing_excluded_from_base(
-    portfolio_manager, mocker
+async def test_net_liq_ex_options_preserves_tail_ownership_outside_regime(
+    portfolio_manager_with_db, mocker
 ):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.runtime.account.margin_usage = 1.2
+    portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
+        enabled=False,
+        targets=[_tail_target("CCC")],
+    )
+    tail_put = _option_position(
+        "CCC",
+        1,
+        market_value=10_000.0,
+        right="P",
+        con_id=703,
+        average_cost=10_001.0,
+        unrealized_pnl=-1.0,
+    )
+    _save_tail_state(
+        portfolio_manager,
+        _tail_state(symbol="CCC", puts=[tail_put]),
+    )
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 500)],
+        "BBB": [_stock_position("BBB", 300)],
+        "CCC": [tail_put],
+    }
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(
+        portfolio_manager,
+        mocker,
+        [100.0, 110.0, 100.0, 110.0],
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
+
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+        _regime_account_summary("100000"),
+        portfolio_positions,
+    )
+
+    assert orders == [("AAA", "NYSE", 40), ("BBB", "NYSE", 240)]
+
+
+@pytest.mark.asyncio
+async def test_untracked_box_does_not_offset_tracked_option_exclusion(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
     portfolio_manager.config.runtime.account.margin_usage = 1.2
     portfolio_manager.config.strategies.regime_rebalance.weight_base = (
         RegimeRebalanceBaseEnum.net_liq_ex_options
     )
-    portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.0
     portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
     portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="100000")}
-    portfolio_positions = {
-        "AAA": [_stock_position("AAA", 400)],
-        "BBB": [_stock_position("BBB", 400)],
-        "SHV": [_stock_position("SHV", 200, market_value=20000.0)],
-        "SPX": [
-            _option_position(
-                "SPX",
-                -1,
-                market_value=-12000.0,
-                strike=5000.0,
-                right="C",
-                expiry="20260716",
-            ),
-            _option_position(
-                "SPX",
-                1,
-                market_value=8000.0,
-                strike=5000.0,
-                right="P",
-                expiry="20260716",
-            ),
-        ],
-    }
-
     _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=100.0)
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
-        account_summary, portfolio_positions
-    )
+    async def rebalance_snapshot(include_box: bool):
+        portfolio_positions = {
+            "AAA": [
+                _stock_position("AAA", 540),
+                _option_position("AAA", 1, market_value=6000.0),
+            ],
+            "BBB": [
+                _stock_position("BBB", 540),
+                _option_position("BBB", 1, market_value=4000.0),
+            ],
+        }
+        if include_box:
+            portfolio_positions["SPX"] = [
+                _option_position(
+                    "SPX",
+                    -1,
+                    market_value=-1_200_000.0,
+                    strike=5000.0,
+                    right="C",
+                    expiry="20260716",
+                ),
+                _option_position(
+                    "SPX",
+                    1,
+                    market_value=2000.0,
+                    strike=5000.0,
+                    right="P",
+                    expiry="20260716",
+                ),
+                _option_position(
+                    "SPX",
+                    1,
+                    market_value=700_000.0,
+                    strike=5100.0,
+                    right="C",
+                    expiry="20260716",
+                ),
+                _option_position(
+                    "SPX",
+                    -1,
+                    market_value=-2000.0,
+                    strike=5100.0,
+                    right="P",
+                    expiry="20260716",
+                ),
+            ]
 
-    assert orders == [("AAA", "NYSE", 224), ("BBB", "NYSE", 224)]
+        (
+            _,
+            orders,
+        ) = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+            account_summary, portfolio_positions
+        )
+        gate = portfolio_manager.data_store.get_last_event_payload(
+            "regime_rebalance_gate"
+        )
+        summary = portfolio_manager.data_store.get_last_event_payload(
+            "regime_rebalance_summary"
+        )
+        return {
+            "rebalance_base": gate["flow"]["rebalance_base"],
+            "current_weights": {
+                item["symbol"]: item["current_weight"] for item in summary["summary"]
+            },
+            "soft_breach": gate["soft_breach"],
+            "hard_breach": gate["hard_breach"],
+            "orders": orders,
+        }
+
+    without_box = await rebalance_snapshot(include_box=False)
+    with_large_untracked_box = await rebalance_snapshot(include_box=True)
+
+    assert with_large_untracked_box == without_box
+    assert without_box["rebalance_base"] == 108_000
+    assert without_box["current_weights"] == {
+        "AAA": pytest.approx(0.5),
+        "BBB": pytest.approx(0.5),
+    }
+    assert without_box["soft_breach"] is False
+    assert without_box["hard_breach"] is False
+    assert without_box["orders"] == []
+
+
+@pytest.mark.asyncio
+async def test_zero_weight_option_does_not_reduce_net_liq_base(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.runtime.account.margin_usage = 1.2
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.portfolio.symbols["CCC"] = SimpleNamespace(
+        weight=0.0,
+        primary_exchange="NYSE",
+    )
+    portfolio_manager.config.strategies.regime_rebalance.symbols.append("CCC")
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="100000")}
+    _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=100.0)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    async def rebalance_snapshot(include_zero_weight_option: bool):
+        portfolio_positions = {
+            "AAA": [_stock_position("AAA", 600)],
+            "BBB": [_stock_position("BBB", 600)],
+        }
+        if include_zero_weight_option:
+            portfolio_positions["CCC"] = [
+                _option_position("CCC", 1, market_value=50_000.0)
+            ]
+
+        (
+            _,
+            orders,
+        ) = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+            account_summary, portfolio_positions
+        )
+        gate = portfolio_manager.data_store.get_last_event_payload(
+            "regime_rebalance_gate"
+        )
+        summary = portfolio_manager.data_store.get_last_event_payload(
+            "regime_rebalance_summary"
+        )
+        return {
+            "rebalance_base": gate["flow"]["rebalance_base"],
+            "current_weights": {
+                item["symbol"]: item["current_weight"] for item in summary["summary"]
+            },
+            "soft_breach": gate["soft_breach"],
+            "hard_breach": gate["hard_breach"],
+            "orders": orders,
+        }
+
+    without_zero_weight_option = await rebalance_snapshot(
+        include_zero_weight_option=False
+    )
+    with_zero_weight_option = await rebalance_snapshot(include_zero_weight_option=True)
+
+    assert with_zero_weight_option == without_zero_weight_option
+    assert without_zero_weight_option["rebalance_base"] == 120_000
+    assert without_zero_weight_option["current_weights"] == {
+        "AAA": pytest.approx(0.5),
+        "BBB": pytest.approx(0.5),
+    }
+    assert without_zero_weight_option["soft_breach"] is False
+    assert without_zero_weight_option["hard_breach"] is False
+    assert without_zero_weight_option["orders"] == []
 
 
 @pytest.mark.asyncio

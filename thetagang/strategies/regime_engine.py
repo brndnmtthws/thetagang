@@ -1614,7 +1614,6 @@ class RegimeRebalanceEngine:
                 "Regime-aware rebalancing enabled but no symbols are configured."
             )
             return (table, to_trade)
-
         missing_symbols = [symbol for symbol in symbols if symbol not in symbol_configs]
         if missing_symbols:
             log.error(
@@ -1638,6 +1637,7 @@ class RegimeRebalanceEngine:
             raise ValueError(
                 "Regime-aware rebalancing requires positive target weights."
             )
+        managed_regime_symbols = set(symbols)
 
         stock_positions = [
             position
@@ -1696,6 +1696,7 @@ class RegimeRebalanceEngine:
 
         last_rebalance = await self._get_last_regime_rebalance_time(symbols)
         tail_cohorts = self._load_tail_cohorts()
+        owned_tail_hedge_con_ids = {cohort.con_id for cohort in tail_cohorts}
 
         weight_base = regime_rebalance.weight_base
         regime_margin_usage = self._resolve_regime_margin_usage()
@@ -1703,9 +1704,14 @@ class RegimeRebalanceEngine:
             total_value = sum(current_values.values())
         elif weight_base == RegimeRebalanceBaseEnum.net_liq_ex_options:
             excluded_value = 0.0
+            # Regime checks receive the combined account map for tail ownership.
+            # Ignore unrelated financing options, but retain state-owned tail puts.
             for positions in portfolio_positions.values():
                 for position in positions:
-                    if isinstance(position.contract, Option):
+                    if isinstance(position.contract, Option) and (
+                        position.contract.symbol in managed_regime_symbols
+                        or position.contract.conId in owned_tail_hedge_con_ids
+                    ):
                         market_value = float(position.marketValue or 0.0)
                         excluded_value += market_value
             net_liq = float(account_summary["NetLiquidation"].value)
