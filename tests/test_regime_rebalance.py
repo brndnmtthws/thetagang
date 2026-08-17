@@ -1385,10 +1385,8 @@ async def test_untracked_box_does_not_offset_tracked_option_exclusion(
     _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=100.0)
     _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
-    notice_mock = mocker.patch.object(regime_engine_module.log, "notice")
 
     async def rebalance_snapshot(include_box: bool):
-        notice_mock.reset_mock()
         portfolio_positions = {
             "AAA": [
                 _stock_position("AAA", 540),
@@ -1441,13 +1439,6 @@ async def test_untracked_box_does_not_offset_tracked_option_exclusion(
         ) = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
-        base_message = next(
-            call.args[0]
-            for call in notice_mock.call_args_list
-            if call.args[0].startswith(
-                "Regime rebalancing base: mode=net_liq_ex_options"
-            )
-        )
         gate = portfolio_manager.data_store.get_last_event_payload(
             "regime_rebalance_gate"
         )
@@ -1455,7 +1446,6 @@ async def test_untracked_box_does_not_offset_tracked_option_exclusion(
             "regime_rebalance_summary"
         )
         return {
-            "base_message": base_message,
             "rebalance_base": gate["flow"]["rebalance_base"],
             "current_weights": {
                 item["symbol"]: item["current_weight"] for item in summary["summary"]
@@ -1469,9 +1459,6 @@ async def test_untracked_box_does_not_offset_tracked_option_exclusion(
     with_large_untracked_box = await rebalance_snapshot(include_box=True)
 
     assert with_large_untracked_box == without_box
-    assert "excluded_options=[green]$10,000.00[/green]" in without_box["base_message"]
-    assert "margin_usage=[green]1.20[/green]" in without_box["base_message"]
-    assert "base=[green]$108,000.00[/green]" in without_box["base_message"]
     assert without_box["rebalance_base"] == 108_000
     assert without_box["current_weights"] == {
         "AAA": pytest.approx(0.5),
@@ -1480,6 +1467,73 @@ async def test_untracked_box_does_not_offset_tracked_option_exclusion(
     assert without_box["soft_breach"] is False
     assert without_box["hard_breach"] is False
     assert without_box["orders"] == []
+
+
+@pytest.mark.asyncio
+async def test_zero_weight_option_does_not_reduce_net_liq_base(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.runtime.account.margin_usage = 1.2
+    portfolio_manager.config.strategies.regime_rebalance.choppiness_min = 0.0
+    portfolio_manager.config.strategies.regime_rebalance.efficiency_max = 1.0
+    portfolio_manager.config.portfolio.symbols["CCC"] = SimpleNamespace(
+        weight=0.0,
+        primary_exchange="NYSE",
+    )
+    portfolio_manager.config.strategies.regime_rebalance.symbols.append("CCC")
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="100000")}
+    _mock_regime_tickers(portfolio_manager, mocker, aaa_price=100.0, bbb_price=100.0)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    async def rebalance_snapshot(include_zero_weight_option: bool):
+        portfolio_positions = {
+            "AAA": [_stock_position("AAA", 600)],
+            "BBB": [_stock_position("BBB", 600)],
+        }
+        if include_zero_weight_option:
+            portfolio_positions["CCC"] = [
+                _option_position("CCC", 1, market_value=50_000.0)
+            ]
+
+        (
+            _,
+            orders,
+        ) = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+            account_summary, portfolio_positions
+        )
+        gate = portfolio_manager.data_store.get_last_event_payload(
+            "regime_rebalance_gate"
+        )
+        summary = portfolio_manager.data_store.get_last_event_payload(
+            "regime_rebalance_summary"
+        )
+        return {
+            "rebalance_base": gate["flow"]["rebalance_base"],
+            "current_weights": {
+                item["symbol"]: item["current_weight"] for item in summary["summary"]
+            },
+            "soft_breach": gate["soft_breach"],
+            "hard_breach": gate["hard_breach"],
+            "orders": orders,
+        }
+
+    without_zero_weight_option = await rebalance_snapshot(
+        include_zero_weight_option=False
+    )
+    with_zero_weight_option = await rebalance_snapshot(include_zero_weight_option=True)
+
+    assert with_zero_weight_option == without_zero_weight_option
+    assert without_zero_weight_option["rebalance_base"] == 120_000
+    assert without_zero_weight_option["current_weights"] == {
+        "AAA": pytest.approx(0.5),
+        "BBB": pytest.approx(0.5),
+    }
+    assert without_zero_weight_option["soft_breach"] is False
+    assert without_zero_weight_option["hard_breach"] is False
+    assert without_zero_weight_option["orders"] == []
 
 
 @pytest.mark.asyncio

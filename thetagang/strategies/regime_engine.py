@@ -1614,8 +1614,6 @@ class RegimeRebalanceEngine:
                 "Regime-aware rebalancing enabled but no symbols are configured."
             )
             return (table, to_trade)
-        configured_regime_symbols = set(symbols)
-
         missing_symbols = [symbol for symbol in symbols if symbol not in symbol_configs]
         if missing_symbols:
             log.error(
@@ -1639,6 +1637,7 @@ class RegimeRebalanceEngine:
             raise ValueError(
                 "Regime-aware rebalancing requires positive target weights."
             )
+        managed_regime_symbols = set(symbols)
 
         stock_positions = [
             position
@@ -1710,7 +1709,7 @@ class RegimeRebalanceEngine:
             for positions in portfolio_positions.values():
                 for position in positions:
                     if isinstance(position.contract, Option) and (
-                        position.contract.symbol in configured_regime_symbols
+                        position.contract.symbol in managed_regime_symbols
                         or position.contract.conId in owned_tail_hedge_con_ids
                     ):
                         market_value = float(position.marketValue or 0.0)
