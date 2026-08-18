@@ -411,11 +411,16 @@ class DataStore:
         *,
         symbol: Optional[str] = None,
         config_scoped: bool = True,
+        exclude_current_run: bool = False,
         raise_on_error: bool = False,
     ) -> Optional[Dict[str, Any]]:
         try:
             overlay_key = (event_type, symbol)
-            if self.dry_run and overlay_key in self._dry_run_event_overlay:
+            if (
+                self.dry_run
+                and not exclude_current_run
+                and overlay_key in self._dry_run_event_overlay
+            ):
                 payload = self._dry_run_event_overlay[overlay_key]
                 if not payload:
                     return None
@@ -435,6 +440,8 @@ class DataStore:
                     query = query.filter(Event.symbol == symbol)
                 if config_scoped:
                     query = query.filter(Run.config_path.in_(self._config_path_aliases))
+                if exclude_current_run:
+                    query = query.filter(Event.run_id != self.run_id)
                 event = query.order_by(Event.id.desc()).first()
                 payload = event.payload if event else None
             if not payload:
@@ -448,6 +455,25 @@ class DataStore:
             if raise_on_error:
                 raise RuntimeError(f"Failed to read event {event_type}") from exc
             return None
+
+    def discard_current_run_events(self, event_types: Iterable[str]) -> None:
+        """Discard uncommitted state events from only the active run."""
+        selected = {event_type for event_type in event_types if event_type}
+        if not selected:
+            return
+        try:
+            with self.session_scope() as session:
+                (
+                    session.query(Event)
+                    .filter(Event.run_id == self.run_id)
+                    .filter(Event.event_type.in_(selected))
+                    .delete(synchronize_session=False)
+                )
+            for key in list(self._dry_run_event_overlay):
+                if key[0] in selected:
+                    self._dry_run_event_overlay.pop(key, None)
+        except Exception as exc:
+            raise RuntimeError("Failed to discard uncommitted run state") from exc
 
     @staticmethod
     def _tail_hedge_entry_dict(entry: TailHedgeEntry) -> Dict[str, Any]:

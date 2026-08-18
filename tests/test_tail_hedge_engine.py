@@ -23,6 +23,7 @@ from thetagang.strategies.tail_hedge_engine import (
     TailHedgeEngine,
 )
 from thetagang.strategies.tail_hedge_state import (
+    TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
     TailHedgeCohort,
     TailHedgeState,
     TailHedgeStateStore,
@@ -166,6 +167,7 @@ def _working_trade(
     remaining: float = 1,
     order_id: int = 17,
     observed_at: datetime | None = NOW,
+    avg_fill_price: float = 0.0,
 ):
     if action is None:
         action = "BUY" if order_ref == TAIL_HEDGE_ENTRY_ORDER_REF else "SELL"
@@ -182,6 +184,7 @@ def _working_trade(
             status=status,
             filled=filled,
             remaining=remaining,
+            avgFillPrice=avg_fill_price,
         ),
         log=([] if observed_at is None else [SimpleNamespace(time=observed_at)]),
         fills=[],
@@ -1103,6 +1106,88 @@ async def test_completed_exit_fill_waits_for_portfolio_cache(mocker):
     closed_state = _saved_states(data_store)[-1]
     assert closed_state.open_cohorts == []
     assert closed_state.cohorts[0].recovered_cost == 200.0
+
+
+@pytest.mark.asyncio
+async def test_completed_harvest_credits_actual_net_fill_proceeds(mocker):
+    engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    engine.config.runtime.orders = SimpleNamespace(estimated_fee_per_contract=1.0)
+    contract = _put_contract(dte=180)
+    pending = _entry(
+        contract,
+        days_ago=1,
+        cost=300.0,
+        quantity=2,
+        pending_recovery_quantity=2,
+        pending_recovery_per_contract=51.0,
+        pending_recovery_enqueued_at=NOW,
+        pending_recovery_initial_quantity=2,
+    )
+    data_store.load_tail_hedge_entries.return_value = _state_rows(_state(pending))
+    ibkr.trades.return_value = [
+        _working_trade(
+            contract,
+            build_tail_reduction_order_ref(
+                f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:QQQ",
+                contract.conId,
+                NOW,
+            ),
+            status="Filled",
+            filled=2,
+            remaining=0,
+            avg_fill_price=1.2,
+        )
+    ]
+
+    await _manage(engine, {"QQQ": [_stock_position()]})
+
+    order_ops.enqueue_order.assert_not_called()
+    closed = _saved_states(data_store)[-1].cohorts[0]
+    assert closed.status == "closed"
+    assert closed.recovered_cost == 238.0
+
+
+@pytest.mark.asyncio
+async def test_partial_harvest_keeps_conservative_recovery_value(mocker):
+    engine, ibkr, order_ops, data_store = _make_engine(mocker)
+    engine.config.runtime.orders = SimpleNamespace(estimated_fee_per_contract=1.0)
+    contract = _put_contract(dte=180)
+    pending = _entry(
+        contract,
+        days_ago=1,
+        cost=300.0,
+        quantity=2,
+        pending_recovery_quantity=2,
+        pending_recovery_per_contract=51.0,
+        pending_recovery_enqueued_at=NOW,
+        pending_recovery_initial_quantity=2,
+    )
+    data_store.load_tail_hedge_entries.return_value = _state_rows(_state(pending))
+    trade = _working_trade(
+        contract,
+        build_tail_reduction_order_ref(
+            f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:QQQ",
+            contract.conId,
+            NOW,
+        ),
+        status="Submitted",
+        filled=1,
+        remaining=1,
+        avg_fill_price=2.0,
+    )
+    ibkr.open_trades.return_value = [trade]
+    ibkr.trades.return_value = [trade]
+
+    await _manage(
+        engine,
+        {"QQQ": [_stock_position(), _put_position(contract, quantity=1)]},
+    )
+
+    order_ops.enqueue_order.assert_not_called()
+    reconciled = _saved_states(data_store)[-1].open_cohorts[0]
+    assert reconciled.quantity == 1
+    assert reconciled.recovered_cost == 51.0
+    assert reconciled.pending_recovery_quantity == 1
 
 
 @pytest.mark.asyncio

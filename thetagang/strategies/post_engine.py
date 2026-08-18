@@ -11,7 +11,7 @@ from thetagang.config import Config
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt
 from thetagang.ibkr import IBKR
-from thetagang.orders import Orders, pending_buy_cash
+from thetagang.orders import Orders, pending_order_cash
 from thetagang.trading_operations import (
     NoValidContractsError,
     OptionChainScanner,
@@ -60,16 +60,27 @@ class PostStrategyEngine:
             return 0.0
         return max(0.0, self._get_reserved_cash_for_post_management())
 
-    def calc_pending_cash_balance(self) -> float:
-        pending = pending_buy_cash(
+    def pending_cash_components(self) -> tuple[float, float]:
+        pending = pending_order_cash(
             self.ibkr.open_trades(),
             self.orders.records(),
             account=self.config.runtime.account.number,
             qualified_contracts=self.qualified_contracts,
+            estimated_fee_per_contract=float(
+                getattr(
+                    self.config.runtime.orders,
+                    "estimated_fee_per_contract",
+                    0.0,
+                )
+            ),
         )
         if pending.ambiguous:
-            raise RuntimeError("Pending BUY cash cannot be priced safely")
-        return -pending.debit
+            raise RuntimeError("Pending order cash cannot be priced safely")
+        return pending.debit, pending.credit
+
+    def calc_pending_cash_balance(self) -> float:
+        pending_debit, pending_credit = self.pending_cash_components()
+        return pending_credit - pending_debit
 
     def _cash_fund_order_pending(self, symbol: str) -> bool:
         account = self.config.runtime.account.number
@@ -242,14 +253,21 @@ class PostStrategyEngine:
 
         def amount_to_manage(summary: Dict[str, AccountValue]) -> float:
             cash_balance = math.floor(float(summary["TotalCashValue"].value))
-            effective_cash_balance = cash_balance + self.calc_pending_cash_balance()
+            (
+                pending_debit,
+                pending_credit,
+            ) = self.pending_cash_components()
+            cash_after_pending_debits = cash_balance - pending_debit
             sweepable_cash_balance = (
-                effective_cash_balance - self.reserved_cash_for_post_management()
+                cash_after_pending_debits - self.reserved_cash_for_post_management()
             )
+            # Pending credits can prevent duplicate liquidation, but cannot fund
+            # a new cash-fund purchase until they settle.
             if sweepable_cash_balance > target_cash_balance + buy_threshold:
                 return sweepable_cash_balance - target_cash_balance
-            if effective_cash_balance < target_cash_balance - sell_threshold:
-                return effective_cash_balance - target_cash_balance
+            projected_cash_balance = cash_after_pending_debits + pending_credit
+            if projected_cash_balance < target_cash_balance - sell_threshold:
+                return projected_cash_balance - target_cash_balance
             return 0.0
 
         reserved_cash = self.reserved_cash_for_post_management()

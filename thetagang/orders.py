@@ -33,8 +33,9 @@ def order_cash_notional(
     quantity = float(getattr(order, "totalQuantity", 0) or 0)
     if (
         not math.isfinite(price)
+        or math.isclose(price, 0.0, abs_tol=1e-12)
         or not math.isfinite(quantity)
-        or quantity < 0
+        or quantity <= 0
         or not math.isfinite(multiplier)
         or multiplier <= 0
     ):
@@ -52,25 +53,34 @@ class PendingBuyCash(NamedTuple):
     ambiguous: bool
 
 
-def working_buy_cash(
+class PendingOrderCash(NamedTuple):
+    debit: float
+    credit: float
+    ambiguous: bool
+
+
+def working_order_cash(
     trades: Iterable[Any],
     *,
     account: str,
     qualified_contracts: Mapping[int, Contract] | None = None,
-) -> PendingBuyCash:
-    """Return unfilled active-account BUY debit and snapshot ambiguity."""
+    estimated_fee_per_contract: float = 0.0,
+) -> PendingOrderCash:
+    """Return remaining debits and credits for active-account working orders."""
     debit = 0.0
+    credit = 0.0
     ambiguous = False
     for trade in trades:
         order = getattr(trade, "order", None)
         contract = getattr(trade, "contract", None)
         is_done = getattr(trade, "isDone", None)
+        action = str(getattr(order, "action", "")).upper()
         if (
             order is None
             or contract is None
             or (callable(is_done) and is_done())
             or getattr(order, "account", None) != account
-            or str(getattr(order, "action", "")).upper() != "BUY"
+            or action not in {"BUY", "SELL"}
         ):
             continue
         try:
@@ -91,44 +101,133 @@ def working_buy_cash(
             ambiguous = True
             remaining = total_quantity
         try:
-            amount = max(
-                0.0,
-                order_cash_notional(contract, order, qualified_contracts)
-                * (remaining / total_quantity),
+            notional = order_cash_notional(contract, order, qualified_contracts)
+            fee = (
+                0.0
+                if contract.secType == "STK"
+                else float(estimated_fee_per_contract) * remaining
             )
+            if not math.isfinite(fee) or fee < 0:
+                raise ValueError("Estimated order fee must be finite and non-negative")
+            cash_change = (notional if action == "SELL" else -notional) * (
+                remaining / total_quantity
+            ) - fee
         except (TypeError, ValueError, OverflowError):
             ambiguous = True
             continue
-        if not math.isfinite(debit + amount):
+        if not math.isfinite(cash_change):
             ambiguous = True
             continue
-        debit += amount
-    return PendingBuyCash(debit, ambiguous)
+        debit += max(0.0, -cash_change)
+        credit += max(0.0, cash_change)
+    return PendingOrderCash(debit, credit, ambiguous)
+
+
+def queued_order_cash(
+    records: Iterable[tuple[Contract, Any, Any]],
+    qualified_contracts: Mapping[int, Contract] | None = None,
+    estimated_fee_per_contract: float = 0.0,
+) -> PendingOrderCash:
+    """Return debits and credits for locally queued orders."""
+    debit = 0.0
+    credit = 0.0
+    ambiguous = False
+    for contract, order, _intent_id in records:
+        action = str(getattr(order, "action", "")).upper()
+        if action not in {"BUY", "SELL"}:
+            continue
+        try:
+            notional = order_cash_notional(contract, order, qualified_contracts)
+            quantity = float(getattr(order, "totalQuantity", 0) or 0)
+            fee = (
+                0.0
+                if contract.secType == "STK"
+                else float(estimated_fee_per_contract) * quantity
+            )
+            if not math.isfinite(fee) or fee < 0:
+                raise ValueError("Estimated order fee must be finite and non-negative")
+            cash_change = (notional if action == "SELL" else -notional) - fee
+        except (TypeError, ValueError, OverflowError):
+            ambiguous = True
+            continue
+        if not math.isfinite(cash_change):
+            ambiguous = True
+            continue
+        debit += max(0.0, -cash_change)
+        credit += max(0.0, cash_change)
+    return PendingOrderCash(debit, credit, ambiguous)
+
+
+def pending_order_cash(
+    trades: Iterable[Any],
+    records: Iterable[tuple[Contract, Any, Any]],
+    *,
+    account: str,
+    qualified_contracts: Mapping[int, Contract] | None = None,
+    estimated_fee_per_contract: float = 0.0,
+) -> PendingOrderCash:
+    """Combine broker-working and locally queued order cash flows."""
+    working = working_order_cash(
+        trades,
+        account=account,
+        qualified_contracts=qualified_contracts,
+        estimated_fee_per_contract=estimated_fee_per_contract,
+    )
+    queued = queued_order_cash(
+        records,
+        qualified_contracts,
+        estimated_fee_per_contract,
+    )
+    debit = working.debit + queued.debit
+    credit = working.credit + queued.credit
+    return PendingOrderCash(
+        debit if math.isfinite(debit) else 0.0,
+        credit if math.isfinite(credit) else 0.0,
+        working.ambiguous
+        or queued.ambiguous
+        or not math.isfinite(debit)
+        or not math.isfinite(credit),
+    )
+
+
+def working_buy_cash(
+    trades: Iterable[Any],
+    *,
+    account: str,
+    qualified_contracts: Mapping[int, Contract] | None = None,
+    estimated_fee_per_contract: float = 0.0,
+) -> PendingBuyCash:
+    """Return unfilled active-account BUY debit and snapshot ambiguity."""
+    pending = working_order_cash(
+        (
+            trade
+            for trade in trades
+            if str(getattr(getattr(trade, "order", None), "action", "")).upper()
+            == "BUY"
+        ),
+        account=account,
+        qualified_contracts=qualified_contracts,
+        estimated_fee_per_contract=estimated_fee_per_contract,
+    )
+    return PendingBuyCash(pending.debit, pending.ambiguous)
 
 
 def queued_buy_cash(
     records: Iterable[tuple[Contract, Any, Any]],
     qualified_contracts: Mapping[int, Contract] | None = None,
+    estimated_fee_per_contract: float = 0.0,
 ) -> PendingBuyCash:
     """Return queued BUY debit, marking orders without a usable limit ambiguous."""
-    debit = 0.0
-    ambiguous = False
-    for contract, order, _intent_id in records:
-        if str(getattr(order, "action", "")).upper() != "BUY":
-            continue
-        try:
-            amount = max(
-                0.0,
-                order_cash_notional(contract, order, qualified_contracts),
-            )
-        except (TypeError, ValueError, OverflowError):
-            ambiguous = True
-            continue
-        if not math.isfinite(debit + amount):
-            ambiguous = True
-            continue
-        debit += amount
-    return PendingBuyCash(debit, ambiguous)
+    pending = queued_order_cash(
+        (
+            record
+            for record in records
+            if str(getattr(record[1], "action", "")).upper() == "BUY"
+        ),
+        qualified_contracts,
+        estimated_fee_per_contract,
+    )
+    return PendingBuyCash(pending.debit, pending.ambiguous)
 
 
 def pending_buy_cash(
@@ -137,14 +236,20 @@ def pending_buy_cash(
     *,
     account: str,
     qualified_contracts: Mapping[int, Contract] | None = None,
+    estimated_fee_per_contract: float = 0.0,
 ) -> PendingBuyCash:
     """Combine broker-working and locally queued BUY reservations."""
     working = working_buy_cash(
         trades,
         account=account,
         qualified_contracts=qualified_contracts,
+        estimated_fee_per_contract=estimated_fee_per_contract,
     )
-    queued = queued_buy_cash(records, qualified_contracts)
+    queued = queued_buy_cash(
+        records,
+        qualified_contracts,
+        estimated_fee_per_contract,
+    )
     debit = working.debit + queued.debit
     return PendingBuyCash(
         debit if math.isfinite(debit) else 0.0,
@@ -163,6 +268,15 @@ class Orders:
 
     def records(self) -> List[Tuple[Contract, LimitOrder, Optional[int]]]:
         return self.__records
+
+    def remove_records(
+        self,
+        records: Iterable[Tuple[Contract, LimitOrder, Optional[int]]],
+    ) -> None:
+        record_ids = {id(record) for record in records}
+        self.__records[:] = [
+            record for record in self.__records if id(record) not in record_ids
+        ]
 
     def print_summary(self) -> None:
         if not self.__records:

@@ -119,6 +119,16 @@ class IBKR:
     async def account_summary(self, account: str) -> List[AccountValue]:
         return await self.ib.accountSummaryAsync(account)
 
+    async def refresh_account(self, account: str) -> None:
+        """Restart account updates and wait for a fresh full snapshot."""
+        self.ib.client.reqAccountUpdates(False, account)
+        await self.ib.reqAccountUpdatesAsync(account)
+        for value in self.ib.accountValues(account):
+            if str(getattr(value, "tag", "")).lower() == "accountready" and str(
+                getattr(value, "value", "")
+            ).lower() in {"false", "0"}:
+                raise RuntimeError("IBKR account snapshot is not ready")
+
     async def request_historical_data(
         self,
         contract: Contract,

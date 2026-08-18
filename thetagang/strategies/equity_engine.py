@@ -109,9 +109,13 @@ class EquityRebalanceEngine:
         self,
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
+        *,
+        exclude_current_run_state: bool = False,
     ) -> Tuple[Table, List[Tuple[str, str, int]]]:
         return await self.regime_engine.check_regime_rebalance_positions(
-            account_summary, portfolio_positions
+            account_summary,
+            portfolio_positions,
+            exclude_current_run_state=exclude_current_run_state,
         )
 
     async def check_buy_only_positions(

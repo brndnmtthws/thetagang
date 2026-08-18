@@ -11,6 +11,7 @@ from thetagang.options import contract_date_to_datetime
 TAIL_HEDGE_ENTRY_ORDER_REF = "tg:tail-hedge:entry"
 TAIL_HEDGE_CLOSE_ORDER_REF = "tg:tail-hedge:close"
 TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX = "tg:tail-harvest"
+TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR = "_thetagang_min_limit_price"
 
 _ORDER_REF_EPOCH = datetime(1970, 1, 1)
 
@@ -173,6 +174,12 @@ class TailHedgeCohort:
             raise RuntimeError("Tail-hedge state contains invalid recovery intent")
         self.pending_recovery_quantity = quantity
         self.pending_recovery_initial_quantity = quantity
+        self.validate()
+
+    def update_recovery_proceeds(self, proceeds_per_contract: float) -> None:
+        if not self.has_pending_recovery:
+            raise RuntimeError("Tail-hedge recovery intent is unavailable")
+        self.pending_recovery_per_contract = self._number(proceeds_per_contract)
         self.validate()
 
     def apply_recovery(self, quantity: int) -> float:

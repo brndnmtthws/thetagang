@@ -88,6 +88,7 @@ class BrokerOrderProgress:
     filled: float
     observed_at: datetime | None
     intent_specific: bool = False
+    net_proceeds_per_contract: float | None = None
 
     @property
     def is_filled(self) -> bool:
@@ -420,7 +421,11 @@ class TailHedgeEngine:
             )
             if progress.is_filled and math.floor(progress.filled) == 0:
                 confirmed_quantity = cohort.pending_recovery_quantity or 0
-            credited = cohort.apply_recovery(confirmed_quantity)
+            credited = self._apply_recovery(
+                cohort,
+                confirmed_quantity,
+                progress,
+            )
             if credited > 0:
                 log.notice(
                     f"{cohort.symbol}: Credited {dfmt(credited)} of recovered tail "
@@ -498,7 +503,11 @@ class TailHedgeEngine:
             )
             cohort.estimated_cost = max(cohort.estimated_cost, settled_cost)
         if live_quantity < cohort.quantity and cohort.has_pending_recovery:
-            recovery_credited = cohort.apply_recovery(cohort.quantity - live_quantity)
+            recovery_credited = self._apply_recovery(
+                cohort,
+                cohort.quantity - live_quantity,
+                self._reduction_progress(cohort, account_trades),
+            )
             if recovery_credited > 0:
                 log.notice(
                     f"{cohort.symbol}: Credited {dfmt(recovery_credited)} of "
@@ -536,6 +545,21 @@ class TailHedgeEngine:
                 "without an observed position change; it can be retried."
             )
         return True
+
+    @staticmethod
+    def _apply_recovery(
+        cohort: TailHedgeCohort,
+        quantity: int,
+        progress: BrokerOrderProgress | None,
+    ) -> float:
+        if (
+            progress is not None
+            and progress.net_proceeds_per_contract is not None
+            and cohort.accounted_recovery_quantity == 0
+            and quantity == cohort.pending_recovery_quantity
+        ):
+            cohort.update_recovery_proceeds(progress.net_proceeds_per_contract)
+        return cohort.apply_recovery(quantity)
 
     @staticmethod
     def _entry_is_working(cohort: TailHedgeCohort, trades: List[Trade]) -> bool:
@@ -1330,11 +1354,29 @@ class TailHedgeEngine:
             filled = 0.0
         if not math.isfinite(filled) or filled < 0:
             filled = 0.0
+        net_proceeds_per_contract = None
+        if action == "SELL" and (filled > 0 or status.lower() == "filled"):
+            try:
+                average_fill_price = float(
+                    getattr(order_status, "avgFillPrice", 0.0) or 0.0
+                )
+                if not math.isfinite(average_fill_price) or average_fill_price <= 0:
+                    raise ValueError("Average fill price is unavailable")
+                net_proceeds = round(
+                    average_fill_price * self._multiplier(trade.contract)
+                    - self._estimated_fee_per_contract(),
+                    2,
+                )
+                if math.isfinite(net_proceeds) and net_proceeds >= 0:
+                    net_proceeds_per_contract = net_proceeds
+            except (RuntimeError, TypeError, ValueError):
+                pass
         return BrokerOrderProgress(
             status=status,
             filled=filled,
             observed_at=self._trade_time(trade),
             intent_specific=selected[3],
+            net_proceeds_per_contract=net_proceeds_per_contract,
         )
 
     @staticmethod

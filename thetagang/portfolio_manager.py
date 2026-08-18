@@ -56,6 +56,8 @@ from thetagang.strategies.runtime_services import (
 from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_CLOSE_ORDER_REF,
     TAIL_HEDGE_ENTRY_ORDER_REF,
+    TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
+    TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR,
     TailHedgeStateStore,
     is_tail_order_ref,
     is_tail_reduction_ref,
@@ -79,6 +81,8 @@ from .options import option_dte
 # Turn off some of the more annoying logging output from ib_async
 logging.getLogger("ib_async.ib").setLevel(logging.ERROR)
 logging.getLogger("ib_async.wrapper").setLevel(logging.CRITICAL)
+
+TAIL_HARVEST_FILL_TIMEOUT_SECONDS = 5 * 60
 
 
 class PortfolioManager:
@@ -636,6 +640,113 @@ class PortfolioManager:
 
         return (account_summary, portfolio_positions)
 
+    @staticmethod
+    def _is_tail_harvest_record(
+        record: Tuple[Contract, LimitOrder, Optional[int]],
+    ) -> bool:
+        order_ref = getattr(record[1], "orderRef", None)
+        return isinstance(order_ref, str) and order_ref.startswith(
+            f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:"
+        )
+
+    async def _refresh_account_state(
+        self,
+    ) -> Tuple[Dict[str, AccountValue], Dict[str, List[PortfolioItem]]]:
+        await asyncio.wait_for(
+            self.ibkr.refresh_account(self.account_number),
+            timeout=self.config.runtime.ib_async.api_response_wait_time,
+        )
+        account_summary = account_summary_to_dict(
+            await self.ibkr.account_summary(self.account_number)
+        )
+        for tag in ("NetLiquidation", "TotalCashValue"):
+            value = self.ibkr.cached_account_value(self.account_number, tag)
+            account_summary[tag] = AccountValue(
+                self.account_number,
+                tag,
+                str(value),
+                "BASE",
+                "",
+            )
+        return account_summary, self.get_portfolio_positions()
+
+    async def _plan_regime_rebalance(
+        self,
+        account_summary: Dict[str, AccountValue],
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+        *,
+        exclude_current_run_state: bool = False,
+    ) -> List[Tuple[str, str, int]]:
+        table, orders = await self.equity_engine.check_regime_rebalance_positions(
+            account_summary,
+            self.combine_position_maps(
+                portfolio_positions,
+                self.last_untracked_positions,
+            ),
+            exclude_current_run_state=exclude_current_run_state,
+        )
+        if self.config.strategies.regime_rebalance.enabled:
+            log.print(table)
+        return orders
+
+    async def _run_regime_rebalance_stage(
+        self,
+        account_summary: Dict[str, AccountValue],
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+    ) -> Tuple[Dict[str, AccountValue], Dict[str, List[PortfolioItem]]]:
+        records_before = len(self.orders.records())
+        regime_orders = await self._plan_regime_rebalance(
+            account_summary,
+            portfolio_positions,
+        )
+        new_records = self.orders.records()[records_before:]
+        harvest_records = [
+            record for record in new_records if self._is_tail_harvest_record(record)
+        ]
+        if self.dry_run or not harvest_records:
+            if regime_orders:
+                await self.equity_engine.execute_regime_rebalance_orders(regime_orders)
+            return account_summary, portfolio_positions
+
+        if self.data_store:
+            self.data_store.discard_current_run_events(
+                {
+                    "regime_rebalance_state",
+                    "volatility_weight_state",
+                }
+            )
+        self.orders.remove_records(harvest_records)
+        if not await self._execute_tail_harvest_phase(harvest_records):
+            raise RuntimeError("Tail-harvest execution did not fully fill")
+
+        account_summary, portfolio_positions = await self._refresh_account_state()
+        records_before = len(self.orders.records())
+        regime_orders = await self._plan_regime_rebalance(
+            account_summary,
+            portfolio_positions,
+            exclude_current_run_state=True,
+        )
+        extra_harvests = [
+            record
+            for record in self.orders.records()[records_before:]
+            if self._is_tail_harvest_record(record)
+        ]
+        if extra_harvests:
+            self.orders.remove_records(extra_harvests)
+            for contract, _order, _intent_id in extra_harvests:
+                con_id = getattr(contract, "conId", 0)
+                if type(con_id) is int and con_id > 0:
+                    self._update_tail_recovery_submission(con_id, None)
+            log.error(
+                "Tail harvest proceeds were insufficient after execution; "
+                "aborting remaining stages safely."
+            )
+            raise RuntimeError("Tail-harvest proceeds were insufficient")
+
+        if regime_orders:
+            await self.equity_engine.execute_regime_rebalance_orders(regime_orders)
+        return account_summary, portfolio_positions
+
     async def manage(self) -> None:
         had_error = False
         try:
@@ -725,21 +836,22 @@ class PortfolioManager:
                         portfolio_positions,
                         options_enabled,
                     )
+                elif stage_id == "equity_regime_rebalance":
+                    (
+                        account_summary,
+                        portfolio_positions,
+                    ) = await self._run_regime_rebalance_stage(
+                        account_summary,
+                        portfolio_positions,
+                    )
                 elif stage_id in {
-                    "equity_regime_rebalance",
                     "equity_buy_rebalance",
                     "equity_sell_rebalance",
                 }:
-                    equity_positions = portfolio_positions
-                    if stage_id == "equity_regime_rebalance":
-                        equity_positions = self.combine_position_maps(
-                            portfolio_positions,
-                            self.last_untracked_positions,
-                        )
                     await run_equity_rebalance_stages(
                         self._equity_strategy_deps({stage_id}),
                         account_summary,
-                        equity_positions,
+                        portfolio_positions,
                     )
                 elif stage_id in post_stage_ids:
                     post_positions = portfolio_positions
@@ -983,7 +1095,136 @@ class PortfolioManager:
             log.error(f"No pending tail-entry state found for conId {con_id}.")
         return released
 
-    def submit_orders(self) -> None:
+    @staticmethod
+    def _trade_fully_filled(trade: Any) -> bool:
+        status = str(getattr(getattr(trade, "orderStatus", None), "status", ""))
+        try:
+            filled = float(getattr(trade.orderStatus, "filled", 0) or 0)
+            remaining = float(getattr(trade.orderStatus, "remaining", 0) or 0)
+            requested = float(getattr(trade.order, "totalQuantity", 0) or 0)
+        except (AttributeError, TypeError, ValueError):
+            return False
+        return status == "Filled" and (
+            requested > 0
+            and filled >= requested
+            and math.isclose(remaining, 0.0, abs_tol=1e-9)
+        )
+
+    async def _cancel_incomplete_trades(self, trades: List[Any]) -> None:
+        canceled_trades = []
+        for trade in trades:
+            if self._trade_fully_filled(trade) or trade.isDone():
+                continue
+            log.warning(
+                f"{trade.contract.symbol}: Canceling incomplete tail harvest "
+                f"after bounded fill attempt."
+            )
+            self.ibkr.cancel_order(trade.order)
+            canceled_trades.append(trade)
+        if not canceled_trades:
+            return
+        still_working = await self.ibkr.wait_for_orders_complete(
+            canceled_trades,
+            max(
+                1,
+                min(60, self.config.runtime.ib_async.api_response_wait_time),
+            ),
+        )
+        if still_working:
+            log.error(
+                "Tail-harvest cancellation was not confirmed before shutdown; "
+                "no dependent orders will be submitted."
+            )
+
+    async def _execute_tail_harvest_phase(
+        self,
+        order_records: List[Tuple[Contract, LimitOrder, Optional[int]]],
+        timeout: int = TAIL_HARVEST_FILL_TIMEOUT_SECONDS,
+    ) -> bool:
+        if not order_records:
+            return True
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        trade_start = len(self.trades.records())
+        self.submit_orders(order_records)
+        trade_indices = list(range(trade_start, len(self.trades.records())))
+        phase_trades = [self.trades.records()[idx] for idx in trade_indices]
+        if len(phase_trades) != len(order_records):
+            await self._cancel_incomplete_trades(phase_trades)
+            log.error("Unable to submit every tail-harvest order; aborting safely.")
+            return False
+
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            await self._cancel_incomplete_trades(phase_trades)
+            log.error("Tail-harvest fill deadline expired; aborting safely.")
+            return False
+        submit_timeout = max(1, math.ceil(min(60.0, remaining)))
+        try:
+            await self.ibkr.wait_for_submitting_orders(
+                phase_trades,
+                submit_timeout,
+            )
+        except RuntimeError as exc:
+            await self._cancel_incomplete_trades(phase_trades)
+            log.error(f"Tail-harvest submission did not settle: {exc}")
+            return False
+
+        delay = random.randrange(
+            self.config.runtime.orders.price_update_delay[0],
+            self.config.runtime.orders.price_update_delay[1],
+        )
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            await self._cancel_incomplete_trades(phase_trades)
+            log.error("Tail-harvest fill deadline expired; aborting safely.")
+            return False
+        first_wait = max(1, math.ceil(min(float(delay), remaining)))
+        incomplete = await self.ibkr.wait_for_orders_complete(
+            phase_trades,
+            first_wait,
+        )
+
+        if incomplete and loop.time() < deadline:
+            incomplete_ids = {id(trade) for trade in incomplete}
+            for idx in trade_indices:
+                trade = self.trades.records()[idx]
+                if id(trade) in incomplete_ids:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    await self._reprice_trade(idx, trade, timeout=remaining)
+
+        phase_trades = [self.trades.records()[idx] for idx in trade_indices]
+        incomplete = [
+            trade for trade in phase_trades if not self._trade_fully_filled(trade)
+        ]
+        remaining = deadline - loop.time()
+        if incomplete and remaining > 0:
+            await self.ibkr.wait_for_orders_complete(
+                incomplete,
+                max(1, math.ceil(remaining)),
+            )
+
+        phase_trades = [self.trades.records()[idx] for idx in trade_indices]
+        if all(self._trade_fully_filled(trade) for trade in phase_trades):
+            log.notice("Tail-harvest orders filled; recalculating regime rebalance.")
+            return True
+
+        await self._cancel_incomplete_trades(phase_trades)
+        log.error(
+            f"Tail-harvest orders did not fully fill within {timeout} seconds; "
+            "aborting remaining stages safely."
+        )
+        return False
+
+    def submit_orders(
+        self,
+        order_records: Optional[
+            List[Tuple[Contract, LimitOrder, Optional[int]]]
+        ] = None,
+    ) -> None:
         open_trades = self.ibkr.open_trades()
         commitments = self._working_option_commitments(open_trades)
         working_option_con_ids = {con_id for con_id, _action in commitments}
@@ -1001,14 +1242,16 @@ class PortfolioManager:
             and type(getattr(trade.contract, "conId", None)) is int
             and trade.contract.conId > 0
         }
-        order_records = self.orders.records()
+        queued_records = self.orders.records()
+        if order_records is None:
+            order_records = queued_records
         working_stock_symbols = working_stock_order_symbols(
             open_trades,
             self.account_number,
         )
         working_stock_symbols |= {
             contract.symbol
-            for contract, order, _intent_id in order_records
+            for contract, order, _intent_id in queued_records
             if isinstance(contract, Stock)
             and getattr(order, "account", None) == self.account_number
             and str(getattr(order, "action", "")).upper() in {"BUY", "SELL"}
@@ -1147,6 +1390,99 @@ class PortfolioManager:
                 submitted_tail_entries.add(int(contract.conId))
         self.trades.print_summary()
 
+    async def _reprice_trade(
+        self,
+        idx: int,
+        trade: Any,
+        *,
+        timeout: Optional[float] = None,
+    ) -> bool:
+        response_timeout = self.config.runtime.ib_async.api_response_wait_time
+        if timeout is not None:
+            response_timeout = min(response_timeout, timeout)
+        try:
+            ticker = await asyncio.wait_for(
+                self.ibkr.get_ticker_for_contract(
+                    trade.contract,
+                    required_fields=[TickerField.MIDPOINT],
+                    optional_fields=[TickerField.MARKET_PRICE],
+                ),
+                timeout=response_timeout,
+            )
+
+            contract, order = trade.contract, trade.order
+            updated_price = np.sign(float(order.lmtPrice or 0)) * max(
+                [
+                    (
+                        self.config.runtime.orders.minimum_credit
+                        if order.action == "BUY" and float(order.lmtPrice or 0) <= 0.0
+                        else 0.0
+                    ),
+                    math.fabs(
+                        round(
+                            (float(order.lmtPrice or 0) + ticker.midpoint()) / 2.0,
+                            2,
+                        )
+                    ),
+                ]
+            )
+            minimum_limit_price = getattr(
+                order,
+                TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR,
+                None,
+            )
+            if (
+                order.action == "SELL"
+                and isinstance(minimum_limit_price, (int, float))
+                and math.isfinite(float(minimum_limit_price))
+            ):
+                updated_price = max(updated_price, float(minimum_limit_price))
+
+            if trade.contract.symbol == "VIX":
+                updated_price = self.order_ops.round_vix_price(updated_price)
+
+            if would_increase_spread(order, updated_price):
+                log.warning(
+                    f"Skipping order for {contract.symbol}"
+                    f" with old lmtPrice={dfmt(float(order.lmtPrice or 0))} "
+                    f"updated lmtPrice={dfmt(updated_price)}, because updated "
+                    "price would increase spread"
+                )
+                return False
+
+            if float(order.lmtPrice or 0) != updated_price and np.sign(
+                float(order.lmtPrice or 0)
+            ) == np.sign(updated_price):
+                log.info(
+                    f"{contract.symbol}: Resubmitting {order.action} "
+                    f"{contract.secType} order with old "
+                    f"lmtPrice={dfmt(float(order.lmtPrice or 0))} "
+                    f"updated lmtPrice={dfmt(updated_price)}"
+                )
+                updated_order = copy.deepcopy(cast(LimitOrder, order))
+                updated_order.lmtPrice = float(updated_price)
+                self.trades.submit_order(contract, updated_order, idx)
+                log.info(f"{contract.symbol}: Order updated, order={updated_order}")
+        except (
+            asyncio.TimeoutError,
+            RuntimeError,
+            RequiredFieldValidationError,
+        ) as exc:
+            log.warning(
+                f"Couldn't generate midpoint price for {trade.contract}, "
+                "skipping repricing"
+            )
+            if self.data_store:
+                self.data_store.record_event(
+                    "order_price_adjustment_skipped",
+                    {
+                        "symbol": getattr(trade.contract, "symbol", ""),
+                        "secType": getattr(trade.contract, "secType", ""),
+                        "reason": type(exc).__name__,
+                    },
+                )
+        return True
+
     async def adjust_prices(self) -> None:
         if (
             all(
@@ -1180,88 +1516,8 @@ class PortfolioManager:
         ]
 
         for idx, trade in unfilled:
-            try:
-                # Bound midpoint price requests so repricing never blocks run termination.
-                ticker = await asyncio.wait_for(
-                    self.ibkr.get_ticker_for_contract(
-                        trade.contract,
-                        required_fields=[TickerField.MIDPOINT],
-                        optional_fields=[TickerField.MARKET_PRICE],
-                    ),
-                    timeout=self.config.runtime.ib_async.api_response_wait_time,
-                )
-
-                (contract, order) = (trade.contract, trade.order)
-                updated_price = np.sign(float(order.lmtPrice or 0)) * max(
-                    [
-                        (
-                            self.config.runtime.orders.minimum_credit
-                            if order.action == "BUY"
-                            and float(order.lmtPrice or 0) <= 0.0
-                            else 0.0
-                        ),
-                        math.fabs(
-                            round(
-                                (float(order.lmtPrice or 0) + ticker.midpoint()) / 2.0,
-                                2,
-                            )
-                        ),
-                    ]
-                )
-
-                if trade.contract.symbol == "VIX":
-                    # Round VIX prices according to contract specifications
-                    updated_price = self.order_ops.round_vix_price(updated_price)
-
-                # We only want to tighten spreads, not widen them. If the
-                # resulting price change would increase the spread, we'll
-                # skip it.
-                if would_increase_spread(order, updated_price):
-                    log.warning(
-                        f"Skipping order for {contract.symbol}"
-                        f" with old lmtPrice={dfmt(float(order.lmtPrice or 0))} updated lmtPrice={dfmt(updated_price)}, because updated price would increase spread"
-                    )
-                    return
-
-                # Check if the updated price is actually any different
-                # before proceeding, and make sure the signs match so we
-                # don't switch a credit to a debit or vice versa.
-                if float(order.lmtPrice or 0) != updated_price and np.sign(
-                    float(order.lmtPrice or 0)
-                ) == np.sign(updated_price):
-                    log.info(
-                        f"{contract.symbol}: Resubmitting {order.action} {contract.secType} order with old lmtPrice={dfmt(float(order.lmtPrice or 0))} updated lmtPrice={dfmt(updated_price)}"
-                    )
-
-                    # IB requires a new order object here. Copy the complete
-                    # order so account routing and execution metadata survive
-                    # the price update.
-                    order = copy.deepcopy(cast(LimitOrder, order))
-                    order.lmtPrice = float(updated_price)
-
-                    # resubmit the order and it will be placed back to the
-                    # original position in the queue
-                    self.trades.submit_order(contract, order, idx)
-
-                    log.info(f"{contract.symbol}: Order updated, order={order}")
-            except (
-                asyncio.TimeoutError,
-                RuntimeError,
-                RequiredFieldValidationError,
-            ) as exc:
-                log.warning(
-                    f"Couldn't generate midpoint price for {trade.contract}, skipping repricing"
-                )
-                if self.data_store:
-                    self.data_store.record_event(
-                        "order_price_adjustment_skipped",
-                        {
-                            "symbol": getattr(trade.contract, "symbol", ""),
-                            "secType": getattr(trade.contract, "secType", ""),
-                            "reason": type(exc).__name__,
-                        },
-                    )
-                continue
+            if not await self._reprice_trade(idx, trade):
+                return
 
     async def get_write_threshold(
         self, ticker: Ticker, right: str
