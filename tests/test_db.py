@@ -659,6 +659,58 @@ def test_get_last_event_payload_uses_event_insertion_order(tmp_path) -> None:
     assert data_store.get_last_event_payload("ordered_event") == {"sequence": 2}
 
 
+def test_get_last_event_payload_can_exclude_current_run(tmp_path) -> None:
+    db_url = f"sqlite:///{tmp_path / 'state.db'}"
+    config_path = str(tmp_path / "thetagang.toml")
+    previous_store = DataStore(
+        db_url,
+        config_path,
+        dry_run=False,
+        config_text="test",
+    )
+    previous_store.record_event("example_state", {"sequence": 1})
+    current_store = DataStore(
+        db_url,
+        config_path,
+        dry_run=False,
+        config_text="test",
+    )
+    current_store.record_event("example_state", {"sequence": 2})
+
+    assert current_store.get_last_event_payload("example_state") == {"sequence": 2}
+    assert current_store.get_last_event_payload(
+        "example_state",
+        exclude_current_run=True,
+    ) == {"sequence": 1}
+
+
+def test_discard_current_run_events_preserves_prior_and_unrelated_events(
+    tmp_path,
+) -> None:
+    db_url = f"sqlite:///{tmp_path / 'state.db'}"
+    config_path = str(tmp_path / "thetagang.toml")
+    previous_store = DataStore(
+        db_url,
+        config_path,
+        dry_run=False,
+        config_text="test",
+    )
+    previous_store.record_event("example_state", {"sequence": 1})
+    current_store = DataStore(
+        db_url,
+        config_path,
+        dry_run=False,
+        config_text="test",
+    )
+    current_store.record_event("example_state", {"sequence": 2})
+    current_store.record_event("diagnostic", {"kept": True})
+
+    current_store.discard_current_run_events({"example_state"})
+
+    assert current_store.get_last_event_payload("example_state") == {"sequence": 1}
+    assert current_store.get_last_event_payload("diagnostic") == {"kept": True}
+
+
 def test_event_state_can_fail_closed(tmp_path, monkeypatch) -> None:
     data_store = DataStore(
         f"sqlite:///{tmp_path / 'state.db'}",

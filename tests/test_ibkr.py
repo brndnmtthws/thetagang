@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from ib_async import (
@@ -37,6 +38,7 @@ def mock_ib(mocker):
     mock.orderStatusEvent.__iadd__ = mocker.Mock(
         return_value=None
     )  # Allow += operation
+    mock.client = mocker.Mock()
     mock.wrapper = mocker.Mock()
     mock.wrapper.accountValues = {}
     mock.wrapper.ticker2ReqId = {"mktData": {}}
@@ -116,6 +118,26 @@ async def test_cached_account_value_prefers_finite_base_value(ibkr, mock_ib):
     assert ibkr.cached_account_value("ACC123", "TotalCashValue") == 1000.0
     mock_ib.accountValues.assert_called_once_with("ACC123")
     mock_ib.accountSummaryAsync.assert_not_called()
+
+
+async def test_refresh_account_restarts_full_snapshot_subscription(ibkr, mock_ib):
+    mock_ib.reqAccountUpdatesAsync = AsyncMock()
+    mock_ib.accountValues.return_value = []
+
+    await ibkr.refresh_account("ACC123")
+
+    mock_ib.client.reqAccountUpdates.assert_called_once_with(False, "ACC123")
+    mock_ib.reqAccountUpdatesAsync.assert_awaited_once_with("ACC123")
+
+
+async def test_refresh_account_rejects_not_ready_snapshot(ibkr, mock_ib):
+    mock_ib.reqAccountUpdatesAsync = AsyncMock()
+    mock_ib.accountValues.return_value = [
+        AccountValue("ACC123", "AccountReady", "false", "", "")
+    ]
+
+    with pytest.raises(RuntimeError, match="not ready"):
+        await ibkr.refresh_account("ACC123")
 
 
 async def test_cached_account_value_prefers_empty_model_base_aggregate(ibkr, mock_ib):

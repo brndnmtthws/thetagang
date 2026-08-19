@@ -21,7 +21,11 @@ class EquityStrategyDeps:
 
 class RegimeRebalanceService(Protocol):
     async def check_regime_rebalance_positions(
-        self, account_summary: AccountSummary, portfolio_positions: PortfolioBySymbol
+        self,
+        account_summary: AccountSummary,
+        portfolio_positions: PortfolioBySymbol,
+        *,
+        exclude_current_run_state: bool = False,
     ) -> Any: ...
 
     async def execute_regime_rebalance_orders(self, orders: List[Any]) -> None: ...

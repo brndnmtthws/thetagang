@@ -3,11 +3,12 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
-from ib_async import IB, LimitOrder, Option, Stock, Ticker
+from ib_async import IB, AccountValue, LimitOrder, Option, Stock, Ticker
 
 from thetagang.db import DataStore
 from thetagang.portfolio_manager import PortfolioManager
 from thetagang.strategies.tail_hedge_state import (
+    TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR,
     TailHedgeCohort,
     TailHedgeState,
     TailHedgeStateStore,
@@ -34,6 +35,7 @@ def mock_config(mocker):
     config.runtime.ib_async.api_response_wait_time = 1
     config.runtime.orders = mocker.Mock()
     config.runtime.orders.exchange = "SMART"
+    config.runtime.orders.estimated_fee_per_contract = 0.0
     config.strategies.cash_management = mocker.Mock()
     config.strategies.cash_management.cash_fund = "MMDA1"
     return config
@@ -881,6 +883,304 @@ class TestPortfolioManager:
         await pm.manage()
 
     @pytest.mark.asyncio
+    async def test_tail_harvest_phase_reprices_then_fills(
+        self, portfolio_manager, mocker
+    ):
+        portfolio_manager.config.runtime.orders.price_update_delay = [1, 2]
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        order = tail_order(
+            portfolio_manager,
+            "SELL",
+            1,
+            "tg:tail-harvest:SPY:123",
+        )
+        status = SimpleNamespace(status="Submitted", filled=0.5, remaining=0.5)
+        trade = SimpleNamespace(
+            contract=contract,
+            order=order,
+            orderStatus=status,
+            isDone=lambda: status.status == "Filled",
+        )
+        trades = []
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.records.side_effect = lambda: trades
+        portfolio_manager.submit_orders = mocker.Mock(
+            side_effect=lambda _records: trades.append(trade)
+        )
+        portfolio_manager.ibkr.wait_for_submitting_orders = mocker.AsyncMock()
+        portfolio_manager.ibkr.wait_for_orders_complete = mocker.AsyncMock(
+            return_value=[trade]
+        )
+        portfolio_manager.ibkr.cancel_order = mocker.Mock()
+
+        async def fill_on_reprice(_idx, _trade, **_kwargs):
+            status.status = "Filled"
+            status.filled = 1.0
+            status.remaining = 0.0
+            return True
+
+        reprice = mocker.patch.object(
+            portfolio_manager,
+            "_reprice_trade",
+            side_effect=fill_on_reprice,
+        )
+
+        filled = await portfolio_manager._execute_tail_harvest_phase(
+            [(contract, order, None)],
+            timeout=5,
+        )
+
+        assert filled is True
+        reprice.assert_awaited_once()
+        assert reprice.await_args.args == (0, trade)
+        assert 0 < reprice.await_args.kwargs["timeout"] <= 5
+        portfolio_manager.ibkr.cancel_order.assert_not_called()
+
+    def test_tail_harvest_fill_check_accepts_normalized_filled_status(
+        self, portfolio_manager
+    ):
+        trade = SimpleNamespace(
+            order=SimpleNamespace(totalQuantity=1),
+            orderStatus=SimpleNamespace(
+                status="FILLED",
+                filled=1,
+                remaining=float("nan"),
+            ),
+        )
+
+        assert portfolio_manager._trade_fully_filled(trade) is True
+
+    @pytest.mark.parametrize(
+        ("filled", "requested"),
+        [(float("nan"), 1), (float("inf"), 1), (1, float("inf"))],
+    )
+    def test_tail_harvest_fill_check_rejects_non_finite_quantities(
+        self,
+        portfolio_manager,
+        filled,
+        requested,
+    ):
+        trade = SimpleNamespace(
+            order=SimpleNamespace(totalQuantity=requested),
+            orderStatus=SimpleNamespace(
+                status="Filled",
+                filled=filled,
+                remaining=0,
+            ),
+        )
+
+        assert portfolio_manager._trade_fully_filled(trade) is False
+
+    @pytest.mark.asyncio
+    async def test_tail_harvest_reprice_preserves_profit_floor(
+        self, portfolio_manager, mocker
+    ):
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        order = tail_order(
+            portfolio_manager,
+            "SELL",
+            1,
+            "tg:tail-harvest:SPY:123",
+        )
+        order.lmtPrice = 2.0
+        setattr(order, TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR, 1.5)
+        trade = SimpleNamespace(contract=contract, order=order)
+        ticker = mocker.Mock(spec=Ticker)
+        ticker.midpoint.return_value = 0.5
+        portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(
+            return_value=ticker
+        )
+        portfolio_manager.trades = mocker.Mock()
+
+        repriced = await portfolio_manager._reprice_trade(0, trade)
+
+        assert repriced is True
+        portfolio_manager.trades.submit_order.assert_called_once()
+        submitted_order = portfolio_manager.trades.submit_order.call_args.args[1]
+        assert submitted_order.lmtPrice == pytest.approx(1.5)
+
+    @pytest.mark.asyncio
+    async def test_tail_harvest_phase_cancels_and_fails_closed(
+        self, portfolio_manager, mocker
+    ):
+        portfolio_manager.config.runtime.orders.price_update_delay = [1, 2]
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        order = tail_order(
+            portfolio_manager,
+            "SELL",
+            1,
+            "tg:tail-harvest:SPY:123",
+        )
+        status = SimpleNamespace(status="Submitted", filled=0.5, remaining=0.5)
+        trade = SimpleNamespace(
+            contract=contract,
+            order=order,
+            orderStatus=status,
+            isDone=lambda: False,
+        )
+        trades = []
+        portfolio_manager.trades = mocker.Mock()
+        portfolio_manager.trades.records.side_effect = lambda: trades
+        portfolio_manager.submit_orders = mocker.Mock(
+            side_effect=lambda _records: trades.append(trade)
+        )
+        portfolio_manager.ibkr.wait_for_submitting_orders = mocker.AsyncMock()
+        portfolio_manager.ibkr.wait_for_orders_complete = mocker.AsyncMock(
+            side_effect=[[trade], [trade], []]
+        )
+        portfolio_manager.ibkr.cancel_order = mocker.Mock()
+        mocker.patch.object(
+            portfolio_manager,
+            "_reprice_trade",
+            new=mocker.AsyncMock(return_value=True),
+        )
+
+        filled = await portfolio_manager._execute_tail_harvest_phase(
+            [(contract, order, None)],
+            timeout=1,
+        )
+
+        assert filled is False
+        portfolio_manager.ibkr.cancel_order.assert_called_once_with(order)
+        assert portfolio_manager.ibkr.wait_for_orders_complete.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_regime_stage_recalculates_after_filled_tail_harvest(
+        self, portfolio_manager, mocker
+    ):
+        portfolio_manager.config.strategies.regime_rebalance.enabled = True
+        portfolio_manager.data_store = mocker.Mock()
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        harvest_order = tail_order(
+            portfolio_manager,
+            "SELL",
+            1,
+            "tg:tail-harvest:SPY:123",
+        )
+        initial_summary = {"TotalCashValue": SimpleNamespace(value="0")}
+        refreshed_summary = {
+            "NetLiquidation": AccountValue(
+                "TEST123", "NetLiquidation", "10000.0", "BASE", ""
+            ),
+            "TotalCashValue": AccountValue(
+                "TEST123", "TotalCashValue", "2000.0", "BASE", ""
+            ),
+        }
+        refreshed_positions = {"SPY": []}
+        checks = 0
+
+        async def check_regime(_summary, _positions, **_kwargs):
+            nonlocal checks
+            checks += 1
+            if checks == 1:
+                portfolio_manager.orders.add_order(contract, harvest_order, None)
+                return mocker.Mock(), [("SPY", "NYSE", 1)]
+            return mocker.Mock(), [("SPY", "NYSE", 2)]
+
+        portfolio_manager.equity_engine.check_regime_rebalance_positions = (
+            mocker.AsyncMock(side_effect=check_regime)
+        )
+        execute = mocker.patch.object(
+            portfolio_manager.equity_engine,
+            "execute_regime_rebalance_orders",
+            new=mocker.AsyncMock(),
+        )
+        execute_harvest = mocker.patch.object(
+            portfolio_manager,
+            "_execute_tail_harvest_phase",
+            new=mocker.AsyncMock(return_value=True),
+        )
+        portfolio_manager.ibkr.refresh_account = mocker.AsyncMock()
+        portfolio_manager.ibkr.account_summary = mocker.AsyncMock(return_value=[])
+        portfolio_manager.ibkr.cached_account_value = mocker.Mock(
+            side_effect=lambda _account, tag: {
+                "NetLiquidation": 10000.0,
+                "TotalCashValue": 2000.0,
+            }[tag]
+        )
+        portfolio_manager.get_portfolio_positions = mocker.Mock(
+            return_value=refreshed_positions
+        )
+
+        result = await portfolio_manager._run_regime_rebalance_stage(
+            initial_summary,
+            {"SPY": []},
+        )
+
+        assert result == (refreshed_summary, refreshed_positions)
+        execute_harvest.assert_awaited_once_with([(contract, harvest_order, None)])
+        portfolio_manager.data_store.discard_current_run_events.assert_called_once_with(
+            {"regime_rebalance_state", "volatility_weight_state"}
+        )
+        portfolio_manager.ibkr.refresh_account.assert_awaited_once_with("TEST123")
+        assert (
+            portfolio_manager.equity_engine.check_regime_rebalance_positions.call_args_list[
+                1
+            ].kwargs["exclude_current_run_state"]
+            is True
+        )
+        execute.assert_awaited_once_with([("SPY", "NYSE", 2)])
+        assert portfolio_manager.orders.records() == []
+
+    @pytest.mark.asyncio
+    async def test_regime_stage_aborts_when_tail_harvest_does_not_fill(
+        self, portfolio_manager, mocker
+    ):
+        portfolio_manager.config.strategies.regime_rebalance.enabled = True
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        harvest_order = tail_order(
+            portfolio_manager,
+            "SELL",
+            1,
+            "tg:tail-harvest:SPY:123",
+        )
+
+        async def check_regime(_summary, _positions, **_kwargs):
+            portfolio_manager.orders.add_order(contract, harvest_order, None)
+            return mocker.Mock(), [("SPY", "NYSE", 1)]
+
+        portfolio_manager.equity_engine.check_regime_rebalance_positions = (
+            mocker.AsyncMock(side_effect=check_regime)
+        )
+        execute = mocker.patch.object(
+            portfolio_manager.equity_engine,
+            "execute_regime_rebalance_orders",
+            new=mocker.AsyncMock(),
+        )
+        mocker.patch.object(
+            portfolio_manager,
+            "_execute_tail_harvest_phase",
+            new=mocker.AsyncMock(return_value=False),
+        )
+
+        with pytest.raises(RuntimeError, match="did not fully fill"):
+            await portfolio_manager._run_regime_rebalance_stage(
+                {"TotalCashValue": SimpleNamespace(value="0")},
+                {"SPY": []},
+            )
+
+        execute.assert_not_awaited()
+        assert portfolio_manager.orders.records() == []
+
+    @pytest.mark.asyncio
+    async def test_manage_does_not_submit_other_orders_after_harvest_abort(
+        self, portfolio_manager, mocker
+    ):
+        portfolio_manager.run_stage_order = ["equity_regime_rebalance"]
+        portfolio_manager.initialize_account = mocker.Mock()
+        portfolio_manager.summarize_account = mocker.AsyncMock(return_value=({}, {}))
+        portfolio_manager.options_trading_enabled = mocker.Mock(return_value=False)
+        portfolio_manager._run_regime_rebalance_stage = mocker.AsyncMock(
+            side_effect=RuntimeError("Tail-harvest execution did not fully fill")
+        )
+        portfolio_manager.submit_orders = mocker.Mock()
+
+        with pytest.raises(RuntimeError, match="did not fully fill"):
+            await portfolio_manager.manage()
+
+        portfolio_manager.submit_orders.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_adjust_prices_continues_if_midpoint_market_data_missing(
         self, portfolio_manager, mocker
     ):
@@ -1471,8 +1771,8 @@ class TestPortfolioManager:
 
         # Expected:
         # Stock BUY: -150 * 100 * 1 = -15,000
-        # Unfilled SELL proceeds are unavailable until IBKR reports the cash.
-        assert pending_balance == -15000.0
+        # Option SELL: 2.50 * 5 * 100 = 1,250
+        assert pending_balance == -13750.0
 
     @pytest.mark.asyncio
     async def test_buy_only_minimum_shares_threshold(self, portfolio_manager, mocker):

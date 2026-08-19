@@ -23,6 +23,7 @@ from thetagang.orders import PendingBuyCash, pending_buy_cash
 from thetagang.strategies.runtime_services import resolve_symbol_configs
 from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
+    TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR,
     TailHedgeCohort,
     TailHedgeStateStore,
     build_tail_reduction_order_ref,
@@ -273,6 +274,13 @@ class RegimeRebalanceEngine:
             self.ibkr.open_trades(),
             self.order_ops.orders.records(),
             account=self.config.runtime.account.number,
+            estimated_fee_per_contract=float(
+                getattr(
+                    self.config.runtime.orders,
+                    "estimated_fee_per_contract",
+                    0.0,
+                )
+            ),
         )
 
     def _ordinary_rebalance_shortfall(
@@ -630,12 +638,31 @@ class RegimeRebalanceEngine:
             or state_cohort.has_pending_recovery
         ):
             return False
+        multiplier = float(candidate.contract.multiplier)
+        minimum_profitable_price = (
+            math.floor(
+                (
+                    candidate.cost_basis_per_contract
+                    + candidate.estimated_fee_per_contract
+                )
+                / multiplier
+                * 100
+            )
+            + 1
+        ) / 100
+        minimum_net_proceeds = round(
+            minimum_profitable_price * multiplier
+            - candidate.estimated_fee_per_contract,
+            2,
+        )
         # Candidate sizing was refreshed from the live portfolio after quotes.
         # A prior external reduction is not proceeds from this unsubmitted sale.
         state_cohort.quantity = min(state_cohort.quantity, candidate.quantity)
         state_cohort.begin_recovery(
             quantity=quantity,
-            proceeds_per_contract=round(candidate.net_proceeds_per_contract, 2),
+            # Actual fill proceeds replace this conservative floor during
+            # tail-state reconciliation.
+            proceeds_per_contract=minimum_net_proceeds,
             enqueued_at=self._now(),
         )
         try:
@@ -658,6 +685,7 @@ class RegimeRebalanceEngine:
             ),
             transmit=True,
         )
+        setattr(order, TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR, minimum_profitable_price)
         self.order_ops.enqueue_order(candidate.contract, order)
         self._record_tail_harvest(
             "harvest_enqueued",
@@ -1327,13 +1355,18 @@ class RegimeRebalanceEngine:
         symbols: List[str],
         symbol_configs: Dict[str, Any],
         history_cache: Optional[RegimeHistoryCache] = None,
+        *,
+        exclude_current_run_state: bool = False,
     ) -> Tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
         effective_weights = {
             symbol: float(symbol_configs[symbol].weight) for symbol in symbols
         }
         volatility_details: Dict[str, Dict[str, float]] = {}
         previous_state = (
-            self.data_store.get_last_event_payload("volatility_weight_state")
+            self.data_store.get_last_event_payload(
+                "volatility_weight_state",
+                exclude_current_run=exclude_current_run_state,
+            )
             if self.data_store
             else None
         )
@@ -1591,6 +1624,8 @@ class RegimeRebalanceEngine:
         self,
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
+        *,
+        exclude_current_run_state: bool = False,
     ) -> Tuple[Table, List[Tuple[str, str, int]]]:
         symbol_configs = resolve_symbol_configs(
             self.config, context="regime rebalance check"
@@ -1748,6 +1783,7 @@ class RegimeRebalanceEngine:
             symbols,
             symbol_configs,
             history_cache,
+            exclude_current_run_state=exclude_current_run_state,
         )
         harvest_risk_ready_symbols = {
             symbol
@@ -1921,7 +1957,10 @@ class RegimeRebalanceEngine:
         flow_was_active = False
         deficit_was_active = False
         if self.data_store:
-            state = self.data_store.get_last_event_payload("regime_rebalance_state")
+            state = self.data_store.get_last_event_payload(
+                "regime_rebalance_state",
+                exclude_current_run=exclude_current_run_state,
+            )
             if state:
                 flow_was_active = bool(state.get("flow_active", False))
                 deficit_was_active = bool(state.get("deficit_active", False))

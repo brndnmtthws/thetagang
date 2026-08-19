@@ -26,6 +26,7 @@ from thetagang.strategies.regime_engine import (
 from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_CLOSE_ORDER_REF,
     TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
+    TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR,
     TailHedgeCohort,
     TailHedgeState,
 )
@@ -905,6 +906,17 @@ async def test_regime_rebalance_volatility_weight_smooths_from_previous_state(
         "volatility_weight_state"
     )
     assert payload["symbols"]["AAA"]["target_weight"] == pytest.approx(0.25)
+    assert payload["symbols"]["AAA"]["effective_weight"] == pytest.approx(0.375)
+
+    await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
+        account_summary,
+        portfolio_positions,
+        exclude_current_run_state=True,
+    )
+
+    payload = portfolio_manager_with_db.data_store.get_last_event_payload(
+        "volatility_weight_state"
+    )
     assert payload["symbols"]["AAA"]["effective_weight"] == pytest.approx(0.375)
 
 
@@ -3456,11 +3468,13 @@ async def test_harvest_persists_recovery_intent(
     )
 
     assert orders == []
+    queued_order = portfolio_manager.orders.records()[0][1]
+    assert getattr(queued_order, TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR) == pytest.approx(0.51)
     store = portfolio_manager.regime_engine._tail_state_store
     assert store is not None
     state = store.load()
     assert state.open_cohorts[0].pending_recovery_quantity == 1
-    assert state.open_cohorts[0].pending_recovery_per_contract == 120.0
+    assert state.open_cohorts[0].pending_recovery_per_contract == 51.0
     assert isinstance(state.open_cohorts[0].pending_recovery_enqueued_at, datetime)
     assert state.open_cohorts[0].pending_recovery_initial_quantity == 1
     telemetry = portfolio_manager.data_store.get_last_event_payload(

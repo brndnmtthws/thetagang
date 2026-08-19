@@ -97,7 +97,7 @@ async def test_do_cashman_disabled_noops(mocker):
     order_ops.enqueue_order.assert_not_called()
 
 
-def test_pending_cash_ignores_all_unfilled_sale_proceeds(mocker):
+def test_pending_cash_includes_all_queued_order_cash_flows(mocker):
     engine, _ibkr, _order_ops, _scanner = _make_engine(mocker)
     stock = Stock("AAA", "SMART", "USD")
     tail_put = Option("AAA", "20270115", 100.0, "P", "SMART")
@@ -145,10 +145,181 @@ def test_pending_cash_ignores_all_unfilled_sale_proceeds(mocker):
         ),
     ]
 
-    assert engine.calc_pending_cash_balance() == -100.0
+    assert engine.calc_pending_cash_balance() == 450.0
 
 
-def test_pending_cash_uses_valid_remaining_quantity(
+def test_pending_cash_uses_signed_combo_order_value(mocker):
+    engine, _ibkr, _order_ops, _scanner = _make_engine(mocker)
+    combo = Contract(secType="BAG", symbol="AAA", multiplier="100")
+    engine.orders.records.return_value = [
+        (
+            combo,
+            SimpleNamespace(action="BUY", lmtPrice=-1.0, totalQuantity=1),
+            None,
+        ),
+        (
+            combo,
+            SimpleNamespace(action="SELL", lmtPrice=-0.5, totalQuantity=1),
+            None,
+        ),
+    ]
+
+    assert engine.pending_cash_components() == (50.0, 100.0)
+    assert engine.calc_pending_cash_balance() == 50.0
+
+
+def test_pending_option_cash_includes_estimated_per_contract_fees(mocker):
+    engine, _ibkr, _order_ops, _scanner = _make_engine(mocker)
+    engine.config.runtime.orders.estimated_fee_per_contract = 1.0
+    option = Option("AAA", "20270115", 100.0, "P", "SMART")
+    option.multiplier = "100"
+    engine.orders.records.return_value = [
+        (
+            option,
+            SimpleNamespace(action="BUY", lmtPrice=1.0, totalQuantity=2),
+            None,
+        ),
+        (
+            option,
+            SimpleNamespace(action="SELL", lmtPrice=2.0, totalQuantity=1),
+            None,
+        ),
+    ]
+
+    assert engine.pending_cash_components() == (202.0, 199.0)
+
+
+@pytest.mark.asyncio
+async def test_do_cashman_accounts_for_same_run_regime_sale_proceeds(mocker):
+    engine, ibkr, order_ops, _scanner = _make_engine(mocker)
+    engine.config.strategies.cash_management.enabled = True
+    engine.config.runtime.orders.estimated_fee_per_contract = 1.0
+    engine.config.strategies.cash_management.target_cash_balance = 5000.0
+    engine.config.strategies.cash_management.buy_threshold = 5000.0
+    engine.config.strategies.cash_management.sell_threshold = 5000.0
+    engine.config.strategies.cash_management.cash_fund = "SHV"
+    regime_sales = [
+        ("TQQQ", 72.10, 53),
+        ("IBIT", 36.61, 135),
+        ("BTAL", 12.11, 359),
+        ("CTA", 27.98, 123),
+    ]
+    engine.orders.records.return_value = [
+        (
+            Stock(symbol, "SMART", "USD"),
+            SimpleNamespace(
+                action="SELL",
+                lmtPrice=price,
+                totalQuantity=quantity,
+                orderRef=f"tg:regime-rebalance:{symbol}",
+            ),
+            None,
+        )
+        for symbol, price, quantity in regime_sales
+    ]
+
+    await engine.do_cashman(
+        {"TotalCashValue": SimpleNamespace(value="-11649")},
+        {
+            "SHV": [
+                SimpleNamespace(
+                    contract=Stock("SHV", "SMART", "USD"),
+                    position=138,
+                )
+            ]
+        },
+    )
+
+    assert engine.calc_pending_cash_balance() == pytest.approx(16552.68)
+    ibkr.get_ticker_for_stock.assert_not_called()
+    order_ops.create_limit_order.assert_not_called()
+    order_ops.enqueue_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_do_cashman_does_not_buy_cash_fund_from_queued_stock_sales(mocker):
+    engine, ibkr, order_ops, _scanner = _make_engine(mocker)
+    engine.config.strategies.cash_management.enabled = True
+    stock = Stock("AAA", "SMART", "USD")
+    engine.orders.records.return_value = [
+        (
+            stock,
+            SimpleNamespace(
+                action="SELL",
+                lmtPrice=100.0,
+                totalQuantity=20,
+                orderRef="tg:regime-rebalance:AAA",
+            ),
+            None,
+        )
+    ]
+
+    await engine.do_cashman(
+        {"TotalCashValue": SimpleNamespace(value="0")},
+        {},
+    )
+
+    assert engine.calc_pending_cash_balance() == 2000.0
+    ibkr.get_ticker_for_stock.assert_not_called()
+    order_ops.create_limit_order.assert_not_called()
+    order_ops.enqueue_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_do_cashman_sells_only_remaining_deficit_after_queued_stock_sales(
+    mocker,
+):
+    engine, ibkr, order_ops, _scanner = _make_engine(mocker)
+    engine.config.strategies.cash_management.enabled = True
+    engine.config.strategies.cash_management.target_cash_balance = 5000.0
+    engine.config.strategies.cash_management.buy_threshold = 5000.0
+    engine.config.strategies.cash_management.sell_threshold = 5000.0
+    engine.config.strategies.cash_management.cash_fund = "SHV"
+    engine.orders.records.return_value = [
+        (
+            Stock("AAA", "SMART", "USD"),
+            SimpleNamespace(
+                action="SELL",
+                lmtPrice=100.0,
+                totalQuantity=100,
+                orderRef="tg:regime-rebalance:AAA",
+            ),
+            None,
+        )
+    ]
+    ticker = SimpleNamespace(
+        contract=Stock("SHV", "SMART", "USD"),
+        ask=100.0,
+        bid=100.0,
+    )
+    ibkr.get_ticker_for_stock = AsyncMock(return_value=ticker)
+    ibkr.cached_account_value.return_value = -20000.0
+    ibkr.portfolio.return_value = [
+        SimpleNamespace(
+            contract=Stock("SHV", "SMART", "USD"),
+            position=200,
+        )
+    ]
+
+    await engine.do_cashman(
+        {"TotalCashValue": SimpleNamespace(value="-20000")},
+        {
+            "SHV": [
+                SimpleNamespace(
+                    contract=Stock("SHV", "SMART", "USD"),
+                    position=200,
+                )
+            ]
+        },
+    )
+
+    order_ops.create_limit_order.assert_called_once()
+    assert order_ops.create_limit_order.call_args.kwargs["action"] == "SELL"
+    assert order_ops.create_limit_order.call_args.kwargs["quantity"] == 150
+    order_ops.enqueue_order.assert_called_once_with(ticker.contract, "ORDER")
+
+
+def test_pending_cash_uses_valid_remaining_quantity_for_buys_and_sells(
     mocker,
 ):
     engine, ibkr, _order_ops, _scanner = _make_engine(mocker)
@@ -175,7 +346,28 @@ def test_pending_cash_uses_valid_remaining_quantity(
         trade(done=True),
     ]
 
-    assert engine.calc_pending_cash_balance() == -200.0
+    assert engine.calc_pending_cash_balance() == 0.0
+
+
+def test_pending_cash_uses_working_stock_sell_remaining_quantity(mocker):
+    engine, ibkr, _order_ops, _scanner = _make_engine(mocker)
+    stock = Stock("AAA", "SMART", "USD")
+    ibkr.open_trades.return_value = [
+        SimpleNamespace(
+            contract=stock,
+            order=SimpleNamespace(
+                account="TEST123",
+                action="SELL",
+                orderType="LMT",
+                lmtPrice=100.0,
+                totalQuantity=3,
+            ),
+            orderStatus=SimpleNamespace(remaining=1),
+            isDone=lambda: False,
+        )
+    ]
+
+    assert engine.pending_cash_components() == (0.0, 100.0)
 
 
 @pytest.mark.parametrize("remaining", [float("nan"), 0.0])
@@ -202,13 +394,14 @@ def test_pending_cash_rejects_ambiguous_remaining_quantity(mocker, remaining):
 
 
 @pytest.mark.asyncio
-async def test_market_buy_blocks_cash_management(mocker):
+@pytest.mark.parametrize("action", ["BUY", "SELL"])
+async def test_market_order_blocks_cash_management(mocker, action):
     engine, ibkr, order_ops, _scanner = _make_engine(mocker)
     engine.config.strategies.cash_management.enabled = True
     ibkr.open_trades.return_value = [
         SimpleNamespace(
             contract=Stock("AAA", "SMART", "USD"),
-            order=MarketOrder("BUY", 1, account="TEST123"),
+            order=MarketOrder(action, 1, account="TEST123"),
             orderStatus=SimpleNamespace(remaining=1),
             isDone=lambda: False,
         )
@@ -235,6 +428,33 @@ def test_order_cash_notional_rejects_overflow():
 
     with pytest.raises(ValueError, match="finite"):
         order_cash_notional(option, order)
+
+
+@pytest.mark.parametrize(
+    ("price", "quantity"),
+    [(0.0, 1), (1.0, 0)],
+)
+def test_pending_cash_rejects_unpriceable_queued_limit_order(
+    mocker,
+    price,
+    quantity,
+):
+    engine, _ibkr, _order_ops, _scanner = _make_engine(mocker)
+    engine.orders.records.return_value = [
+        (
+            Stock("AAA", "SMART", "USD"),
+            SimpleNamespace(
+                action="BUY",
+                orderType="LMT",
+                lmtPrice=price,
+                totalQuantity=quantity,
+            ),
+            None,
+        )
+    ]
+
+    with pytest.raises(RuntimeError, match="cannot be priced safely"):
+        engine.pending_cash_components()
 
 
 @pytest.mark.asyncio
