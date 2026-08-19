@@ -924,7 +924,6 @@ class TestPortfolioManager:
             "_reprice_trade",
             side_effect=fill_on_reprice,
         )
-
         filled = await portfolio_manager._execute_tail_harvest_phase(
             [(contract, order, None)],
             timeout=5,
@@ -1080,10 +1079,28 @@ class TestPortfolioManager:
         portfolio_manager.equity_engine.check_regime_rebalance_positions = (
             mocker.AsyncMock(side_effect=check_regime)
         )
+
+        async def prepare_regime_orders(orders):
+            for symbol, primary_exchange, quantity in orders:
+                contract = Stock(
+                    symbol,
+                    "SMART",
+                    "USD",
+                    primaryExchange=primary_exchange,
+                )
+                order = LimitOrder(
+                    "BUY" if quantity > 0 else "SELL",
+                    abs(quantity),
+                    100.0,
+                    account="TEST123",
+                    orderRef=f"tg:regime-rebalance:{symbol}",
+                )
+                portfolio_manager.orders.add_order(contract, order, None)
+
         execute = mocker.patch.object(
             portfolio_manager.equity_engine,
             "execute_regime_rebalance_orders",
-            new=mocker.AsyncMock(),
+            new=mocker.AsyncMock(side_effect=prepare_regime_orders),
         )
         execute_harvest = mocker.patch.object(
             portfolio_manager,
@@ -1119,8 +1136,75 @@ class TestPortfolioManager:
             ].kwargs["exclude_current_run_state"]
             is True
         )
+        assert (
+            portfolio_manager.equity_engine.check_regime_rebalance_positions.call_args_list[
+                1
+            ].kwargs["allow_tail_harvest"]
+            is False
+        )
         execute.assert_awaited_once_with([("SPY", "NYSE", 2)])
+        assert len(portfolio_manager.orders.records()) == 1
+
+    @pytest.mark.asyncio
+    async def test_regime_stage_fails_if_post_harvest_buy_is_not_prepared(
+        self, portfolio_manager, mocker
+    ):
+        portfolio_manager.config.strategies.regime_rebalance.enabled = True
+        portfolio_manager.data_store = mocker.Mock()
+        contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
+        harvest_order = tail_order(
+            portfolio_manager,
+            "SELL",
+            1,
+            "tg:tail-harvest:SPY:123",
+        )
+        checks = 0
+
+        async def check_regime(_summary, _positions, **_kwargs):
+            nonlocal checks
+            checks += 1
+            if checks == 1:
+                portfolio_manager.orders.add_order(contract, harvest_order, None)
+            return mocker.Mock(), [("SPY", "NYSE", 1)]
+
+        portfolio_manager.equity_engine.check_regime_rebalance_positions = (
+            mocker.AsyncMock(side_effect=check_regime)
+        )
+
+        async def prepare_invalid_regime_order(_orders):
+            stock = Stock("SPY", "SMART", "USD", primaryExchange="NYSE")
+            order = LimitOrder(
+                "BUY",
+                1,
+                float("nan"),
+                account="TEST123",
+                orderRef="tg:regime-rebalance:SPY",
+            )
+            portfolio_manager.orders.add_order(stock, order, None)
+
+        portfolio_manager.equity_engine.execute_regime_rebalance_orders = (
+            mocker.AsyncMock(side_effect=prepare_invalid_regime_order)
+        )
+        mocker.patch.object(
+            portfolio_manager,
+            "_execute_tail_harvest_phase",
+            new=mocker.AsyncMock(return_value=True),
+        )
+        portfolio_manager.ibkr.refresh_account = mocker.AsyncMock()
+        portfolio_manager.ibkr.account_summary = mocker.AsyncMock(return_value=[])
+        portfolio_manager.ibkr.cached_account_value = mocker.Mock(return_value=10_000.0)
+        portfolio_manager.get_portfolio_positions = mocker.Mock(
+            return_value={"SPY": []}
+        )
+
+        with pytest.raises(RuntimeError, match="preparation was incomplete"):
+            await portfolio_manager._run_regime_rebalance_stage(
+                {"NetLiquidation": SimpleNamespace(value="10000")},
+                {"SPY": []},
+            )
+
         assert portfolio_manager.orders.records() == []
+        assert portfolio_manager.data_store.discard_current_run_events.call_count == 2
 
     @pytest.mark.asyncio
     async def test_regime_stage_aborts_when_tail_harvest_does_not_fill(

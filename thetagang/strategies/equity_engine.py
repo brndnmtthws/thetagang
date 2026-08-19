@@ -111,11 +111,13 @@ class EquityRebalanceEngine:
         portfolio_positions: Dict[str, List[PortfolioItem]],
         *,
         exclude_current_run_state: bool = False,
+        allow_tail_harvest: bool = True,
     ) -> Tuple[Table, List[Tuple[str, str, int]]]:
         return await self.regime_engine.check_regime_rebalance_positions(
             account_summary,
             portfolio_positions,
             exclude_current_run_state=exclude_current_run_state,
+            allow_tail_harvest=allow_tail_harvest,
         )
 
     async def check_buy_only_positions(

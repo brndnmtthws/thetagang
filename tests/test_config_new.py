@@ -62,6 +62,8 @@ def test_tail_hedge_strategy_compiles_to_its_post_stage() -> None:
     assert target.exit_dte == 30
     assert not hasattr(target, "strike_ratio")
     assert target.catastrophe_drawdowns == [0.40, 0.50, 0.60]
+    assert config.tail_hedge.harvest_trigger_weight == 0.05
+    assert config.tail_hedge.harvest_target_weight == 0.03
     assert config.runtime.orders.estimated_fee_per_contract == 1.0
 
 
@@ -109,6 +111,20 @@ def test_tail_hedge_catastrophe_drawdowns_are_ordered_fractions(
     }
 
     with pytest.raises(ValueError, match="catastrophe_drawdowns"):
+        Config(**data)
+
+
+@pytest.mark.parametrize("target", [0.05, 0.06])
+def test_tail_hedge_harvest_target_must_be_below_trigger(target) -> None:
+    data = _base_config({"strategies": ["tail_hedge"]})
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "harvest_trigger_weight": 0.05,
+        "harvest_target_weight": target,
+        "targets": [_tail_target()],
+    }
+
+    with pytest.raises(ValueError, match="harvest_target_weight"):
         Config(**data)
 
 

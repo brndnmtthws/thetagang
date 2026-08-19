@@ -25,14 +25,14 @@ On each `tail_hedge` stage, ThetaGang:
 
 ```mermaid
 flowchart TD
-    R{"Regime stage: approved stock buy still short after ordinary funding?"}
-    R -->|Yes| Q{"Profitable owned cohort available?"}
+    R{"Regime stage: same-symbol hard-underweight buy approved?"}
+    R -->|Yes| Q{"Tail sleeve above harvest trigger?"}
     R -->|No or stage disabled| A["Tail stage: load SQLite cohorts"]
-    Q -->|Yes| J["Submit at most one harvest per target in a bounded fill phase"]
+    Q -->|Yes| J["Sell earliest-expiring profitable puts toward target band"]
     Q -->|No| A
     J --> K{"Every harvest fully filled?"}
     K -->|No| S["Cancel incomplete orders and abort remaining stages"]
-    K -->|Yes| L["Refresh broker cash and positions, then replan regime orders"]
+    K -->|Yes| L["Refresh broker state, then replan regime orders"]
     L --> A
     A --> B["Reconcile every open cohort with broker state"]
     B --> C{"Any cohort due to exit or target removed?"}
@@ -141,47 +141,72 @@ still apply.
 
 ## Selling puts during a drawdown
 
-When `regime_rebalance` is also running, ThetaGang can sell a profitable tail
-put to help fund a same-symbol stock buy. Harvesting never creates or enlarges
-the allocation: volatility and dynamic sizing must first produce an approved buy
-past the stock's hard-underweight band. Normal funding is applied first,
-including the configured cash reserve, queued buy debits, approved stock sales,
-and usable cash-fund value when cash management runs later. Only the remaining
-shortfall can trigger a harvest.
+When `regime_rebalance` is also running, ThetaGang can rotate part of a
+profitable tail hedge into a same-symbol stock buy. Harvesting never bypasses
+the allocation policy: volatility and dynamic sizing must first produce an
+approved buy past the stock's hard-underweight band.
 
-Only active, state-owned puts without a conflicting order are eligible. The
-live sell quote, after the configured estimated sell fee, must exceed both the
-IBKR average cost and the configured all-in entry basis. The submitted limit
-also carries a fee-aware floor above that cost basis, so the bounded reprice
-cannot turn a profitable harvest into an estimated loss.
+The second condition is a portfolio-level allocation band. The market value of
+all state-owned tail puts must be greater than `harvest_trigger_weight` of
+current net liquidation value. ThetaGang then sizes sales toward
+`harvest_target_weight`. The target sale budget is the value of the tail sleeve
+above that target, without consulting broker cash. The defaults
+trigger above 5% of NLV and target 3%. They are configurable policy values, not
+calibrated recommendations.
 
-ThetaGang uses the earliest-expiring useful cohort and sells the fewest whole
-contracts needed. It sells at most one cohort per target in a run. The part of
-the stock buy covered by normal funding stays in the current run. Shares assigned
-to the shortfall are deferred during preliminary planning. ThetaGang then submits
-the harvest as a bounded first phase, waits once at the original limit, and may
-reprice once toward the midpoint without crossing the profit floor. Every harvest
-must fully fill. Otherwise, ThetaGang cancels incomplete orders and aborts the
-remaining stages without submitting dependent stock or cash-fund orders.
+The separation between the trigger and target is the hysteresis. After a sale
+toward 3%, enough eligible fills normally leave no reason for another daily
+harvest in a flat or recovering market. A later sale requires the remaining
+sleeve to be above 5% again and the same-symbol hard-underweight buy to remain
+approved. No crash episode, trough, profit-tier, or recovery state is needed.
+
+IBKR cash balances, cash-fund holdings, queued cash debits, box-spread proceeds,
+and unrelated stock orders do not enter the trigger or sale budget. The only
+account total used is `NetLiquidation`, as the denominator of the hedge sleeve.
+The numerator contains only live, state-owned tail puts. The amount available
+for conversion is determined from the band, not from reported cash or the
+preliminary size of the stock order. After option quotes return, ThetaGang
+rechecks both the live sleeve and the latest available NLV before committing a
+sale, so the two sides of the ratio are not intentionally taken from different
+market moments.
+
+Only active, state-owned puts without a conflicting order are eligible.
+ThetaGang walks profitable cohorts by earliest expiration and sells only as
+many whole contracts as needed along that ordering to move the sleeve toward
+its target. Contract rounding may overshoot the target sale budget by less than
+one selected contract. Newly purchased or still-unprofitable cohorts
+remain invested rather than being used merely because the total sleeve crossed
+the trigger. The submitted limit carries both a fee-aware floor above the
+cohort's cost basis and a floor strictly above the price implied by the trigger.
+A hedge barely above the trigger therefore cannot be chased down to break-even
+or sold after it has fallen back to the upper-band boundary.
+
+ThetaGang submits a newly selected harvest as a bounded first phase, waits once
+at the original limit, and may reprice once toward the midpoint without crossing
+the higher of those two floors. Every harvest must fully fill. Otherwise,
+ThetaGang cancels incomplete orders and aborts the remaining stages without
+submitting stock or cash-fund orders from that plan.
 
 After complete fills, ThetaGang refreshes IBKR account and portfolio state and
 recalculates the regime rebalance in the same run from prior-run smoothing state.
-Only cash in that refreshed broker snapshot can fund the dependent stock orders;
-the preliminary quote is never treated as cash. If the refreshed state supports
-fewer shares, the second plan retains only the ordinarily funded amount. Pending
-sale credits can prevent cash management from queuing a duplicate cash-fund
-liquidation, but they cannot fund a new cash-fund purchase.
+The recalculated allocation, not estimated option proceeds, determines the stock
+order. The preliminary quote is never treated as a fill, and the preliminary
+stock order is never submitted ahead of the harvest. If any recalculated stock
+order cannot be prepared completely, ThetaGang aborts loudly before the final
+submission batch instead of treating the partial rebalance as successful.
 
-If any cohort for the symbol still has unresolved recovery state, a new harvest
-is deferred for that planning pass. The later tail stage reconciles the sale and
-its actual average fill when available. A subsequent invocation may sell another
-cohort if a fresh broker snapshot still shows both a hard-underweight allocation
-and a cash shortfall.
+If any state-owned tail reduction still has unresolved recovery state, a new
+portfolio harvest is blocked without changing an otherwise approved stock
+order. The later tail stage reconciles the sale and its actual average fill when
+available. This portfolio-wide lock prevents a pending sale in one target from
+being double-counted as excess available for another. ThetaGang runs only one
+bounded harvest phase per invocation.
 
 Entry evaluations record premium, estimated fees, catastrophe payouts and
 score, order size, open interest, and the quantity/open-interest ratio. Harvest
-events record blocks, estimated gross and net proceeds, fees, required proceeds,
-and excess proceeds. The same details are included in concise run logs.
+events record the sleeve value and weight, band settings, sale budget, estimated
+gross and net proceeds, fees, and the approved rebalance. The same details are
+included in concise run logs.
 
 ## State and safe shutdown
 
@@ -196,10 +221,13 @@ portfolio rebalancing, and cohort reconciliation all assume one process owns the
 account's run.
 
 State-owned puts are excluded from wheel management. With regime rebalancing,
-`net_liq` excludes those puts from its allocation base, `net_liq_ex_options`
-excludes all options, and `managed_stocks` uses managed stock value only.
-If ownership state cannot be read, wheel paths that need it fail closed instead
-of treating the puts as unowned.
+`net_liq` excludes those puts from its allocation base. `net_liq_ex_options`
+excludes options on active regime symbols plus state-owned tail puts, including
+tail puts outside the regime sleeve. It does not subtract unrelated financing
+or overlay options again: their cash and option liability are already netted in
+broker `NetLiquidation`. `managed_stocks` uses managed stock value only. If
+ownership state cannot be read, wheel paths that need it fail closed instead of
+treating the puts as unowned.
 
 Do not trade a state-owned put manually. IBKR combines manual and automated
 positions in the same contract, so ThetaGang cannot tell them apart.
@@ -229,6 +257,8 @@ estimated_fee_per_contract = 1.0
 [strategies.tail_hedge]
 enabled = true
 annual_budget = 0.005
+harvest_trigger_weight = 0.05
+harvest_target_weight = 0.03
 
 [[strategies.tail_hedge.targets]]
 symbol = "QQQ"
@@ -251,7 +281,7 @@ When tail hedging is enabled, each target symbol must also appear in
 `portfolio.symbols`. If regime rebalancing is enabled,
 `regime_rebalance.shares_only` must be `false`. Enable
 `regime_rebalance` and add it to `run.strategies` if you want profitable puts to
-fund hard-underweight buys.
+be monetized during hard-underweight buys.
 
 The values above show the configuration shape. They are not trading advice or
 calibrated defaults for every account.
