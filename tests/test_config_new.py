@@ -65,6 +65,20 @@ def test_tail_hedge_strategy_compiles_to_its_post_stage() -> None:
     assert config.runtime.orders.estimated_fee_per_contract == 1.0
 
 
+@pytest.mark.parametrize(
+    "price_update_delay",
+    [[30, 30], [60, 30], [-1, 30]],
+)
+def test_orders_reject_invalid_price_update_delay_ranges(
+    price_update_delay,
+) -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["runtime"]["orders"] = {"price_update_delay": price_update_delay}
+
+    with pytest.raises(ValueError, match="price_update_delay"):
+        Config(**data)
+
+
 def test_tail_hedge_rejects_removed_strike_ratio() -> None:
     data = _base_config({"strategies": ["tail_hedge"]})
     data["strategies"]["tail_hedge"] = {

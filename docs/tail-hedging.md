@@ -28,9 +28,12 @@ flowchart TD
     R{"Regime stage: approved stock buy still short after ordinary funding?"}
     R -->|Yes| Q{"Profitable owned cohort available?"}
     R -->|No or stage disabled| A["Tail stage: load SQLite cohorts"]
-    Q -->|Yes| J["Queue at most one harvest per target and defer unfunded shares"]
+    Q -->|Yes| J["Submit at most one harvest per target in a bounded fill phase"]
     Q -->|No| A
-    J --> A
+    J --> K{"Every harvest fully filled?"}
+    K -->|No| S["Cancel incomplete orders and abort remaining stages"]
+    K -->|Yes| L["Refresh broker cash and positions, then replan regime orders"]
+    L --> A
     A --> B["Reconcile every open cohort with broker state"]
     B --> C{"Any cohort due to exit or target removed?"}
     C -->|Yes| X["Queue safe closes for due cohorts"]
@@ -103,15 +106,18 @@ live cohorts in steady state, but this is an expectation rather than a target
 count. Available expirations and entry filters determine the actual ladder.
 
 An unfilled sell order does not restore budget. After the broker position shows
-an actual reduction, ThetaGang credits the originating cohort using a
-recorded sell-limit value, capped at that cohort's entry cost. This makes
-remaining premium from a normal DTE exit available within the rolling annual
-budget without enlarging the next entry slice. A crash gain can reduce the
-cohort's net cost to zero, but it cannot create extra hedge budget.
+an actual reduction, ThetaGang credits the originating cohort, capped at that
+cohort's entry cost. A complete reduction with a usable IBKR average fill price
+uses that fill price less the configured estimated fee. Partial or ambiguous
+reconciliation keeps the conservative recovery value recorded when the order
+was created. This makes remaining premium from a normal DTE exit available
+within the rolling annual budget without enlarging the next entry slice. A
+crash gain can reduce the cohort's net cost to zero, but it cannot create extra
+hedge budget.
 
-Budget accounting uses submitted limit values and the configured fee estimate
-rather than an execution and commission ledger. Actual commissions and favorable
-fill-price improvement are therefore not reconciled after execution.
+Budget accounting is not an execution-and-commission ledger. It can reconcile
+the average fill price for a complete sale, but actual commissions are still
+represented by `runtime.orders.estimated_fee_per_contract`.
 
 Within the nearest eligible expiration, each liquid and affordable candidate
 receives two model-free catastrophe scores. For every configured drawdown,
@@ -145,20 +151,32 @@ shortfall can trigger a harvest.
 
 Only active, state-owned puts without a conflicting order are eligible. The
 live sell quote, after the configured estimated sell fee, must exceed both the
-IBKR average cost and the configured all-in entry basis. Estimated net proceeds
-are used for funding and budget recovery.
+IBKR average cost and the configured all-in entry basis. The submitted limit
+also carries a fee-aware floor above that cost basis, so the bounded reprice
+cannot turn a profitable harvest into an estimated loss.
 
 ThetaGang uses the earliest-expiring useful cohort and sells the fewest whole
 contracts needed. It sells at most one cohort per target in a run. The part of
 the stock buy covered by normal funding stays in the current run. Shares assigned
-to the shortfall are deferred, even if the chosen cohort can fund only some of
-them. Estimated put proceeds are never spent immediately. After the sale fills
-and IBKR reports the cash, a later run makes a new rebalance decision.
+to the shortfall are deferred during preliminary planning. ThetaGang then submits
+the harvest as a bounded first phase, waits once at the original limit, and may
+reprice once toward the midpoint without crossing the profit floor. Every harvest
+must fully fill. Otherwise, ThetaGang cancels incomplete orders and aborts the
+remaining stages without submitting dependent stock or cash-fund orders.
+
+After complete fills, ThetaGang refreshes IBKR account and portfolio state and
+recalculates the regime rebalance in the same run from prior-run smoothing state.
+Only cash in that refreshed broker snapshot can fund the dependent stock orders;
+the preliminary quote is never treated as cash. If the refreshed state supports
+fewer shares, the second plan retains only the ordinarily funded amount. Pending
+sale credits can prevent cash management from queuing a duplicate cash-fund
+liquidation, but they cannot fund a new cash-fund purchase.
 
 If any cohort for the symbol still has unresolved recovery state, a new harvest
-is deferred for that invocation. The later tail stage reconciles the prior sale;
-a subsequent invocation may sell another cohort if a fresh broker snapshot still
-shows both a hard-underweight allocation and a cash shortfall.
+is deferred for that planning pass. The later tail stage reconciles the sale and
+its actual average fill when available. A subsequent invocation may sell another
+cohort if a fresh broker snapshot still shows both a hard-underweight allocation
+and a cash shortfall.
 
 Entry evaluations record premium, estimated fees, catastrophe payouts and
 score, order size, open interest, and the quantity/open-interest ratio. Harvest

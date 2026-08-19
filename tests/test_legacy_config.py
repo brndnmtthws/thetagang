@@ -4,6 +4,7 @@ from thetagang.legacy_config import (
     AccountConfig,
     LegacyConfig,
     OptionChainsConfig,
+    OrdersConfig,
     RegimeRebalanceConfig,
     RollWhenConfig,
     SymbolConfig,
@@ -53,6 +54,7 @@ class RegimeRebalanceConfigFactory(ModelFactory[RegimeRebalanceConfig]):
 class LegacyConfigFactory(ModelFactory[LegacyConfig]):
     @classmethod
     def build(cls, factory_use_construct: bool = False, **kwargs):
+        kwargs.setdefault("orders", OrdersConfig())
         kwargs.setdefault(
             "regime_rebalance",
             RegimeRebalanceConfigFactory.build(soft_band=0.10, hard_band=0.50),

@@ -936,6 +936,41 @@ class TestPortfolioManager:
         assert 0 < reprice.await_args.kwargs["timeout"] <= 5
         portfolio_manager.ibkr.cancel_order.assert_not_called()
 
+    def test_tail_harvest_fill_check_accepts_normalized_filled_status(
+        self, portfolio_manager
+    ):
+        trade = SimpleNamespace(
+            order=SimpleNamespace(totalQuantity=1),
+            orderStatus=SimpleNamespace(
+                status="FILLED",
+                filled=1,
+                remaining=float("nan"),
+            ),
+        )
+
+        assert portfolio_manager._trade_fully_filled(trade) is True
+
+    @pytest.mark.parametrize(
+        ("filled", "requested"),
+        [(float("nan"), 1), (float("inf"), 1), (1, float("inf"))],
+    )
+    def test_tail_harvest_fill_check_rejects_non_finite_quantities(
+        self,
+        portfolio_manager,
+        filled,
+        requested,
+    ):
+        trade = SimpleNamespace(
+            order=SimpleNamespace(totalQuantity=requested),
+            orderStatus=SimpleNamespace(
+                status="Filled",
+                filled=filled,
+                remaining=0,
+            ),
+        )
+
+        assert portfolio_manager._trade_fully_filled(trade) is False
+
     @pytest.mark.asyncio
     async def test_tail_harvest_reprice_preserves_profit_floor(
         self, portfolio_manager, mocker

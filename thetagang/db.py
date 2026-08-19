@@ -457,7 +457,7 @@ class DataStore:
             return None
 
     def discard_current_run_events(self, event_types: Iterable[str]) -> None:
-        """Discard uncommitted state events from only the active run."""
+        """Discard committed state events and overlays for the active run."""
         selected = {event_type for event_type in event_types if event_type}
         if not selected:
             return
@@ -473,7 +473,7 @@ class DataStore:
                 if key[0] in selected:
                     self._dry_run_event_overlay.pop(key, None)
         except Exception as exc:
-            raise RuntimeError("Failed to discard uncommitted run state") from exc
+            raise RuntimeError("Failed to discard active-run state") from exc
 
     @staticmethod
     def _tail_hedge_entry_dict(entry: TailHedgeEntry) -> Dict[str, Any]:

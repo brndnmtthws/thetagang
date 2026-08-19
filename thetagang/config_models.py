@@ -95,6 +95,15 @@ class OrdersConfig(BaseModel, DisplayMixin):
         default_factory=lambda: [30, 60], min_length=2, max_length=2
     )
 
+    @model_validator(mode="after")
+    def validate_price_update_delay(self) -> Self:
+        start, stop = self.price_update_delay
+        if start < 0 or stop <= start:
+            raise ValueError(
+                "orders.price_update_delay must be a non-negative increasing range"
+            )
+        return self
+
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
         table.add_row("[spring_green1]Order settings")

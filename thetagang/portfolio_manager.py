@@ -1097,17 +1097,27 @@ class PortfolioManager:
 
     @staticmethod
     def _trade_fully_filled(trade: Any) -> bool:
-        status = str(getattr(getattr(trade, "orderStatus", None), "status", ""))
+        status = str(
+            getattr(getattr(trade, "orderStatus", None), "status", "")
+        ).casefold()
         try:
             filled = float(getattr(trade.orderStatus, "filled", 0) or 0)
             remaining = float(getattr(trade.orderStatus, "remaining", 0) or 0)
             requested = float(getattr(trade.order, "totalQuantity", 0) or 0)
         except (AttributeError, TypeError, ValueError):
             return False
-        return status == "Filled" and (
-            requested > 0
-            and filled >= requested
-            and math.isclose(remaining, 0.0, abs_tol=1e-9)
+        if (
+            status != "filled"
+            or not math.isfinite(requested)
+            or requested <= 0
+            or not math.isfinite(filled)
+            or filled < requested
+        ):
+            return False
+        return not math.isfinite(remaining) or math.isclose(
+            remaining,
+            0.0,
+            abs_tol=1e-9,
         )
 
     async def _cancel_incomplete_trades(self, trades: List[Any]) -> None:
