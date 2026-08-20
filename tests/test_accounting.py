@@ -15,6 +15,7 @@ from thetagang.accounting import (
     RegimeRebalanceBaseEnum,
     account_summary_from_values,
     select_account_value,
+    stock_market_value,
 )
 
 
@@ -121,6 +122,20 @@ def test_position_taxonomy_splits_state_owned_and_manual_option_value() -> None:
     )
     assert base.excluded_value == 5_000
     assert base.value == 114_000
+
+
+def test_stock_value_falls_back_from_nonfinite_broker_mark() -> None:
+    stock = _position(Stock("AAA", "SMART", "USD"), 4, float("nan"))
+    stock.marketPrice = 125.0
+
+    accounting = PortfolioAccounting.build(
+        config=_config(),
+        account_summary=_summary(),
+        portfolio_positions={"AAA": [stock]},
+    )
+
+    assert stock_market_value([stock], long_only=True) == 500
+    assert accounting.positions.stock_value("AAA") == 500
 
 
 def test_active_regime_option_is_excluded_in_addition_to_owned_tail_value() -> None:

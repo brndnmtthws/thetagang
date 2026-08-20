@@ -144,19 +144,36 @@ def stock_market_value(
         )
         if long_only and quantity <= 0:
             continue
-        value = _finite_number(
-            getattr(position, "marketValue", 0.0) or 0.0,
-            description=f"{position.contract.symbol} stock market value",
-        )
-        if value <= 0 and quantity > 0:
-            price = _finite_number(
-                getattr(position, "marketPrice", 0.0) or 0.0,
-                description=f"{position.contract.symbol} stock market price",
-            )
-            if price > 0:
-                value = quantity * price
-        total += value
+        total += _stock_position_market_value(position, quantity)
     return total
+
+
+def _stock_position_market_value(
+    position: PortfolioItem,
+    quantity: float,
+) -> float:
+    symbol = position.contract.symbol
+    market_value_error: AccountingError | None = None
+    try:
+        market_value = _finite_number(
+            getattr(position, "marketValue", 0.0) or 0.0,
+            description=f"{symbol} stock market value",
+        )
+    except AccountingError as exc:
+        market_value_error = exc
+        market_value = 0.0
+
+    if market_value <= 0 and quantity > 0:
+        market_price = _finite_number(
+            getattr(position, "marketPrice", 0.0) or 0.0,
+            description=f"{symbol} stock market price",
+        )
+        if market_price > 0:
+            return quantity * market_price
+
+    if market_value_error is not None:
+        raise market_value_error
+    return market_value
 
 
 def _finite_number(value: Any, *, description: str) -> float:
@@ -428,22 +445,12 @@ class PositionLedger:
         for position in positions:
             contract = position.contract
             symbol = str(contract.symbol)
-            market_value = _finite_number(
-                getattr(position, "marketValue", 0.0) or 0.0,
-                description=f"{symbol} position market value",
-            )
             if isinstance(contract, Stock):
                 quantity = _finite_number(
                     position.position,
                     description=f"{symbol} stock quantity",
                 )
-                if market_value <= 0 and quantity > 0:
-                    market_price = _finite_number(
-                        getattr(position, "marketPrice", 0.0) or 0.0,
-                        description=f"{symbol} stock market price",
-                    )
-                    if market_price > 0:
-                        market_value = quantity * market_price
+                market_value = _stock_position_market_value(position, quantity)
                 stock_quantities[symbol] = stock_quantities.get(symbol, 0.0) + quantity
                 stock_values[symbol] = stock_values.get(symbol, 0.0) + market_value
                 if symbol == policy.cash_fund_symbol:
@@ -457,6 +464,10 @@ class PositionLedger:
                 category_values[category] += market_value
                 continue
 
+            market_value = _finite_number(
+                getattr(position, "marketValue", 0.0) or 0.0,
+                description=f"{symbol} position market value",
+            )
             if not isinstance(contract, Option):
                 category_values[PositionCategory.OTHER_ASSET] += market_value
                 continue
