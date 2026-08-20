@@ -167,8 +167,10 @@ financing options, including SPX box-spread legs, remain netted against their
 cash proceeds inside `NetLiquidation`; cash-fund holdings also remain included.
 `net_liq` removes only state-owned tail puts, while `managed_stocks` uses only
 the managed regime stock value. For example, $100,000 of broker NLV containing
-$5,000 of state-owned tail puts produces a $95,000 regime base before any
-configured margin multiplier, so the tail sleeve weight is about 5.26%.
+$5,000 of state-owned tail puts produces a $95,000 adjusted NLV. The final
+regime base is `floor($95,000 * regime margin_usage)`, and the sleeve weight is
+`$5,000 / final regime base`. It is about 5.26% when the multiplier is 1.0 and
+about 4.39% when the multiplier is 1.2.
 
 The numerator contains only live, state-owned tail puts. The amount available
 for conversion is determined from the band, not from reported cash or the
