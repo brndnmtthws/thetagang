@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
@@ -42,9 +42,9 @@ def _naive_utc(
     second: int = 0,
 ) -> datetime:
     """Build the naive UTC values used by persisted broker state."""
-    return datetime(
-        year, month, day, hour, minute, second, tzinfo=timezone.utc
-    ).replace(tzinfo=None)
+    return datetime(year, month, day, hour, minute, second, tzinfo=UTC).replace(
+        tzinfo=None
+    )
 
 
 NOW = _naive_utc(2026, 8, 12, 12)

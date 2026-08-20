@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from thetagang.db import DataStore
@@ -14,7 +14,7 @@ TAIL_HEDGE_CLOSE_ORDER_REF = "tg:tail-hedge:close"
 TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX = "tg:tail-harvest"
 TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR = "_thetagang_min_limit_price"
 
-_ORDER_REF_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+_ORDER_REF_EPOCH = datetime(1970, 1, 1, tzinfo=UTC).replace(tzinfo=None)
 
 TailHedgeStatus = Literal["entry_enqueued", "active", "closed"]
 

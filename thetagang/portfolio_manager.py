@@ -1482,11 +1482,7 @@ class PortfolioManager:
                 updated_order.lmtPrice = float(updated_price)
                 self.trades.submit_order(contract, updated_order, idx)
                 log.info(f"{contract.symbol}: Order updated, order={updated_order}")
-        except (
-            asyncio.TimeoutError,
-            RuntimeError,
-            RequiredFieldValidationError,
-        ) as exc:
+        except (TimeoutError, RuntimeError, RequiredFieldValidationError) as exc:
             log.warning(
                 f"Couldn't generate midpoint price for {trade.contract}, "
                 "skipping repricing"

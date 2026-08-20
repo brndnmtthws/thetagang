@@ -481,7 +481,7 @@ class IBKR:
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
         finally:
             update_event -= onTicker
@@ -566,7 +566,7 @@ class IBKR:
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
         finally:
             trade.statusEvent -= onStatusEvent

@@ -1,12 +1,11 @@
 import math
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rich.console import Console
 from rich.table import Table
-from typing_extensions import Self
 
 from thetagang.fmt import dfmt, ffmt, pfmt
 

@@ -370,7 +370,7 @@ version (see `IBC(1045, ...)` in the code).
 
 To use the bot, you'll need an Interactive Brokers account with a working
 installation of IBC. If you want to modify the bot, you'll need an
-installation of Python 3.10 to 3.14 with the
+installation of Python 3.11 to 3.14 with the
 [`uv`](https://docs.astral.sh/uv/) package manager.
 
 One more thing: to run this on a live account, you'll require enough capital

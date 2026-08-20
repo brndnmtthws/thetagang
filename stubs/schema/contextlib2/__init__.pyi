@@ -8,12 +8,13 @@ from types import TracebackType
 from typing import (
     IO,
     Any,
+    Self,
     TypeAlias,
     TypeVar,
     overload,
 )
 
-from typing_extensions import ParamSpec, Protocol, Self
+from typing_extensions import ParamSpec, Protocol
 
 _T = TypeVar("_T")
 _T_co = TypeVar("_T_co", covariant=True)

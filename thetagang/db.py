@@ -7,7 +7,7 @@ import platform
 import shutil
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -44,7 +44,7 @@ class Base(DeclarativeBase):
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Run(Base):
@@ -563,7 +563,7 @@ class DataStore:
 
     def record_positions_snapshot(self, positions: Mapping[str, Iterable[Any]]) -> None:
         try:
-            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            now = datetime.now(UTC).replace(tzinfo=None)
             rows = []
             for symbol, items in positions.items():
                 for position in items:
@@ -841,17 +841,15 @@ def _parse_datetime(
         return None
     if isinstance(value, datetime):
         if value.tzinfo is not None:
-            return value.astimezone(timezone.utc).replace(tzinfo=None)
+            return value.astimezone(UTC).replace(tzinfo=None)
         return value
     if isinstance(value, date):
-        return datetime.combine(value, datetime.min.time(), timezone.utc).replace(
-            tzinfo=None
-        )
+        return datetime.combine(value, datetime.min.time(), UTC).replace(tzinfo=None)
     if hasattr(value, "date"):
         try:
-            return datetime.combine(
-                value.date(), datetime.min.time(), timezone.utc
-            ).replace(tzinfo=None)
+            return datetime.combine(value.date(), datetime.min.time(), UTC).replace(
+                tzinfo=None
+            )
         except (AttributeError, OverflowError, TypeError, ValueError):
             return None
     if isinstance(value, str):
@@ -860,16 +858,14 @@ def _parse_datetime(
             if len(raw) == 8 and assume_start_of_day:
                 return (
                     datetime.strptime(raw, "%Y%m%d")
-                    .replace(tzinfo=timezone.utc)
+                    .replace(tzinfo=UTC)
                     .replace(tzinfo=None)
                 )
             if len(raw) in (10, 13):
                 timestamp = int(raw)
                 if len(raw) == 13:
                     timestamp = int(raw) / 1000
-                return datetime.fromtimestamp(timestamp, timezone.utc).replace(
-                    tzinfo=None
-                )
+                return datetime.fromtimestamp(timestamp, UTC).replace(tzinfo=None)
         for fmt in (
             "%Y%m%d  %H:%M:%S",
             "%Y%m%d %H:%M:%S",
@@ -877,17 +873,17 @@ def _parse_datetime(
             "%Y-%m-%d",
         ):
             try:
-                parsed = datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+                parsed = datetime.strptime(raw, fmt).replace(tzinfo=UTC)
                 if fmt == "%Y-%m-%d" and not assume_start_of_day:
                     return None
                 return parsed.replace(tzinfo=None)
             except ValueError:
                 continue
         try:
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(raw)
         except ValueError:
             return None
         if isinstance(parsed, datetime) and parsed.tzinfo is not None:
-            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed.astimezone(UTC).replace(tzinfo=None)
         return parsed
     return None

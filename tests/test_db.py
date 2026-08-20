@@ -1,7 +1,7 @@
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import fields
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,9 +34,9 @@ def _naive_utc(
     second: int = 0,
 ) -> datetime:
     """Build the naive UTC values used by SQLite's timezone-free columns."""
-    return datetime(
-        year, month, day, hour, minute, second, tzinfo=timezone.utc
-    ).replace(tzinfo=None)
+    return datetime(year, month, day, hour, minute, second, tzinfo=UTC).replace(
+        tzinfo=None
+    )
 
 
 def test_data_store_records_executions_and_queries(tmp_path) -> None:

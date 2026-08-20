@@ -1,5 +1,5 @@
 import math
-from typing import Any
+from typing import Any, Self
 
 from pydantic import BaseModel, Field, model_validator
 from rich import box
@@ -7,7 +7,6 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
-from typing_extensions import Self
 
 from thetagang.config_models import (
     AccountConfig,

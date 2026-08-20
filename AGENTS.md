@@ -21,7 +21,7 @@ in `config.py`.
 - `uv run pre-commit run --all-files` — replicate the CI hook set before pushing.
 
 ## Coding Style & Naming Conventions
-- Python ≥3.10 with 4-space indentation and Ruff-enforced 88 character lines; keep imports sorted via Ruff.
+- Python ≥3.11 with 4-space indentation and Ruff-enforced 88 character lines; keep imports sorted via Ruff.
 - Use snake_case for functions and variables, CapWords for classes, and descriptive config keys; follow existing naming inside `portfolio_manager.py`.
 - Annotate new or modified functions with precise type hints and keep module-level constants uppercase.
 - Add configuration-driven behavior through Pydantic models in `config.py`, ensuring defaults and validation match `thetagang.toml`.

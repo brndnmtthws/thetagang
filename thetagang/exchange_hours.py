@@ -1,5 +1,5 @@
 import time
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import exchange_calendars as xcals
 import pandas as pd
@@ -110,7 +110,7 @@ def waited_for_open(config: ExchangeHoursConfig, now: datetime) -> bool:
 
 
 def need_to_exit(config: ExchangeHoursConfig) -> bool:
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     action = determine_action(config, now)
     if action == "exit":
         return True

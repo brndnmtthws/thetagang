@@ -1,5 +1,5 @@
 import math
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
@@ -41,9 +41,9 @@ def _naive_utc(
     second: int = 0,
 ) -> datetime:
     """Build the naive UTC values used by persisted broker state."""
-    return datetime(
-        year, month, day, hour, minute, second, tzinfo=timezone.utc
-    ).replace(tzinfo=None)
+    return datetime(year, month, day, hour, minute, second, tzinfo=UTC).replace(
+        tzinfo=None
+    )
 
 
 REGIME_HISTORY_START = _naive_utc(2024, 1, 2)

@@ -1,5 +1,4 @@
-import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -24,9 +23,9 @@ def _naive_utc(
     second: int = 0,
 ) -> datetime:
     """Build the naive UTC values used by persisted broker state."""
-    return datetime(
-        year, month, day, hour, minute, second, tzinfo=timezone.utc
-    ).replace(tzinfo=None)
+    return datetime(year, month, day, hour, minute, second, tzinfo=UTC).replace(
+        tzinfo=None
+    )
 
 
 @pytest.fixture
@@ -1328,7 +1327,7 @@ class TestPortfolioManager:
             return_value=[trade]
         )
         portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(
-            side_effect=asyncio.TimeoutError()
+            side_effect=TimeoutError()
         )
 
         await portfolio_manager.adjust_prices()
