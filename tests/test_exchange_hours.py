@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-import thetagang.exchange_hours as exchange_hours
+from thetagang import exchange_hours
 from thetagang.config_models import ActionWhenClosedEnum, ExchangeHoursConfig
 from thetagang.exchange_hours import determine_action, waited_for_open
 

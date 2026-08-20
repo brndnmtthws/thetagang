@@ -1,5 +1,5 @@
 import math
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 from rich import box
@@ -75,7 +75,7 @@ class LegacyConfig(BaseModel, DisplayMixin):
     cash_management: CashManagementConfig = Field(default_factory=CashManagementConfig)
     vix_call_hedge: VIXCallHedgeConfig = Field(default_factory=VIXCallHedgeConfig)
     write_when: WriteWhenConfig = Field(default_factory=WriteWhenConfig)
-    symbols: Dict[str, SymbolConfig] = Field(default_factory=dict)
+    symbols: dict[str, SymbolConfig] = Field(default_factory=dict)
     constants: ConstantsConfig = Field(default_factory=ConstantsConfig)
     regime_rebalance: RegimeRebalanceConfig = Field(
         default_factory=RegimeRebalanceConfig
@@ -96,7 +96,7 @@ class LegacyConfig(BaseModel, DisplayMixin):
     def is_regime_rebalance_symbol(self, symbol: str) -> bool:
         return self.regime_rebalance.enabled and symbol in self.regime_rebalance.symbols
 
-    def symbol_config(self, symbol: str) -> Optional[SymbolConfig]:
+    def symbol_config(self, symbol: str) -> SymbolConfig | None:
         return self.symbols.get(symbol)
 
     @model_validator(mode="after")
@@ -144,7 +144,7 @@ class LegacyConfig(BaseModel, DisplayMixin):
         self,
         symbol: str,
         right: str,
-    ) -> Optional[float]:
+    ) -> float | None:
         p_or_c = "calls" if right.upper().startswith("C") else "puts"
         symbol_config = self.symbols.get(symbol)
 
@@ -237,7 +237,7 @@ class LegacyConfig(BaseModel, DisplayMixin):
             )
         return table
 
-    def create_volatility_weight_table(self) -> Optional[Table]:
+    def create_volatility_weight_table(self) -> Table | None:
         volatility_symbols = {
             symbol: sconfig.volatility_weight
             for symbol, sconfig in self.symbols.items()
@@ -352,7 +352,7 @@ class LegacyConfig(BaseModel, DisplayMixin):
             return symbol_config.calls.cap_target_floor
         return self.write_when.calls.cap_target_floor
 
-    def get_strike_limit(self, symbol: str, right: str) -> Optional[float]:
+    def get_strike_limit(self, symbol: str, right: str) -> float | None:
         p_or_c = "calls" if right.upper().startswith("C") else "puts"
         symbol_config = self.symbols.get(symbol)
         option_config = getattr(symbol_config, p_or_c, None) if symbol_config else None
@@ -368,7 +368,7 @@ class LegacyConfig(BaseModel, DisplayMixin):
             return symbol_config.calls.excess_only
         return self.write_when.calls.excess_only
 
-    def get_max_dte_for(self, symbol: str) -> Optional[int]:
+    def get_max_dte_for(self, symbol: str) -> int | None:
         if symbol == "VIX" and self.vix_call_hedge.max_dte is not None:
             return self.vix_call_hedge.max_dte
         symbol_config = self.symbols.get(symbol)
@@ -376,7 +376,7 @@ class LegacyConfig(BaseModel, DisplayMixin):
             return symbol_config.max_dte
         return self.target.max_dte
 
-    def can_write_when(self, symbol: str, right: str) -> Tuple[bool, bool]:
+    def can_write_when(self, symbol: str, right: str) -> tuple[bool, bool]:
         symbol_config = self.symbols.get(symbol)
         p_or_c = "calls" if right.upper().startswith("C") else "puts"
         option_config = (
@@ -409,7 +409,7 @@ class LegacyConfig(BaseModel, DisplayMixin):
         )
 
 
-def normalize_config(config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def normalize_config(config: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     # Do any pre-processing necessary to the config here, such as handling
     # defaults, deprecated values, config changes, etc.
     if "minimum_cushion" in config["account"]:
@@ -444,17 +444,17 @@ def normalize_config(config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, A
         del config["target"]["maximum_new_contracts"]
 
     # xor: should have weight OR parts, but not both
-    if any(["weight" in s for s in config["symbols"].values()]) == any(
-        ["parts" in s for s in config["symbols"].values()]
+    if any("weight" in s for s in config["symbols"].values()) == any(
+        "parts" in s for s in config["symbols"].values()
     ):
         raise RuntimeError(
             "ERROR: all symbols should have either a weight or parts specified, but parts and weights cannot be mixed."
         )
 
-    if "parts" in list(config["symbols"].values())[0]:
+    if "parts" in next(iter(config["symbols"].values())):
         # If using "parts" instead of "weight", convert parts into weights
         total_parts = float(sum([s["parts"] for s in config["symbols"].values()]))
-        for k in config["symbols"].keys():
+        for k in config["symbols"]:
             config["symbols"][k]["weight"] = config["symbols"][k]["parts"] / total_parts
         for s in config["symbols"].values():
             del s["parts"]

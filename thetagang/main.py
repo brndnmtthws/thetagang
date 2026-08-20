@@ -7,9 +7,10 @@ logger = logging.getLogger(__name__)
 click_log.basic_config(logger)
 
 
-CONTEXT_SETTINGS = dict(
-    help_option_names=["-h", "--help"], auto_envvar_prefix="THETAGANG"
-)
+CONTEXT_SETTINGS = {
+    "help_option_names": ["-h", "--help"],
+    "auto_envvar_prefix": "THETAGANG",
+}
 
 
 @click.command(context_settings=CONTEXT_SETTINGS)

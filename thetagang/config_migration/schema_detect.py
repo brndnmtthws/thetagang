@@ -1,5 +1,6 @@
+from collections.abc import Mapping
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any
 
 from tomlkit import parse
 from tomlkit.exceptions import ParseError

@@ -1,7 +1,7 @@
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import fields
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,6 +25,20 @@ from thetagang.db import (
 from thetagang.strategies.tail_hedge_state import TailHedgeCohort
 
 
+def _naive_utc(
+    year: int,
+    month: int,
+    day: int,
+    hour: int = 0,
+    minute: int = 0,
+    second: int = 0,
+) -> datetime:
+    """Build the naive UTC values used by SQLite's timezone-free columns."""
+    return datetime(
+        year, month, day, hour, minute, second, tzinfo=timezone.utc
+    ).replace(tzinfo=None)
+
+
 def test_data_store_records_executions_and_queries(tmp_path) -> None:
     db_path = tmp_path / "state.db"
     data_store = DataStore(
@@ -43,40 +57,40 @@ def test_data_store_records_executions_and_queries(tmp_path) -> None:
                 side="BOT",
                 shares=1,
                 price=100.0,
-                time=datetime(2024, 1, 5, 12, 0, 0),
+                time=_naive_utc(2024, 1, 5, 12, 0, 0),
             ),
             contract=SimpleNamespace(symbol="AAA"),
-            time=datetime(2024, 1, 5, 12, 0, 0),
+            time=_naive_utc(2024, 1, 5, 12, 0, 0),
         ),
         SimpleNamespace(
             execution=SimpleNamespace(
                 execId="2",
                 acctNumber="TEST123",
                 orderRef="tg:regime-rebalance:BBB",
-                time=datetime(2024, 1, 7, 12, 0, 0),
+                time=_naive_utc(2024, 1, 7, 12, 0, 0),
             ),
             contract=SimpleNamespace(symbol="BBB"),
-            time=datetime(2024, 1, 7, 12, 0, 0),
+            time=_naive_utc(2024, 1, 7, 12, 0, 0),
         ),
         SimpleNamespace(
             execution=SimpleNamespace(
                 execId="3",
                 acctNumber="TEST123",
                 orderRef="tg:other:CCC",
-                time=datetime(2024, 1, 9, 12, 0, 0),
+                time=_naive_utc(2024, 1, 9, 12, 0, 0),
             ),
             contract=SimpleNamespace(symbol="CCC"),
-            time=datetime(2024, 1, 9, 12, 0, 0),
+            time=_naive_utc(2024, 1, 9, 12, 0, 0),
         ),
         SimpleNamespace(
             execution=SimpleNamespace(
                 execId="4",
                 acctNumber="OTHER",
                 orderRef="tg:regime-rebalance:AAA",
-                time=datetime(2024, 1, 10, 12, 0, 0),
+                time=_naive_utc(2024, 1, 10, 12, 0, 0),
             ),
             contract=SimpleNamespace(symbol="AAA"),
-            time=datetime(2024, 1, 10, 12, 0, 0),
+            time=_naive_utc(2024, 1, 10, 12, 0, 0),
         ),
     ]
 
@@ -84,11 +98,11 @@ def test_data_store_records_executions_and_queries(tmp_path) -> None:
     last = data_store.get_last_regime_rebalance_time(
         symbols=["AAA", "BBB"],
         order_ref_prefix="tg:regime-rebalance",
-        start_time=datetime(2024, 1, 1, 0, 0, 0),
+        start_time=_naive_utc(2024, 1, 1, 0, 0, 0),
         account="TEST123",
     )
 
-    assert last == datetime(2024, 1, 7, 12, 0, 0)
+    assert last == _naive_utc(2024, 1, 7, 12, 0, 0)
     with data_store.session_scope() as session:
         stored = session.execute(
             select(ExecutionRecord).where(ExecutionRecord.exec_id == "1")
@@ -202,7 +216,7 @@ def _tail_hedge_row(
         "strike": 60.0,
         "quantity": 2,
         "entry_limit_price": 0.5,
-        "entered_at": datetime(2026, 1, 1, 12, 0, 0),
+        "entered_at": _naive_utc(2026, 1, 1, 12, 0, 0),
         "estimated_cost": 100.0,
         "recovered_cost": 0.0,
         "pending_recovery_quantity": None,
@@ -222,7 +236,7 @@ def test_tail_hedge_entries_round_trip_active_and_closed_rows(tmp_path) -> None:
     active = _tail_hedge_row()
     active["pending_recovery_quantity"] = 2
     active["pending_recovery_per_contract"] = 40.0
-    active["pending_recovery_enqueued_at"] = datetime(2026, 1, 2, 12, 0, 0)
+    active["pending_recovery_enqueued_at"] = _naive_utc(2026, 1, 2, 12, 0, 0)
     active["pending_recovery_initial_quantity"] = 2
 
     assert data_store.save_tail_hedge_entries("TEST123", [active])
@@ -269,7 +283,7 @@ def test_tail_hedge_entries_normalize_order_and_reject_duplicates(
     )
     earlier = _tail_hedge_row("earlier")
     later = _tail_hedge_row("later")
-    later["entered_at"] = datetime(2026, 1, 2, 12, 0, 0)
+    later["entered_at"] = _naive_utc(2026, 1, 2, 12, 0, 0)
 
     assert data_store.save_tail_hedge_entries("TEST123", [later, earlier])
     assert data_store.load_tail_hedge_entries("TEST123") == [earlier, later]
@@ -383,12 +397,12 @@ def test_get_historical_bars_filters_by_symbol_timeframe_and_time(tmp_path) -> N
     bars = data_store.get_historical_bars(
         "AAA",
         "1 day",
-        datetime(2024, 1, 5, 0, 0, 0),
-        datetime(2024, 1, 5, 23, 59, 59),
+        _naive_utc(2024, 1, 5, 0, 0, 0),
+        _naive_utc(2024, 1, 5, 23, 59, 59),
     )
 
     assert len(bars) == 1
-    assert bars[0].date == datetime(2024, 1, 5)
+    assert bars[0].date == _naive_utc(2024, 1, 5)
     assert bars[0].close == 2.0
 
 
@@ -418,11 +432,11 @@ def test_record_executions_parses_string_times(tmp_path) -> None:
     last = data_store.get_last_regime_rebalance_time(
         symbols=["AAA"],
         order_ref_prefix="tg:regime-rebalance",
-        start_time=datetime(2024, 1, 1, 0, 0, 0),
+        start_time=_naive_utc(2024, 1, 1, 0, 0, 0),
         account="TEST123",
     )
 
-    assert last == datetime(2024, 1, 5, 12, 0, 0)
+    assert last == _naive_utc(2024, 1, 5, 12, 0, 0)
 
 
 def test_record_executions_backfills_account_on_repeat(tmp_path) -> None:
@@ -436,7 +450,7 @@ def test_record_executions_backfills_account_on_repeat(tmp_path) -> None:
         execId="1",
         acctNumber=None,
         orderRef="tg:regime-rebalance:AAA",
-        time=datetime(2024, 1, 5, 12, 0, 0),
+        time=_naive_utc(2024, 1, 5, 12, 0, 0),
     )
     fill = SimpleNamespace(
         execution=execution,
@@ -471,7 +485,7 @@ def test_legacy_execution_fallback_never_overrides_scoped_history(tmp_path) -> N
                     account=None,
                     order_ref="tg:regime-rebalance:AAA",
                     symbol="AAA",
-                    execution_time=datetime(2024, 1, 9, 12),
+                    execution_time=_naive_utc(2024, 1, 9, 12),
                 ),
                 ExecutionRecord(
                     run_id=data_store.run_id,
@@ -479,7 +493,7 @@ def test_legacy_execution_fallback_never_overrides_scoped_history(tmp_path) -> N
                     account="TEST123",
                     order_ref="tg:regime-rebalance:AAA",
                     symbol="AAA",
-                    execution_time=datetime(2024, 1, 7, 12),
+                    execution_time=_naive_utc(2024, 1, 7, 12),
                 ),
                 ExecutionRecord(
                     run_id=data_store.run_id,
@@ -487,7 +501,7 @@ def test_legacy_execution_fallback_never_overrides_scoped_history(tmp_path) -> N
                     account="OTHER",
                     order_ref="tg:regime-rebalance:AAA",
                     symbol="AAA",
-                    execution_time=datetime(2024, 1, 10, 12),
+                    execution_time=_naive_utc(2024, 1, 10, 12),
                 ),
             ]
         )
@@ -495,23 +509,23 @@ def test_legacy_execution_fallback_never_overrides_scoped_history(tmp_path) -> N
     assert data_store.get_last_regime_rebalance_time(
         symbols=["AAA"],
         order_ref_prefix="tg:regime-rebalance",
-        start_time=datetime(2024, 1, 1),
+        start_time=_naive_utc(2024, 1, 1),
         account="TEST123",
         include_legacy_unscoped=True,
-    ) == datetime(2024, 1, 7, 12)
+    ) == _naive_utc(2024, 1, 7, 12)
     assert data_store.get_last_regime_rebalance_time(
         symbols=["AAA"],
         order_ref_prefix="tg:regime-rebalance",
-        start_time=datetime(2024, 1, 1),
+        start_time=_naive_utc(2024, 1, 1),
         account="UNSEEN",
         include_legacy_unscoped=True,
-    ) == datetime(2024, 1, 9, 12)
+    ) == _naive_utc(2024, 1, 9, 12)
     assert (
         data_store.get_last_regime_rebalance_time(
             account="UNSEEN",
             symbols=["AAA"],
             order_ref_prefix="tg:regime-rebalance",
-            start_time=datetime(2024, 1, 1),
+            start_time=_naive_utc(2024, 1, 1),
         )
         is None
     )
@@ -643,13 +657,13 @@ def test_get_last_event_payload_uses_event_insertion_order(tmp_path) -> None:
             [
                 Event(
                     run_id=data_store.run_id,
-                    created_at=datetime(2026, 8, 14, 12, 0, 0),
+                    created_at=_naive_utc(2026, 8, 14, 12, 0, 0),
                     event_type="ordered_event",
                     payload='{"sequence": 1}',
                 ),
                 Event(
                     run_id=data_store.run_id,
-                    created_at=datetime(2026, 8, 13, 12, 0, 0),
+                    created_at=_naive_utc(2026, 8, 13, 12, 0, 0),
                     event_type="ordered_event",
                     payload='{"sequence": 2}',
                 ),

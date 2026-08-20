@@ -1,6 +1,6 @@
 import math
 from collections.abc import Iterable, Mapping
-from typing import Any, List, NamedTuple, Optional, Tuple
+from typing import Any, NamedTuple
 
 from ib_async import Contract, LimitOrder
 from rich import box
@@ -259,19 +259,19 @@ def pending_buy_cash(
 
 class Orders:
     def __init__(self) -> None:
-        self.__records: List[Tuple[Contract, LimitOrder, Optional[int]]] = []
+        self.__records: list[tuple[Contract, LimitOrder, int | None]] = []
 
     def add_order(
-        self, contract: Contract, order: LimitOrder, intent_id: Optional[int]
+        self, contract: Contract, order: LimitOrder, intent_id: int | None
     ) -> None:
         self.__records.append((contract, order, intent_id))
 
-    def records(self) -> List[Tuple[Contract, LimitOrder, Optional[int]]]:
+    def records(self) -> list[tuple[Contract, LimitOrder, int | None]]:
         return self.__records
 
     def remove_records(
         self,
-        records: Iterable[Tuple[Contract, LimitOrder, Optional[int]]],
+        records: Iterable[tuple[Contract, LimitOrder, int | None]],
     ) -> None:
         record_ids = {id(record) for record in records}
         self.__records[:] = [

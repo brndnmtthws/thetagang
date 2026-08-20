@@ -32,7 +32,22 @@ from thetagang.strategies.tail_hedge_state import (
     parse_state_datetime,
 )
 
-NOW = datetime(2026, 8, 12, 12)
+
+def _naive_utc(
+    year: int,
+    month: int,
+    day: int,
+    hour: int = 0,
+    minute: int = 0,
+    second: int = 0,
+) -> datetime:
+    """Build the naive UTC values used by persisted broker state."""
+    return datetime(
+        year, month, day, hour, minute, second, tzinfo=timezone.utc
+    ).replace(tzinfo=None)
+
+
+NOW = _naive_utc(2026, 8, 12, 12)
 
 
 def _expiration(days: int) -> str:
@@ -68,8 +83,8 @@ def _make_engine(mocker):
             }
         ),
     )
-    config.trading_is_allowed = lambda symbol: not bool(
-        getattr(config.portfolio.symbols.get(symbol), "no_trading", False)
+    config.trading_is_allowed = lambda symbol: (
+        not bool(getattr(config.portfolio.symbols.get(symbol), "no_trading", False))
     )
     ibkr = mocker.Mock()
     ibkr.open_trades.return_value = []

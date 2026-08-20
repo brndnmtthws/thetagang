@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any
 
 from ib_async import AccountValue, Ticker
 
 
-def resolve_symbol_configs(config: Any, *, context: str) -> Dict[str, Any]:
+def resolve_symbol_configs(config: Any, *, context: str) -> dict[str, Any]:
     symbols = getattr(config, "symbols", None)
     if isinstance(symbols, dict):
         return symbols
@@ -23,29 +24,29 @@ def resolve_symbol_configs(config: Any, *, context: str) -> Dict[str, Any]:
 
 @dataclass(frozen=True)
 class OptionsRuntimeServiceAdapter:
-    get_symbols_fn: Callable[[], List[str]]
+    get_symbols_fn: Callable[[], list[str]]
     get_primary_exchange_fn: Callable[[str], str]
-    get_buying_power_fn: Callable[[Dict[str, AccountValue]], int]
+    get_buying_power_fn: Callable[[dict[str, AccountValue]], int]
     get_maximum_new_contracts_for_fn: Callable[
-        [str, str, Dict[str, AccountValue]], Awaitable[int]
+        [str, str, dict[str, AccountValue]], Awaitable[int]
     ]
     get_write_threshold_fn: Callable[[Ticker, str], Awaitable[tuple[float, float]]]
     get_close_price_fn: Callable[[Ticker], float]
 
-    def get_symbols(self) -> List[str]:
+    def get_symbols(self) -> list[str]:
         return self.get_symbols_fn()
 
     def get_primary_exchange(self, symbol: str) -> str:
         return self.get_primary_exchange_fn(symbol)
 
-    def get_buying_power(self, account_summary: Dict[str, AccountValue]) -> int:
+    def get_buying_power(self, account_summary: dict[str, AccountValue]) -> int:
         return self.get_buying_power_fn(account_summary)
 
     async def get_maximum_new_contracts_for(
         self,
         symbol: str,
         primary_exchange: str,
-        account_summary: Dict[str, AccountValue],
+        account_summary: dict[str, AccountValue],
     ) -> int:
         return await self.get_maximum_new_contracts_for_fn(
             symbol, primary_exchange, account_summary
@@ -63,13 +64,13 @@ class OptionsRuntimeServiceAdapter:
 @dataclass(frozen=True)
 class EquityRuntimeServiceAdapter:
     get_primary_exchange_fn: Callable[[str], str]
-    get_buying_power_fn: Callable[[Dict[str, AccountValue]], int]
+    get_buying_power_fn: Callable[[dict[str, AccountValue]], int]
     midpoint_or_market_price_fn: Callable[[Ticker], float]
 
     def get_primary_exchange(self, symbol: str) -> str:
         return self.get_primary_exchange_fn(symbol)
 
-    def get_buying_power(self, account_summary: Dict[str, AccountValue]) -> int:
+    def get_buying_power(self, account_summary: dict[str, AccountValue]) -> int:
         return self.get_buying_power_fn(account_summary)
 
     def midpoint_or_market_price(self, ticker: Ticker) -> float:

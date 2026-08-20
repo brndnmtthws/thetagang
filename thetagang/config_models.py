@@ -1,7 +1,7 @@
 import math
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rich.console import Console
@@ -39,11 +39,11 @@ class AccountConfig(BaseModel, DisplayMixin):
 
 class ConstantsConfig(BaseModel, DisplayMixin):
     class WriteThreshold(BaseModel):
-        write_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-        write_threshold_sigma: Optional[float] = Field(default=None, ge=0.0)
+        write_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+        write_threshold_sigma: float | None = Field(default=None, ge=0.0)
 
-    write_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    write_threshold_sigma: Optional[float] = Field(default=None, ge=0.0)
+    write_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    write_threshold_sigma: float | None = Field(default=None, ge=0.0)
     daily_stddev_window: str = Field(default="30 D")
     calls: Optional["ConstantsConfig.WriteThreshold"] = None
     puts: Optional["ConstantsConfig.WriteThreshold"] = None
@@ -75,7 +75,7 @@ class OptionChainsConfig(BaseModel):
 
 class AlgoSettingsConfig(BaseModel):
     strategy: str = Field("Adaptive")
-    params: List[List[str]] = Field(
+    params: list[list[str]] = Field(
         default_factory=lambda: [["adaptivePriority", "Patient"]],
         min_length=0,
         max_length=1,
@@ -91,7 +91,7 @@ class OrdersConfig(BaseModel, DisplayMixin):
             strategy="Adaptive", params=[["adaptivePriority", "Patient"]]
         )
     )
-    price_update_delay: List[int] = Field(
+    price_update_delay: list[int] = Field(
         default_factory=lambda: [30, 60], min_length=2, max_length=2
     )
 
@@ -121,13 +121,13 @@ class OrdersConfig(BaseModel, DisplayMixin):
 
 class IBAsyncConfig(BaseModel):
     api_response_wait_time: int = Field(default=60, ge=0)
-    logfile: Optional[str] = None
+    logfile: str | None = None
 
 
 class DatabaseConfig(BaseModel, DisplayMixin):
     enabled: bool = Field(default=True)
     path: str = Field(default="data/thetagang.db")
-    url: Optional[str] = None
+    url: str | None = None
 
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_section()
@@ -149,19 +149,19 @@ class DatabaseConfig(BaseModel, DisplayMixin):
 
 class IBCConfig(BaseModel):
     tradingMode: Literal["live", "paper"] = Field(default="paper")
-    password: Optional[str] = None
-    userid: Optional[str] = None
+    password: str | None = None
+    userid: str | None = None
     gateway: bool = Field(default=True)
     RaiseRequestErrors: bool = Field(default=False)
     ibcPath: str = Field(default="/opt/ibc")
     ibcIni: str = Field(default="/etc/thetagang/config.ini")
-    twsPath: Optional[str] = None
-    twsSettingsPath: Optional[str] = None
+    twsPath: str | None = None
+    twsSettingsPath: str | None = None
     javaPath: str = Field(default="/opt/java/openjdk/bin")
-    fixuserid: Optional[str] = None
-    fixpassword: Optional[str] = None
+    fixuserid: str | None = None
+    fixpassword: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "tradingMode": self.tradingMode,
             "password": self.password,
@@ -202,7 +202,7 @@ class WatchdogConfig(BaseModel):
         default_factory=lambda: WatchdogConfig.ProbeContract()
     )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "appStartupTime": self.appStartupTime,
             "appTimeout": self.appTimeout,
@@ -246,16 +246,16 @@ class CashManagementConfig(BaseModel, DisplayMixin):
 class VIXCallHedgeConfig(BaseModel, DisplayMixin):
     class Allocation(BaseModel):
         weight: float = Field(..., ge=0.0)
-        lower_bound: Optional[float] = Field(default=None, ge=0.0)
-        upper_bound: Optional[float] = Field(default=None, ge=0.0)
+        lower_bound: float | None = Field(default=None, ge=0.0)
+        upper_bound: float | None = Field(default=None, ge=0.0)
 
     enabled: bool = Field(default=False)
     delta: float = Field(default=0.3, ge=0.0, le=1.0)
     target_dte: int = Field(default=30, gt=0)
     ignore_dte: int = Field(default=0, ge=0)
-    max_dte: Optional[int] = Field(default=None, ge=1)
-    close_hedges_when_vix_exceeds: Optional[float] = None
-    allocation: List["VIXCallHedgeConfig.Allocation"] = Field(
+    max_dte: int | None = Field(default=None, ge=1)
+    close_hedges_when_vix_exceeds: float | None = None
+    allocation: list["VIXCallHedgeConfig.Allocation"] = Field(
         default_factory=lambda: [
             VIXCallHedgeConfig.Allocation(
                 lower_bound=None, upper_bound=15.0, weight=0.0
@@ -322,7 +322,7 @@ class TailHedgeTargetConfig(BaseModel, DisplayMixin):
     minimum_bid: float = Field(default=0.01, gt=0.0)
     max_bid_ask_ratio: float = Field(default=0.50, ge=0.0)
     max_premium_ratio: float = Field(default=0.05, gt=0.0, le=1.0)
-    catastrophe_drawdowns: List[float] = Field(
+    catastrophe_drawdowns: list[float] = Field(
         default_factory=lambda: [0.40, 0.50, 0.60],
         min_length=1,
     )
@@ -390,7 +390,7 @@ class TailHedgeConfig(BaseModel, DisplayMixin):
     annual_budget: float = Field(default=0.005, gt=0.0, le=1.0)
     harvest_trigger_weight: float = Field(default=0.05, gt=0.0, le=1.0)
     harvest_target_weight: float = Field(default=0.03, ge=0.0, le=1.0)
-    targets: List[TailHedgeTargetConfig] = Field(default_factory=list)
+    targets: list[TailHedgeTargetConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_targets(self) -> Self:
@@ -450,8 +450,8 @@ class WriteWhenConfig(BaseModel, DisplayMixin):
         cap_factor: float = Field(default=1.0, ge=0.0, le=1.0)
         cap_target_floor: float = Field(default=0.0, ge=0.0, le=1.0)
         excess_only: bool = Field(default=False)
-        min_threshold_percent: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-        min_threshold_percent_relative: Optional[float] = Field(
+        min_threshold_percent: float | None = Field(default=None, ge=0.0, le=1.0)
+        min_threshold_percent_relative: float | None = Field(
             default=None, ge=0.0, le=1.0
         )
 
@@ -514,7 +514,7 @@ class RollWhenConfig(BaseModel, DisplayMixin):
     min_pnl: float = Field(default=0.0)
     close_at_pnl: float = Field(default=1.0)
     close_if_unable_to_roll: bool = Field(default=False)
-    max_dte: Optional[int] = Field(default=None, ge=1)
+    max_dte: int | None = Field(default=None, ge=1)
     calls: "RollWhenConfig.Calls" = Field(
         default_factory=lambda: RollWhenConfig.Calls()
     )
@@ -588,17 +588,17 @@ class RollWhenConfig(BaseModel, DisplayMixin):
 
 class TargetConfig(BaseModel, DisplayMixin):
     class Puts(BaseModel):
-        delta: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+        delta: float | None = Field(default=None, ge=0.0, le=1.0)
 
     class Calls(BaseModel):
-        delta: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+        delta: float | None = Field(default=None, ge=0.0, le=1.0)
 
     dte: int = Field(..., ge=0)
     minimum_open_interest: int = Field(..., ge=0)
     maximum_new_contracts_percent: float = Field(0.05, ge=0.0, le=1.0)
     delta: float = Field(default=0.3, ge=0.0, le=1.0)
-    max_dte: Optional[int] = Field(default=None, ge=1)
-    maximum_new_contracts: Optional[int] = Field(default=None, ge=1)
+    max_dte: int | None = Field(default=None, ge=1)
+    maximum_new_contracts: int | None = Field(default=None, ge=1)
     calls: Optional["TargetConfig.Calls"] = None
     puts: Optional["TargetConfig.Puts"] = None
 
@@ -624,27 +624,27 @@ class TargetConfig(BaseModel, DisplayMixin):
 
 class SymbolConfig(BaseModel):
     class WriteWhen(BaseModel):
-        green: Optional[bool] = None
-        red: Optional[bool] = None
+        green: bool | None = None
+        red: bool | None = None
 
     class Calls(BaseModel):
-        cap_factor: Optional[float] = Field(default=None, ge=0, le=1)
-        cap_target_floor: Optional[float] = Field(default=None, ge=0, le=1)
-        excess_only: Optional[bool] = None
-        delta: Optional[float] = Field(default=None, ge=0, le=1)
-        write_threshold: Optional[float] = Field(default=None, ge=0, le=1)
-        write_threshold_sigma: Optional[float] = Field(default=None, gt=0)
-        strike_limit: Optional[float] = Field(default=None, gt=0)
-        maintain_high_water_mark: Optional[bool] = None
+        cap_factor: float | None = Field(default=None, ge=0, le=1)
+        cap_target_floor: float | None = Field(default=None, ge=0, le=1)
+        excess_only: bool | None = None
+        delta: float | None = Field(default=None, ge=0, le=1)
+        write_threshold: float | None = Field(default=None, ge=0, le=1)
+        write_threshold_sigma: float | None = Field(default=None, gt=0)
+        strike_limit: float | None = Field(default=None, gt=0)
+        maintain_high_water_mark: bool | None = None
         write_when: Optional["SymbolConfig.WriteWhen"] = Field(
             default_factory=lambda: SymbolConfig.WriteWhen()
         )
 
     class Puts(BaseModel):
-        delta: Optional[float] = Field(default=None, ge=0, le=1)
-        write_threshold: Optional[float] = Field(default=None, ge=0, le=1)
-        write_threshold_sigma: Optional[float] = Field(default=None, gt=0)
-        strike_limit: Optional[float] = Field(default=None, gt=0)
+        delta: float | None = Field(default=None, ge=0, le=1)
+        write_threshold: float | None = Field(default=None, ge=0, le=1)
+        write_threshold_sigma: float | None = Field(default=None, gt=0)
+        strike_limit: float | None = Field(default=None, gt=0)
         write_when: Optional["SymbolConfig.WriteWhen"] = Field(
             default_factory=lambda: SymbolConfig.WriteWhen()
         )
@@ -657,8 +657,8 @@ class SymbolConfig(BaseModel):
         max_weight: float = Field(..., ge=0.0, le=1.0)
         rebalance_band: float = Field(default=0.0, ge=0.0, le=1.0)
         smoothing_factor: float = Field(default=0.3, gt=0.0, le=1.0)
-        increase_smoothing_factor: Optional[float] = Field(default=None, gt=0.0, le=1.0)
-        decrease_smoothing_factor: Optional[float] = Field(default=None, gt=0.0, le=1.0)
+        increase_smoothing_factor: float | None = Field(default=None, gt=0.0, le=1.0)
+        decrease_smoothing_factor: float | None = Field(default=None, gt=0.0, le=1.0)
 
         @model_validator(mode="after")
         def validate_weight_bounds(self) -> Self:
@@ -668,39 +668,35 @@ class SymbolConfig(BaseModel):
 
     weight: float = Field(..., ge=0, le=1)
     primary_exchange: str = Field(default="", min_length=1)
-    delta: Optional[float] = Field(default=None, ge=0, le=1)
-    write_threshold: Optional[float] = Field(default=None, ge=0, le=1)
-    write_threshold_sigma: Optional[float] = Field(default=None, gt=0)
-    max_dte: Optional[int] = Field(default=None, ge=1)
-    dte: Optional[int] = Field(default=None, ge=0)
-    close_if_unable_to_roll: Optional[bool] = None
+    delta: float | None = Field(default=None, ge=0, le=1)
+    write_threshold: float | None = Field(default=None, ge=0, le=1)
+    write_threshold_sigma: float | None = Field(default=None, gt=0)
+    max_dte: int | None = Field(default=None, ge=1)
+    dte: int | None = Field(default=None, ge=0)
+    close_if_unable_to_roll: bool | None = None
     calls: Optional["SymbolConfig.Calls"] = None
     puts: Optional["SymbolConfig.Puts"] = None
     volatility_weight: Optional["SymbolConfig.VolatilityWeight"] = None
     adjust_price_after_delay: bool = Field(default=False)
-    no_trading: Optional[bool] = None
-    buy_only_rebalancing: Optional[bool] = None
-    buy_only_min_threshold_shares: Optional[int] = Field(default=None, ge=1)
-    buy_only_min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
-    buy_only_min_threshold_percent: Optional[float] = Field(
+    no_trading: bool | None = None
+    buy_only_rebalancing: bool | None = None
+    buy_only_min_threshold_shares: int | None = Field(default=None, ge=1)
+    buy_only_min_threshold_amount: float | None = Field(default=None, ge=0.0)
+    buy_only_min_threshold_percent: float | None = Field(default=None, ge=0.0, le=1.0)
+    buy_only_min_threshold_percent_relative: float | None = Field(
         default=None, ge=0.0, le=1.0
     )
-    buy_only_min_threshold_percent_relative: Optional[float] = Field(
+    write_calls_only_min_threshold_percent: float | None = Field(
         default=None, ge=0.0, le=1.0
     )
-    write_calls_only_min_threshold_percent: Optional[float] = Field(
+    write_calls_only_min_threshold_percent_relative: float | None = Field(
         default=None, ge=0.0, le=1.0
     )
-    write_calls_only_min_threshold_percent_relative: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0
-    )
-    sell_only_rebalancing: Optional[bool] = None
-    sell_only_min_threshold_shares: Optional[int] = Field(default=None, ge=1)
-    sell_only_min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
-    sell_only_min_threshold_percent: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0
-    )
-    sell_only_min_threshold_percent_relative: Optional[float] = Field(
+    sell_only_rebalancing: bool | None = None
+    sell_only_min_threshold_shares: int | None = Field(default=None, ge=1)
+    sell_only_min_threshold_amount: float | None = Field(default=None, ge=0.0)
+    sell_only_min_threshold_percent: float | None = Field(default=None, ge=0.0, le=1.0)
+    sell_only_min_threshold_percent_relative: float | None = Field(
         default=None, ge=0.0, le=1.0
     )
 
@@ -711,7 +707,7 @@ class RatioGateConfig(BaseModel, DisplayMixin):
     enabled: bool = Field(default=False)
     anchor: str = Field(default="")
     drift_max: float = Field(default=1.25, ge=0.0)
-    vol_min: Optional[float] = Field(default=None, ge=0.0)
+    vol_min: float | None = Field(default=None, ge=0.0)
 
     @model_validator(mode="before")
     @classmethod
@@ -745,7 +741,7 @@ class RegimeRebalanceBaseEnum(str, Enum):
 
 class RegimeRebalanceConfig(BaseModel, DisplayMixin):
     enabled: bool = Field(default=False)
-    symbols: List[str] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
     lookback_days: int = Field(default=40, ge=1)
     soft_band: float = Field(default=0.10, ge=0.0, le=1.0)
     hard_band: float = Field(default=0.50, ge=0.0, le=1.0)
@@ -764,7 +760,7 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
     weight_base: RegimeRebalanceBaseEnum = Field(
         default=RegimeRebalanceBaseEnum.net_liq_ex_options
     )
-    ratio_gate: Optional[RatioGateConfig] = None
+    ratio_gate: RatioGateConfig | None = None
 
     @model_validator(mode="after")
     def validate_bands(self) -> Self:

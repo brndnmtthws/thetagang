@@ -1,7 +1,8 @@
 import asyncio
 import math
+from collections.abc import Awaitable, Callable, Coroutine
 from enum import Enum
-from typing import Any, Awaitable, Callable, Coroutine, List, Optional, cast
+from typing import Any, cast
 
 from ib_async import (
     IB,
@@ -44,13 +45,23 @@ class RequiredFieldValidationError(Exception):
         super().__init__(self.message)
 
 
+BROKER_REQUEST_ERRORS = (
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+    RequestError,
+    RequiredFieldValidationError,
+)
+
+
 class IBKR:
     def __init__(
         self,
         ib: IB,
         api_response_wait_time: int,
         default_order_exchange: str,
-        data_store: Optional[DataStore] = None,
+        data_store: DataStore | None = None,
         dry_run: bool = False,
     ) -> None:
         self.ib = ib
@@ -64,7 +75,7 @@ class IBKR:
         )
         self.__market_data_contract_locks: dict[int, asyncio.Lock] = {}
 
-    def portfolio(self, account: str) -> List[PortfolioItem]:
+    def portfolio(self, account: str) -> list[PortfolioItem]:
         return self.ib.portfolio(account)
 
     def cached_net_liquidation(self, account: str) -> float:
@@ -116,7 +127,7 @@ class IBKR:
             return candidates[0][2]
         raise RuntimeError(f"{tag} account value is unavailable")
 
-    async def account_summary(self, account: str) -> List[AccountValue]:
+    async def account_summary(self, account: str) -> list[AccountValue]:
         return await self.ib.accountSummaryAsync(account)
 
     async def refresh_account(self, account: str) -> None:
@@ -148,8 +159,8 @@ class IBKR:
 
     async def request_executions(
         self,
-        exec_filter: Optional[ExecutionFilter] = None,
-    ) -> List[Fill]:
+        exec_filter: ExecutionFilter | None = None,
+    ) -> list[Fill]:
         fills = await self.ib.reqExecutionsAsync(exec_filter)
         if self.data_store:
             self.data_store.record_executions(fills)
@@ -161,10 +172,10 @@ class IBKR:
     ) -> None:
         self.ib.reqMarketDataType(data_type)
 
-    def open_trades(self) -> List[Trade]:
+    def open_trades(self) -> list[Trade]:
         return self.ib.openTrades()
 
-    def trades(self) -> List[Trade]:
+    def trades(self) -> list[Trade]:
         """Return open and completed trades loaded for this broker session."""
         return self.ib.trades()
 
@@ -177,20 +188,20 @@ class IBKR:
             return
         self.ib.cancelOrder(order)
 
-    def positions(self, account: str) -> List[Position]:
+    def positions(self, account: str) -> list[Position]:
         return self.ib.positions(account)
 
-    async def get_chains_for_contract(self, contract: Contract) -> List[OptionChain]:
+    async def get_chains_for_contract(self, contract: Contract) -> list[OptionChain]:
         return await self.ib.reqSecDefOptParamsAsync(
             contract.symbol, "", contract.secType, contract.conId
         )
 
-    async def qualify_contracts(self, *contracts: Contract) -> List[Contract]:
+    async def qualify_contracts(self, *contracts: Contract) -> list[Contract]:
         results = await asyncio.gather(
             *(self.ib.qualifyContractsAsync(contract) for contract in contracts),
             return_exceptions=True,
         )
-        qualified: List[Contract] = []
+        qualified: list[Contract] = []
         for requested_contract, result in zip(contracts, results):
             if isinstance(result, RequestError):
                 if result.code != 200:
@@ -210,11 +221,15 @@ class IBKR:
         self,
         symbol: str,
         primary_exchange: str,
-        order_exchange: Optional[str] = None,
+        order_exchange: str | None = None,
         generic_tick_list: str = "",
-        required_fields: List[TickerField] = [TickerField.MARKET_PRICE],
-        optional_fields: List[TickerField] = [TickerField.MIDPOINT],
+        required_fields: list[TickerField] | None = None,
+        optional_fields: list[TickerField] | None = None,
     ) -> Ticker:
+        if optional_fields is None:
+            optional_fields = [TickerField.MIDPOINT]
+        if required_fields is None:
+            required_fields = [TickerField.MARKET_PRICE]
         stock = Stock(
             symbol,
             order_exchange or self.default_order_exchange,
@@ -239,17 +254,22 @@ class IBKR:
     async def get_tickers_for_contracts(
         self,
         underlying_symbol: str,
-        contracts: List[Contract],
+        contracts: list[Contract],
         generic_tick_list: str = "",
-        required_fields: List[TickerField] = [TickerField.MARKET_PRICE],
-        optional_fields: List[TickerField] = [TickerField.MIDPOINT],
-    ) -> List[Ticker]:
+        required_fields: list[TickerField] | None = None,
+        optional_fields: list[TickerField] | None = None,
+    ) -> list[Ticker]:
+        if optional_fields is None:
+            optional_fields = [TickerField.MIDPOINT]
+        if required_fields is None:
+            required_fields = [TickerField.MARKET_PRICE]
+
         async def get_ticker_task(contract: Contract) -> Ticker:
             return await self.get_ticker_for_contract(
                 contract, generic_tick_list, required_fields, optional_fields
             )
 
-        tasks: List[Coroutine[Any, Any, Ticker]] = [
+        tasks: list[Coroutine[Any, Any, Ticker]] = [
             get_ticker_task(contract) for contract in contracts
         ]
         tickers = await log.track_async(
@@ -262,9 +282,13 @@ class IBKR:
         self,
         contract: Contract,
         generic_tick_list: str = "",
-        required_fields: List[TickerField] = [TickerField.MARKET_PRICE],
-        optional_fields: List[TickerField] = [TickerField.MIDPOINT],
+        required_fields: list[TickerField] | None = None,
+        optional_fields: list[TickerField] | None = None,
     ) -> Ticker:
+        if optional_fields is None:
+            optional_fields = [TickerField.MIDPOINT]
+        if required_fields is None:
+            required_fields = [TickerField.MARKET_PRICE]
         required_handlers = [
             (field, self.__ticker_field_handler__(field)) for field in required_fields
         ]
@@ -329,10 +353,12 @@ class IBKR:
     async def __wait_for_greeks__(self, ticker: Ticker) -> bool:
         return await self.__ticker_wait_for_condition__(
             ticker,
-            lambda t: not (
-                t.modelGreeks is None
-                or t.modelGreeks.delta is None
-                or util.isNan(t.modelGreeks.delta)
+            lambda t: (
+                not (
+                    t.modelGreeks is None
+                    or t.modelGreeks.delta is None
+                    or util.isNan(t.modelGreeks.delta)
+                )
             ),
             self.api_response_wait_time,
         )
@@ -398,7 +424,7 @@ class IBKR:
                 f"Contract {contract} can't be qualified because no 'conId' value exists."
             )
 
-        def active_ticker() -> Optional[Ticker]:
+        def active_ticker() -> Ticker | None:
             ticker = self.ib.ticker(contract)
             if ticker is None:
                 return None
@@ -461,13 +487,14 @@ class IBKR:
             update_event -= onTicker
 
     async def wait_for_submitting_orders(
-        self, trades: List[Trade], timetout: int = 60
+        self, trades: list[Trade], timetout: int = 60
     ) -> None:
-        tasks: List[Coroutine[Any, Any, bool]] = [
+        tasks: list[Coroutine[Any, Any, bool]] = [
             self.__trade_wait_for_condition__(
                 trade,
-                lambda trade: trade.orderStatus.status
-                not in ["PendingSubmit", "PreSubmitted"],
+                lambda trade: (
+                    trade.orderStatus.status not in ["PendingSubmit", "PreSubmitted"]
+                ),
                 timetout,
             )
             for trade in trades
@@ -484,9 +511,9 @@ class IBKR:
             )
 
     async def wait_for_orders_complete(
-        self, trades: List[Trade], timetout: int = 60
-    ) -> List[Trade]:
-        tasks: List[Coroutine[Any, Any, bool]] = [
+        self, trades: list[Trade], timetout: int = 60
+    ) -> list[Trade]:
+        tasks: list[Coroutine[Any, Any, bool]] = [
             self.__trade_wait_for_condition__(
                 trade,
                 lambda trade: trade.isDone(),

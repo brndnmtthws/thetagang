@@ -5,8 +5,9 @@ import math
 import random
 from asyncio import Future
 from collections import Counter
+from collections.abc import Coroutine
 from datetime import datetime
-from typing import Any, Coroutine, Dict, List, Optional, Tuple, cast
+from typing import Any, cast
 
 import numpy as np
 from ib_async import (
@@ -104,9 +105,9 @@ class PortfolioManager:
         ib: IB,
         completion_future: Future[bool],
         dry_run: bool,
-        data_store: Optional[DataStore] = None,
-        run_stage_flags: Optional[Dict[str, bool]] = None,
-        run_stage_order: Optional[List[str]] = None,
+        data_store: DataStore | None = None,
+        run_stage_flags: dict[str, bool] | None = None,
+        run_stage_order: list[str] | None = None,
     ) -> None:
         self.account_number = config.runtime.account.number
         self.config = config
@@ -123,10 +124,10 @@ class PortfolioManager:
         self.has_excess_puts: set[str] = set()
         self.orders: Orders = Orders()
         self.trades: Trades = Trades(self.ibkr, data_store=data_store)
-        self.target_quantities: Dict[str, int] = {}
-        self.qualified_contracts: Dict[int, Contract] = {}
+        self.target_quantities: dict[str, int] = {}
+        self.qualified_contracts: dict[int, Contract] = {}
         self.dry_run = dry_run
-        self.last_untracked_positions: Dict[str, List[PortfolioItem]] = {}
+        self.last_untracked_positions: dict[str, list[PortfolioItem]] = {}
         self._reserved_cash_for_post_management = 0.0
         self.order_ops = OrderOperations(
             config=self.config,
@@ -182,7 +183,7 @@ class PortfolioManager:
             order_ops=self.order_ops,
             data_store=self.data_store,
             get_primary_exchange=self.get_primary_exchange,
-            now_provider=lambda: datetime.now(),
+            now_provider=lambda: datetime.now().astimezone().replace(tzinfo=None),
             tail_hedge_stage_enabled=lambda: self.stage_enabled("post_tail_hedge"),
             set_reserved_cash_for_post_management=(
                 self.set_reserved_cash_for_post_management
@@ -268,15 +269,15 @@ class PortfolioManager:
     async def call_is_itm(self, contract: Contract) -> bool:
         return await self.options_engine.call_is_itm(contract)
 
-    def get_symbols(self) -> List[str]:
+    def get_symbols(self) -> list[str]:
         return list(self.config.portfolio.symbols.keys())
 
     def partition_positions(
-        self, portfolio_positions: List[PortfolioItem]
-    ) -> Tuple[List[PortfolioItem], List[PortfolioItem]]:
+        self, portfolio_positions: list[PortfolioItem]
+    ) -> tuple[list[PortfolioItem], list[PortfolioItem]]:
         symbols = self.get_symbols()
-        tracked_positions: List[PortfolioItem] = []
-        untracked_positions: List[PortfolioItem] = []
+        tracked_positions: list[PortfolioItem] = []
+        untracked_positions: list[PortfolioItem] = []
         for item in portfolio_positions:
             if item.account != self.account_number or item.position == 0:
                 continue
@@ -293,9 +294,9 @@ class PortfolioManager:
 
     @staticmethod
     def combine_position_maps(
-        *position_maps: Dict[str, List[PortfolioItem]],
-    ) -> Dict[str, List[PortfolioItem]]:
-        combined: Dict[str, List[PortfolioItem]] = {}
+        *position_maps: dict[str, list[PortfolioItem]],
+    ) -> dict[str, list[PortfolioItem]]:
+        combined: dict[str, list[PortfolioItem]] = {}
         for position_map in position_maps:
             for symbol, positions in position_map.items():
                 combined.setdefault(symbol, []).extend(positions)
@@ -322,7 +323,7 @@ class PortfolioManager:
                 raise
             return set()
 
-    def get_portfolio_positions(self) -> Dict[str, List[PortfolioItem]]:
+    def get_portfolio_positions(self) -> dict[str, list[PortfolioItem]]:
         """Materialize the account's current ib_async portfolio cache."""
         portfolio_positions = self.ibkr.portfolio(account=self.account_number)
         filtered_positions, untracked_positions = self.partition_positions(
@@ -333,7 +334,7 @@ class PortfolioManager:
 
     async def load_initial_portfolio_positions(
         self,
-    ) -> Dict[str, List[PortfolioItem]]:
+    ) -> dict[str, list[PortfolioItem]]:
         """Validate the synchronized startup caches before trading."""
         attempts = 3
         symbols = set(self.get_symbols())
@@ -376,12 +377,10 @@ class PortfolioManager:
                 sorted({pos.contract.symbol for pos in missing_positions})
             )
             log.warning(
-                (
-                    f"Attempt {attempt}/{attempts}: Portfolio snapshot is missing "
-                    f"{len(missing_positions)} of {len(protected_positions)} tracked "
-                    f"or tail-hedge-owned positions (symbols: {missing_symbols}). "
-                    "Waiting briefly before retrying..."
-                )
+                f"Attempt {attempt}/{attempts}: Portfolio snapshot is missing "
+                f"{len(missing_positions)} of {len(protected_positions)} tracked "
+                f"or tail-hedge-owned positions (symbols: {missing_symbols}). "
+                "Waiting briefly before retrying..."
             )
             await asyncio.sleep(1)
 
@@ -458,9 +457,9 @@ class PortfolioManager:
 
     async def summarize_account(
         self,
-    ) -> Tuple[
-        Dict[str, AccountValue],
-        Dict[str, List[PortfolioItem]],
+    ) -> tuple[
+        dict[str, AccountValue],
+        dict[str, list[PortfolioItem]],
     ]:
         account_summary = await self.ibkr.account_summary(self.account_number)
         account_summary = account_summary_to_dict(account_summary)
@@ -503,7 +502,7 @@ class PortfolioManager:
                 )
             )
 
-        position_values: Dict[int, Dict[str, str]] = {}
+        position_values: dict[int, dict[str, str]] = {}
 
         async def is_itm(pos: PortfolioItem) -> str:
             if isinstance(pos.contract, Option):
@@ -547,11 +546,11 @@ class PortfolioManager:
                     pos.contract.lastTradeDateOrContractMonth
                 )
 
-        tasks: List[Coroutine[Any, Any, None]] = []
-        for _, positions in portfolio_positions.items():
+        tasks: list[Coroutine[Any, Any, None]] = []
+        for positions in portfolio_positions.values():
             for position in positions:
                 tasks.append(load_position_task(position))
-        for _, positions in untracked_positions.items():
+        for positions in untracked_positions.values():
             for position in positions:
                 tasks.append(load_position_task(position))
         await log.track_async(tasks, "Loading portfolio positions...")
@@ -577,7 +576,7 @@ class PortfolioManager:
         def getval(col: str, conId: int) -> str:
             return position_values[conId][col]
 
-        def add_symbol_positions(symbol: str, positions: List[PortfolioItem]) -> None:
+        def add_symbol_positions(symbol: str, positions: list[PortfolioItem]) -> None:
             table.add_row(symbol)
             sorted_positions = sorted(
                 positions,
@@ -643,7 +642,7 @@ class PortfolioManager:
 
     @staticmethod
     def _is_tail_harvest_record(
-        record: Tuple[Contract, LimitOrder, Optional[int]],
+        record: tuple[Contract, LimitOrder, int | None],
     ) -> bool:
         order_ref = getattr(record[1], "orderRef", None)
         return isinstance(order_ref, str) and order_ref.startswith(
@@ -652,7 +651,7 @@ class PortfolioManager:
 
     async def _refresh_account_state(
         self,
-    ) -> Tuple[Dict[str, AccountValue], Dict[str, List[PortfolioItem]]]:
+    ) -> tuple[dict[str, AccountValue], dict[str, list[PortfolioItem]]]:
         await asyncio.wait_for(
             self.ibkr.refresh_account(self.account_number),
             timeout=self.config.runtime.ib_async.api_response_wait_time,
@@ -677,11 +676,11 @@ class PortfolioManager:
 
     async def _plan_regime_rebalance(
         self,
-        account_summary: Dict[str, AccountValue],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        account_summary: dict[str, AccountValue],
+        portfolio_positions: dict[str, list[PortfolioItem]],
         *,
         exclude_current_run_state: bool = False,
-    ) -> List[Tuple[str, str, int]]:
+    ) -> list[tuple[str, str, int]]:
         table, orders = await self.equity_engine.check_regime_rebalance_positions(
             account_summary,
             self.combine_position_maps(
@@ -696,9 +695,9 @@ class PortfolioManager:
 
     async def _run_regime_rebalance_stage(
         self,
-        account_summary: Dict[str, AccountValue],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> Tuple[Dict[str, AccountValue], Dict[str, List[PortfolioItem]]]:
+        account_summary: dict[str, AccountValue],
+        portfolio_positions: dict[str, list[PortfolioItem]],
+    ) -> tuple[dict[str, AccountValue], dict[str, list[PortfolioItem]]]:
         records_before = len(self.orders.records())
         regime_orders = await self._plan_regime_rebalance(
             account_summary,
@@ -950,7 +949,7 @@ class PortfolioManager:
         self,
         symbol: str,
         primary_exchange: str,
-        account_summary: Dict[str, AccountValue],
+        account_summary: dict[str, AccountValue],
     ) -> int:
         total_buying_power = self.get_buying_power(account_summary)
         max_buying_power = (
@@ -968,7 +967,7 @@ class PortfolioManager:
         return self.config.portfolio.symbols[symbol].primary_exchange
 
     def _buying_power_with_margin(
-        self, account_summary: Dict[str, AccountValue], margin_usage: float
+        self, account_summary: dict[str, AccountValue], margin_usage: float
     ) -> int:
         return math.floor(float(account_summary["NetLiquidation"].value) * margin_usage)
 
@@ -985,24 +984,24 @@ class PortfolioManager:
             return fallback
         try:
             resolved = resolver()
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             return fallback
         if isinstance(resolved, bool) or not isinstance(resolved, (int, float)):
             return fallback
         return float(resolved)
 
-    def get_wheel_buying_power(self, account_summary: Dict[str, AccountValue]) -> int:
+    def get_wheel_buying_power(self, account_summary: dict[str, AccountValue]) -> int:
         margin_usage = self._resolve_margin_usage("wheel_margin_usage")
         return self._buying_power_with_margin(account_summary, margin_usage)
 
-    def get_buying_power(self, account_summary: Dict[str, AccountValue]) -> int:
+    def get_buying_power(self, account_summary: dict[str, AccountValue]) -> int:
         return self.get_wheel_buying_power(account_summary)
 
     def midpoint_or_market_price(self, ticker: Ticker) -> float:
         return float(midpoint_or_market_price(ticker))
 
     def _working_option_commitments(
-        self, open_trades: List[Any]
+        self, open_trades: list[Any]
     ) -> Counter[tuple[int, str]]:
         commitments: Counter[tuple[int, str]] = Counter()
         for trade in open_trades:
@@ -1132,7 +1131,7 @@ class PortfolioManager:
             abs_tol=1e-9,
         )
 
-    async def _cancel_incomplete_trades(self, trades: List[Any]) -> None:
+    async def _cancel_incomplete_trades(self, trades: list[Any]) -> None:
         canceled_trades = []
         for trade in trades:
             if self._trade_fully_filled(trade) or trade.isDone():
@@ -1160,7 +1159,7 @@ class PortfolioManager:
 
     async def _execute_tail_harvest_phase(
         self,
-        order_records: List[Tuple[Contract, LimitOrder, Optional[int]]],
+        order_records: list[tuple[Contract, LimitOrder, int | None]],
         timeout: int = TAIL_HARVEST_FILL_TIMEOUT_SECONDS,
     ) -> bool:
         if not order_records:
@@ -1243,9 +1242,7 @@ class PortfolioManager:
 
     def submit_orders(
         self,
-        order_records: Optional[
-            List[Tuple[Contract, LimitOrder, Optional[int]]]
-        ] = None,
+        order_records: list[tuple[Contract, LimitOrder, int | None]] | None = None,
     ) -> None:
         open_trades = self.ibkr.open_trades()
         commitments = self._working_option_commitments(open_trades)
@@ -1417,7 +1414,7 @@ class PortfolioManager:
         idx: int,
         trade: Any,
         *,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> bool:
         response_timeout = self.config.runtime.ib_async.api_response_wait_time
         if timeout is not None:
@@ -1508,10 +1505,8 @@ class PortfolioManager:
     async def adjust_prices(self) -> None:
         if (
             all(
-                [
-                    not self.config.portfolio.symbols[symbol].adjust_price_after_delay
-                    for symbol in self.config.portfolio.symbols
-                ]
+                not self.config.portfolio.symbols[symbol].adjust_price_after_delay
+                for symbol in self.config.portfolio.symbols
             )
             or self.trades.is_empty()
         ):

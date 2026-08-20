@@ -1,7 +1,8 @@
 import asyncio
 from asyncio import Future
+from collections.abc import Awaitable
 from pathlib import Path
-from typing import Any, Awaitable, Optional, Protocol, cast
+from typing import Any, Protocol, cast
 
 import tomlkit
 from ib_async import IB, IBC, Contract, Watchdog, util
@@ -31,7 +32,7 @@ else:
 console = Console()
 
 
-def _configure_ib_async_logging(logfile: Optional[str]) -> None:
+def _configure_ib_async_logging(logfile: str | None) -> None:
     if not logfile:
         return
 

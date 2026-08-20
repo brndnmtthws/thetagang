@@ -5,11 +5,14 @@ import logging
 import os
 import platform
 import shutil
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, Iterable, Iterator, Mapping, Optional
+from typing import Any
 
 from alembic.config import Config as AlembicConfig
 from sqlalchemy import (
@@ -27,11 +30,13 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.exc import ArgumentError
+from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from alembic import command
 from thetagang import log
+
+PERSISTENCE_ERRORS = (SQLAlchemyError, OSError, RuntimeError, TypeError, ValueError)
 
 
 class Base(DeclarativeBase):
@@ -51,7 +56,7 @@ class Run(Base):
     dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
     version: Mapped[str] = mapped_column(String, nullable=False)
     hostname: Mapped[str] = mapped_column(String, nullable=False)
-    config_text: Mapped[Optional[str]] = mapped_column(Text)
+    config_text: Mapped[str | None] = mapped_column(Text)
 
 
 class Event(Base):
@@ -61,8 +66,8 @@ class Event(Base):
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     event_type: Mapped[str] = mapped_column(String, nullable=False)
-    symbol: Mapped[Optional[str]] = mapped_column(String)
-    payload: Mapped[Optional[str]] = mapped_column(Text)
+    symbol: Mapped[str | None] = mapped_column(String)
+    payload: Mapped[str | None] = mapped_column(Text)
 
 
 class AccountSnapshot(Base):
@@ -81,20 +86,20 @@ class PositionSnapshot(Base):
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     symbol: Mapped[str] = mapped_column(String, nullable=False)
-    con_id: Mapped[Optional[int]] = mapped_column(Integer)
-    sec_type: Mapped[Optional[str]] = mapped_column(String)
-    position: Mapped[Optional[float]] = mapped_column(Float)
-    avg_cost: Mapped[Optional[float]] = mapped_column(Float)
-    market_price: Mapped[Optional[float]] = mapped_column(Float)
-    market_value: Mapped[Optional[float]] = mapped_column(Float)
-    unrealized_pnl: Mapped[Optional[float]] = mapped_column(Float)
-    realized_pnl: Mapped[Optional[float]] = mapped_column(Float)
-    currency: Mapped[Optional[str]] = mapped_column(String)
-    exchange: Mapped[Optional[str]] = mapped_column(String)
-    multiplier: Mapped[Optional[str]] = mapped_column(String)
-    expiry: Mapped[Optional[str]] = mapped_column(String)
-    strike: Mapped[Optional[float]] = mapped_column(Float)
-    right: Mapped[Optional[str]] = mapped_column(String)
+    con_id: Mapped[int | None] = mapped_column(Integer)
+    sec_type: Mapped[str | None] = mapped_column(String)
+    position: Mapped[float | None] = mapped_column(Float)
+    avg_cost: Mapped[float | None] = mapped_column(Float)
+    market_price: Mapped[float | None] = mapped_column(Float)
+    market_value: Mapped[float | None] = mapped_column(Float)
+    unrealized_pnl: Mapped[float | None] = mapped_column(Float)
+    realized_pnl: Mapped[float | None] = mapped_column(Float)
+    currency: Mapped[str | None] = mapped_column(String)
+    exchange: Mapped[str | None] = mapped_column(String)
+    multiplier: Mapped[str | None] = mapped_column(String)
+    expiry: Mapped[str | None] = mapped_column(String)
+    strike: Mapped[float | None] = mapped_column(Float)
+    right: Mapped[str | None] = mapped_column(String)
 
 
 class OrderIntent(Base):
@@ -105,17 +110,17 @@ class OrderIntent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
     symbol: Mapped[str] = mapped_column(String, nullable=False)
-    sec_type: Mapped[Optional[str]] = mapped_column(String)
-    con_id: Mapped[Optional[int]] = mapped_column(Integer)
-    exchange: Mapped[Optional[str]] = mapped_column(String)
-    currency: Mapped[Optional[str]] = mapped_column(String)
-    action: Mapped[Optional[str]] = mapped_column(String)
-    quantity: Mapped[Optional[float]] = mapped_column(Float)
-    limit_price: Mapped[Optional[float]] = mapped_column(Float)
-    order_type: Mapped[Optional[str]] = mapped_column(String)
-    order_ref: Mapped[Optional[str]] = mapped_column(String)
-    tif: Mapped[Optional[str]] = mapped_column(String)
-    payload_json: Mapped[Optional[str]] = mapped_column(Text)
+    sec_type: Mapped[str | None] = mapped_column(String)
+    con_id: Mapped[int | None] = mapped_column(Integer)
+    exchange: Mapped[str | None] = mapped_column(String)
+    currency: Mapped[str | None] = mapped_column(String)
+    action: Mapped[str | None] = mapped_column(String)
+    quantity: Mapped[float | None] = mapped_column(Float)
+    limit_price: Mapped[float | None] = mapped_column(Float)
+    order_type: Mapped[str | None] = mapped_column(String)
+    order_ref: Mapped[str | None] = mapped_column(String)
+    tif: Mapped[str | None] = mapped_column(String)
+    payload_json: Mapped[str | None] = mapped_column(Text)
 
 
 class OrderRecord(Base):
@@ -124,18 +129,18 @@ class OrderRecord(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    intent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("order_intents.id"))
+    intent_id: Mapped[int | None] = mapped_column(ForeignKey("order_intents.id"))
     symbol: Mapped[str] = mapped_column(String, nullable=False)
-    sec_type: Mapped[Optional[str]] = mapped_column(String)
-    con_id: Mapped[Optional[int]] = mapped_column(Integer)
-    exchange: Mapped[Optional[str]] = mapped_column(String)
-    currency: Mapped[Optional[str]] = mapped_column(String)
-    action: Mapped[Optional[str]] = mapped_column(String)
-    quantity: Mapped[Optional[float]] = mapped_column(Float)
-    limit_price: Mapped[Optional[float]] = mapped_column(Float)
-    order_type: Mapped[Optional[str]] = mapped_column(String)
-    order_ref: Mapped[Optional[str]] = mapped_column(String)
-    order_id: Mapped[Optional[int]] = mapped_column(Integer)
+    sec_type: Mapped[str | None] = mapped_column(String)
+    con_id: Mapped[int | None] = mapped_column(Integer)
+    exchange: Mapped[str | None] = mapped_column(String)
+    currency: Mapped[str | None] = mapped_column(String)
+    action: Mapped[str | None] = mapped_column(String)
+    quantity: Mapped[float | None] = mapped_column(Float)
+    limit_price: Mapped[float | None] = mapped_column(Float)
+    order_type: Mapped[str | None] = mapped_column(String)
+    order_ref: Mapped[str | None] = mapped_column(String)
+    order_id: Mapped[int | None] = mapped_column(Integer)
 
 
 class OrderStatus(Base):
@@ -144,13 +149,13 @@ class OrderStatus(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    order_id: Mapped[Optional[int]] = mapped_column(Integer)
-    status: Mapped[Optional[str]] = mapped_column(String)
-    filled: Mapped[Optional[float]] = mapped_column(Float)
-    remaining: Mapped[Optional[float]] = mapped_column(Float)
-    avg_fill_price: Mapped[Optional[float]] = mapped_column(Float)
-    last_fill_price: Mapped[Optional[float]] = mapped_column(Float)
-    perm_id: Mapped[Optional[int]] = mapped_column(Integer)
+    order_id: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str | None] = mapped_column(String)
+    filled: Mapped[float | None] = mapped_column(Float)
+    remaining: Mapped[float | None] = mapped_column(Float)
+    avg_fill_price: Mapped[float | None] = mapped_column(Float)
+    last_fill_price: Mapped[float | None] = mapped_column(Float)
+    perm_id: Mapped[int | None] = mapped_column(Integer)
 
 
 class ExecutionRecord(Base):
@@ -159,16 +164,16 @@ class ExecutionRecord(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    exec_id: Mapped[Optional[str]] = mapped_column(String, unique=True)
-    account: Mapped[Optional[str]] = mapped_column(String)
-    order_id: Mapped[Optional[int]] = mapped_column(Integer)
-    order_ref: Mapped[Optional[str]] = mapped_column(String)
-    symbol: Mapped[Optional[str]] = mapped_column(String)
-    side: Mapped[Optional[str]] = mapped_column(String)
-    shares: Mapped[Optional[float]] = mapped_column(Float)
-    price: Mapped[Optional[float]] = mapped_column(Float)
-    execution_time: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    exchange: Mapped[Optional[str]] = mapped_column(String)
+    exec_id: Mapped[str | None] = mapped_column(String, unique=True)
+    account: Mapped[str | None] = mapped_column(String)
+    order_id: Mapped[int | None] = mapped_column(Integer)
+    order_ref: Mapped[str | None] = mapped_column(String)
+    symbol: Mapped[str | None] = mapped_column(String)
+    side: Mapped[str | None] = mapped_column(String)
+    shares: Mapped[float | None] = mapped_column(Float)
+    price: Mapped[float | None] = mapped_column(Float)
+    execution_time: Mapped[datetime | None] = mapped_column(DateTime)
+    exchange: Mapped[str | None] = mapped_column(String)
 
 
 class TailHedgeEntry(Base):
@@ -186,10 +191,10 @@ class TailHedgeEntry(Base):
     entered_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     estimated_cost: Mapped[float] = mapped_column(Float, nullable=False)
     recovered_cost: Mapped[float] = mapped_column(Float, nullable=False)
-    pending_recovery_quantity: Mapped[Optional[int]] = mapped_column(Integer)
-    pending_recovery_per_contract: Mapped[Optional[float]] = mapped_column(Float)
-    pending_recovery_enqueued_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    pending_recovery_initial_quantity: Mapped[Optional[int]] = mapped_column(Integer)
+    pending_recovery_quantity: Mapped[int | None] = mapped_column(Integer)
+    pending_recovery_per_contract: Mapped[float | None] = mapped_column(Float)
+    pending_recovery_enqueued_at: Mapped[datetime | None] = mapped_column(DateTime)
+    pending_recovery_initial_quantity: Mapped[int | None] = mapped_column(Integer)
 
 
 TAIL_HEDGE_ENTRY_FIELDS = tuple(
@@ -210,16 +215,16 @@ class HistoricalBar(Base):
     symbol: Mapped[str] = mapped_column(String, nullable=False)
     bar_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     timeframe: Mapped[str] = mapped_column(String, nullable=False)
-    open: Mapped[Optional[float]] = mapped_column(Float)
-    high: Mapped[Optional[float]] = mapped_column(Float)
-    low: Mapped[Optional[float]] = mapped_column(Float)
-    close: Mapped[Optional[float]] = mapped_column(Float)
-    volume: Mapped[Optional[float]] = mapped_column(Float)
-    bar_count: Mapped[Optional[int]] = mapped_column(Integer)
-    average: Mapped[Optional[float]] = mapped_column(Float)
+    open: Mapped[float | None] = mapped_column(Float)
+    high: Mapped[float | None] = mapped_column(Float)
+    low: Mapped[float | None] = mapped_column(Float)
+    close: Mapped[float | None] = mapped_column(Float)
+    volume: Mapped[float | None] = mapped_column(Float)
+    bar_count: Mapped[int | None] = mapped_column(Integer)
+    average: Mapped[float | None] = mapped_column(Float)
 
 
-def sqlite_db_path(db_url: str) -> Optional[Path]:
+def sqlite_db_path(db_url: str) -> Path | None:
     try:
         url = make_url(db_url)
     except ArgumentError:
@@ -262,7 +267,7 @@ def make_alembic_config(db_url: str) -> AlembicConfig:
 
 
 def _run_alembic_upgrade(alembic_cfg: AlembicConfig, db_url: str) -> None:
-    connect_args: Dict[str, Any] = {}
+    connect_args: dict[str, Any] = {}
     if db_url.startswith("sqlite"):
         connect_args = {"check_same_thread": False}
     engine = create_engine(db_url, future=True, connect_args=connect_args)
@@ -287,19 +292,20 @@ def run_migrations(db_url: str) -> None:
             temp_path = sqlite_path.with_suffix(f"{sqlite_path.suffix}.tmp")
             migration_url = f"sqlite:///{temp_path}"
 
+    migration_succeeded = False
     try:
         _run_alembic_upgrade(alembic_cfg, migration_url)
         if sqlite_path and temp_path:
             if sqlite_path.exists():
                 sqlite_path.unlink()
             temp_path.replace(sqlite_path)
-    except Exception:
-        if sqlite_path and backup_path and backup_path.exists():
-            shutil.copy2(backup_path, sqlite_path)
-        if temp_path and temp_path.exists():
-            temp_path.unlink()
-        raise
+        migration_succeeded = True
     finally:
+        if not migration_succeeded:
+            if sqlite_path and backup_path and backup_path.exists():
+                shutil.copy2(backup_path, sqlite_path)
+            if temp_path and temp_path.exists():
+                temp_path.unlink()
         if backup_path and backup_path.exists():
             backup_path.unlink()
 
@@ -310,7 +316,7 @@ class DataStore:
         db_url: str,
         config_path: str,
         dry_run: bool,
-        config_text: Optional[str] = None,
+        config_text: str | None = None,
     ) -> None:
         if not db_url.startswith("sqlite"):
             raise ValueError("Only sqlite database URLs are supported.")
@@ -334,9 +340,9 @@ class DataStore:
             config_path_aliases.add(cwd_relative_path)
             config_path_aliases.add(f".{os.sep}{cwd_relative_path}")
         self._config_path_aliases = tuple(sorted(config_path_aliases))
-        self._dry_run_event_overlay: Dict[tuple[str, Optional[str]], Optional[str]] = {}
-        self._dry_run_tail_hedge_overlay: Dict[str, list[Dict[str, Any]]] = {}
-        connect_args: Dict[str, Any] = {}
+        self._dry_run_event_overlay: dict[tuple[str, str | None], str | None] = {}
+        self._dry_run_tail_hedge_overlay: dict[str, list[dict[str, Any]]] = {}
+        connect_args: dict[str, Any] = {}
         if db_url.startswith("sqlite"):
             connect_args = {"check_same_thread": False}
         self.engine = create_engine(db_url, future=True, connect_args=connect_args)
@@ -347,26 +353,19 @@ class DataStore:
 
     @contextmanager
     def session_scope(self) -> Iterator[Any]:
-        session = self.Session()
-        try:
+        with self.Session.begin() as session:
             yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
 
     def _create_run(
-        self, config_path: str, dry_run: bool, config_text: Optional[str]
+        self, config_path: str, dry_run: bool, config_text: str | None
     ) -> int:
         version = os.getenv("THETAGANG_VERSION", "unknown")
         try:
-            from importlib.metadata import version as pkg_version
-
-            version = pkg_version("thetagang")
-        except Exception:
-            pass
+            version = package_version("thetagang")
+        except PackageNotFoundError:
+            logging.getLogger(__name__).debug(
+                "Package metadata is unavailable; recording configured version."
+            )
         hostname = platform.node() or "unknown"
 
         with self.session_scope() as session:
@@ -384,8 +383,8 @@ class DataStore:
     def record_event(
         self,
         event_type: str,
-        payload: Optional[Dict[str, Any]] = None,
-        symbol: Optional[str] = None,
+        payload: dict[str, Any] | None = None,
+        symbol: str | None = None,
     ) -> bool:
         try:
             payload_json = json.dumps(payload, default=str) if payload else None
@@ -401,7 +400,7 @@ class DataStore:
             if self.dry_run:
                 self._dry_run_event_overlay[(event_type, symbol)] = payload_json
             return True
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             log.warning(f"Failed to record event {event_type}: {exc}")
             return False
 
@@ -409,11 +408,11 @@ class DataStore:
         self,
         event_type: str,
         *,
-        symbol: Optional[str] = None,
+        symbol: str | None = None,
         config_scoped: bool = True,
         exclude_current_run: bool = False,
         raise_on_error: bool = False,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         try:
             overlay_key = (event_type, symbol)
             if (
@@ -426,7 +425,7 @@ class DataStore:
                     return None
                 decoded = json.loads(payload)
                 if not isinstance(decoded, dict):
-                    raise ValueError(f"Event {event_type} payload is not an object")
+                    raise TypeError(f"Event {event_type} payload is not an object")
                 return decoded
 
             with self.session_scope() as session:
@@ -448,9 +447,9 @@ class DataStore:
                 return None
             decoded = json.loads(payload)
             if not isinstance(decoded, dict):
-                raise ValueError(f"Event {event_type} payload is not an object")
+                raise TypeError(f"Event {event_type} payload is not an object")
             return decoded
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             log.warning(f"Failed to read event {event_type}: {exc}")
             if raise_on_error:
                 raise RuntimeError(f"Failed to read event {event_type}") from exc
@@ -472,11 +471,11 @@ class DataStore:
             for key in list(self._dry_run_event_overlay):
                 if key[0] in selected:
                     self._dry_run_event_overlay.pop(key, None)
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             raise RuntimeError("Failed to discard active-run state") from exc
 
     @staticmethod
-    def _tail_hedge_entry_dict(entry: TailHedgeEntry) -> Dict[str, Any]:
+    def _tail_hedge_entry_dict(entry: TailHedgeEntry) -> dict[str, Any]:
         return {field: getattr(entry, field) for field in TAIL_HEDGE_ENTRY_FIELDS}
 
     def load_tail_hedge_entries(
@@ -484,7 +483,7 @@ class DataStore:
         account: str,
         *,
         raise_on_error: bool = False,
-    ) -> list[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Load the current account-scoped tail cohorts from typed SQLite rows."""
         try:
             if self.dry_run and account in self._dry_run_tail_hedge_overlay:
@@ -503,7 +502,7 @@ class DataStore:
                     .all()
                 )
                 return [self._tail_hedge_entry_dict(entry) for entry in entries]
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             log.warning(f"Failed to read tail-hedge state: {exc}")
             if raise_on_error:
                 raise RuntimeError("Failed to read tail-hedge state") from exc
@@ -540,13 +539,13 @@ class DataStore:
                     for entry in current
                 )
             return True
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             log.warning(f"Failed to persist tail-hedge state: {exc}")
             return False
 
-    def record_account_snapshot(self, summary: Dict[str, Any]) -> None:
+    def record_account_snapshot(self, summary: dict[str, Any]) -> None:
         try:
-            payload: Dict[str, Dict[str, Optional[str]]] = {}
+            payload: dict[str, dict[str, str | None]] = {}
             for key, value in summary.items():
                 payload[key] = {
                     "value": getattr(value, "value", None),
@@ -559,7 +558,7 @@ class DataStore:
                         summary_json=json.dumps(payload, default=str),
                     )
                 )
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             log.warning(f"Failed to record account snapshot: {exc}")
 
     def record_positions_snapshot(self, positions: Mapping[str, Iterable[Any]]) -> None:
@@ -595,13 +594,13 @@ class DataStore:
             if rows:
                 with self.session_scope() as session:
                     session.add_all(rows)
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             log.warning(f"Failed to record positions snapshot: {exc}")
 
-    def record_order_intent(self, contract: Any, order: Any) -> Optional[int]:
+    def record_order_intent(self, contract: Any, order: Any) -> int | None:
         try:
 
-            def _safe_vars(obj: Any) -> Dict[str, Any]:
+            def _safe_vars(obj: Any) -> dict[str, Any]:
                 try:
                     return dict(vars(obj))
                 except TypeError:
@@ -631,12 +630,12 @@ class DataStore:
                 session.add(intent)
                 session.flush()
                 return int(intent.id)
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             log.warning(f"Failed to record order intent: {exc}")
             return None
 
     def record_order(
-        self, contract: Any, order: Any, intent_id: Optional[int] = None
+        self, contract: Any, order: Any, intent_id: int | None = None
     ) -> None:
         try:
             with self.session_scope() as session:
@@ -657,7 +656,7 @@ class DataStore:
                         order_id=getattr(order, "orderId", None),
                     )
                 )
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             log.warning(f"Failed to record order: {exc}")
 
     def record_order_status(self, trade: Any) -> None:
@@ -677,7 +676,7 @@ class DataStore:
                         perm_id=getattr(order, "permId", None),
                     )
                 )
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             log.warning(f"Failed to record order status: {exc}")
 
     def record_executions(self, fills: Iterable[Any]) -> None:
@@ -691,19 +690,19 @@ class DataStore:
                 )
                 exec_time = _parse_datetime(exec_time_raw, assume_start_of_day=True)
                 rows.append(
-                    dict(
-                        run_id=self.run_id,
-                        exec_id=getattr(execution, "execId", None),
-                        account=getattr(execution, "acctNumber", None),
-                        order_id=getattr(execution, "orderId", None),
-                        order_ref=getattr(execution, "orderRef", None),
-                        symbol=getattr(contract, "symbol", None),
-                        side=getattr(execution, "side", None),
-                        shares=getattr(execution, "shares", None),
-                        price=getattr(execution, "price", None),
-                        execution_time=exec_time,
-                        exchange=getattr(execution, "exchange", None),
-                    )
+                    {
+                        "run_id": self.run_id,
+                        "exec_id": getattr(execution, "execId", None),
+                        "account": getattr(execution, "acctNumber", None),
+                        "order_id": getattr(execution, "orderId", None),
+                        "order_ref": getattr(execution, "orderRef", None),
+                        "symbol": getattr(contract, "symbol", None),
+                        "side": getattr(execution, "side", None),
+                        "shares": getattr(execution, "shares", None),
+                        "price": getattr(execution, "price", None),
+                        "execution_time": exec_time,
+                        "exchange": getattr(execution, "exchange", None),
+                    }
                 )
             if rows:
                 with self.session_scope() as session:
@@ -718,7 +717,7 @@ class DataStore:
                         },
                     )
                     session.execute(stmt)
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             log.warning(f"Failed to record executions: {exc}")
 
     def record_historical_bars(
@@ -732,18 +731,18 @@ class DataStore:
                 if bar_time is None:
                     continue
                 rows.append(
-                    dict(
-                        symbol=symbol,
-                        bar_time=bar_time,
-                        timeframe=timeframe,
-                        open=getattr(bar, "open", None),
-                        high=getattr(bar, "high", None),
-                        low=getattr(bar, "low", None),
-                        close=getattr(bar, "close", None),
-                        volume=getattr(bar, "volume", None),
-                        bar_count=getattr(bar, "barCount", None),
-                        average=getattr(bar, "average", None),
-                    )
+                    {
+                        "symbol": symbol,
+                        "bar_time": bar_time,
+                        "timeframe": timeframe,
+                        "open": getattr(bar, "open", None),
+                        "high": getattr(bar, "high", None),
+                        "low": getattr(bar, "low", None),
+                        "close": getattr(bar, "close", None),
+                        "volume": getattr(bar, "volume", None),
+                        "bar_count": getattr(bar, "barCount", None),
+                        "average": getattr(bar, "average", None),
+                    }
                 )
             if rows:
                 with self.session_scope() as session:
@@ -761,7 +760,7 @@ class DataStore:
                         },
                     )
                     session.execute(stmt)
-        except Exception as exc:
+        except PERSISTENCE_ERRORS as exc:
             log.warning(f"Failed to record historical bars: {exc}")
 
     def get_historical_bars(
@@ -806,7 +805,7 @@ class DataStore:
         account: str,
         *,
         include_legacy_unscoped: bool = False,
-    ) -> Optional[datetime]:
+    ) -> datetime | None:
         symbols = list(symbols)
         with self.session_scope() as session:
             base_stmt = (
@@ -831,13 +830,13 @@ class DataStore:
             return session.execute(legacy_stmt).scalar_one_or_none()
 
 
-def _parse_bar_time(value: Any) -> Optional[datetime]:
+def _parse_bar_time(value: Any) -> datetime | None:
     return _parse_datetime(value, assume_start_of_day=True)
 
 
 def _parse_datetime(
     value: Any, *, assume_start_of_day: bool = False
-) -> Optional[datetime]:
+) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -845,17 +844,25 @@ def _parse_datetime(
             return value.astimezone(timezone.utc).replace(tzinfo=None)
         return value
     if isinstance(value, date):
-        return datetime.combine(value, datetime.min.time())
+        return datetime.combine(value, datetime.min.time(), timezone.utc).replace(
+            tzinfo=None
+        )
     if hasattr(value, "date"):
         try:
-            return datetime.combine(value.date(), datetime.min.time())
-        except Exception:
+            return datetime.combine(
+                value.date(), datetime.min.time(), timezone.utc
+            ).replace(tzinfo=None)
+        except (AttributeError, OverflowError, TypeError, ValueError):
             return None
     if isinstance(value, str):
         raw = value.strip()
         if raw.isdigit():
             if len(raw) == 8 and assume_start_of_day:
-                return datetime.strptime(raw, "%Y%m%d")
+                return (
+                    datetime.strptime(raw, "%Y%m%d")
+                    .replace(tzinfo=timezone.utc)
+                    .replace(tzinfo=None)
+                )
             if len(raw) in (10, 13):
                 timestamp = int(raw)
                 if len(raw) == 13:
@@ -870,10 +877,10 @@ def _parse_datetime(
             "%Y-%m-%d",
         ):
             try:
-                parsed = datetime.strptime(raw, fmt)
+                parsed = datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
                 if fmt == "%Y-%m-%d" and not assume_start_of_day:
                     return None
-                return parsed
+                return parsed.replace(tzinfo=None)
             except ValueError:
                 continue
         try:

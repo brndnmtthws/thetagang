@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Protocol
+from typing import Protocol
 
 from ib_async import AccountValue, PortfolioItem
 
-AccountSummary = Dict[str, AccountValue]
-PortfolioBySymbol = Dict[str, List[PortfolioItem]]
+AccountSummary = dict[str, AccountValue]
+PortfolioBySymbol = dict[str, list[PortfolioItem]]
 
 
 @dataclass
 class PostStrategyDeps:
     enabled_stages: set[str]
-    service: "PostStageService"
+    service: PostStageService
 
 
 class PostStageService(Protocol):

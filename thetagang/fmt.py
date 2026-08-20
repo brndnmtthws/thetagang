@@ -1,13 +1,10 @@
-from typing import Optional, Union
-
-
-def redgreen(value: Union[int, float]) -> str:
+def redgreen(value: float) -> str:
     if value >= 0:
         return "green"
     return "red"
 
 
-def dfmt(amount: Optional[Union[int, str, float]], precision: int = 2) -> str:
+def dfmt(amount: str | float | None, precision: int = 2) -> str:
     if amount is not None:
         amount = float(amount)
         rg = redgreen(amount)
@@ -15,7 +12,7 @@ def dfmt(amount: Optional[Union[int, str, float]], precision: int = 2) -> str:
     return ""
 
 
-def pfmt(amount: Union[str, float, None], precision: int = 2) -> str:
+def pfmt(amount: str | float | None, precision: int = 2) -> str:
     if amount is None:
         return ""
     amount = float(amount) * 100.0
@@ -23,7 +20,7 @@ def pfmt(amount: Union[str, float, None], precision: int = 2) -> str:
     return f"[{rg}]{amount:.{precision}f}%[/{rg}]"
 
 
-def ffmt(amount: Optional[float], precision: int = 2) -> str:
+def ffmt(amount: float | None, precision: int = 2) -> str:
     if amount is not None:
         amount = float(amount)
         rg = redgreen(amount)
@@ -31,7 +28,7 @@ def ffmt(amount: Optional[float], precision: int = 2) -> str:
     return ""
 
 
-def ifmt(amount: Optional[int]) -> str:
+def ifmt(amount: int | None) -> str:
     if amount is not None:
         amount = int(amount)
         rg = redgreen(amount)

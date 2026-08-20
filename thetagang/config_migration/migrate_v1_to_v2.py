@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any
 
 import tomlkit
 
@@ -63,25 +63,25 @@ class MigrationResult:
     source_schema: str
     target_schema: str
     migrated_text: str
-    mappings: List[MappingEntry] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    mappings: list[MappingEntry] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def migrate_v1_to_v2(raw_text: str) -> MigrationResult:
     source_doc = tomlkit.parse(raw_text)
-    source_data: Dict[str, Any] = source_doc.unwrap()
+    source_data: dict[str, Any] = source_doc.unwrap()
     normalized_legacy = normalize_config(copy.deepcopy(source_data))
     legacy_model = LegacyConfig.model_validate(normalized_legacy)
     validated_legacy = legacy_model.model_dump(mode="python")
-    mappings: List[MappingEntry] = []
-    warnings: List[str] = []
+    mappings: list[MappingEntry] = []
+    warnings: list[str] = []
 
-    runtime: Dict[str, Any] = {}
-    wheel_defaults: Dict[str, Any] = {}
-    symbols_section: Dict[str, Any] = {}
-    strategies: Dict[str, Any] = {}
-    wheel_rebalance_symbol_overrides: Dict[str, Any] = {}
-    wheel_symbol_overrides: Dict[str, Any] = {}
+    runtime: dict[str, Any] = {}
+    wheel_defaults: dict[str, Any] = {}
+    symbols_section: dict[str, Any] = {}
+    strategies: dict[str, Any] = {}
+    wheel_rebalance_symbol_overrides: dict[str, Any] = {}
+    wheel_symbol_overrides: dict[str, Any] = {}
 
     for key in RUNTIME_KEYS:
         if _key_present_in_source(source_data, key):
@@ -111,7 +111,7 @@ def migrate_v1_to_v2(raw_text: str) -> MigrationResult:
     for symbol, values in symbols.items():
         if not isinstance(values, dict):
             continue
-        policy_override: Dict[str, Any] = {}
+        policy_override: dict[str, Any] = {}
         buy_only_enabled = bool(values.get("buy_only_rebalancing", False))
         sell_only_enabled = bool(values.get("sell_only_rebalancing", False))
         if buy_only_enabled and sell_only_enabled:
@@ -121,7 +121,7 @@ def migrate_v1_to_v2(raw_text: str) -> MigrationResult:
         elif sell_only_enabled:
             policy_override["mode"] = "sell_only"
 
-        threshold_sources: Dict[str, List[Any]] = {}
+        threshold_sources: dict[str, list[Any]] = {}
         for old_key, new_key in POLICY_KEY_MAP.items():
             val = values.get(old_key)
             if val is None:
@@ -278,7 +278,7 @@ def _source_section(source_doc: Any, key: str) -> Any:
     return copy.deepcopy(source_doc[key])
 
 
-def _key_present_in_source(source_data: Dict[str, Any], key: str) -> bool:
+def _key_present_in_source(source_data: dict[str, Any], key: str) -> bool:
     if key in source_data:
         return True
     # Legacy key that normalize_config upgrades to ib_async.
@@ -286,7 +286,7 @@ def _key_present_in_source(source_data: Dict[str, Any], key: str) -> bool:
 
 
 def _symbols_section(
-    source_doc: Any, source_data: Dict[str, Any], symbols: Dict[str, Any]
+    source_doc: Any, source_data: dict[str, Any], symbols: dict[str, Any]
 ) -> Any:
     source_symbols = source_data.get("symbols", {})
     has_parts = isinstance(source_symbols, dict) and any(
@@ -301,7 +301,7 @@ def _symbols_section(
 
 
 def _rewrite_parts_to_weight(
-    symbols_doc: Any, normalized_symbols: Dict[str, Any]
+    symbols_doc: Any, normalized_symbols: dict[str, Any]
 ) -> None:
     if not hasattr(symbols_doc, "items"):
         return
@@ -319,7 +319,7 @@ def _rewrite_parts_to_weight(
 def _strip_legacy_symbol_strategy_keys(symbols_doc: Any) -> None:
     if not hasattr(symbols_doc, "items"):
         return
-    for _symbol, symbol_cfg in symbols_doc.items():
+    for symbol_cfg in symbols_doc.values():
         if not hasattr(symbol_cfg, "__contains__"):
             continue
         for key in (
@@ -332,13 +332,13 @@ def _strip_legacy_symbol_strategy_keys(symbols_doc: Any) -> None:
 
 
 def _infer_run_plan(
-    validated_legacy: Dict[str, Any], _warnings: List[str]
-) -> Dict[str, Any]:
+    validated_legacy: dict[str, Any], _warnings: list[str]
+) -> dict[str, Any]:
     return {"strategies": _infer_run_strategies(validated_legacy)}
 
 
-def _infer_run_strategies(validated_legacy: Dict[str, Any]) -> List[str]:
-    out: List[str] = []
+def _infer_run_strategies(validated_legacy: dict[str, Any]) -> list[str]:
+    out: list[str] = []
     regime = validated_legacy.get("regime_rebalance", {})
     regime_enabled = (
         bool(regime.get("enabled", False)) if isinstance(regime, dict) else False

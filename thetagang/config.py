@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rich import box
@@ -114,7 +113,7 @@ class ConfigMeta(BaseModel):
     schema_version: int = Field(2)
 
     @model_validator(mode="after")
-    def validate_schema_version(self) -> "ConfigMeta":
+    def validate_schema_version(self) -> ConfigMeta:
         if self.schema_version != 2:
             raise ValueError("meta.schema_version must be 2")
         return self
@@ -124,10 +123,10 @@ class RunStageConfig(BaseModel):
     id: str
     kind: str
     enabled: bool = True
-    depends_on: List[str] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_stage_identity(self) -> "RunStageConfig":
+    def validate_stage_identity(self) -> RunStageConfig:
         expected_kind = STAGE_KIND_BY_ID.get(self.id)
         if expected_kind is None:
             raise ValueError(f"run.stages contains unknown stage id: {self.id}")
@@ -139,11 +138,11 @@ class RunStageConfig(BaseModel):
 
 
 class RunConfig(BaseModel):
-    stages: List[RunStageConfig] = Field(default_factory=list)
-    strategies: List[str] = Field(default_factory=list)
+    stages: list[RunStageConfig] = Field(default_factory=list)
+    strategies: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_unique_stage_ids(self) -> "RunConfig":
+    def validate_unique_stage_ids(self) -> RunConfig:
         if not self.stages and not self.strategies:
             raise ValueError(
                 "run must define at least one of run.strategies or run.stages"
@@ -241,7 +240,7 @@ class RunConfig(BaseModel):
             )
         return self
 
-    def resolved_stages(self) -> List[RunStageConfig]:
+    def resolved_stages(self) -> list[RunStageConfig]:
         if self.stages:
             return list(self.stages)
 
@@ -252,10 +251,10 @@ class RunConfig(BaseModel):
         ordered_ids = [
             stage_id for stage_id in CANONICAL_STAGE_ORDER if stage_id in enabled
         ]
-        resolved: List[RunStageConfig] = []
-        prev: Optional[str] = None
+        resolved: list[RunStageConfig] = []
+        prev: str | None = None
         for stage_id in ordered_ids:
-            deps: List[str] = [prev] if prev else []
+            deps: list[str] = [prev] if prev else []
             resolved.append(
                 RunStageConfig(
                     id=stage_id,
@@ -280,16 +279,16 @@ class RuntimeConfig(BaseModel):
 
 
 class PortfolioConfig(BaseModel):
-    symbols: Dict[str, SymbolConfig] = Field(default_factory=dict)
+    symbols: dict[str, SymbolConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def check_symbols(self) -> "PortfolioConfig":
+    def check_symbols(self) -> PortfolioConfig:
         if not self.symbols:
             raise ValueError("At least one symbol must be specified")
         return self
 
     @model_validator(mode="after")
-    def check_symbol_weights(self) -> "PortfolioConfig":
+    def check_symbol_weights(self) -> PortfolioConfig:
         if not math.isclose(
             1, sum([s.weight or 0.0 for s in self.symbols.values()]), rel_tol=1e-5
         ):
@@ -306,12 +305,10 @@ class RebalanceMode(str, Enum):
 
 class RebalanceExecutionPolicy(BaseModel):
     mode: RebalanceMode = RebalanceMode.off
-    min_threshold_shares: Optional[int] = Field(default=None, ge=1)
-    min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
-    min_threshold_percent: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    min_threshold_percent_relative: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0
-    )
+    min_threshold_shares: int | None = Field(default=None, ge=1)
+    min_threshold_amount: float | None = Field(default=None, ge=0.0)
+    min_threshold_percent: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_threshold_percent_relative: float | None = Field(default=None, ge=0.0, le=1.0)
 
     def allows_buy(self) -> bool:
         return self.mode in {RebalanceMode.buy_only, RebalanceMode.both}
@@ -321,13 +318,11 @@ class RebalanceExecutionPolicy(BaseModel):
 
 
 class RebalanceExecutionPolicyOverride(BaseModel):
-    mode: Optional[RebalanceMode] = None
-    min_threshold_shares: Optional[int] = Field(default=None, ge=1)
-    min_threshold_amount: Optional[float] = Field(default=None, ge=0.0)
-    min_threshold_percent: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    min_threshold_percent_relative: Optional[float] = Field(
-        default=None, ge=0.0, le=1.0
-    )
+    mode: RebalanceMode | None = None
+    min_threshold_shares: int | None = Field(default=None, ge=1)
+    min_threshold_amount: float | None = Field(default=None, ge=0.0)
+    min_threshold_percent: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_threshold_percent_relative: float | None = Field(default=None, ge=0.0, le=1.0)
 
     def apply_to(self, base: RebalanceExecutionPolicy) -> RebalanceExecutionPolicy:
         return RebalanceExecutionPolicy(
@@ -359,7 +354,7 @@ class RebalanceExecutionConfig(BaseModel):
     defaults: RebalanceExecutionPolicyOverride = Field(
         default_factory=RebalanceExecutionPolicyOverride
     )
-    symbol_overrides: Dict[str, RebalanceExecutionPolicyOverride] = Field(
+    symbol_overrides: dict[str, RebalanceExecutionPolicyOverride] = Field(
         default_factory=dict
     )
 
@@ -374,7 +369,7 @@ class RebalanceExecutionConfig(BaseModel):
 
 
 class StrategyRiskConfig(BaseModel):
-    margin_usage: Optional[float] = Field(default=None, ge=0.0)
+    margin_usage: float | None = Field(default=None, ge=0.0)
 
 
 class WheelDefaultsConfig(BaseModel):
@@ -382,10 +377,10 @@ class WheelDefaultsConfig(BaseModel):
     write_when: WriteWhenConfig = Field(default_factory=WriteWhenConfig)
     roll_when: RollWhenConfig
     constants: ConstantsConfig = Field(default_factory=ConstantsConfig)
-    write_calls_only_min_threshold_percent: Optional[float] = Field(
+    write_calls_only_min_threshold_percent: float | None = Field(
         default=None, ge=0.0, le=1.0
     )
-    write_calls_only_min_threshold_percent_relative: Optional[float] = Field(
+    write_calls_only_min_threshold_percent_relative: float | None = Field(
         default=None, ge=0.0, le=1.0
     )
 
@@ -393,17 +388,17 @@ class WheelDefaultsConfig(BaseModel):
 class WheelSymbolOverrideConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    write_calls_only_min_threshold_percent: Optional[float] = Field(
+    write_calls_only_min_threshold_percent: float | None = Field(
         default=None, ge=0.0, le=1.0
     )
-    write_calls_only_min_threshold_percent_relative: Optional[float] = Field(
+    write_calls_only_min_threshold_percent_relative: float | None = Field(
         default=None, ge=0.0, le=1.0
     )
 
 
 class WheelStrategyConfig(BaseModel):
     defaults: WheelDefaultsConfig
-    symbol_overrides: Dict[str, WheelSymbolOverrideConfig] = Field(default_factory=dict)
+    symbol_overrides: dict[str, WheelSymbolOverrideConfig] = Field(default_factory=dict)
     risk: StrategyRiskConfig = Field(default_factory=StrategyRiskConfig)
     equity_rebalance: RebalanceExecutionConfig = Field(
         default_factory=RebalanceExecutionConfig
@@ -439,11 +434,11 @@ class Config(BaseModel, DisplayMixin):
     strategies: StrategiesConfig
 
     @model_validator(mode="after")
-    def apply_strategy_overrides(self) -> "Config":
+    def apply_strategy_overrides(self) -> Config:
         symbols = self.portfolio.symbols
 
         def apply_wheel_symbol_overrides(
-            strategy_overrides: Dict[str, WheelSymbolOverrideConfig], keys: List[str]
+            strategy_overrides: dict[str, WheelSymbolOverrideConfig], keys: list[str]
         ) -> None:
             for symbol, overrides in strategy_overrides.items():
                 symbol_cfg = symbols.get(symbol)
@@ -478,7 +473,7 @@ class Config(BaseModel, DisplayMixin):
         return self
 
     @model_validator(mode="after")
-    def validate_tail_hedge(self) -> "Config":
+    def validate_tail_hedge(self) -> Config:
         tail_hedge = self.strategies.tail_hedge
         if not tail_hedge.enabled and not tail_hedge.targets:
             return self
@@ -543,7 +538,7 @@ class Config(BaseModel, DisplayMixin):
         return self.runtime.watchdog
 
     @property
-    def symbols(self) -> Dict[str, SymbolConfig]:
+    def symbols(self) -> dict[str, SymbolConfig]:
         return self.portfolio.symbols
 
     @property
@@ -615,7 +610,7 @@ class Config(BaseModel, DisplayMixin):
     def is_regime_rebalance_symbol(self, symbol: str) -> bool:
         return self.regime_rebalance.enabled and symbol in self.regime_rebalance.symbols
 
-    def symbol_config(self, symbol: str) -> Optional[SymbolConfig]:
+    def symbol_config(self, symbol: str) -> SymbolConfig | None:
         return self.symbols.get(symbol)
 
     def get_target_delta(self, symbol: str, right: str) -> float:
@@ -645,7 +640,7 @@ class Config(BaseModel, DisplayMixin):
             return symbol_config.calls.maintain_high_water_mark
         return self.roll_when.calls.maintain_high_water_mark
 
-    def get_write_threshold_sigma(self, symbol: str, right: str) -> Optional[float]:
+    def get_write_threshold_sigma(self, symbol: str, right: str) -> float | None:
         p_or_c = "calls" if right.upper().startswith("C") else "puts"
         symbol_config = self.symbols.get(symbol)
 
@@ -734,7 +729,7 @@ class Config(BaseModel, DisplayMixin):
             )
         return table
 
-    def create_volatility_weight_table(self) -> Optional[Table]:
+    def create_volatility_weight_table(self) -> Table | None:
         volatility_symbols = {
             symbol: sconfig.volatility_weight
             for symbol, sconfig in self.symbols.items()
@@ -848,7 +843,7 @@ class Config(BaseModel, DisplayMixin):
             return symbol_config.calls.cap_target_floor
         return self.write_when.calls.cap_target_floor
 
-    def get_strike_limit(self, symbol: str, right: str) -> Optional[float]:
+    def get_strike_limit(self, symbol: str, right: str) -> float | None:
         p_or_c = "calls" if right.upper().startswith("C") else "puts"
         symbol_config = self.symbols.get(symbol)
         option_config = getattr(symbol_config, p_or_c, None) if symbol_config else None
@@ -864,7 +859,7 @@ class Config(BaseModel, DisplayMixin):
             return symbol_config.calls.excess_only
         return self.write_when.calls.excess_only
 
-    def get_max_dte_for(self, symbol: str) -> Optional[int]:
+    def get_max_dte_for(self, symbol: str) -> int | None:
         if symbol == "VIX" and self.vix_call_hedge.max_dte is not None:
             return self.vix_call_hedge.max_dte
         symbol_config = self.symbols.get(symbol)
@@ -872,7 +867,7 @@ class Config(BaseModel, DisplayMixin):
             return symbol_config.max_dte
         return self.target.max_dte
 
-    def can_write_when(self, symbol: str, right: str) -> Tuple[bool, bool]:
+    def can_write_when(self, symbol: str, right: str) -> tuple[bool, bool]:
         symbol_config = self.symbols.get(symbol)
         p_or_c = "calls" if right.upper().startswith("C") else "puts"
         option_config = (
@@ -908,14 +903,14 @@ class Config(BaseModel, DisplayMixin):
 DEFAULT_RUN_STRATEGIES: list[str] = ["wheel", "vix_call_hedge", "cash_management"]
 
 
-def enabled_stage_ids_from_run(run: RunConfig) -> List[str]:
+def enabled_stage_ids_from_run(run: RunConfig) -> list[str]:
     return [stage.id for stage in run.resolved_stages() if stage.enabled]
 
 
-def stage_enabled_map(config: Config) -> Dict[str, bool]:
+def stage_enabled_map(config: Config) -> dict[str, bool]:
     return stage_enabled_map_from_run(config.run)
 
 
-def stage_enabled_map_from_run(run: RunConfig) -> Dict[str, bool]:
+def stage_enabled_map_from_run(run: RunConfig) -> dict[str, bool]:
     resolved_ids = set(enabled_stage_ids_from_run(run))
     return {stage_id: (stage_id in resolved_ids) for stage_id in STAGE_KIND_BY_ID}

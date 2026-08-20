@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Coroutine, Dict, List, Protocol, Tuple
+from collections.abc import Coroutine
+from typing import Any, Protocol
 
 from ib_async import AccountValue, PortfolioItem
 from ib_async.contract import Stock
@@ -10,7 +11,7 @@ from rich.table import Table
 from thetagang import log
 from thetagang.config import Config
 from thetagang.fmt import ifmt
-from thetagang.ibkr import IBKR, TickerField
+from thetagang.ibkr import BROKER_REQUEST_ERRORS, IBKR, TickerField
 from thetagang.strategies.regime_engine import RegimeRebalanceEngine
 from thetagang.strategies.runtime_services import resolve_symbol_configs
 from thetagang.trading_operations import OrderOperations
@@ -19,7 +20,7 @@ from thetagang.trading_operations import OrderOperations
 class EquityRuntimeServices(Protocol):
     def get_primary_exchange(self, symbol: str) -> str: ...
 
-    def get_buying_power(self, account_summary: Dict[str, AccountValue]) -> int: ...
+    def get_buying_power(self, account_summary: dict[str, AccountValue]) -> int: ...
 
     def midpoint_or_market_price(self, ticker: Any) -> float: ...
 
@@ -52,7 +53,7 @@ class EquityRebalanceEngine:
     def get_primary_exchange(self, symbol: str) -> str:
         return self.services.get_primary_exchange(symbol)
 
-    def get_buying_power(self, account_summary: Dict[str, AccountValue]) -> int:
+    def get_buying_power(self, account_summary: dict[str, AccountValue]) -> int:
         return self.services.get_buying_power(account_summary)
 
     def _midpoint_or_market_price(self, ticker: Any) -> float:
@@ -71,7 +72,7 @@ class EquityRebalanceEngine:
         return None
 
     async def execute_regime_rebalance_orders(
-        self, orders: List[Tuple[str, str, int]]
+        self, orders: list[tuple[str, str, int]]
     ) -> int:
         prepared = 0
         for symbol, primary_exchange, quantity in orders:
@@ -105,20 +106,20 @@ class EquityRebalanceEngine:
                 )
                 self.order_ops.enqueue_order(stock_contract, order)
                 prepared += 1
-            except Exception as e:
+            except BROKER_REQUEST_ERRORS as exc:
                 log.error(
-                    f"{symbol}: Failed to execute regime rebalance order. Error: {e}"
+                    f"{symbol}: Failed to execute regime rebalance order. Error: {exc}"
                 )
                 continue
         return prepared
 
     async def check_regime_rebalance_positions(
         self,
-        account_summary: Dict[str, AccountValue],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        account_summary: dict[str, AccountValue],
+        portfolio_positions: dict[str, list[PortfolioItem]],
         *,
         exclude_current_run_state: bool = False,
-    ) -> Tuple[Table, List[Tuple[str, str, int]]]:
+    ) -> tuple[Table, list[tuple[str, str, int]]]:
         return await self.regime_engine.check_regime_rebalance_positions(
             account_summary,
             portfolio_positions,
@@ -127,9 +128,9 @@ class EquityRebalanceEngine:
 
     async def check_buy_only_positions(
         self,
-        account_summary: Dict[str, AccountValue],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> Tuple[Table, List[Tuple[str, str, int]]]:
+        account_summary: dict[str, AccountValue],
+        portfolio_positions: dict[str, list[PortfolioItem]],
+    ) -> tuple[Table, list[tuple[str, str, int]]]:
         stock_positions = [
             position
             for symbol in portfolio_positions
@@ -137,7 +138,7 @@ class EquityRebalanceEngine:
             if isinstance(position.contract, Stock)
         ]
         total_buying_power = self.get_buying_power(account_summary)
-        stock_symbols: Dict[str, PortfolioItem] = {
+        stock_symbols: dict[str, PortfolioItem] = {
             stock.contract.symbol: stock for stock in stock_positions
         }
 
@@ -148,12 +149,12 @@ class EquityRebalanceEngine:
         buy_actions_table.add_column("Shares to buy", justify="right")
         buy_actions_table.add_column("Action")
 
-        to_buy: List[Tuple[str, str, int]] = []
+        to_buy: list[tuple[str, str, int]] = []
         regime_symbols = self._regime_rebalance_symbols()
         symbols = resolve_symbol_configs(self.config, context="buy-only rebalancing")
         buy_only_symbols = [
             symbol
-            for symbol in symbols.keys()
+            for symbol in symbols
             if self.config.is_buy_only_rebalancing(symbol)
             and symbol not in regime_symbols
         ]
@@ -226,11 +227,18 @@ class EquityRebalanceEngine:
                     )
                     return
 
-            if shares_to_buy <= 0 and current_position == 0 and target_value > 0:
-                if min_amount and min_amount < market_price:
-                    shares_to_buy = 1 - current_position
-                elif not min_amount and min_shares == 1:
-                    shares_to_buy = 1 - current_position
+            if (
+                shares_to_buy <= 0
+                and current_position == 0
+                and target_value > 0
+                and (
+                    min_amount
+                    and min_amount < market_price
+                    or not min_amount
+                    and min_shares == 1
+                )
+            ):
+                shares_to_buy = 1 - current_position
 
             if shares_to_buy > 0:
                 order_amount = shares_to_buy * market_price
@@ -315,13 +323,13 @@ class EquityRebalanceEngine:
                     "[cyan]At or above target",
                 )
 
-        tasks: List[Coroutine[Any, Any, None]] = [
+        tasks: list[Coroutine[Any, Any, None]] = [
             check_buy_position_task(symbol) for symbol in buy_only_symbols
         ]
         await log.track_async(tasks, description="Checking buy-only positions...")
         return (buy_actions_table, to_buy)
 
-    async def execute_buy_orders(self, buy_orders: List[Tuple[str, str, int]]) -> None:
+    async def execute_buy_orders(self, buy_orders: list[tuple[str, str, int]]) -> None:
         for symbol, primary_exchange, quantity in buy_orders:
             try:
                 stock_contract = Stock(
@@ -346,17 +354,17 @@ class EquityRebalanceEngine:
                     f"Buy-only rebalancing: buying {quantity} shares of {symbol} @ ${limit_price}"
                 )
                 self.order_ops.enqueue_order(stock_contract, order)
-            except Exception as e:
+            except BROKER_REQUEST_ERRORS as exc:
                 log.error(
-                    f"{symbol}: Failed to execute buy order for {quantity} shares. Error: {e}"
+                    f"{symbol}: Failed to execute buy order for {quantity} shares. Error: {exc}"
                 )
                 continue
 
     async def check_sell_only_positions(
         self,
-        account_summary: Dict[str, AccountValue],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> Tuple[Table, List[Tuple[str, str, int]]]:
+        account_summary: dict[str, AccountValue],
+        portfolio_positions: dict[str, list[PortfolioItem]],
+    ) -> tuple[Table, list[tuple[str, str, int]]]:
         stock_positions = [
             position
             for symbol in portfolio_positions
@@ -364,7 +372,7 @@ class EquityRebalanceEngine:
             if isinstance(position.contract, Stock)
         ]
         total_buying_power = self.get_buying_power(account_summary)
-        stock_symbols: Dict[str, PortfolioItem] = {
+        stock_symbols: dict[str, PortfolioItem] = {
             stock.contract.symbol: stock for stock in stock_positions
         }
 
@@ -375,12 +383,12 @@ class EquityRebalanceEngine:
         sell_actions_table.add_column("Shares to sell", justify="right")
         sell_actions_table.add_column("Action")
 
-        to_sell: List[Tuple[str, str, int]] = []
+        to_sell: list[tuple[str, str, int]] = []
         regime_symbols = self._regime_rebalance_symbols()
         symbols = resolve_symbol_configs(self.config, context="sell-only rebalancing")
         sell_only_symbols = [
             symbol
-            for symbol in symbols.keys()
+            for symbol in symbols
             if self.config.is_sell_only_rebalancing(symbol)
             and symbol not in regime_symbols
         ]
@@ -493,14 +501,14 @@ class EquityRebalanceEngine:
                     "[cyan]At or below target",
                 )
 
-        tasks: List[Coroutine[Any, Any, None]] = [
+        tasks: list[Coroutine[Any, Any, None]] = [
             check_sell_position_task(symbol) for symbol in sell_only_symbols
         ]
         await log.track_async(tasks, description="Checking sell-only positions...")
         return (sell_actions_table, to_sell)
 
     async def execute_sell_orders(
-        self, sell_orders: List[Tuple[str, str, int]]
+        self, sell_orders: list[tuple[str, str, int]]
     ) -> None:
         for symbol, primary_exchange, quantity in sell_orders:
             try:
@@ -526,8 +534,8 @@ class EquityRebalanceEngine:
                     f"Sell-only rebalancing: selling {quantity} shares of {symbol} @ ${limit_price}"
                 )
                 self.order_ops.enqueue_order(stock_contract, order)
-            except Exception as e:
+            except BROKER_REQUEST_ERRORS as exc:
                 log.error(
-                    f"{symbol}: Failed to execute sell order for {quantity} shares. Error: {e}"
+                    f"{symbol}: Failed to execute sell order for {quantity} shares. Error: {exc}"
                 )
                 continue

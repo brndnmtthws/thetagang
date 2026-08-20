@@ -67,13 +67,7 @@ def test_patch_ibc_java_logging_repairs_partial_older_patch(tmp_path):
 def test_patch_ibc_java_logging_requires_exact_anchor(tmp_path):
     ibcstart = tmp_path / "ibcstart.sh"
     ibcstart.write_text(
-        "\n".join(
-            (
-                "#!/bin/bash",
-                'java_vm_options="$java_vm_options -Dinstall4jType=standalonex"',
-                '"$java_path/java" $java_vm_options ibcalpha.ibc.IbcGateway',
-            )
-        )
+        '#!/bin/bash\njava_vm_options="$java_vm_options -Dinstall4jType=standalonex"\n"$java_path/java" $java_vm_options ibcalpha.ibc.IbcGateway'
     )
 
     result = subprocess.run(
