@@ -4,12 +4,17 @@ import math
 import sys
 from typing import Any, Coroutine, Dict, List, Optional, Protocol, Tuple
 
-from ib_async import AccountValue, PortfolioItem, Ticker, util
+from ib_async import PortfolioItem, Ticker, util
 from ib_async.contract import ComboLeg, Contract, Index, Option, Stock
 from rich.console import Group
 from rich.table import Table
 
 from thetagang import log
+from thetagang.accounting import (
+    AccountSummary,
+    BrokerAccountSnapshot,
+    stock_market_value,
+)
 from thetagang.config import Config
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ifmt, pfmt
@@ -42,13 +47,13 @@ class OptionsRuntimeServices(Protocol):
 
     def get_primary_exchange(self, symbol: str) -> str: ...
 
-    def get_buying_power(self, account_summary: Dict[str, AccountValue]) -> int: ...
+    def get_buying_power(self, account_summary: AccountSummary) -> int: ...
 
     async def get_maximum_new_contracts_for(
         self,
         symbol: str,
         primary_exchange: str,
-        account_summary: Dict[str, AccountValue],
+        account_summary: AccountSummary,
     ) -> int: ...
 
     async def get_write_threshold(
@@ -106,14 +111,14 @@ class OptionsStrategyEngine:
     def get_primary_exchange(self, symbol: str) -> str:
         return self.services.get_primary_exchange(symbol)
 
-    def get_buying_power(self, account_summary: Dict[str, AccountValue]) -> int:
+    def get_buying_power(self, account_summary: AccountSummary) -> int:
         return self.services.get_buying_power(account_summary)
 
     async def get_maximum_new_contracts_for(
         self,
         symbol: str,
         primary_exchange: str,
-        account_summary: Dict[str, AccountValue],
+        account_summary: AccountSummary,
     ) -> int:
         return await self.services.get_maximum_new_contracts_for(
             symbol, primary_exchange, account_summary
@@ -156,7 +161,7 @@ class OptionsStrategyEngine:
 
     async def check_for_uncovered_positions(
         self,
-        account_summary: Dict[str, AccountValue],
+        account_summary: AccountSummary,
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> Tuple[Table, List[Tuple[str, str, int, int]]]:
         call_actions_table = Table(title="Call writing summary")
@@ -304,9 +309,9 @@ class OptionsStrategyEngine:
                     current_stock_value = stock_count * ticker.marketPrice()
 
                     if min_percent is not None:
-                        net_liquidation_value = float(
-                            account_summary["NetLiquidation"].value
-                        )
+                        net_liquidation_value = BrokerAccountSnapshot(
+                            account_summary
+                        ).net_liquidation
                         position_percent = current_stock_value / net_liquidation_value
 
                         if position_percent < min_percent:
@@ -439,7 +444,7 @@ class OptionsStrategyEngine:
 
     async def check_if_can_write_puts(
         self,
-        account_summary: Dict[str, AccountValue],
+        account_summary: AccountSummary,
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> Tuple[Table, Table, List[Tuple[str, str, int, Optional[float]]]]:
         stock_positions = [
@@ -456,14 +461,13 @@ class OptionsStrategyEngine:
             symbol = stock.contract.symbol
             stock_symbols[symbol] = stock
 
-        position_values: Dict[str, float] = {}
-        for stock in stock_positions:
-            symbol = stock.contract.symbol
-            if (
-                symbol != "VIX"
-                and symbol != self.config.strategies.cash_management.cash_fund
-            ):
-                position_values[symbol] = stock.marketValue
+        position_values = {
+            symbol: stock_market_value(positions)
+            for symbol, positions in portfolio_positions.items()
+            if symbol != "VIX"
+            and symbol != self.config.strategies.cash_management.cash_fund
+            and any(isinstance(position.contract, Stock) for position in positions)
+        }
 
         targets: Dict[str, float] = {}
         target_additional_quantity: Dict[str, Dict[str, int | bool]] = {}
@@ -1090,14 +1094,14 @@ class OptionsStrategyEngine:
     async def roll_puts(
         self,
         puts: List[PortfolioItem],
-        account_summary: Dict[str, AccountValue],
+        account_summary: AccountSummary,
     ) -> List[PortfolioItem]:
         return await self.roll_positions(puts, "P", account_summary)
 
     async def roll_calls(
         self,
         calls: List[PortfolioItem],
-        account_summary: Dict[str, AccountValue],
+        account_summary: AccountSummary,
         portfolio_positions: Dict[str, List[PortfolioItem]],
     ) -> List[PortfolioItem]:
         return await self.roll_positions(
@@ -1147,7 +1151,7 @@ class OptionsStrategyEngine:
         self,
         positions: List[PortfolioItem],
         right: str,
-        account_summary: Dict[str, AccountValue],
+        account_summary: AccountSummary,
         portfolio_positions: Optional[Dict[str, List[PortfolioItem]]] = None,
     ) -> List[PortfolioItem]:
         closeable_positions: List[PortfolioItem] = []

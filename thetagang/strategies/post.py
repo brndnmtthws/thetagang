@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Protocol
+from typing import Protocol
 
-from ib_async import AccountValue, PortfolioItem
-
-AccountSummary = Dict[str, AccountValue]
-PortfolioBySymbol = Dict[str, List[PortfolioItem]]
+from thetagang.accounting import AccountSummary, PortfolioBySymbol
 
 
 @dataclass

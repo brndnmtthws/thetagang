@@ -87,6 +87,7 @@ config:
 - Cash management via a cash-equivalent fund
 - VIX call hedging
 - [Long-put tail hedging](docs/tail-hedging.md)
+- [Portfolio accounting model](docs/accounting.md)
 - Regime-aware rebalancing gates
 - Exchange-hours enforcement
 

@@ -9,13 +9,22 @@ from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional, Tup
 import exchange_calendars as xcals
 import numpy as np
 import pandas as pd
-from ib_async import AccountValue, ExecutionFilter, PortfolioItem, Ticker
+from ib_async import ExecutionFilter, PortfolioItem, Ticker
 from ib_async.contract import Option, Stock
 from rich.table import Table
 
 from thetagang import log
+from thetagang.accounting import (
+    AccountingPolicy,
+    AccountSummary,
+    BrokerAccountSnapshot,
+    CapitalBaseKind,
+    PortfolioAccounting,
+    RegimeRebalanceBaseEnum,
+    owned_option_market_value,
+    state_owned_option_values,
+)
 from thetagang.config import Config
-from thetagang.config_models import RegimeRebalanceBaseEnum
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import IBKR, TickerField
@@ -218,55 +227,21 @@ class RegimeRebalanceEngine:
         tail_hedge_value_override: float | None = None,
     ) -> tuple[float, float]:
         """Return the configured regime base and its signed option exclusion."""
-        weight_base = self.config.strategies.regime_rebalance.weight_base
-        if weight_base == RegimeRebalanceBaseEnum.managed_stocks:
-            stock_positions = {
-                position.contract.symbol: position
-                for positions in portfolio_positions.values()
-                for position in positions
-                if isinstance(position.contract, Stock)
-            }
-            managed_stock_value = sum(
-                math.floor(
-                    float(stock_positions[symbol].position)
-                    if symbol in stock_positions
-                    else 0.0
-                )
-                * market_price
-                for symbol, market_price in market_prices.items()
-            )
-            return managed_stock_value, 0.0
-
-        owned_tail_hedge_con_ids = {cohort.con_id for cohort in cohorts}
-        reported_tail_hedge_value = self._tail_hedge_market_value(
-            portfolio_positions,
-            cohorts,
+        accounting = PortfolioAccounting.from_net_liquidation(
+            config=self.config,
+            net_liquidation=net_liquidation,
+            portfolio_positions=portfolio_positions,
+            tail_owned_quantities={
+                cohort.con_id: cohort.quantity for cohort in cohorts
+            },
+            regime_symbols=market_prices,
         )
-        tail_hedge_value = (
-            reported_tail_hedge_value
-            if tail_hedge_value_override is None
-            else tail_hedge_value_override
+        base = accounting.capital_base(
+            CapitalBaseKind.REGIME_REBALANCE,
+            market_prices=market_prices,
+            tail_hedge_value_override=tail_hedge_value_override,
         )
-        if weight_base == RegimeRebalanceBaseEnum.net_liq_ex_options:
-            excluded_option_value = sum(
-                float(position.marketValue or 0.0)
-                for positions in portfolio_positions.values()
-                for position in positions
-                if isinstance(position.contract, Option)
-                and (
-                    position.contract.symbol in market_prices
-                    or position.contract.conId in owned_tail_hedge_con_ids
-                )
-            )
-            excluded_option_value += tail_hedge_value - reported_tail_hedge_value
-        else:
-            excluded_option_value = tail_hedge_value
-        adjusted_net_liquidation = net_liquidation - excluded_option_value
-        regime_margin_usage = self._resolve_regime_margin_usage()
-        return (
-            math.floor(adjusted_net_liquidation * regime_margin_usage),
-            excluded_option_value,
-        )
+        return base.value, base.excluded_value
 
     def _record_tail_harvest(
         self,
@@ -312,26 +287,9 @@ class RegimeRebalanceEngine:
         position: PortfolioItem,
         cohort: TailHedgeCohort,
     ) -> tuple[int, float] | None:
-        if (
-            not isinstance(position.contract, Option)
-            or position.contract.conId != cohort.con_id
-        ):
+        if position.contract.conId != cohort.con_id:
             return None
-        try:
-            live_quantity = float(position.position)
-            reported_value = float(position.marketValue or 0.0)
-        except (TypeError, ValueError):
-            return None
-        if (
-            not math.isfinite(live_quantity)
-            or live_quantity <= 0
-            or not math.isfinite(reported_value)
-        ):
-            return None
-        owned_quantity = min(cohort.quantity, math.floor(live_quantity))
-        if owned_quantity <= 0:
-            return None
-        return owned_quantity, reported_value * owned_quantity / live_quantity
+        return owned_option_market_value(position, cohort.quantity)
 
     @classmethod
     def _tail_hedge_market_value(
@@ -339,17 +297,12 @@ class RegimeRebalanceEngine:
         portfolio_positions: Dict[str, List[PortfolioItem]],
         cohorts: list[TailHedgeCohort],
     ) -> float:
-        cohorts_by_con_id = {cohort.con_id: cohort for cohort in cohorts}
-        sleeve_value = 0.0
-        for positions in portfolio_positions.values():
-            for position in positions:
-                cohort = cohorts_by_con_id.get(position.contract.conId)
-                if cohort is None:
-                    continue
-                owned_position = cls._owned_tail_position_value(position, cohort)
-                if owned_position is not None:
-                    sleeve_value += owned_position[1]
-        return sleeve_value
+        return sum(
+            state_owned_option_values(
+                portfolio_positions,
+                {cohort.con_id: cohort.quantity for cohort in cohorts},
+            ).values()
+        )
 
     @staticmethod
     def _long_puts_by_con_id(
@@ -1180,25 +1133,6 @@ class RegimeRebalanceEngine:
             drift_max=ratio_drift_max,
         )
 
-    def _resolve_regime_margin_usage(self) -> float:
-        fallback_raw = self.config.runtime.account.margin_usage
-        fallback = (
-            float(fallback_raw)
-            if isinstance(fallback_raw, (int, float))
-            and not isinstance(fallback_raw, bool)
-            else 1.0
-        )
-        resolver = getattr(self.config, "regime_margin_usage", None)
-        if not callable(resolver):
-            return fallback
-        try:
-            resolved = resolver()
-        except Exception:
-            return fallback
-        if isinstance(resolved, bool) or not isinstance(resolved, (int, float)):
-            return fallback
-        return float(resolved)
-
     def get_primary_exchange(self, symbol: str) -> str:
         return self._get_primary_exchange(symbol)
 
@@ -1699,7 +1633,7 @@ class RegimeRebalanceEngine:
 
     async def check_regime_rebalance_positions(
         self,
-        account_summary: Dict[str, AccountValue],
+        account_summary: AccountSummary,
         portfolio_positions: Dict[str, List[PortfolioItem]],
         *,
         exclude_current_run_state: bool = False,
@@ -1808,8 +1742,10 @@ class RegimeRebalanceEngine:
         tail_cohorts = self._load_tail_cohorts()
 
         weight_base = regime_rebalance.weight_base
-        regime_margin_usage = self._resolve_regime_margin_usage()
-        net_liq = float(account_summary["NetLiquidation"].value)
+        account = BrokerAccountSnapshot(account_summary)
+        accounting_policy = AccountingPolicy.from_config(self.config)
+        regime_margin_usage = accounting_policy.regime_margin_usage
+        net_liq = account.net_liquidation
         total_value, excluded_value = self._regime_rebalance_base_value(
             net_liquidation=net_liq,
             portfolio_positions=portfolio_positions,
@@ -2352,7 +2288,7 @@ class RegimeRebalanceEngine:
 
         regime_summary: List[Dict[str, Any]] = []
         actionable_flow_buy_symbols: set[str] = set()
-        net_liquidation_value = float(account_summary["NetLiquidation"].value)
+        net_liquidation_value = account.net_liquidation
         for symbol in symbols:
             target_weight = effective_weights[symbol]
             target_value = target_values[symbol]
