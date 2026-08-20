@@ -148,11 +148,11 @@ approved buy past the stock's hard-underweight band.
 
 The second condition is a portfolio-level allocation band. The market value of
 all state-owned tail puts must be greater than `harvest_trigger_weight` of
-current net liquidation value. ThetaGang then sizes sales toward
-`harvest_target_weight`. The target sale budget is the value of the tail sleeve
-above that target, without consulting broker cash. The defaults
-trigger above 5% of NLV and target 3%. They are configurable policy values, not
-calibrated recommendations.
+the configured regime-rebalancing base. ThetaGang then sizes sales toward
+`harvest_target_weight` of that same base. The target sale budget is the value
+of the tail sleeve above that target, without consulting broker cash. The
+defaults trigger above 5% of the regime base and target 3%. They are
+configurable policy values, not calibrated recommendations.
 
 The separation between the trigger and target is the hysteresis. After a sale
 toward 3%, enough eligible fills normally leave no reason for another daily
@@ -160,15 +160,27 @@ harvest in a flat or recovering market. A later sale requires the remaining
 sleeve to be above 5% again and the same-symbol hard-underweight buy to remain
 approved. No crash episode, trough, profit-tier, or recovery state is needed.
 
-IBKR cash balances, cash-fund holdings, queued cash debits, box-spread proceeds,
-and unrelated stock orders do not enter the trigger or sale budget. The only
-account total used is `NetLiquidation`, as the denominator of the hedge sleeve.
+Harvesting uses the exact same `weight_base` calculation as regime rebalancing.
+With the default `net_liq_ex_options`, options on active regime symbols and all
+state-owned tail puts are removed from broker `NetLiquidation`. Unrelated
+financing options, including SPX box-spread legs, remain netted against their
+cash proceeds inside `NetLiquidation`; cash-fund holdings also remain included.
+`net_liq` removes only state-owned tail puts, while `managed_stocks` uses only
+the managed regime stock value. For example, $100,000 of broker NLV containing
+$5,000 of state-owned tail puts produces a $95,000 regime base before any
+configured margin multiplier, so the tail sleeve weight is about 5.26%.
+
 The numerator contains only live, state-owned tail puts. The amount available
 for conversion is determined from the band, not from reported cash or the
 preliminary size of the stock order. After option quotes return, ThetaGang
-rechecks both the live sleeve and the latest available NLV before committing a
-sale, so the two sides of the ratio are not intentionally taken from different
-market moments.
+rechecks both the live sleeve and the latest available NLV and rebuilds the
+regime base before committing a sale, so the two sides of the ratio are not
+intentionally taken from different market moments.
+
+After a fill, excluded put value has become included cash, so the refreshed
+regime base can increase. The target weight is therefore a sale-sizing reference
+for the pre-sale snapshot, not a guarantee of the exact post-fill weight; whole
+contract rounding and refreshed marks can move the result slightly below it.
 
 Only active, state-owned puts without a conflicting order are eligible.
 ThetaGang walks profitable cohorts by earliest expiration and sells only as

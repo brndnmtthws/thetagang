@@ -72,9 +72,12 @@ class EquityRebalanceEngine:
 
     async def execute_regime_rebalance_orders(
         self, orders: List[Tuple[str, str, int]]
-    ) -> None:
+    ) -> int:
+        prepared = 0
         for symbol, primary_exchange, quantity in orders:
             try:
+                if quantity == 0:
+                    raise ValueError("regime rebalance quantity must be non-zero")
                 stock_contract = Stock(
                     symbol,
                     self.order_ops.get_order_exchange(),
@@ -87,6 +90,8 @@ class EquityRebalanceEngine:
                     optional_fields=[TickerField.MIDPOINT, TickerField.MARKET_PRICE],
                 )
                 limit_price = round(self._midpoint_or_market_price(ticker), 2)
+                if not math.isfinite(limit_price) or limit_price <= 0:
+                    raise ValueError("regime rebalance limit price must be positive")
                 action = "BUY" if quantity > 0 else "SELL"
                 order = self.order_ops.create_limit_order(
                     action=action,
@@ -99,11 +104,13 @@ class EquityRebalanceEngine:
                     f"Regime rebalancing: {action.lower()} {abs(quantity)} shares of {symbol} @ ${limit_price}"
                 )
                 self.order_ops.enqueue_order(stock_contract, order)
+                prepared += 1
             except Exception as e:
                 log.error(
                     f"{symbol}: Failed to execute regime rebalance order. Error: {e}"
                 )
                 continue
+        return prepared
 
     async def check_regime_rebalance_positions(
         self,
@@ -111,13 +118,11 @@ class EquityRebalanceEngine:
         portfolio_positions: Dict[str, List[PortfolioItem]],
         *,
         exclude_current_run_state: bool = False,
-        allow_tail_harvest: bool = True,
     ) -> Tuple[Table, List[Tuple[str, str, int]]]:
         return await self.regime_engine.check_regime_rebalance_positions(
             account_summary,
             portfolio_positions,
             exclude_current_run_state=exclude_current_run_state,
-            allow_tail_harvest=allow_tail_harvest,
         )
 
     async def check_buy_only_positions(

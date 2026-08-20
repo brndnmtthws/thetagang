@@ -26,10 +26,9 @@ class RegimeRebalanceService(Protocol):
         portfolio_positions: PortfolioBySymbol,
         *,
         exclude_current_run_state: bool = False,
-        allow_tail_harvest: bool = True,
     ) -> Any: ...
 
-    async def execute_regime_rebalance_orders(self, orders: List[Any]) -> None: ...
+    async def execute_regime_rebalance_orders(self, orders: List[Any]) -> int: ...
 
 
 class EquityRebalanceService(Protocol):

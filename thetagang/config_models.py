@@ -422,13 +422,13 @@ class TailHedgeConfig(BaseModel, DisplayMixin):
         )
         table.add_row(
             "",
-            "Harvest trigger (% NLV)",
+            "Harvest trigger (% regime base)",
             "=",
             pfmt(self.harvest_trigger_weight),
         )
         table.add_row(
             "",
-            "Harvest target (% NLV)",
+            "Harvest target (% regime base)",
             "=",
             pfmt(self.harvest_target_weight),
         )

@@ -83,6 +83,10 @@ logging.getLogger("ib_async.ib").setLevel(logging.ERROR)
 logging.getLogger("ib_async.wrapper").setLevel(logging.CRITICAL)
 
 TAIL_HARVEST_FILL_TIMEOUT_SECONDS = 5 * 60
+REGIME_PLANNING_STATE_EVENTS = {
+    "regime_rebalance_state",
+    "volatility_weight_state",
+}
 
 
 class PortfolioManager:
@@ -667,13 +671,16 @@ class PortfolioManager:
             )
         return account_summary, self.get_portfolio_positions()
 
+    def _discard_current_regime_planning_state(self) -> None:
+        if self.data_store:
+            self.data_store.discard_current_run_events(REGIME_PLANNING_STATE_EVENTS)
+
     async def _plan_regime_rebalance(
         self,
         account_summary: Dict[str, AccountValue],
         portfolio_positions: Dict[str, List[PortfolioItem]],
         *,
         exclude_current_run_state: bool = False,
-        allow_tail_harvest: bool = True,
     ) -> List[Tuple[str, str, int]]:
         table, orders = await self.equity_engine.check_regime_rebalance_positions(
             account_summary,
@@ -682,7 +689,6 @@ class PortfolioManager:
                 self.last_untracked_positions,
             ),
             exclude_current_run_state=exclude_current_run_state,
-            allow_tail_harvest=allow_tail_harvest,
         )
         if self.config.strategies.regime_rebalance.enabled:
             log.print(table)
@@ -707,13 +713,7 @@ class PortfolioManager:
                 await self.equity_engine.execute_regime_rebalance_orders(regime_orders)
             return account_summary, portfolio_positions
 
-        if self.data_store:
-            self.data_store.discard_current_run_events(
-                {
-                    "regime_rebalance_state",
-                    "volatility_weight_state",
-                }
-            )
+        self._discard_current_regime_planning_state()
         self.orders.remove_records(harvest_records)
         if not await self._execute_tail_harvest_phase(harvest_records):
             raise RuntimeError("Tail-harvest execution did not fully fill")
@@ -724,7 +724,6 @@ class PortfolioManager:
             account_summary,
             portfolio_positions,
             exclude_current_run_state=True,
-            allow_tail_harvest=False,
         )
         extra_harvests = [
             record
@@ -737,13 +736,7 @@ class PortfolioManager:
                 con_id = getattr(contract, "conId", 0)
                 if type(con_id) is int and con_id > 0:
                     self._update_tail_recovery_submission(con_id, None)
-            if self.data_store:
-                self.data_store.discard_current_run_events(
-                    {
-                        "regime_rebalance_state",
-                        "volatility_weight_state",
-                    }
-                )
+            self._discard_current_regime_planning_state()
             log.error(
                 "A second tail harvest was queued during post-fill replanning; "
                 "aborting remaining stages safely."
@@ -752,59 +745,13 @@ class PortfolioManager:
 
         if regime_orders:
             records_before = len(self.orders.records())
-            await self.equity_engine.execute_regime_rebalance_orders(regime_orders)
-            added_records = self.orders.records()[records_before:]
-            expected_orders = Counter(
-                (
-                    symbol,
-                    "BUY" if quantity > 0 else "SELL",
-                    abs(quantity),
-                )
-                for symbol, _primary_exchange, quantity in regime_orders
+            prepared = await self.equity_engine.execute_regime_rebalance_orders(
+                regime_orders
             )
-            prepared_orders: Counter[tuple[str, str, int]] = Counter()
-            for contract, order, _intent_id in added_records:
-                raw_limit_price = order.lmtPrice
-                if raw_limit_price is None:
-                    continue
-                try:
-                    raw_quantity = float(order.totalQuantity)
-                    limit_price = float(raw_limit_price)
-                except (TypeError, ValueError):
-                    continue
-                if (
-                    not math.isfinite(raw_quantity)
-                    or raw_quantity <= 0
-                    or not raw_quantity.is_integer()
-                    or not math.isfinite(limit_price)
-                    or limit_price <= 0
-                ):
-                    continue
-                quantity = int(raw_quantity)
-                if (
-                    isinstance(contract, Stock)
-                    and getattr(order, "account", None) == self.account_number
-                    and getattr(order, "orderRef", None)
-                    == f"tg:regime-rebalance:{contract.symbol}"
-                ):
-                    prepared_orders[
-                        (
-                            contract.symbol,
-                            str(getattr(order, "action", "")).upper(),
-                            quantity,
-                        )
-                    ] += 1
-            if prepared_orders != expected_orders or len(added_records) != sum(
-                prepared_orders.values()
-            ):
+            if prepared != len(regime_orders):
+                added_records = self.orders.records()[records_before:]
                 self.orders.remove_records(added_records)
-                if self.data_store:
-                    self.data_store.discard_current_run_events(
-                        {
-                            "regime_rebalance_state",
-                            "volatility_weight_state",
-                        }
-                    )
+                self._discard_current_regime_planning_state()
                 log.error(
                     "Post-harvest regime orders were not prepared completely; "
                     "aborting before final submission."

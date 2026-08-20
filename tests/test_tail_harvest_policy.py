@@ -10,7 +10,7 @@ from thetagang.strategies.tail_harvest_policy import (
 
 def test_band_breach_sizes_sale_toward_target() -> None:
     decision = evaluate_harvest_band(
-        net_liquidation=100_000.0,
+        portfolio_base_value=100_000.0,
         sleeve_value=7_000.0,
         trigger_weight=0.05,
         target_weight=0.03,
@@ -20,18 +20,6 @@ def test_band_breach_sizes_sale_toward_target() -> None:
     assert decision.sleeve_weight == pytest.approx(0.07)
     assert decision.trigger_value == 5_000.0
     assert decision.target_value == 3_000.0
-    assert decision.sale_budget == 4_000.0
-
-
-def test_band_sale_is_independent_of_broker_cash_or_rebalance_size() -> None:
-    decision = evaluate_harvest_band(
-        net_liquidation=100_000.0,
-        sleeve_value=7_000.0,
-        trigger_weight=0.05,
-        target_weight=0.03,
-    )
-
-    assert decision is not None
     assert decision.sale_budget == 4_000.0
 
 
@@ -66,7 +54,7 @@ def test_reprice_floor_never_crosses_profitability() -> None:
 def test_band_does_not_trigger_at_or_below_upper_bound(sleeve_value: float) -> None:
     assert (
         evaluate_harvest_band(
-            net_liquidation=100_000.0,
+            portfolio_base_value=100_000.0,
             sleeve_value=sleeve_value,
             trigger_weight=0.05,
             target_weight=0.03,
@@ -76,10 +64,10 @@ def test_band_does_not_trigger_at_or_below_upper_bound(sleeve_value: float) -> N
 
 
 @pytest.mark.parametrize("bad_value", [math.nan, math.inf, -1.0, 0.0])
-def test_band_rejects_invalid_net_liquidation(bad_value: float) -> None:
+def test_band_rejects_invalid_portfolio_base(bad_value: float) -> None:
     assert (
         evaluate_harvest_band(
-            net_liquidation=bad_value,
+            portfolio_base_value=bad_value,
             sleeve_value=7_000.0,
             trigger_weight=0.05,
             target_weight=0.03,

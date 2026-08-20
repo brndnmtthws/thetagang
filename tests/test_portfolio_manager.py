@@ -1096,6 +1096,7 @@ class TestPortfolioManager:
                     orderRef=f"tg:regime-rebalance:{symbol}",
                 )
                 portfolio_manager.orders.add_order(contract, order, None)
+            return len(orders)
 
         execute = mocker.patch.object(
             portfolio_manager.equity_engine,
@@ -1136,12 +1137,6 @@ class TestPortfolioManager:
             ].kwargs["exclude_current_run_state"]
             is True
         )
-        assert (
-            portfolio_manager.equity_engine.check_regime_rebalance_positions.call_args_list[
-                1
-            ].kwargs["allow_tail_harvest"]
-            is False
-        )
         execute.assert_awaited_once_with([("SPY", "NYSE", 2)])
         assert len(portfolio_manager.orders.records()) == 1
 
@@ -1171,19 +1166,13 @@ class TestPortfolioManager:
             mocker.AsyncMock(side_effect=check_regime)
         )
 
-        async def prepare_invalid_regime_order(_orders):
-            stock = Stock("SPY", "SMART", "USD", primaryExchange="NYSE")
-            order = LimitOrder(
-                "BUY",
-                1,
-                float("nan"),
-                account="TEST123",
-                orderRef="tg:regime-rebalance:SPY",
-            )
-            portfolio_manager.orders.add_order(stock, order, None)
-
-        portfolio_manager.equity_engine.execute_regime_rebalance_orders = (
-            mocker.AsyncMock(side_effect=prepare_invalid_regime_order)
+        portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(
+            return_value=mocker.Mock()
+        )
+        mocker.patch.object(
+            portfolio_manager.equity_engine,
+            "_midpoint_or_market_price",
+            return_value=float("nan"),
         )
         mocker.patch.object(
             portfolio_manager,
