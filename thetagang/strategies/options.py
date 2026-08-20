@@ -56,14 +56,7 @@ async def run_option_write_stages(
     deps: OptionsStrategyDeps,
     account_summary: AccountSummary,
     portfolio_positions: PortfolioBySymbol,
-    options_enabled: bool,
 ) -> None:
-    if not options_enabled:
-        log.notice(
-            "Regime rebalancing shares-only enabled; skipping option writes and rolls."
-        )
-        return
-
     if "options_write_puts" in deps.enabled_stages:
         (
             positions_table,
@@ -91,11 +84,7 @@ async def run_option_management_stages(
     deps: OptionsStrategyDeps,
     account_summary: AccountSummary,
     portfolio_positions: PortfolioBySymbol,
-    options_enabled: bool,
 ) -> None:
-    if not options_enabled:
-        return
-
     should_roll = "options_roll_positions" in deps.enabled_stages
     should_close = "options_close_positions" in deps.enabled_stages
     if not (should_roll or should_close):

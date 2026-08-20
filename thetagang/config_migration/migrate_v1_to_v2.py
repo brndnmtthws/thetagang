@@ -240,6 +240,13 @@ def migrate_v1_to_v2(raw_text: str) -> MigrationResult:
         if new_key in strategies:
             source_item = _source_section(source_doc, old_key)
             if source_item is not None:
+                if old_key == "regime_rebalance" and "shares_only" in source_item:
+                    del source_item["shares_only"]
+                    warnings.append(
+                        "`regime_rebalance.shares_only` is deprecated and was not "
+                        "migrated; option execution is controlled by "
+                        "`run.strategies`/`run.stages`."
+                    )
                 strategies_doc.add(new_key, source_item)
             else:
                 strategies_doc.add(new_key, tomlkit.item(strategies[new_key]))

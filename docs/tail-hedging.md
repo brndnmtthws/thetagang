@@ -292,10 +292,11 @@ catastrophe_drawdowns = [0.40, 0.50, 0.60]
 ```
 
 When tail hedging is enabled, each target symbol must also appear in
-`portfolio.symbols`. If regime rebalancing is enabled,
-`regime_rebalance.shares_only` must be `false`. Enable
-`regime_rebalance` and add it to `run.strategies` if you want profitable puts to
-be monetized during hard-underweight buys.
+`portfolio.symbols`. Enable `regime_rebalance` and add it alongside `tail_hedge`
+in `run.strategies` if you want profitable puts to be monetized during
+hard-underweight buys. Tail-hedge option trading and regime share rebalancing
+are independent stages; the deprecated `regime_rebalance.shares_only` setting
+has no effect.
 
 The values above show the configuration shape. They are not trading advice or
 calibrated defaults for every account.

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Mapping
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rich import box
@@ -59,6 +61,25 @@ CANONICAL_STAGE_ORDER: list[str] = [
     "post_tail_hedge",
     "post_cash_management",
 ]
+
+STAGE_CAPABILITY_LABELS: dict[str, str] = {
+    "options_write_puts": "Wheel put writing",
+    "options_write_calls": "Wheel call writing",
+    "equity_regime_rebalance": "Regime share rebalancing",
+    "equity_buy_rebalance": "Wheel share buying",
+    "equity_sell_rebalance": "Wheel share selling",
+    "options_roll_positions": "Wheel option rolling",
+    "options_close_positions": "Wheel option closing",
+    "post_vix_call_hedge": "VIX call hedging",
+    "post_tail_hedge": "Tail-hedge option trading",
+    "post_cash_management": "Cash management",
+}
+
+SHARES_ONLY_DEPRECATION_MESSAGE = (
+    "Deprecated config: strategies.regime_rebalance.shares_only has no effect. "
+    "Option trading is controlled by run.strategies/run.stages. Remove this "
+    "setting from your configuration."
+)
 
 WHEEL_OPTION_STAGE_IDS = {
     "options_write_puts",
@@ -500,9 +521,6 @@ class Config(BaseModel, DisplayMixin):
                 "tail_hedge target symbols must be in portfolio.symbols: "
                 + ", ".join(missing_symbols)
             )
-        regime_rebalance = self.strategies.regime_rebalance
-        if regime_rebalance.enabled and regime_rebalance.shares_only:
-            raise ValueError("tail_hedge cannot be enabled when shares_only is true")
         return self
 
     @property
@@ -779,6 +797,26 @@ class Config(BaseModel, DisplayMixin):
             )
         return table
 
+    def create_trading_capabilities_table(self) -> Table:
+        table = Table(
+            title="Trading capabilities (resolved from run)",
+            box=box.SIMPLE_HEAVY,
+        )
+        table.add_column("Capability")
+        table.add_column("Status", justify="center")
+        table.add_column("Stage")
+
+        enabled_stage_ids = {
+            stage.id for stage in self.run.resolved_stages() if stage.enabled
+        }
+        for stage_id in CANONICAL_STAGE_ORDER:
+            table.add_row(
+                STAGE_CAPABILITY_LABELS[stage_id],
+                "Enabled" if stage_id in enabled_stage_ids else "Disabled",
+                stage_id,
+            )
+        return table
+
     def display(self, config_path: str) -> None:
         console = Console()
         config_table = Table(box=box.SIMPLE_HEAVY)
@@ -803,6 +841,12 @@ class Config(BaseModel, DisplayMixin):
 
         tree = Tree(":control_knobs:")
         tree.add(Group(f":file_cabinet: Loaded from {config_path}", config_table))
+        tree.add(
+            Group(
+                ":vertical_traffic_light: Trading capabilities",
+                self.create_trading_capabilities_table(),
+            )
+        )
         tree.add(Group(":yin_yang: Symbology", self.create_symbols_table()))
         volatility_weight_table = self.create_volatility_weight_table()
         if volatility_weight_table is not None:
@@ -914,3 +958,15 @@ def stage_enabled_map(config: Config) -> dict[str, bool]:
 def stage_enabled_map_from_run(run: RunConfig) -> dict[str, bool]:
     resolved_ids = set(enabled_stage_ids_from_run(run))
     return {stage_id: (stage_id in resolved_ids) for stage_id in STAGE_KIND_BY_ID}
+
+
+def config_deprecation_warnings(config_doc: Mapping[str, Any]) -> list[str]:
+    strategies = config_doc.get("strategies")
+    if not isinstance(strategies, Mapping):
+        return []
+    regime_rebalance = strategies.get("regime_rebalance")
+    if not isinstance(regime_rebalance, Mapping):
+        return []
+    if "shares_only" not in regime_rebalance:
+        return []
+    return [SHARES_ONLY_DEPRECATION_MESSAGE]

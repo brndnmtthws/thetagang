@@ -25,7 +25,7 @@ from thetagang.strategies.post import (
 
 
 @pytest.mark.asyncio
-async def test_run_option_write_stages_skips_when_options_disabled(mocker):
+async def test_run_option_write_stages_skips_stages_not_enabled():
     write_service = SimpleNamespace(
         check_if_can_write_puts=AsyncMock(),
         write_puts=AsyncMock(),
@@ -33,12 +33,12 @@ async def test_run_option_write_stages_skips_when_options_disabled(mocker):
         write_calls=AsyncMock(),
     )
     deps = OptionsStrategyDeps(
-        enabled_stages={"options_write_puts", "options_write_calls"},
+        enabled_stages=set(),
         write_service=cast(OptionsWriteService, write_service),
         manage_service=cast(OptionsManageService, SimpleNamespace()),
     )
 
-    await run_option_write_stages(deps, {}, {}, options_enabled=False)
+    await run_option_write_stages(deps, {}, {})
 
     write_service.check_if_can_write_puts.assert_not_called()
     write_service.check_for_uncovered_positions.assert_not_called()
@@ -68,7 +68,7 @@ async def test_run_option_write_stages_puts_and_calls_paths(mocker):
     )
     print_mock = mocker.patch("thetagang.strategies.options.log.print")
 
-    await run_option_write_stages(deps, {}, {}, options_enabled=True)
+    await run_option_write_stages(deps, {}, {})
 
     write_service.check_if_can_write_puts.assert_awaited_once()
     write_service.write_puts.assert_awaited_once_with(["PUT_ORDER"])
@@ -93,7 +93,7 @@ async def test_run_option_management_stages_roll_only(mocker):
         manage_service=cast(OptionsManageService, manage_service),
     )
 
-    await run_option_management_stages(deps, {}, {}, options_enabled=True)
+    await run_option_management_stages(deps, {}, {})
 
     manage_service.roll_puts.assert_awaited_once_with(["RP"], {})
     manage_service.roll_calls.assert_awaited_once_with(["RC"], {}, {})
@@ -117,7 +117,7 @@ async def test_run_option_management_stages_close_only(mocker):
         manage_service=cast(OptionsManageService, manage_service),
     )
 
-    await run_option_management_stages(deps, {}, {}, options_enabled=True)
+    await run_option_management_stages(deps, {}, {})
 
     manage_service.roll_puts.assert_not_called()
     manage_service.roll_calls.assert_not_called()
@@ -141,7 +141,7 @@ async def test_run_option_management_stages_roll_and_close_combines_results(mock
         manage_service=cast(OptionsManageService, manage_service),
     )
 
-    await run_option_management_stages(deps, {}, {}, options_enabled=True)
+    await run_option_management_stages(deps, {}, {})
 
     manage_service.roll_puts.assert_awaited_once_with(["RP"], {})
     manage_service.roll_calls.assert_awaited_once_with(["RC"], {}, {})

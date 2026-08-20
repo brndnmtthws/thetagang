@@ -97,7 +97,6 @@ def portfolio_manager(mock_ib, mocker):
                 deficit_rail_stop=0.03,
                 eps=1e-8,
                 order_history_lookback_days=30,
-                shares_only=False,
                 weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options,
             ),
         ),
@@ -148,7 +147,6 @@ def portfolio_manager_with_db(mock_ib, mocker, tmp_path):
                 deficit_rail_stop=0.03,
                 eps=1e-8,
                 order_history_lookback_days=30,
-                shares_only=False,
                 weight_base=RegimeRebalanceBaseEnum.net_liq_ex_options,
             ),
         ),
@@ -2841,11 +2839,6 @@ def test_normalize_config_converts_parts_to_weights():
     assert normalized["symbols"]["AAA"]["weight"] == pytest.approx(0.3)
     assert normalized["symbols"]["BBB"]["weight"] == pytest.approx(0.3)
     assert normalized["symbols"]["CCC"]["weight"] == pytest.approx(0.4)
-
-
-def test_regime_rebalance_shares_only_disables_options(portfolio_manager):
-    portfolio_manager.config.strategies.regime_rebalance.shares_only = True
-    assert portfolio_manager.options_trading_enabled() is False
 
 
 def test_regime_rebalance_config_rejects_inverted_bands():

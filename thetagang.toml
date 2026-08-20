@@ -2,7 +2,10 @@
 schema_version = 2
 
 [run]
+# This strategy plan is authoritative: only its resolved trading stages run.
+# Strategy-specific sections below configure how those stages behave.
 strategies = ["wheel", "vix_call_hedge", "cash_management"]
+
 [runtime.account]
 # The account number to operate on
 number = "DU1234567"
@@ -642,7 +645,6 @@ daily_stddev_window = "30 D"
 # deficit_rail_start = 0.06  # deficit that triggers safety rail (fraction of base)
 # deficit_rail_stop = 0.03  # hysteresis stop once within this band (fraction of base)
 # order_history_lookback_days = 30  # look back this many calendar days for fills
-# shares_only = false  # when true, disables all option writes/rolls
 # Effective symbol weights are absolute targets and are not renormalized. A total
 # below 100% remains outside the managed targets as cash (or the configured cash
 # fund); a total above 100% aborts. The managed_stocks base requires exactly 100%.

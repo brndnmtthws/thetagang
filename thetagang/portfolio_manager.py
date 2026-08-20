@@ -266,10 +266,6 @@ class PortfolioManager:
     def get_reserved_cash_for_post_management(self) -> float:
         return self._reserved_cash_for_post_management
 
-    def options_trading_enabled(self) -> bool:
-        regime_rebalance = self.config.strategies.regime_rebalance
-        return not (regime_rebalance.enabled and regime_rebalance.shares_only)
-
     async def put_is_itm(self, contract: Contract) -> bool:
         return await self.options_engine.put_is_itm(contract)
 
@@ -782,13 +778,11 @@ class PortfolioManager:
             self.initialize_account()
             (account_summary, portfolio_positions) = await self.summarize_account()
 
-            options_enabled = self.options_trading_enabled()
             enabled_stages = set(self.run_stage_order)
             stage_index = {
                 stage_id: idx for idx, stage_id in enumerate(self.run_stage_order)
             }
             close_stage_handled = False
-            options_disabled_notice_logged = False
             positions_might_be_stale = False
 
             write_stage_ids = {"options_write_puts", "options_write_calls"}
@@ -798,7 +792,6 @@ class PortfolioManager:
                 "post_tail_hedge",
                 "post_cash_management",
             }
-            option_stage_ids = write_stage_ids | management_stage_ids
             rematerialize_before_stage_ids = management_stage_ids | post_stage_ids
             pre_management_trade_stage_ids = {
                 "options_write_puts",
@@ -809,14 +802,6 @@ class PortfolioManager:
             }
 
             for stage_id in self.run_stage_order:
-                if stage_id in option_stage_ids and not options_enabled:
-                    if not options_disabled_notice_logged:
-                        log.notice(
-                            "Regime rebalancing shares-only enabled; skipping option writes and rolls."
-                        )
-                        options_disabled_notice_logged = True
-                    continue
-
                 if (
                     stage_id in rematerialize_before_stage_ids
                     and positions_might_be_stale
@@ -829,7 +814,6 @@ class PortfolioManager:
                         self._options_strategy_deps({stage_id}),
                         account_summary,
                         portfolio_positions,
-                        options_enabled,
                     )
                 elif stage_id == "options_roll_positions":
                     if (
@@ -843,7 +827,6 @@ class PortfolioManager:
                             ),
                             account_summary,
                             portfolio_positions,
-                            options_enabled,
                         )
                         close_stage_handled = True
                     else:
@@ -851,7 +834,6 @@ class PortfolioManager:
                             self._options_strategy_deps({"options_roll_positions"}),
                             account_summary,
                             portfolio_positions,
-                            options_enabled,
                         )
                 elif stage_id == "options_close_positions":
                     if close_stage_handled:
@@ -860,7 +842,6 @@ class PortfolioManager:
                         self._options_strategy_deps({"options_close_positions"}),
                         account_summary,
                         portfolio_positions,
-                        options_enabled,
                     )
                 elif stage_id == "equity_regime_rebalance":
                     (
