@@ -83,6 +83,10 @@ logging.getLogger("ib_async.ib").setLevel(logging.ERROR)
 logging.getLogger("ib_async.wrapper").setLevel(logging.CRITICAL)
 
 TAIL_HARVEST_FILL_TIMEOUT_SECONDS = 5 * 60
+REGIME_PLANNING_STATE_EVENTS = {
+    "regime_rebalance_state",
+    "volatility_weight_state",
+}
 
 
 class PortfolioManager:
@@ -180,9 +184,6 @@ class PortfolioManager:
             get_primary_exchange=self.get_primary_exchange,
             now_provider=lambda: datetime.now(),
             tail_hedge_stage_enabled=lambda: self.stage_enabled("post_tail_hedge"),
-            cash_management_stage_enabled=lambda: self.stage_enabled(
-                "post_cash_management"
-            ),
             set_reserved_cash_for_post_management=(
                 self.set_reserved_cash_for_post_management
             ),
@@ -670,6 +671,10 @@ class PortfolioManager:
             )
         return account_summary, self.get_portfolio_positions()
 
+    def _discard_current_regime_planning_state(self) -> None:
+        if self.data_store:
+            self.data_store.discard_current_run_events(REGIME_PLANNING_STATE_EVENTS)
+
     async def _plan_regime_rebalance(
         self,
         account_summary: Dict[str, AccountValue],
@@ -708,13 +713,7 @@ class PortfolioManager:
                 await self.equity_engine.execute_regime_rebalance_orders(regime_orders)
             return account_summary, portfolio_positions
 
-        if self.data_store:
-            self.data_store.discard_current_run_events(
-                {
-                    "regime_rebalance_state",
-                    "volatility_weight_state",
-                }
-            )
+        self._discard_current_regime_planning_state()
         self.orders.remove_records(harvest_records)
         if not await self._execute_tail_harvest_phase(harvest_records):
             raise RuntimeError("Tail-harvest execution did not fully fill")
@@ -737,14 +736,27 @@ class PortfolioManager:
                 con_id = getattr(contract, "conId", 0)
                 if type(con_id) is int and con_id > 0:
                     self._update_tail_recovery_submission(con_id, None)
+            self._discard_current_regime_planning_state()
             log.error(
-                "Tail harvest proceeds were insufficient after execution; "
+                "A second tail harvest was queued during post-fill replanning; "
                 "aborting remaining stages safely."
             )
-            raise RuntimeError("Tail-harvest proceeds were insufficient")
+            raise RuntimeError("Tail-harvest replanning did not serialize")
 
         if regime_orders:
-            await self.equity_engine.execute_regime_rebalance_orders(regime_orders)
+            records_before = len(self.orders.records())
+            prepared = await self.equity_engine.execute_regime_rebalance_orders(
+                regime_orders
+            )
+            if prepared != len(regime_orders):
+                added_records = self.orders.records()[records_before:]
+                self.orders.remove_records(added_records)
+                self._discard_current_regime_planning_state()
+                log.error(
+                    "Post-harvest regime orders were not prepared completely; "
+                    "aborting before final submission."
+                )
+                raise RuntimeError("Post-harvest rebalance preparation was incomplete")
         return account_summary, portfolio_positions
 
     async def manage(self) -> None:

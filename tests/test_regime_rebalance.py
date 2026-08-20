@@ -5,7 +5,7 @@ from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
-from ib_async import IB, AccountValue, MarketOrder, Option, Stock
+from ib_async import IB, AccountValue, Option, Stock
 
 import thetagang.portfolio_manager as pm_module
 import thetagang.strategies.regime_engine as regime_engine_module
@@ -246,10 +246,6 @@ def _mock_regime_broker(portfolio_manager, mocker, **history_mock_kwargs) -> Non
 def _enable_tail_hedge_stage(portfolio_manager) -> None:
     portfolio_manager.run_stage_flags["equity_regime_rebalance"] = True
     portfolio_manager.run_stage_flags["post_tail_hedge"] = True
-
-
-def _enable_cash_management_stage(portfolio_manager, enabled: bool = True) -> None:
-    portfolio_manager.run_stage_flags["post_cash_management"] = enabled
 
 
 def _stock_position(
@@ -1251,6 +1247,45 @@ async def test_regime_rebalance_volatility_weight_state_payload_fields(
         "realized_vol",
         "smoothing_factor",
     }
+
+
+@pytest.mark.parametrize(
+    ("state_quantity", "live_quantity", "market_value", "expected_value"),
+    [
+        (1, 2, 240.0, 120.0),
+        (2, 1, 120.0, 120.0),
+        (1, float("nan"), 120.0, 0.0),
+        (1, 2, float("nan"), 0.0),
+    ],
+)
+def test_tail_hedge_market_value_counts_only_state_owned_quantity(
+    state_quantity,
+    live_quantity,
+    market_value,
+    expected_value,
+):
+    state_position = _option_position(
+        "BBB",
+        state_quantity,
+        market_value=120.0,
+        right="P",
+        con_id=801,
+        average_cost=50.0,
+    )
+    cohort = _tail_state(symbol="BBB", puts=[state_position]).open_cohorts[0]
+    live_position = _option_position(
+        "BBB",
+        live_quantity,
+        market_value=market_value,
+        right="P",
+        con_id=801,
+        average_cost=50.0,
+    )
+
+    assert regime_engine_module.RegimeRebalanceEngine._tail_hedge_market_value(
+        {"BBB": [live_position]},
+        [cohort],
+    ) == pytest.approx(expected_value)
 
 
 @pytest.mark.asyncio
@@ -3396,6 +3431,8 @@ def _configure_tail_harvest(
 ) -> None:
     portfolio_manager.config.strategies.tail_hedge = SimpleNamespace(
         enabled=True,
+        harvest_trigger_weight=0.05,
+        harvest_target_weight=0.03,
         targets=[_tail_target(symbol) for symbol in symbols],
     )
     _enable_tail_hedge_stage(portfolio_manager)
@@ -3459,22 +3496,21 @@ async def test_harvest_persists_recovery_intent(
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [tail_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
         cohorts=payload.open_cohorts,
     )
 
-    assert orders == []
+    assert orders == [("BBB", "NYSE", 1)]
     queued_order = portfolio_manager.orders.records()[0][1]
-    assert getattr(queued_order, TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR) == pytest.approx(0.51)
+    assert getattr(queued_order, TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR) == pytest.approx(0.95)
     store = portfolio_manager.regime_engine._tail_state_store
     assert store is not None
     state = store.load()
     assert state.open_cohorts[0].pending_recovery_quantity == 1
-    assert state.open_cohorts[0].pending_recovery_per_contract == 51.0
+    assert state.open_cohorts[0].pending_recovery_per_contract == 95.0
     assert isinstance(state.open_cohorts[0].pending_recovery_enqueued_at, datetime)
     assert state.open_cohorts[0].pending_recovery_initial_quantity == 1
     telemetry = portfolio_manager.data_store.get_last_event_payload(
@@ -3486,8 +3522,182 @@ async def test_harvest_persists_recovery_intent(
     assert telemetry["gross_proceeds"] == 120.0
     assert telemetry["estimated_fees"] == 0.0
     assert telemetry["net_proceeds"] == 120.0
-    assert telemetry["required_proceeds"] == 100.0
-    assert telemetry["excess_proceeds"] == 20.0
+    assert telemetry["minimum_limit_price"] == 0.95
+    assert telemetry["minimum_net_proceeds_per_contract"] == 95.0
+    assert telemetry["rebalance_shares"] == 1
+    assert telemetry["net_liquidation"] == 2_000.0
+    assert telemetry["regime_rebalance_base"] == 1_880
+    assert telemetry["regime_weight_base"] == "net_liq_ex_options"
+    assert telemetry["excluded_option_value"] == 120.0
+    assert telemetry["sleeve_value"] == 120.0
+    assert telemetry["sleeve_weight"] == pytest.approx(120.0 / 1_880.0)
+    assert telemetry["sale_budget"] == pytest.approx(63.6)
+    assert telemetry["harvest_trigger_weight"] == 0.05
+    assert telemetry["harvest_target_weight"] == 0.03
+
+
+@pytest.mark.asyncio
+async def test_harvest_band_does_not_trigger_at_upper_bound(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=100.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    state = _tail_state(symbol="BBB", puts=[tail_put])
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock()
+
+    await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        net_liquidation=2_100.0,
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=state.open_cohorts,
+    )
+
+    assert portfolio_manager.orders.records() == []
+    portfolio_manager.ibkr.get_ticker_for_contract.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_harvest_band_sizes_contracts_by_market_value_not_net_cash(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    portfolio_manager.config.runtime.orders.estimated_fee_per_contract = 1.0
+    tail_put = _option_position(
+        "BBB",
+        2,
+        market_value=240.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    tail_put.contract.multiplier = "100"
+    state = _tail_state(symbol="BBB", puts=[tail_put])
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        net_liquidation=4_240.0,
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=state.open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    queued = portfolio_manager.orders.records()
+    assert len(queued) == 1
+    assert int(queued[0][1].totalQuantity) == 1
+
+
+@pytest.mark.asyncio
+async def test_harvest_reuses_regime_option_box_and_cash_fund_base(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
+        "BBB",
+        1,
+        market_value=4_700.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=1_000.0,
+    )
+    tail_put.contract.multiplier = "100"
+    state = _tail_state(symbol="BBB", puts=[tail_put])
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    manual_regime_option = _option_position(
+        "AAA",
+        1,
+        market_value=5_000.0,
+        con_id=802,
+    )
+    cash_fund = _stock_position("SHV", 100, market_value=15_000.0)
+    box_legs = [
+        _option_position(
+            "SPX",
+            -1,
+            market_value=-1_200_000.0,
+            strike=5_000.0,
+            right="C",
+            expiry="20260716",
+            con_id=901,
+        ),
+        _option_position(
+            "SPX",
+            1,
+            market_value=2_000.0,
+            strike=5_000.0,
+            right="P",
+            expiry="20260716",
+            con_id=902,
+        ),
+        _option_position(
+            "SPX",
+            1,
+            market_value=700_000.0,
+            strike=5_100.0,
+            right="C",
+            expiry="20260716",
+            con_id=903,
+        ),
+        _option_position(
+            "SPX",
+            -1,
+            market_value=-2_000.0,
+            strike=5_100.0,
+            right="P",
+            expiry="20260716",
+            con_id=904,
+        ),
+    ]
+    portfolio_manager.ibkr.ib.portfolio.return_value = [
+        tail_put,
+        manual_regime_option,
+        cash_fund,
+        *box_legs,
+    ]
+    _set_tail_quotes(portfolio_manager, mocker, {801: 47.0})
+
+    await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        net_liquidation=100_000.0,
+        market_prices={"AAA": 100.0, "BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=state.open_cohorts,
+    )
+
+    assert len(portfolio_manager.orders.records()) == 1
+    telemetry = portfolio_manager.data_store.get_last_event_payload(
+        TAIL_HEDGE_HARVEST_EVENT,
+        symbol="BBB",
+    )
+    assert telemetry is not None
+    assert telemetry["net_liquidation"] == 100_000.0
+    assert telemetry["excluded_option_value"] == 9_700.0
+    assert telemetry["regime_rebalance_base"] == 90_300
+    assert telemetry["sleeve_weight"] == pytest.approx(4_700.0 / 90_300.0)
 
 
 @pytest.mark.asyncio
@@ -3534,22 +3744,21 @@ async def test_pending_recovery_serializes_same_symbol_harvests(
     assert store is not None
     first_orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [next_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
         cohorts=store.load().open_cohorts,
     )
 
-    assert first_orders == []
+    assert first_orders == [("BBB", "NYSE", 1)]
     assert portfolio_manager.orders.records() == []
     telemetry = portfolio_manager.data_store.get_last_event_payload(
         TAIL_HEDGE_HARVEST_EVENT,
         symbol="BBB",
     )
     assert telemetry is not None
-    assert telemetry["outcome"] == "harvest_deferred"
+    assert telemetry["outcome"] == "harvest_blocked"
     assert telemetry["reason"] == "pending_recovery"
 
     reconciled = store.load()
@@ -3563,19 +3772,87 @@ async def test_pending_recovery_serializes_same_symbol_harvests(
 
     next_orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [next_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
         cohorts=store.load().open_cohorts,
     )
 
-    assert next_orders == []
+    assert next_orders == [("BBB", "NYSE", 1)]
     assert [
         contract.conId
         for contract, _order, _intent_id in portfolio_manager.orders.records()
     ] == [802]
+
+
+@pytest.mark.asyncio
+async def test_pending_recovery_serializes_portfolio_wide_harvests(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "AAA", "BBB")
+    aaa_put = _option_position(
+        "AAA",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    bbb_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261218",
+        con_id=802,
+        average_cost=50.0,
+    )
+    aaa_put.contract.multiplier = bbb_put.contract.multiplier = "100"
+    _save_tail_state(
+        portfolio_manager,
+        _tail_state(symbol="AAA", puts=[aaa_put]),
+        _tail_state(symbol="BBB", puts=[bbb_put]),
+    )
+    store = portfolio_manager.regime_engine._tail_state_store
+    assert store is not None
+    state = store.load()
+    bbb_cohort = state.find_open_by_con_id(802)
+    assert bbb_cohort is not None
+    bbb_cohort.begin_recovery(
+        quantity=1,
+        proceeds_per_contract=120.0,
+        enqueued_at=datetime.now() - timedelta(minutes=10),
+    )
+    store.save(state)
+    portfolio_manager.ibkr.ib.portfolio.return_value = [aaa_put, bbb_put]
+    portfolio_manager.ibkr.ib.openTrades.return_value = []
+    portfolio_manager.ibkr.ib.accountValues.return_value = []
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock()
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("AAA", "NYSE", 1)],
+        net_liquidation=2_000.0,
+        market_prices={"AAA": 100.0},
+        regime_summary=[{"symbol": "AAA"}],
+        hard_underweight_symbols={"AAA"},
+        cohorts=store.load().open_cohorts,
+    )
+
+    assert orders == [("AAA", "NYSE", 1)]
+    assert portfolio_manager.orders.records() == []
+    portfolio_manager.ibkr.get_ticker_for_contract.assert_not_awaited()
+    telemetry = portfolio_manager.data_store.get_last_event_payload(
+        TAIL_HEDGE_HARVEST_EVENT,
+        symbol="AAA",
+    )
+    assert telemetry is not None
+    assert telemetry["outcome"] == "harvest_blocked"
+    assert telemetry["reason"] == "pending_recovery"
+    assert telemetry["blocking_symbols"] == ["BBB"]
 
 
 @pytest.mark.asyncio
@@ -3605,8 +3882,7 @@ async def test_harvest_profitability_includes_estimated_broker_fee(
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [tail_put]},
+        net_liquidation=1_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
@@ -3659,15 +3935,14 @@ async def test_harvest_does_not_credit_a_pre_submission_position_change(
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [live_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
         cohorts=payload.open_cohorts,
     )
 
-    assert orders == []
+    assert orders == [("BBB", "NYSE", 1)]
     await portfolio_manager.post_engine.tail_hedge_engine.manage(
         {"BBB": [live_put]},
         net_liquidation=200.0,
@@ -3678,7 +3953,7 @@ async def test_harvest_does_not_credit_a_pre_submission_position_change(
     cohort = store.load().open_cohorts[0]
     assert cohort.quantity == 2
     assert cohort.recovered_cost == 0.0
-    assert cohort.pending_recovery_quantity == 1
+    assert cohort.pending_recovery_quantity == 2
 
 
 @pytest.mark.asyncio
@@ -3705,8 +3980,7 @@ async def test_harvest_requires_fresh_persisted_ownership(
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [tail_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
@@ -3747,8 +4021,7 @@ async def test_harvest_does_not_queue_sell_when_recovery_intent_cannot_persist(
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [tail_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
@@ -3759,38 +4032,8 @@ async def test_harvest_does_not_queue_sell_when_recovery_intent_cannot_persist(
     assert portfolio_manager.orders.records() == []
 
 
-def test_partial_broker_working_buy_reserves_only_remaining_debit(
-    portfolio_manager_with_db,
-):
-    portfolio_manager = portfolio_manager_with_db
-    working_put = Option("AAA", "20270115", 50.0, "P", "SMART")
-    working_put.multiplier = "100"
-    portfolio_manager.ibkr.ib.openTrades.return_value = [
-        SimpleNamespace(
-            contract=working_put,
-            order=SimpleNamespace(
-                account="TEST123",
-                action="BUY",
-                lmtPrice=1.0,
-                totalQuantity=1,
-            ),
-            orderStatus=SimpleNamespace(remaining=0.25),
-            isDone=lambda: False,
-        )
-    ]
-
-    shortfall = portfolio_manager.regime_engine._ordinary_rebalance_shortfall(
-        orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("500", cash="100"),
-        portfolio_positions={},
-        market_prices={"BBB": 100.0},
-    )
-
-    assert shortfall == 25.0
-
-
 @pytest.mark.asyncio
-async def test_ambiguous_working_buy_skips_tail_harvest(
+async def test_unrelated_working_stock_order_does_not_block_tail_harvest(
     portfolio_manager_with_db,
     mocker,
 ):
@@ -3820,12 +4063,11 @@ async def test_ambiguous_working_buy_skips_tail_harvest(
             isDone=lambda: False,
         )
     ]
-    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock()
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [tail_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
@@ -3833,11 +4075,198 @@ async def test_ambiguous_working_buy_skips_tail_harvest(
     )
 
     assert orders == [("BBB", "NYSE", 1)]
-    assert portfolio_manager.orders.records() == []
+    assert len(portfolio_manager.orders.records()) == 1
 
 
 @pytest.mark.asyncio
-async def test_market_buy_skips_tail_harvest(
+async def test_harvest_rereads_replacement_ib_async_cache_objects(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    live_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=802,
+        average_cost=50.0,
+    )
+    live_put.contract.multiplier = "100"
+    live_state = _tail_state(symbol="BBB", puts=[live_put])
+    _save_tail_state(portfolio_manager, live_state)
+
+    live_ib = IB()
+    live_ib.wrapper.accountValues[("TEST123", "NetLiquidation", "BASE", "")] = (
+        AccountValue("TEST123", "NetLiquidation", "2000", "BASE", "")
+    )
+    live_ib.wrapper.portfolio["TEST123"][802] = live_put
+    account_values = mocker.spy(live_ib, "accountValues")
+    account_summary_async = mocker.spy(live_ib, "accountSummaryAsync")
+    request_positions = mocker.spy(live_ib, "reqPositionsAsync")
+    portfolio_manager.ibkr.ib = live_ib
+    _set_tail_quotes(portfolio_manager, mocker, {802: 1.20})
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 2)],
+        net_liquidation=2_000.0,
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=live_state.open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 2)]
+    assert [
+        contract.conId
+        for contract, _order, _intent_id in portfolio_manager.orders.records()
+    ] == [802]
+    assert account_values.call_args_list == [mocker.call("TEST123")] * 2
+    account_summary_async.assert_not_called()
+    request_positions.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_working_sale", [False, True])
+async def test_harvest_revalidates_earlier_candidates_after_all_quotes(
+    portfolio_manager_with_db,
+    mocker,
+    late_working_sale,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "AAA", "BBB")
+    stale_put = _option_position(
+        "AAA",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    live_put = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261218",
+        con_id=802,
+        average_cost=50.0,
+    )
+    stale_put.contract.multiplier = live_put.contract.multiplier = "100"
+    _set_live_tail_positions(portfolio_manager, [stale_put, live_put])
+
+    async def quote(contract, **_kwargs):
+        if contract.conId == 802:
+            portfolio_manager.ibkr.ib.portfolio.return_value = [live_put]
+            if late_working_sale:
+                portfolio_manager.ibkr.ib.openTrades.return_value = [
+                    SimpleNamespace(
+                        contract=stale_put.contract,
+                        order=SimpleNamespace(
+                            account="TEST123",
+                            action="SELL",
+                            orderRef=None,
+                        ),
+                        isDone=lambda: False,
+                    )
+                ]
+        return _option_ticker(1.20)
+
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(side_effect=quote)
+    store = portfolio_manager.regime_engine._tail_state_store
+    assert store is not None
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("AAA", "NYSE", 1), ("BBB", "NYSE", 1)],
+        net_liquidation=2_000.0,
+        market_prices={"AAA": 100.0, "BBB": 100.0},
+        regime_summary=[{"symbol": "AAA"}, {"symbol": "BBB"}],
+        hard_underweight_symbols={"AAA", "BBB"},
+        cohorts=store.load().open_cohorts,
+    )
+
+    assert orders == [("AAA", "NYSE", 1), ("BBB", "NYSE", 1)]
+    queued_con_ids = [
+        contract.conId
+        for contract, _order, _intent_id in portfolio_manager.orders.records()
+    ]
+    state = store.load()
+    stale_cohort = state.find_open_by_con_id(801)
+    live_cohort = state.find_open_by_con_id(802)
+    assert stale_cohort is not None and not stale_cohort.has_pending_recovery
+    assert live_cohort is not None
+    if late_working_sale:
+        assert queued_con_ids == []
+        assert not live_cohort.has_pending_recovery
+        telemetry = portfolio_manager.data_store.get_last_event_payload(
+            TAIL_HEDGE_HARVEST_EVENT,
+            symbol="BBB",
+        )
+        assert telemetry is not None
+        assert telemetry["outcome"] == "harvest_blocked"
+        assert telemetry["reason"] == "working_tail_sale"
+        assert telemetry["blocking_symbols"] == ["AAA"]
+    else:
+        assert queued_con_ids == [802]
+        assert live_cohort.has_pending_recovery
+
+
+@pytest.mark.asyncio
+async def test_harvest_rechecks_band_after_quotes_before_saving_intent(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    before_quote = _option_position(
+        "BBB",
+        1,
+        market_value=120.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    after_quote = _option_position(
+        "BBB",
+        1,
+        market_value=80.0,
+        right="P",
+        expiry="20261120",
+        con_id=801,
+        average_cost=50.0,
+    )
+    before_quote.contract.multiplier = after_quote.contract.multiplier = "100"
+    state = _tail_state(symbol="BBB", puts=[before_quote])
+    _set_live_tail_positions(portfolio_manager, [before_quote])
+
+    async def quote(_contract, **_kwargs):
+        portfolio_manager.ibkr.ib.portfolio.return_value = [after_quote]
+        return _option_ticker(1.20)
+
+    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(side_effect=quote)
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        net_liquidation=2_000.0,
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=state.open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert portfolio_manager.orders.records() == []
+    store = portfolio_manager.regime_engine._tail_state_store
+    assert store is not None
+    assert not store.load().open_cohorts[0].has_pending_recovery
+
+
+@pytest.mark.asyncio
+async def test_harvest_rechecks_band_with_fresh_quote_value(
     portfolio_manager_with_db,
     mocker,
 ):
@@ -3854,103 +4283,108 @@ async def test_market_buy_skips_tail_harvest(
     )
     tail_put.contract.multiplier = "100"
     _set_live_tail_positions(portfolio_manager, [tail_put])
-    portfolio_manager.ibkr.ib.openTrades.return_value = [
-        SimpleNamespace(
-            contract=Stock("AAA", "SMART", "USD"),
-            order=MarketOrder("BUY", 1, account="TEST123"),
-            orderStatus=SimpleNamespace(remaining=1),
-            isDone=lambda: False,
-        )
-    ]
-    portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock()
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.00})
+    store = portfolio_manager.regime_engine._tail_state_store
+    assert store is not None
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [tail_put]},
+        net_liquidation=2_100.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
-        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
+        cohorts=store.load().open_cohorts,
     )
 
     assert orders == [("BBB", "NYSE", 1)]
     assert portfolio_manager.orders.records() == []
-    portfolio_manager.ibkr.get_ticker_for_contract.assert_not_awaited()
+    cohort = store.load().find_open_by_con_id(801)
+    assert cohort is not None and not cohort.has_pending_recovery
 
 
 @pytest.mark.asyncio
-async def test_harvest_rereads_replacement_ib_async_cache_objects(
+async def test_harvest_rechecks_net_liquidation_after_quotes(
     portfolio_manager_with_db,
     mocker,
 ):
     portfolio_manager = portfolio_manager_with_db
     _configure_tail_harvest(portfolio_manager, "BBB")
-    _enable_cash_management_stage(portfolio_manager)
-    portfolio_manager.config.strategies.cash_management = SimpleNamespace(
-        enabled=True,
-        cash_fund="SHV",
-        target_cash_balance=0.0,
-    )
-
-    live_put = _option_position(
+    tail_put = _option_position(
         "BBB",
         1,
         market_value=120.0,
         right="P",
         expiry="20261120",
-        con_id=802,
+        con_id=801,
         average_cost=50.0,
     )
-    live_put.contract.multiplier = "100"
-    live_state = _tail_state(symbol="BBB", puts=[live_put])
-    _save_tail_state(portfolio_manager, live_state)
-    stale_put = _option_position(
+    tail_put.contract.multiplier = "100"
+    state = _tail_state(symbol="BBB", puts=[tail_put])
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
+    portfolio_manager.ibkr.cached_net_liquidation = mocker.Mock(
+        side_effect=[2_000.0, 3_000.0]
+    )
+
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+        orders=[("BBB", "NYSE", 1)],
+        net_liquidation=2_000.0,
+        market_prices={"BBB": 100.0},
+        regime_summary=[{"symbol": "BBB"}],
+        hard_underweight_symbols={"BBB"},
+        cohorts=state.open_cohorts,
+    )
+
+    assert orders == [("BBB", "NYSE", 1)]
+    assert portfolio_manager.orders.records() == []
+    assert portfolio_manager.ibkr.cached_net_liquidation.call_args_list == [
+        mocker.call("TEST123"),
+        mocker.call("TEST123"),
+    ]
+    store = portfolio_manager.regime_engine._tail_state_store
+    assert store is not None
+    assert not store.load().open_cohorts[0].has_pending_recovery
+
+
+@pytest.mark.asyncio
+async def test_harvest_uses_current_net_liquidation_for_initial_band_gate(
+    portfolio_manager_with_db,
+    mocker,
+):
+    portfolio_manager = portfolio_manager_with_db
+    _configure_tail_harvest(portfolio_manager, "BBB")
+    tail_put = _option_position(
         "BBB",
         1,
-        market_value=60.0,
+        market_value=120.0,
         right="P",
         expiry="20261120",
         con_id=801,
         average_cost=50.0,
     )
-    cash_fund = _stock_position("SHV", 1, market_value=50.0)
-    cash_fund.contract.conId = 901
-
-    live_ib = IB()
-    live_ib.wrapper.accountValues[("TEST123", "TotalCashValue", "BASE", "")] = (
-        AccountValue("TEST123", "TotalCashValue", "50", "BASE", "")
-    )
-    live_ib.wrapper.portfolio["TEST123"][802] = live_put
-    live_ib.wrapper.portfolio["TEST123"][901] = cash_fund
-    account_values = mocker.spy(live_ib, "accountValues")
-    account_summary_async = mocker.spy(live_ib, "accountSummaryAsync")
-    request_positions = mocker.spy(live_ib, "reqPositionsAsync")
-    portfolio_manager.ibkr.ib = live_ib
-    _set_tail_quotes(portfolio_manager, mocker, {802: 1.20})
+    tail_put.contract.multiplier = "100"
+    state = _tail_state(symbol="BBB", puts=[tail_put])
+    _set_live_tail_positions(portfolio_manager, [tail_put])
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
+    portfolio_manager.ibkr.cached_net_liquidation = mocker.Mock(return_value=2_000.0)
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
-        orders=[("BBB", "NYSE", 2)],
-        account_summary=_regime_account_summary("500", cash="0"),
-        portfolio_positions={"BBB": [stale_put]},
+        orders=[("BBB", "NYSE", 1)],
+        net_liquidation=3_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
-        cohorts=live_state.open_cohorts,
+        cohorts=state.open_cohorts,
     )
 
     assert orders == [("BBB", "NYSE", 1)]
-    assert [
-        contract.conId
-        for contract, _order, _intent_id in portfolio_manager.orders.records()
-    ] == [802]
-    account_values.assert_called_once_with("TEST123")
-    account_summary_async.assert_not_called()
-    request_positions.assert_not_called()
+    assert len(portfolio_manager.orders.records()) == 1
+    assert portfolio_manager.ibkr.get_ticker_for_contract.await_count == 1
+    assert portfolio_manager.ibkr.cached_net_liquidation.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_harvest_stages_one_shortest_tranche_during_large_shortfall(
+async def test_harvest_sells_earliest_cohorts_toward_band_target(
     portfolio_manager_with_db,
     mocker,
 ):
@@ -3991,8 +4425,7 @@ async def test_harvest_stages_one_shortest_tranche_during_large_shortfall(
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 3)],
-        account_summary=_regime_account_summary("500", cash="0"),
-        portfolio_positions=positions,
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
@@ -4002,10 +4435,18 @@ async def test_harvest_stages_one_shortest_tranche_during_large_shortfall(
         ).open_cohorts,
     )
 
-    assert orders == []
+    assert orders == [("BBB", "NYSE", 3)]
     queued = portfolio_manager.orders.records()
-    assert [contract.conId for contract, _order, _intent_id in queued] == [801]
-    assert [int(order.totalQuantity) for _contract, order, _intent_id in queued] == [1]
+    assert [contract.conId for contract, _order, _intent_id in queued] == [
+        801,
+        802,
+        803,
+    ]
+    assert [int(order.totalQuantity) for _contract, order, _intent_id in queued] == [
+        1,
+        1,
+        1,
+    ]
     assert all(
         order.orderRef.startswith(f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:BBB:")
         for _contract, order, _intent_id in queued
@@ -4013,7 +4454,7 @@ async def test_harvest_stages_one_shortest_tranche_during_large_shortfall(
 
 
 @pytest.mark.asyncio
-async def test_harvest_defers_all_unfunded_shares_when_tranche_covers_only_part(
+async def test_harvest_keeps_full_rebalance_when_tranche_covers_only_part(
     portfolio_manager_with_db,
     mocker,
 ):
@@ -4029,20 +4470,19 @@ async def test_harvest_defers_all_unfunded_shares_when_tranche_covers_only_part(
         average_cost=50.0,
     )
     tail_put.contract.multiplier = "100"
-    _set_live_tail_positions(portfolio_manager, [tail_put], cash=200.0)
+    _set_live_tail_positions(portfolio_manager, [tail_put])
     _set_tail_quotes(portfolio_manager, mocker, {801: 1.0})
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 20)],
-        account_summary=_regime_account_summary("2500", cash="200"),
-        portfolio_positions={"BBB": [tail_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
         cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
     )
 
-    assert orders == [("BBB", "NYSE", 2)]
+    assert orders == [("BBB", "NYSE", 20)]
     assert [
         int(order.totalQuantity)
         for _contract, order, _intent_id in portfolio_manager.orders.records()
@@ -4051,26 +4491,18 @@ async def test_harvest_defers_all_unfunded_shares_when_tranche_covers_only_part(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    (
-        "first_price",
-        "next_cash",
-        "still_hard",
-        "expected_orders",
-        "expected_sale",
-    ),
+    ("cash", "still_hard", "expected_sale"),
     [
-        (3.0, "300", True, [("BBB", "NYSE", 3)], []),
-        (1.0, "100", True, [("BBB", "NYSE", 1)], [802]),
-        (1.0, "0", False, [("BBB", "NYSE", 3)], []),
+        (300.0, True, [801, 802]),
+        (-500_000.0, True, [801, 802]),
+        (300.0, False, []),
     ],
 )
-async def test_harvest_next_run_uses_cash_then_rechecks_remaining_shortfall(
+async def test_harvest_ignores_cash_and_requires_hard_underweight(
     portfolio_manager_with_db,
     mocker,
-    first_price,
-    next_cash,
+    cash,
     still_hard,
-    expected_orders,
     expected_sale,
 ):
     portfolio_manager = portfolio_manager_with_db
@@ -4095,37 +4527,19 @@ async def test_harvest_next_run_uses_cash_then_rechecks_remaining_shortfall(
     )
     first_put.contract.multiplier = next_put.contract.multiplier = "100"
     cohorts = _tail_state(symbol="BBB", puts=[first_put, next_put]).open_cohorts
-    _set_live_tail_positions(portfolio_manager, [first_put, next_put])
-    _set_tail_quotes(portfolio_manager, mocker, {801: first_price, 802: 1.2})
+    _set_live_tail_positions(portfolio_manager, [first_put, next_put], cash=cash)
+    _set_tail_quotes(portfolio_manager, mocker, {801: 1.2, 802: 1.2})
 
-    first_orders = await portfolio_manager.regime_engine._apply_tail_harvest(
+    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 3)],
-        account_summary=_regime_account_summary("500", cash="0"),
-        portfolio_positions={"BBB": [first_put, next_put]},
-        market_prices={"BBB": 100.0},
-        regime_summary=[{"symbol": "BBB"}],
-        hard_underweight_symbols={"BBB"},
-        cohorts=cohorts,
-    )
-    assert first_orders == []
-    assert [
-        contract.conId
-        for contract, _order, _intent_id in portfolio_manager.orders.records()
-    ] == [801]
-
-    portfolio_manager.orders.records().clear()
-    _set_live_tail_positions(portfolio_manager, [next_put], cash=float(next_cash))
-    next_orders = await portfolio_manager.regime_engine._apply_tail_harvest(
-        orders=[("BBB", "NYSE", 3)],
-        account_summary=_regime_account_summary("500", cash=next_cash),
-        portfolio_positions={"BBB": [next_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"} if still_hard else set(),
         cohorts=cohorts,
     )
 
-    assert next_orders == expected_orders
+    assert orders == [("BBB", "NYSE", 3)]
     assert [
         contract.conId
         for contract, _order, _intent_id in portfolio_manager.orders.records()
@@ -4134,137 +4548,15 @@ async def test_harvest_next_run_uses_cash_then_rechecks_remaining_shortfall(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    (
-        "cash_fund_value",
-        "sell_threshold",
-        "cash_stage_enabled",
-        "expected_stock_quantity",
-        "put_sales",
-    ),
-    [
-        (250.0, 100.0, True, 2, 0),
-        (50.0, 100.0, True, 1, 1),
-        (50.0, 200.0, True, 2, 0),
-        (250.0, 100.0, False, 0, 2),
-    ],
-)
-async def test_cash_fund_and_tolerance_bound_harvest_shortfall(
-    portfolio_manager_with_db,
-    mocker,
-    cash_fund_value,
-    sell_threshold,
-    cash_stage_enabled,
-    expected_stock_quantity,
-    put_sales,
-):
-    portfolio_manager = portfolio_manager_with_db
-    _configure_tail_harvest(portfolio_manager, "BBB")
-    _enable_cash_management_stage(portfolio_manager, cash_stage_enabled)
-    portfolio_manager.config.strategies.cash_management = SimpleNamespace(
-        enabled=True,
-        cash_fund="SHV",
-        target_cash_balance=50.0,
-        sell_threshold=sell_threshold,
-    )
-    tail_put = _option_position(
-        "BBB",
-        2,
-        market_value=240.0,
-        right="P",
-        expiry="20261120",
-        con_id=801,
-        average_cost=50.0,
-    )
-    tail_put.contract.multiplier = "100"
-    positions = {
-        "BBB": [tail_put],
-        "SHV": [_stock_position("SHV", 2, market_value=cash_fund_value)],
-    }
-    _set_live_tail_positions(
-        portfolio_manager,
-        [
-            position
-            for symbol_positions in positions.values()
-            for position in symbol_positions
-        ],
-    )
-    _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
-
-    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
-        orders=[("BBB", "NYSE", 2)],
-        account_summary=_regime_account_summary("500", cash="0"),
-        portfolio_positions=positions,
-        market_prices={"BBB": 100.0},
-        regime_summary=[{"symbol": "BBB"}],
-        hard_underweight_symbols={"BBB"},
-        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
-    )
-
-    expected_orders = (
-        [("BBB", "NYSE", expected_stock_quantity)] if expected_stock_quantity else []
-    )
-    assert orders == expected_orders
-    queued_harvests = [
-        order
-        for contract, order, _intent_id in portfolio_manager.orders.records()
-        if isinstance(contract, Option)
-    ]
-    assert sum(int(order.totalQuantity) for order in queued_harvests) == put_sales
-
-
-@pytest.mark.asyncio
-async def test_cash_fund_capacity_excludes_fractional_unsellable_share(
-    portfolio_manager_with_db,
-    mocker,
-):
-    portfolio_manager = portfolio_manager_with_db
-    _configure_tail_harvest(portfolio_manager, "BBB")
-    _enable_cash_management_stage(portfolio_manager)
-    portfolio_manager.config.strategies.cash_management = SimpleNamespace(
-        enabled=True,
-        cash_fund="SHV",
-        target_cash_balance=0.0,
-        sell_threshold=0.0,
-    )
-    tail_put = _option_position(
-        "BBB",
-        1,
-        market_value=120.0,
-        right="P",
-        expiry="20261120",
-        con_id=801,
-        average_cost=50.0,
-    )
-    tail_put.contract.multiplier = "100"
-    cash_fund = _stock_position("SHV", 1.5, market_value=150.0)
-    positions = {"BBB": [tail_put], "SHV": [cash_fund]}
-    _set_live_tail_positions(portfolio_manager, [tail_put, cash_fund], cash=50.0)
-    _set_tail_quotes(portfolio_manager, mocker, {801: 1.2})
-
-    orders = await portfolio_manager.regime_engine._apply_tail_harvest(
-        orders=[("BBB", "NYSE", 2)],
-        account_summary=_regime_account_summary("500", cash="50"),
-        portfolio_positions=positions,
-        market_prices={"BBB": 100.0},
-        regime_summary=[{"symbol": "BBB"}],
-        hard_underweight_symbols={"BBB"},
-        cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
-    )
-
-    assert orders == [("BBB", "NYSE", 1)]
-    assert len(portfolio_manager.orders.records()) == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
     ("source", "order_ref"),
     [
         ("broker", f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:BBB:801"),
         ("broker", TAIL_HEDGE_CLOSE_ORDER_REF),
+        ("broker", None),
         ("local", TAIL_HEDGE_CLOSE_ORDER_REF),
     ],
 )
-async def test_working_tail_sale_keeps_unfunded_shares_deferred(
+async def test_working_tail_sale_blocks_duplicate_without_changing_rebalance(
     portfolio_manager_with_db,
     mocker,
     source,
@@ -4282,7 +4574,7 @@ async def test_working_tail_sale_keeps_unfunded_shares_deferred(
         average_cost=50.0,
     )
     tail_put.contract.multiplier = "100"
-    _set_live_tail_positions(portfolio_manager, [tail_put], cash=100.0)
+    _set_live_tail_positions(portfolio_manager, [tail_put])
     working_order = SimpleNamespace(
         account="TEST123",
         action="SELL",
@@ -4304,33 +4596,22 @@ async def test_working_tail_sale_keeps_unfunded_shares_deferred(
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 2)],
-        account_summary=_regime_account_summary("500", cash="100"),
-        portfolio_positions={"BBB": [tail_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
         cohorts=_tail_state(symbol="BBB", puts=[tail_put]).open_cohorts,
     )
 
-    assert orders == [("BBB", "NYSE", 1)]
+    assert orders == [("BBB", "NYSE", 2)]
     assert len(portfolio_manager.orders.records()) == (1 if source == "local" else 0)
     portfolio_manager.ibkr.get_ticker_for_contract.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("entry_limit_price", "expected_orders", "put_sales"),
-    [
-        (0.5, [], 1),
-        (float("nan"), [("BBB", "NYSE", 1)], 0),
-    ],
-)
-async def test_nan_live_cost_uses_only_a_finite_entry_limit_basis(
+async def test_nan_live_cost_uses_persisted_entry_limit_basis(
     portfolio_manager_with_db,
     mocker,
-    entry_limit_price,
-    expected_orders,
-    put_sales,
 ):
     portfolio_manager = portfolio_manager_with_db
     _configure_tail_harvest(portfolio_manager, "BBB")
@@ -4344,27 +4625,26 @@ async def test_nan_live_cost_uses_only_a_finite_entry_limit_basis(
         average_cost=float("nan"),
     )
     tail_put.contract.multiplier = "100"
-    cohorts = _tail_state(symbol="BBB", puts=[tail_put]).open_cohorts
-    cohorts[0].entry_limit_price = entry_limit_price
     _set_live_tail_positions(portfolio_manager, [tail_put])
     _set_tail_quotes(portfolio_manager, mocker, {801: 1.20})
+    store = portfolio_manager.regime_engine._tail_state_store
+    assert store is not None
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [tail_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
-        cohorts=cohorts,
+        cohorts=store.load().open_cohorts,
     )
 
-    assert orders == expected_orders
-    assert len(portfolio_manager.orders.records()) == put_sales
+    assert orders == [("BBB", "NYSE", 1)]
+    assert len(portfolio_manager.orders.records()) == 1
 
 
 @pytest.mark.asyncio
-async def test_harvest_keeps_buy_when_puts_cannot_fund_one_whole_share(
+async def test_harvest_is_not_gated_by_one_share_of_rebalance_value(
     portfolio_manager_with_db,
     mocker,
 ):
@@ -4385,8 +4665,7 @@ async def test_harvest_keeps_buy_when_puts_cannot_fund_one_whole_share(
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [tail_put]},
+        net_liquidation=1_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
@@ -4394,11 +4673,11 @@ async def test_harvest_keeps_buy_when_puts_cannot_fund_one_whole_share(
     )
 
     assert orders == [("BBB", "NYSE", 1)]
-    assert portfolio_manager.orders.records() == []
+    assert len(portfolio_manager.orders.records()) == 1
 
 
 @pytest.mark.asyncio
-async def test_harvest_skips_too_small_shortest_tranche_for_later_useful_one(
+async def test_harvest_combines_earliest_profitable_cohorts_toward_target(
     portfolio_manager_with_db,
     mocker,
 ):
@@ -4429,23 +4708,22 @@ async def test_harvest_skips_too_small_shortest_tranche_for_later_useful_one(
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions=positions,
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"BBB"},
         cohorts=_tail_state(symbol="BBB", puts=[shortest_put, later_put]).open_cohorts,
     )
 
-    assert orders == []
+    assert orders == [("BBB", "NYSE", 1)]
     assert [
         contract.conId
         for contract, _order, _intent_id in portfolio_manager.orders.records()
-    ] == [802]
+    ] == [801, 802]
 
 
 @pytest.mark.asyncio
-async def test_harvest_rounding_cannot_over_defer_across_symbols(
+async def test_harvest_combines_eligible_symbols_for_portfolio_band(
     portfolio_manager_with_db,
     mocker,
 ):
@@ -4470,7 +4748,7 @@ async def test_harvest_rounding_cannot_over_defer_across_symbols(
         average_cost=50.0,
     )
     aaa_put.contract.multiplier = bbb_put.contract.multiplier = "100"
-    _set_live_tail_positions(portfolio_manager, [aaa_put, bbb_put], cash=150.0)
+    _set_live_tail_positions(portfolio_manager, [aaa_put, bbb_put])
     _set_tail_quotes(portfolio_manager, mocker, {801: 1.20, 802: 1.20})
     cohorts = [
         *_tail_state(symbol="AAA", puts=[aaa_put]).open_cohorts,
@@ -4479,20 +4757,19 @@ async def test_harvest_rounding_cannot_over_defer_across_symbols(
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("AAA", "NYSE", 1), ("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("500", cash="150"),
-        portfolio_positions={"AAA": [aaa_put], "BBB": [bbb_put]},
+        net_liquidation=2_000.0,
         market_prices={"AAA": 100.0, "BBB": 100.0},
         regime_summary=[{"symbol": "AAA"}, {"symbol": "BBB"}],
         hard_underweight_symbols={"AAA", "BBB"},
         cohorts=cohorts,
     )
 
-    assert orders == [("BBB", "NYSE", 1)]
+    assert orders == [("AAA", "NYSE", 1), ("BBB", "NYSE", 1)]
     assert [
         contract.symbol
         for contract, _order, _intent_id in portfolio_manager.orders.records()
-    ] == ["AAA"]
-    portfolio_manager.ibkr.get_ticker_for_contract.assert_awaited_once()
+    ] == ["AAA", "BBB"]
+    assert portfolio_manager.ibkr.get_ticker_for_contract.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -4517,8 +4794,7 @@ async def test_harvest_requires_same_symbol_hard_underweight(
 
     orders = await portfolio_manager.regime_engine._apply_tail_harvest(
         orders=[("BBB", "NYSE", 1)],
-        account_summary=_regime_account_summary("200", cash="0"),
-        portfolio_positions={"BBB": [tail_put]},
+        net_liquidation=2_000.0,
         market_prices={"BBB": 100.0},
         regime_summary=[{"symbol": "BBB"}],
         hard_underweight_symbols={"AAA"},

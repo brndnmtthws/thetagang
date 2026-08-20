@@ -779,6 +779,8 @@ ignore_dte = 0
 # [strategies.tail_hedge]
 # enabled = true
 # annual_budget = 0.005  # estimated all-in cost over 365 days / net liquidation
+# harvest_trigger_weight = 0.05  # trim only above 5% of the regime base
+# harvest_target_weight = 0.03  # size sales toward 3% of the regime base
 #
 # [[strategies.tail_hedge.targets]]
 # symbol = "QQQ"

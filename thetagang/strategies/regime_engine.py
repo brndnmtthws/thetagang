@@ -19,15 +19,17 @@ from thetagang.config_models import RegimeRebalanceBaseEnum
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import IBKR, TickerField
-from thetagang.orders import PendingBuyCash, pending_buy_cash
 from thetagang.strategies.runtime_services import resolve_symbol_configs
+from thetagang.strategies.tail_harvest_policy import (
+    evaluate_harvest_band,
+    minimum_harvest_limit_price,
+)
 from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
     TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR,
     TailHedgeCohort,
     TailHedgeStateStore,
     build_tail_reduction_order_ref,
-    is_tail_reduction_ref,
     parse_state_datetime,
 )
 from thetagang.trading_operations import OrderOperations
@@ -43,7 +45,7 @@ REGIME_HISTORY_TIMEFRAME = "1 day"
 REGIME_HISTORY_MAX_ATTEMPTS = 3
 REGIME_HISTORY_RETRY_DELAY_SECONDS = 0.25
 TAIL_HEDGE_HARVEST_EVENT = "tail_hedge_harvest"
-TAIL_HEDGE_HARVEST_SCHEMA_VERSION = 1
+TAIL_HEDGE_HARVEST_SCHEMA_VERSION = 2
 
 
 class RegimeHistoryValidationError(ValueError):
@@ -109,6 +111,19 @@ class HarvestPut:
     net_proceeds_per_contract: float
     cost_basis_per_contract: float
 
+    @property
+    def profit_multiple(self) -> float:
+        return self.net_proceeds_per_contract / self.cost_basis_per_contract
+
+
+@dataclass(frozen=True)
+class PlannedHarvest:
+    candidate: HarvestPut
+    quantity: int
+    order: Any
+    minimum_limit_price: float
+    minimum_net_proceeds: float
+
 
 def _ffmt_or_dash(value: Optional[float], precision: int = 2) -> str:
     return ffmt(value, precision) if value is not None else "-"
@@ -149,7 +164,6 @@ class RegimeRebalanceEngine:
         get_primary_exchange: Callable[[str], str],
         now_provider: Callable[[], datetime],
         tail_hedge_stage_enabled: Callable[[], bool] | None = None,
-        cash_management_stage_enabled: Callable[[], bool] | None = None,
         set_reserved_cash_for_post_management: Callable[[float], None] | None = None,
     ) -> None:
         self.config = config
@@ -159,9 +173,6 @@ class RegimeRebalanceEngine:
         self._get_primary_exchange = get_primary_exchange
         self._now = now_provider
         self._tail_hedge_stage_enabled = tail_hedge_stage_enabled or (lambda: False)
-        self._cash_management_stage_enabled = cash_management_stage_enabled or (
-            lambda: False
-        )
         self._set_reserved_cash_for_post_management = (
             set_reserved_cash_for_post_management
         )
@@ -188,6 +199,73 @@ class RegimeRebalanceEngine:
                 "estimated_fee_per_contract",
                 0.0,
             )
+        )
+
+    def _latest_net_liquidation(self, fallback: float) -> float:
+        try:
+            return self.ibkr.cached_net_liquidation(self.config.runtime.account.number)
+        except RuntimeError:
+            # Never substitute a cash-derived proxy for an unavailable NLV.
+            return fallback
+
+    def _regime_rebalance_base_value(
+        self,
+        *,
+        net_liquidation: float,
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+        market_prices: Dict[str, float],
+        cohorts: list[TailHedgeCohort],
+        tail_hedge_value_override: float | None = None,
+    ) -> tuple[float, float]:
+        """Return the configured regime base and its signed option exclusion."""
+        weight_base = self.config.strategies.regime_rebalance.weight_base
+        if weight_base == RegimeRebalanceBaseEnum.managed_stocks:
+            stock_positions = {
+                position.contract.symbol: position
+                for positions in portfolio_positions.values()
+                for position in positions
+                if isinstance(position.contract, Stock)
+            }
+            managed_stock_value = sum(
+                math.floor(
+                    float(stock_positions[symbol].position)
+                    if symbol in stock_positions
+                    else 0.0
+                )
+                * market_price
+                for symbol, market_price in market_prices.items()
+            )
+            return managed_stock_value, 0.0
+
+        owned_tail_hedge_con_ids = {cohort.con_id for cohort in cohorts}
+        reported_tail_hedge_value = self._tail_hedge_market_value(
+            portfolio_positions,
+            cohorts,
+        )
+        tail_hedge_value = (
+            reported_tail_hedge_value
+            if tail_hedge_value_override is None
+            else tail_hedge_value_override
+        )
+        if weight_base == RegimeRebalanceBaseEnum.net_liq_ex_options:
+            excluded_option_value = sum(
+                float(position.marketValue or 0.0)
+                for positions in portfolio_positions.values()
+                for position in positions
+                if isinstance(position.contract, Option)
+                and (
+                    position.contract.symbol in market_prices
+                    or position.contract.conId in owned_tail_hedge_con_ids
+                )
+            )
+            excluded_option_value += tail_hedge_value - reported_tail_hedge_value
+        else:
+            excluded_option_value = tail_hedge_value
+        adjusted_net_liquidation = net_liquidation - excluded_option_value
+        regime_margin_usage = self._resolve_regime_margin_usage()
+        return (
+            math.floor(adjusted_net_liquidation * regime_margin_usage),
+            excluded_option_value,
         )
 
     def _record_tail_harvest(
@@ -229,151 +307,104 @@ class RegimeRebalanceEngine:
             return []
         return self._tail_state_store.load().open_cohorts
 
-    def _cash_fund_value(
-        self,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> float:
-        cash_management = getattr(self.config.strategies, "cash_management", None)
-        if (
-            not bool(getattr(cash_management, "enabled", False))
-            or not self._cash_management_stage_enabled()
-        ):
-            return 0.0
-        cash_fund = getattr(cash_management, "cash_fund", None)
-        if not isinstance(cash_fund, str) or not cash_fund:
-            return 0.0
-
-        value = 0.0
-        for position in portfolio_positions.get(cash_fund, []):
-            if not isinstance(position.contract, Stock) or (
-                position.contract.symbol != cash_fund
-            ):
-                continue
-            try:
-                quantity = float(position.position)
-                market_price = float(getattr(position, "marketPrice", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                continue
-            if not math.isfinite(quantity) or quantity <= 0:
-                continue
-            if not math.isfinite(market_price) or market_price <= 0:
-                try:
-                    market_value = float(getattr(position, "marketValue", 0.0) or 0.0)
-                except (TypeError, ValueError):
-                    continue
-                if not math.isfinite(market_value) or market_value <= 0:
-                    continue
-                market_price = market_value / quantity
-            if not math.isfinite(market_price) or market_price <= 0:
-                continue
-            value += math.floor(quantity) * market_price
-        return value
-
-    def _queued_cash_debits(self) -> PendingBuyCash:
-        return pending_buy_cash(
-            self.ibkr.open_trades(),
-            self.order_ops.orders.records(),
-            account=self.config.runtime.account.number,
-            estimated_fee_per_contract=float(
-                getattr(
-                    self.config.runtime.orders,
-                    "estimated_fee_per_contract",
-                    0.0,
-                )
-            ),
-        )
-
-    def _ordinary_rebalance_shortfall(
-        self,
-        *,
-        orders: List[Tuple[str, str, int]],
-        account_summary: Dict[str, AccountValue],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-        market_prices: Dict[str, float],
-    ) -> float:
-        approved_buys = sum(
-            quantity * market_prices[symbol]
-            for symbol, _primary_exchange, quantity in orders
-            if quantity > 0
-        )
-        approved_sells = sum(
-            abs(quantity) * market_prices[symbol]
-            for symbol, _primary_exchange, quantity in orders
-            if quantity < 0
-        )
-
-        cash_value = account_summary.get("TotalCashValue")
-        available_cash = float(getattr(cash_value, "value", 0.0) or 0.0)
-        cash_management = getattr(self.config.strategies, "cash_management", None)
-        cash_target = (
-            float(getattr(cash_management, "target_cash_balance", 0.0) or 0.0)
-            if bool(getattr(cash_management, "enabled", False))
-            else 0.0
-        )
-        queued_cash = self._queued_cash_debits()
-        if queued_cash.ambiguous:
-            return 0.0
-        cash_management_runs = (
-            bool(getattr(cash_management, "enabled", False))
-            and self._cash_management_stage_enabled()
-        )
-        sell_threshold = (
-            float(getattr(cash_management, "sell_threshold", 0.0) or 0.0)
-            if cash_management_runs
-            else 0.0
-        )
-        cash_fund_value = self._cash_fund_value(portfolio_positions)
-        cash_fund_symbol = getattr(cash_management, "cash_fund", None)
-        cash_fund_sales = sum(
-            abs(quantity) * market_prices[symbol]
-            for symbol, _primary_exchange, quantity in orders
-            if quantity < 0 and symbol == cash_fund_symbol
-        )
-        remaining_cash_fund_value = max(0.0, cash_fund_value - cash_fund_sales)
-
-        # This is cash management's fixed point: after the retained buys, it
-        # can liquidate the remaining fund and may leave at most its configured
-        # deficit tolerance. Subtracting an approved fund sale above prevents
-        # counting the same holding twice.
-        ordinary_capacity = max(
-            0.0,
-            available_cash
-            - cash_target
-            - queued_cash.debit
-            + approved_sells
-            + remaining_cash_fund_value
-            + sell_threshold,
-        )
-        return max(
-            0.0,
-            approved_buys - ordinary_capacity,
-        )
-
     @staticmethod
+    def _owned_tail_position_value(
+        position: PortfolioItem,
+        cohort: TailHedgeCohort,
+    ) -> tuple[int, float] | None:
+        if (
+            not isinstance(position.contract, Option)
+            or position.contract.conId != cohort.con_id
+        ):
+            return None
+        try:
+            live_quantity = float(position.position)
+            reported_value = float(position.marketValue or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if (
+            not math.isfinite(live_quantity)
+            or live_quantity <= 0
+            or not math.isfinite(reported_value)
+        ):
+            return None
+        owned_quantity = min(cohort.quantity, math.floor(live_quantity))
+        if owned_quantity <= 0:
+            return None
+        return owned_quantity, reported_value * owned_quantity / live_quantity
+
+    @classmethod
     def _tail_hedge_market_value(
+        cls,
         portfolio_positions: Dict[str, List[PortfolioItem]],
         cohorts: list[TailHedgeCohort],
     ) -> float:
-        owned_con_ids = {cohort.con_id for cohort in cohorts}
-        return sum(
-            float(position.marketValue or 0.0)
+        cohorts_by_con_id = {cohort.con_id: cohort for cohort in cohorts}
+        sleeve_value = 0.0
+        for positions in portfolio_positions.values():
+            for position in positions:
+                cohort = cohorts_by_con_id.get(position.contract.conId)
+                if cohort is None:
+                    continue
+                owned_position = cls._owned_tail_position_value(position, cohort)
+                if owned_position is not None:
+                    sleeve_value += owned_position[1]
+        return sleeve_value
+
+    @staticmethod
+    def _long_puts_by_con_id(
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+    ) -> dict[int, PortfolioItem]:
+        return {
+            int(position.contract.conId): position
             for positions in portfolio_positions.values()
             for position in positions
             if isinstance(position.contract, Option)
-            and position.contract.conId in owned_con_ids
-        )
+            and position.contract.right.upper().startswith("P")
+            and type(position.contract.conId) is int
+            and position.contract.conId > 0
+            and float(position.position) > 0
+        }
 
-    def _working_option_orders(
+    @classmethod
+    def _tail_hedge_market_value_at_quotes(
+        cls,
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+        cohorts: list[TailHedgeCohort],
+        quoted_limit_prices: dict[tuple[str, int], float],
+    ) -> float:
+        sleeve_value = cls._tail_hedge_market_value(portfolio_positions, cohorts)
+        cohorts_by_key = {
+            (cohort.entry_id, cohort.con_id): cohort for cohort in cohorts
+        }
+        positions_by_con_id = cls._long_puts_by_con_id(portfolio_positions)
+        for key, limit_price in quoted_limit_prices.items():
+            cohort = cohorts_by_key.get(key)
+            position = positions_by_con_id.get(key[1])
+            if cohort is None or position is None:
+                continue
+            owned_position = cls._owned_tail_position_value(position, cohort)
+            if owned_position is None:
+                continue
+            owned_quantity, reported_owned_value = owned_position
+            try:
+                multiplier = float(position.contract.multiplier)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(multiplier) or multiplier <= 0:
+                continue
+            quoted_owned_value = limit_price * multiplier * owned_quantity
+            sleeve_value -= max(0.0, reported_owned_value - quoted_owned_value)
+        return sleeve_value
+
+    def _option_order_state(
         self,
         owned_con_ids: set[int] | None = None,
     ) -> tuple[set[int], set[str]]:
         account_number = self.config.runtime.account.number
-        open_trades = self.ibkr.open_trades()
-        if not isinstance(open_trades, list):
-            return set(), set()
-        con_ids: set[int] = set()
+        unavailable_con_ids: set[int] = set()
         tail_sell_symbols: set[str] = set()
-        for trade in open_trades:
+        for trade in self.ibkr.open_trades():
             order = getattr(trade, "order", None)
             contract = getattr(trade, "contract", None)
             is_done = getattr(trade, "isDone", None)
@@ -386,80 +417,161 @@ class RegimeRebalanceEngine:
                 or contract.conId <= 0
             ):
                 continue
-            con_ids.add(contract.conId)
+            unavailable_con_ids.add(contract.conId)
             if (
                 owned_con_ids is not None
                 and contract.conId in owned_con_ids
                 and str(getattr(order, "action", "")).upper() == "SELL"
-                and is_tail_reduction_ref(getattr(order, "orderRef", None))
             ):
                 tail_sell_symbols.add(str(contract.symbol))
-        return con_ids, tail_sell_symbols
+        for contract, order, _intent_id in self.order_ops.orders.records():
+            if (
+                not isinstance(contract, Option)
+                or type(contract.conId) is not int
+                or contract.conId <= 0
+            ):
+                continue
+            unavailable_con_ids.add(contract.conId)
+            if (
+                owned_con_ids is not None
+                and contract.conId in owned_con_ids
+                and getattr(order, "account", None) == account_number
+                and str(getattr(order, "action", "")).upper() == "SELL"
+            ):
+                tail_sell_symbols.add(str(contract.symbol))
+        return unavailable_con_ids, tail_sell_symbols
 
-    def _tail_sale_in_progress_symbols(self, owned_con_ids: set[int]) -> set[str]:
-        _working_con_ids, symbols = self._working_option_orders(owned_con_ids)
-        account_number = self.config.runtime.account.number
-        symbols.update(
-            str(contract.symbol)
-            for contract, order, _intent_id in self.order_ops.orders.records()
-            if isinstance(contract, Option)
-            and contract.conId in owned_con_ids
-            and getattr(order, "account", None) == account_number
-            and str(getattr(order, "action", "")).upper() == "SELL"
-            and is_tail_reduction_ref(getattr(order, "orderRef", None))
+    def _tail_harvest_conflicts(
+        self,
+        cohorts: list[TailHedgeCohort],
+    ) -> tuple[set[int], set[str], str | None]:
+        owned_con_ids = {cohort.con_id for cohort in cohorts}
+        unavailable_con_ids, working_sale_symbols = self._option_order_state(
+            owned_con_ids
         )
-        return symbols
-
-    def _live_account_puts(self) -> dict[int, PortfolioItem]:
-        account_number = self.config.runtime.account.number
-        positions = self.ibkr.portfolio(account=account_number)
-        if not isinstance(positions, list):
-            return {}
-        return {
-            int(position.contract.conId): position
-            for position in positions
-            if getattr(position, "account", None) == account_number
-            and isinstance(position.contract, Option)
-            and position.contract.right.upper().startswith("P")
-            and type(position.contract.conId) is int
-            and position.contract.conId > 0
-            and float(position.position) > 0
+        pending_recovery_symbols = {
+            cohort.symbol for cohort in cohorts if cohort.has_pending_recovery
         }
+        blocked_symbols = working_sale_symbols | pending_recovery_symbols
+        if pending_recovery_symbols and working_sale_symbols:
+            reason = "unresolved_tail_reduction"
+        elif pending_recovery_symbols:
+            reason = "pending_recovery"
+        elif working_sale_symbols:
+            reason = "working_tail_sale"
+        else:
+            reason = None
+        return unavailable_con_ids, blocked_symbols, reason
 
-    async def _profitable_tail_puts(
+    def _record_tail_harvest_blocked(
         self,
         *,
-        symbol: str,
-        cohorts: list[TailHedgeCohort],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> list[HarvestPut]:
-        snapshot_positions = {
-            int(position.contract.conId): position
-            for position in portfolio_positions.get(symbol, [])
-            if isinstance(position.contract, Option)
-            and position.contract.right.upper().startswith("P")
-            and type(position.contract.conId) is int
-            and position.contract.conId > 0
-            and float(position.position) > 0
-        }
-        unavailable_con_ids, _harvest_symbols = self._working_option_orders()
-        unavailable_con_ids.update(
-            int(contract.conId)
-            for contract, _order, _intent_id in self.order_ops.orders.records()
-            if isinstance(contract, Option)
-            and type(contract.conId) is int
-            and contract.conId > 0
+        rebalance_shares: dict[str, int],
+        blocked_symbols: set[str],
+        reason: str,
+    ) -> None:
+        for symbol, quantity in rebalance_shares.items():
+            self._record_tail_harvest(
+                "harvest_blocked",
+                symbol=symbol,
+                reason=reason,
+                rebalance_shares=quantity,
+                blocking_symbols=sorted(blocked_symbols),
+            )
+        log.info(
+            "Skipping a new portfolio tail harvest while prior reductions "
+            f"are unresolved for {', '.join(sorted(blocked_symbols))}."
         )
 
-        quoted: list[tuple[TailHedgeCohort, float]] = []
+    def _build_profitable_tail_put(
+        self,
+        *,
+        cohort: TailHedgeCohort,
+        position: PortfolioItem,
+        limit_price: float,
+    ) -> HarvestPut | None:
+        symbol = cohort.symbol
+        contract = position.contract
+        if not isinstance(contract, Option) or contract.symbol != symbol:
+            return None
+        try:
+            multiplier = float(contract.multiplier)
+            live_quantity = float(position.position)
+        except (TypeError, ValueError):
+            return None
+        if (
+            not math.isfinite(multiplier)
+            or multiplier <= 0
+            or not math.isfinite(live_quantity)
+        ):
+            return None
+        quantity = min(cohort.quantity, math.floor(live_quantity))
+        if quantity <= 0:
+            return None
+
+        try:
+            average_cost = float(getattr(position, "averageCost", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            average_cost = 0.0
+        estimated_fee = self._estimated_tail_fee_per_contract()
+        configured_entry_basis = cohort.entry_limit_price * multiplier + estimated_fee
+        if not math.isfinite(average_cost) or average_cost <= 0:
+            average_cost = configured_entry_basis
+        else:
+            average_cost = max(average_cost, configured_entry_basis)
+        gross_proceeds = limit_price * multiplier
+        net_proceeds = max(0.0, gross_proceeds - estimated_fee)
+        if (
+            not math.isfinite(average_cost)
+            or average_cost <= 0
+            or net_proceeds <= average_cost
+        ):
+            self._record_tail_harvest(
+                "candidate_not_net_profitable",
+                symbol=symbol,
+                entry_id=cohort.entry_id,
+                con_id=cohort.con_id,
+                gross_proceeds_per_contract=gross_proceeds,
+                estimated_fee_per_contract=estimated_fee,
+                net_proceeds_per_contract=net_proceeds,
+                cost_basis_per_contract=average_cost,
+            )
+            log.info(
+                f"{symbol}: Tail put conId={cohort.con_id} is not profitable "
+                "after its estimated sell fee."
+            )
+            return None
+
+        contract.exchange = self.order_ops.get_order_exchange()
+        return HarvestPut(
+            entry_id=cohort.entry_id,
+            contract=contract,
+            expiration=cohort.expiration,
+            quantity=quantity,
+            limit_price=limit_price,
+            gross_proceeds_per_contract=gross_proceeds,
+            estimated_fee_per_contract=estimated_fee,
+            net_proceeds_per_contract=net_proceeds,
+            cost_basis_per_contract=average_cost,
+        )
+
+    async def _quote_tail_puts(
+        self,
+        *,
+        symbols: set[str],
+        cohorts: list[TailHedgeCohort],
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+    ) -> dict[tuple[str, int], float]:
+        snapshot_positions = self._long_puts_by_con_id(portfolio_positions)
+
+        quoted: dict[tuple[str, int], float] = {}
         for cohort in cohorts:
             con_id = cohort.con_id
             position = snapshot_positions.get(con_id)
             if (
-                cohort.symbol != symbol
+                cohort.symbol not in symbols
                 or cohort.status != "active"
                 or cohort.has_pending_recovery
-                or con_id in unavailable_con_ids
                 or position is None
             ):
                 continue
@@ -474,96 +586,80 @@ class RegimeRebalanceEngine:
                 )
             except Exception as exc:
                 log.warning(
-                    f"{symbol}: Unable to quote tail put {con_id} for harvesting "
+                    f"{cohort.symbol}: Unable to quote tail put {con_id} for harvesting "
                     f"({type(exc).__name__})."
                 )
                 continue
             limit_price = round(float(midpoint_or_market_price(ticker)), 2)
             if math.isfinite(limit_price) and limit_price > 0:
-                quoted.append((cohort, limit_price))
+                quoted[(cohort.entry_id, con_id)] = limit_price
+        return quoted
 
-        # Quote requests yield to ib_async. Re-read its cache once after all
-        # requests and before committing any close.
-        live_positions = self._live_account_puts()
-        unavailable_con_ids, _harvest_symbols = self._working_option_orders()
+    async def _enqueue_tail_harvest(
+        self,
+        *,
+        net_liquidation: float,
+        rebalance_shares: Dict[str, int],
+        market_prices: Dict[str, float],
+        cohorts: list[TailHedgeCohort],
+        portfolio_positions: Dict[str, List[PortfolioItem]],
+    ) -> set[str]:
+        if self._tail_state_store is None:
+            return set()
+
+        quoted_limit_prices = await self._quote_tail_puts(
+            symbols=set(rebalance_shares),
+            cohorts=cohorts,
+            portfolio_positions=portfolio_positions,
+        )
+
+        # Quote requests yield to ib_async. Re-evaluate the portfolio-level
+        # band from its current cache before persisting or queuing a sale.
+        account_number = self.config.runtime.account.number
+        refreshed_positions = portfolio_positions_to_dict(
+            self.ibkr.portfolio(account=account_number)
+        )
+        state = self._tail_state_store.load()
+        live_cohorts = state.open_cohorts
+        unavailable_con_ids, blocked_symbols, blocked_reason = (
+            self._tail_harvest_conflicts(live_cohorts)
+        )
+        if blocked_reason is not None:
+            self._record_tail_harvest_blocked(
+                rebalance_shares=rebalance_shares,
+                blocked_symbols=blocked_symbols,
+                reason=blocked_reason,
+            )
+            return set()
+        refreshed_puts = self._long_puts_by_con_id(refreshed_positions)
+        cohorts_by_key = {
+            (cohort.entry_id, cohort.con_id): cohort for cohort in live_cohorts
+        }
         candidates: list[HarvestPut] = []
-        for cohort, limit_price in quoted:
-            con_id = cohort.con_id
-            position = live_positions.get(con_id)
+        live_quotes: dict[tuple[str, int], float] = {}
+        for key, limit_price in quoted_limit_prices.items():
+            cohort = cohorts_by_key.get(key)
+            con_id = key[1]
+            position = refreshed_puts.get(con_id)
             if (
-                position is None
-                or position.contract.symbol != symbol
-                or con_id in unavailable_con_ids
+                cohort is None
+                or cohort.status != "active"
+                or cohort.has_pending_recovery
+                or position is None
+                or position.contract.symbol != cohort.symbol
             ):
                 continue
-            contract = position.contract
-            if not isinstance(contract, Option):
+            live_quotes[key] = limit_price
+            if con_id in unavailable_con_ids:
                 continue
-            try:
-                multiplier = float(contract.multiplier)
-            except (TypeError, ValueError):
-                continue
-            if not math.isfinite(multiplier) or multiplier <= 0:
-                continue
-            quantity = min(
-                cohort.quantity,
-                math.floor(float(position.position)),
+            candidate = self._build_profitable_tail_put(
+                cohort=cohort,
+                position=position,
+                limit_price=limit_price,
             )
-            if quantity <= 0:
-                continue
-
-            try:
-                average_cost = float(getattr(position, "averageCost", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                average_cost = 0.0
-            configured_entry_basis = (
-                cohort.entry_limit_price * multiplier
-                + self._estimated_tail_fee_per_contract()
-            )
-            if not math.isfinite(average_cost) or average_cost <= 0:
-                average_cost = configured_entry_basis
-            else:
-                average_cost = max(average_cost, configured_entry_basis)
-            gross_proceeds = limit_price * multiplier
-            estimated_fee = self._estimated_tail_fee_per_contract()
-            net_proceeds = max(0.0, gross_proceeds - estimated_fee)
-            if (
-                not math.isfinite(average_cost)
-                or average_cost <= 0
-                or net_proceeds <= average_cost
-            ):
-                self._record_tail_harvest(
-                    "candidate_not_net_profitable",
-                    symbol=symbol,
-                    entry_id=cohort.entry_id,
-                    con_id=con_id,
-                    gross_proceeds_per_contract=gross_proceeds,
-                    estimated_fee_per_contract=estimated_fee,
-                    net_proceeds_per_contract=net_proceeds,
-                    cost_basis_per_contract=average_cost,
-                )
-                log.info(
-                    f"{symbol}: Tail put conId={con_id} is not profitable after "
-                    "its estimated sell fee."
-                )
-                continue
-
-            contract.exchange = self.order_ops.get_order_exchange()
-            candidates.append(
-                HarvestPut(
-                    entry_id=cohort.entry_id,
-                    contract=contract,
-                    expiration=cohort.expiration,
-                    quantity=quantity,
-                    limit_price=limit_price,
-                    gross_proceeds_per_contract=gross_proceeds,
-                    estimated_fee_per_contract=estimated_fee,
-                    net_proceeds_per_contract=net_proceeds,
-                    cost_basis_per_contract=average_cost,
-                )
-            )
-
-        return sorted(
+            if candidate is not None:
+                candidates.append(candidate)
+        candidates = sorted(
             candidates,
             key=lambda candidate: (
                 candidate.expiration,
@@ -571,154 +667,199 @@ class RegimeRebalanceEngine:
                 candidate.contract.conId,
             ),
         )
-
-    async def _enqueue_tail_harvest(
-        self,
-        *,
-        symbol: str,
-        stock_price: float,
-        deferred_shares: int,
-        cohorts: list[TailHedgeCohort],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> bool:
-        candidates = await self._profitable_tail_puts(
-            symbol=symbol,
-            cohorts=cohorts,
-            portfolio_positions=portfolio_positions,
+        sleeve_value = self._tail_hedge_market_value_at_quotes(
+            refreshed_positions,
+            live_cohorts,
+            live_quotes,
         )
-        candidate = next(
-            (
-                item
-                for item in candidates
-                if math.floor(
-                    item.quantity * item.net_proceeds_per_contract / stock_price
-                )
-                > 0
+        refreshed_net_liquidation = self._latest_net_liquidation(net_liquidation)
+        refreshed_regime_base, excluded_option_value = (
+            self._regime_rebalance_base_value(
+                net_liquidation=refreshed_net_liquidation,
+                portfolio_positions=refreshed_positions,
+                market_prices=market_prices,
+                cohorts=live_cohorts,
+                # Use the conservative quote-aware tail mark on both sides of
+                # the ratio. This keeps the shared option-exclusion formula
+                # coherent even when IBKR's portfolio mark lags the quote.
+                tail_hedge_value_override=sleeve_value,
+            )
+        )
+        tail_hedge = self.config.strategies.tail_hedge
+        decision = evaluate_harvest_band(
+            portfolio_base_value=refreshed_regime_base,
+            sleeve_value=sleeve_value,
+            trigger_weight=tail_hedge.harvest_trigger_weight,
+            target_weight=tail_hedge.harvest_target_weight,
+        )
+        if decision is None:
+            return set()
+        sale_budget = decision.sale_budget
+        band_payload = {
+            "net_liquidation": refreshed_net_liquidation,
+            "regime_rebalance_base": refreshed_regime_base,
+            "regime_weight_base": (
+                self.config.strategies.regime_rebalance.weight_base.value
             ),
-            None,
-        )
-        if candidate is None or deferred_shares <= 0:
-            self._record_tail_harvest(
-                "no_eligible_cohort",
-                symbol=symbol,
-                deferred_shares=deferred_shares,
-                stock_price=stock_price,
+            "excluded_option_value": excluded_option_value,
+            "sleeve_value": decision.sleeve_value,
+            "sleeve_weight": decision.sleeve_weight,
+            "harvest_trigger_weight": tail_hedge.harvest_trigger_weight,
+            "harvest_target_weight": tail_hedge.harvest_target_weight,
+            "target_sleeve_value": decision.target_value,
+            "approved_rebalance_value": sum(
+                shares * market_prices[symbol]
+                for symbol, shares in rebalance_shares.items()
+            ),
+        }
+
+        selected: list[tuple[HarvestPut, int]] = []
+        selected_con_ids: set[int] = set()
+        remaining = sale_budget
+        for candidate in candidates:
+            con_id = candidate.contract.conId
+            if remaining <= 0.0 or con_id in selected_con_ids:
+                continue
+            # The band measures option market value, so fees must not change
+            # how many contracts are removed from the sleeve.
+            quantity = min(
+                candidate.quantity,
+                math.ceil(remaining / candidate.gross_proceeds_per_contract),
             )
-            return False
+            if quantity <= 0:
+                continue
+            selected.append((candidate, quantity))
+            selected_con_ids.add(con_id)
+            remaining -= quantity * candidate.gross_proceeds_per_contract
 
-        # Monetize one useful tranche, shortest expiration first. A smaller
-        # earlier tranche remains invested rather than blocking the ladder.
-        total_proceeds = candidate.quantity * candidate.net_proceeds_per_contract
-        fundable_shares = min(
-            deferred_shares,
-            math.floor(total_proceeds / stock_price),
-        )
-        required_proceeds = fundable_shares * stock_price
-        quantity = min(
-            candidate.quantity,
-            math.ceil(required_proceeds / candidate.net_proceeds_per_contract),
-        )
-        estimated_net_proceeds = quantity * candidate.net_proceeds_per_contract
-        if estimated_net_proceeds < required_proceeds:
-            return False
-        estimated_gross_proceeds = quantity * candidate.gross_proceeds_per_contract
-        estimated_fees = quantity * candidate.estimated_fee_per_contract
-        excess_proceeds = estimated_net_proceeds - required_proceeds
-
-        con_id = candidate.contract.conId
-        if self._tail_state_store is None:
-            return False
-        state = self._tail_state_store.load()
-        state_cohort = state.find_open(candidate.entry_id, con_id)
-        if (
-            state_cohort is None
-            or state_cohort.symbol != symbol
-            or state_cohort.status != "active"
-            or state_cohort.quantity < quantity
-            or state_cohort.has_pending_recovery
-        ):
-            return False
-        multiplier = float(candidate.contract.multiplier)
-        minimum_profitable_price = (
-            math.floor(
-                (
-                    candidate.cost_basis_per_contract
-                    + candidate.estimated_fee_per_contract
+        if not selected:
+            for symbol, shares in rebalance_shares.items():
+                self._record_tail_harvest(
+                    "no_eligible_cohort",
+                    symbol=symbol,
+                    rebalance_shares=shares,
+                    sale_budget=sale_budget,
+                    **band_payload,
                 )
-                / multiplier
-                * 100
+            return set()
+
+        enqueued_at = self._now()
+        planned: list[PlannedHarvest] = []
+        for candidate, quantity in selected:
+            symbol = candidate.contract.symbol
+            con_id = candidate.contract.conId
+            state_cohort = state.find_open(candidate.entry_id, con_id)
+            if (
+                state_cohort is None
+                or state_cohort.symbol != symbol
+                or state_cohort.status != "active"
+                or state_cohort.quantity < quantity
+                or state_cohort.has_pending_recovery
+            ):
+                return set()
+            multiplier = float(candidate.contract.multiplier)
+            minimum_profitable_price = (
+                math.floor(
+                    (
+                        candidate.cost_basis_per_contract
+                        + candidate.estimated_fee_per_contract
+                    )
+                    / multiplier
+                    * 100
+                )
+                + 1
+            ) / 100
+            minimum_limit_price = minimum_harvest_limit_price(
+                quoted_limit_price=candidate.limit_price,
+                sleeve_value=decision.sleeve_value,
+                trigger_value=decision.trigger_value,
+                profitable_limit_price=minimum_profitable_price,
             )
-            + 1
-        ) / 100
-        minimum_net_proceeds = round(
-            minimum_profitable_price * multiplier
-            - candidate.estimated_fee_per_contract,
-            2,
-        )
-        # Candidate sizing was refreshed from the live portfolio after quotes.
-        # A prior external reduction is not proceeds from this unsubmitted sale.
-        state_cohort.quantity = min(state_cohort.quantity, candidate.quantity)
-        state_cohort.begin_recovery(
-            quantity=quantity,
-            # Actual fill proceeds replace this conservative floor during
-            # tail-state reconciliation.
-            proceeds_per_contract=minimum_net_proceeds,
-            enqueued_at=self._now(),
-        )
+            minimum_net_proceeds = round(
+                minimum_limit_price * multiplier - candidate.estimated_fee_per_contract,
+                2,
+            )
+            state_cohort.quantity = min(state_cohort.quantity, candidate.quantity)
+            state_cohort.begin_recovery(
+                quantity=quantity,
+                proceeds_per_contract=minimum_net_proceeds,
+                enqueued_at=enqueued_at,
+            )
+            order = self.order_ops.create_limit_order(
+                action="SELL",
+                quantity=quantity,
+                limit_price=candidate.limit_price,
+                use_default_algo=False,
+                order_ref=build_tail_reduction_order_ref(
+                    f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{symbol}",
+                    con_id,
+                    state_cohort.pending_recovery_enqueued_at,
+                ),
+                transmit=True,
+            )
+            setattr(order, TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR, minimum_limit_price)
+            planned.append(
+                PlannedHarvest(
+                    candidate=candidate,
+                    quantity=quantity,
+                    order=order,
+                    minimum_limit_price=minimum_limit_price,
+                    minimum_net_proceeds=minimum_net_proceeds,
+                )
+            )
+
         try:
             self._tail_state_store.save(state)
         except RuntimeError:
             log.error(
-                f"{symbol}: Unable to persist tail-harvest recovery intent; "
-                "keeping the ordinary rebalance order unchanged."
+                "Unable to persist tail-harvest recovery intents; keeping the "
+                "approved rebalance unchanged."
             )
-            return False
-        order = self.order_ops.create_limit_order(
-            action="SELL",
-            quantity=quantity,
-            limit_price=candidate.limit_price,
-            use_default_algo=False,
-            order_ref=build_tail_reduction_order_ref(
-                f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:{symbol}",
-                con_id,
-                state_cohort.pending_recovery_enqueued_at,
-            ),
-            transmit=True,
-        )
-        setattr(order, TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR, minimum_profitable_price)
-        self.order_ops.enqueue_order(candidate.contract, order)
-        self._record_tail_harvest(
-            "harvest_enqueued",
-            symbol=symbol,
-            entry_id=candidate.entry_id,
-            con_id=con_id,
-            expiration=candidate.expiration,
-            quantity=quantity,
-            limit_price=candidate.limit_price,
-            cost_basis_per_contract=candidate.cost_basis_per_contract,
-            gross_proceeds=estimated_gross_proceeds,
-            estimated_fees=estimated_fees,
-            net_proceeds=estimated_net_proceeds,
-            required_proceeds=required_proceeds,
-            excess_proceeds=excess_proceeds,
-            stock_price=stock_price,
-            deferred_shares=deferred_shares,
-            fundable_shares=fundable_shares,
-        )
-        log.notice(
-            f"{symbol}: Harvesting {quantity} profitable tail put(s) from one "
-            f"tranche for about {dfmt(estimated_net_proceeds)} net of estimated "
-            f"fees; excess over this rebalance slice={dfmt(excess_proceeds)}, "
-            f"fundable deferred shares={fundable_shares}."
-        )
-        return True
+            return set()
+
+        enqueued_symbols: set[str] = set()
+        for plan in planned:
+            candidate = plan.candidate
+            quantity = plan.quantity
+            symbol = candidate.contract.symbol
+            estimated_net_proceeds = quantity * candidate.net_proceeds_per_contract
+            estimated_gross_proceeds = quantity * candidate.gross_proceeds_per_contract
+            estimated_fees = quantity * candidate.estimated_fee_per_contract
+            stock_price = market_prices[symbol]
+            self.order_ops.enqueue_order(candidate.contract, plan.order)
+            enqueued_symbols.add(symbol)
+            self._record_tail_harvest(
+                "harvest_enqueued",
+                symbol=symbol,
+                entry_id=candidate.entry_id,
+                con_id=candidate.contract.conId,
+                expiration=candidate.expiration,
+                quantity=quantity,
+                limit_price=candidate.limit_price,
+                minimum_limit_price=plan.minimum_limit_price,
+                minimum_net_proceeds_per_contract=plan.minimum_net_proceeds,
+                cost_basis_per_contract=candidate.cost_basis_per_contract,
+                gross_proceeds=estimated_gross_proceeds,
+                estimated_fees=estimated_fees,
+                net_proceeds=estimated_net_proceeds,
+                stock_price=stock_price,
+                rebalance_shares=rebalance_shares[symbol],
+                profit_multiple=candidate.profit_multiple,
+                sale_budget=sale_budget,
+                **band_payload,
+            )
+            log.notice(
+                f"{symbol}: Harvesting {quantity} earliest-expiring profitable "
+                f"tail put(s) for about {dfmt(estimated_net_proceeds)} net of "
+                "estimated fees before the approved hard rebalance."
+            )
+        return enqueued_symbols
 
     async def _apply_tail_harvest(
         self,
         *,
         orders: List[Tuple[str, str, int]],
-        account_summary: Dict[str, AccountValue],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        net_liquidation: float,
         market_prices: Dict[str, float],
         regime_summary: List[Dict[str, Any]],
         hard_underweight_symbols: set[str],
@@ -728,147 +869,83 @@ class RegimeRebalanceEngine:
         if not targets or not cohorts or not hard_underweight_symbols:
             return orders
 
-        # Re-materialize ib_async's fill-current caches after preceding awaits;
-        # no broker refresh request is needed.
+        # Cash is intentionally absent from this decision. A harvest is an
+        # allocation response to a same-symbol hard-underweight buy, not an
+        # attempt to infer deployable capital from IBKR cash accounting.
+        # Re-materialize ib_async's fill-current portfolio cache after
+        # preceding awaits; no broker refresh request is needed.
         account_number = self.config.runtime.account.number
-        try:
-            live_cash = self.ibkr.cached_account_value(account_number, "TotalCashValue")
-        except RuntimeError:
-            return orders
-        account_summary = dict(account_summary)
-        account_summary["TotalCashValue"] = AccountValue(
-            account_number, "TotalCashValue", str(live_cash), "BASE", ""
-        )
         portfolio_positions = portfolio_positions_to_dict(
             self.ibkr.portfolio(account=account_number)
         )
 
-        funding_shortfall = self._ordinary_rebalance_shortfall(
-            orders=orders,
-            account_summary=account_summary,
-            portfolio_positions=portfolio_positions,
-            market_prices=market_prices,
-        )
-        if funding_shortfall <= 0:
-            return orders
-
-        owned_con_ids = {cohort.con_id for cohort in cohorts}
-        working_sale_symbols = self._tail_sale_in_progress_symbols(owned_con_ids)
-        pending_recovery_symbols = {
-            cohort.symbol for cohort in cohorts if cohort.has_pending_recovery
-        }
-        blocked_symbols = working_sale_symbols | pending_recovery_symbols
-        summaries = {str(item["symbol"]): item for item in regime_summary}
-        eligible_buys = {
-            symbol: (quantity, quantity * market_prices[symbol])
-            for symbol, _primary_exchange, quantity in orders
-            if quantity > 0 and symbol in targets and symbol in hard_underweight_symbols
-        }
-        eligible_buy_value = sum(value for _quantity, value in eligible_buys.values())
-        if eligible_buy_value <= 0:
-            return orders
-        allocatable_shortfall = min(funding_shortfall, eligible_buy_value)
-        dollar_allocations = {
-            symbol: allocatable_shortfall * buy_value / eligible_buy_value
-            for symbol, (_quantity, buy_value) in eligible_buys.items()
-        }
-        deferred_by_symbol = {
-            symbol: min(
-                quantity,
-                math.floor(dollar_allocations[symbol] / market_prices[symbol]),
-            )
-            for symbol, (quantity, _buy_value) in eligible_buys.items()
-        }
-        deferred_value = sum(
-            quantity * market_prices[symbol]
-            for symbol, quantity in deferred_by_symbol.items()
-        )
-        # Largest-remainder apportionment keeps scarce cash proportional in
-        # dollars; symbol is only the deterministic tie-break for whole shares.
-        remainder_order = sorted(
-            eligible_buys,
-            key=lambda symbol: (
-                -(
-                    dollar_allocations[symbol] / market_prices[symbol]
-                    - deferred_by_symbol[symbol]
-                ),
-                symbol,
-            ),
-        )
-        for symbol in remainder_order:
-            if deferred_value >= allocatable_shortfall or math.isclose(
-                deferred_value,
-                allocatable_shortfall,
-                abs_tol=1e-6,
-            ):
-                break
-            quantity = eligible_buys[symbol][0]
-            if deferred_by_symbol[symbol] >= quantity:
-                continue
-            deferred_by_symbol[symbol] += 1
-            deferred_value += market_prices[symbol]
-
-        retained_orders: list[tuple[str, str, int]] = []
-        for symbol, primary_exchange, quantity in orders:
+        rebalance_shares: Dict[str, int] = {}
+        for symbol, _primary_exchange, quantity in orders:
             if (
                 quantity <= 0
                 or symbol not in targets
                 or symbol not in hard_underweight_symbols
             ):
-                retained_orders.append((symbol, primary_exchange, quantity))
                 continue
+            rebalance_shares[symbol] = quantity
 
-            stock_price = market_prices[symbol]
-            allocated_deferred_shares = deferred_by_symbol.get(symbol, 0)
-            if allocated_deferred_shares <= 0:
-                retained_orders.append((symbol, primary_exchange, quantity))
-                continue
-            if symbol in blocked_symbols:
-                # Do not spend estimated proceeds from a harvest that is still
-                # working or awaiting reconciliation. Keep only the
-                # ordinary-funded stock slice; a later invocation starts from a
-                # newly synchronized broker snapshot.
-                harvest_pending = True
-                reason = (
-                    "pending_recovery"
-                    if symbol in pending_recovery_symbols
-                    else "working_tail_sale"
-                )
-                self._record_tail_harvest(
-                    "harvest_deferred",
-                    symbol=symbol,
-                    reason=reason,
-                    deferred_shares=allocated_deferred_shares,
-                    funding_shortfall=funding_shortfall,
-                    live_cash=live_cash,
-                )
-                log.info(
-                    f"{symbol}: Deferring {allocated_deferred_shares} stock "
-                    f"share(s); tail harvest blocked by {reason}."
-                )
-            else:
-                harvest_pending = await self._enqueue_tail_harvest(
-                    symbol=symbol,
-                    stock_price=stock_price,
-                    deferred_shares=allocated_deferred_shares,
-                    cohorts=cohorts,
-                    portfolio_positions=portfolio_positions,
-                )
-            deferred_shares = allocated_deferred_shares if harvest_pending else 0
-            retained_quantity = quantity - deferred_shares
-            if retained_quantity > 0:
-                retained_orders.append((symbol, primary_exchange, retained_quantity))
+        if not rebalance_shares:
+            return orders
+
+        _unavailable_con_ids, blocked_symbols, blocked_reason = (
+            self._tail_harvest_conflicts(cohorts)
+        )
+
+        # The band is portfolio-wide. Until every prior reduction is resolved,
+        # its eventual sleeve impact is unknown and no new excess can be sized
+        # safely—even for a different target symbol.
+        if blocked_reason is not None:
+            self._record_tail_harvest_blocked(
+                rebalance_shares=rebalance_shares,
+                blocked_symbols=blocked_symbols,
+                reason=blocked_reason,
+            )
+            return orders
+
+        current_net_liquidation = self._latest_net_liquidation(net_liquidation)
+        current_regime_base, _ = self._regime_rebalance_base_value(
+            net_liquidation=current_net_liquidation,
+            portfolio_positions=portfolio_positions,
+            market_prices=market_prices,
+            cohorts=cohorts,
+        )
+        sleeve_value = self._tail_hedge_market_value(portfolio_positions, cohorts)
+        tail_hedge = self.config.strategies.tail_hedge
+        decision = evaluate_harvest_band(
+            portfolio_base_value=current_regime_base,
+            sleeve_value=sleeve_value,
+            trigger_weight=tail_hedge.harvest_trigger_weight,
+            target_weight=tail_hedge.harvest_target_weight,
+        )
+        if decision is None:
+            return orders
+
+        enqueued_symbols = await self._enqueue_tail_harvest(
+            net_liquidation=current_net_liquidation,
+            rebalance_shares=rebalance_shares,
+            market_prices=market_prices,
+            cohorts=cohorts,
+            portfolio_positions=portfolio_positions,
+        )
+        summaries = {str(item["symbol"]): item for item in regime_summary}
+        for symbol in enqueued_symbols:
             summary = summaries.get(symbol)
-            if summary is not None and deferred_shares > 0:
-                summary["shares_to_trade"] = retained_quantity
+            if summary is not None:
                 summary["action"] = (
-                    f"[green]Buy {retained_quantity}; "
-                    f"[magenta]defer {deferred_shares} to tail proceeds"
-                    if retained_quantity > 0
-                    else f"[magenta]Harvest puts; defer {deferred_shares}"
+                    f"[magenta]Harvest puts first; "
+                    f"[green]buy {rebalance_shares[symbol]}"
                 )
 
-        return retained_orders
+        # The stock orders are preliminary planning output. In live mode a
+        # newly queued harvest executes first, then the full regime plan is
+        # recalculated from refreshed broker state. Existing or unavailable
+        # harvests never mutate an otherwise approved rebalance.
+        return orders
 
     @staticmethod
     def _as_int_or_none(value: Any) -> int | None:
@@ -1672,8 +1749,6 @@ class RegimeRebalanceEngine:
             raise ValueError(
                 "Regime-aware rebalancing requires positive target weights."
             )
-        managed_regime_symbols = set(symbols)
-
         stock_positions = [
             position
             for symbol in portfolio_positions
@@ -1731,45 +1806,28 @@ class RegimeRebalanceEngine:
 
         last_rebalance = await self._get_last_regime_rebalance_time(symbols)
         tail_cohorts = self._load_tail_cohorts()
-        owned_tail_hedge_con_ids = {cohort.con_id for cohort in tail_cohorts}
 
         weight_base = regime_rebalance.weight_base
         regime_margin_usage = self._resolve_regime_margin_usage()
-        if weight_base == RegimeRebalanceBaseEnum.managed_stocks:
-            total_value = sum(current_values.values())
-        elif weight_base == RegimeRebalanceBaseEnum.net_liq_ex_options:
-            excluded_value = 0.0
-            # Regime checks receive the combined account map for tail ownership.
-            # Ignore unrelated financing options, but retain state-owned tail puts.
-            for positions in portfolio_positions.values():
-                for position in positions:
-                    if isinstance(position.contract, Option) and (
-                        position.contract.symbol in managed_regime_symbols
-                        or position.contract.conId in owned_tail_hedge_con_ids
-                    ):
-                        market_value = float(position.marketValue or 0.0)
-                        excluded_value += market_value
-            net_liq = float(account_summary["NetLiquidation"].value)
-            adjusted_net_liq = net_liq - excluded_value
-            total_value = math.floor(adjusted_net_liq * regime_margin_usage)
+        net_liq = float(account_summary["NetLiquidation"].value)
+        total_value, excluded_value = self._regime_rebalance_base_value(
+            net_liquidation=net_liq,
+            portfolio_positions=portfolio_positions,
+            market_prices=market_prices,
+            cohorts=tail_cohorts,
+        )
+        if weight_base == RegimeRebalanceBaseEnum.net_liq_ex_options:
             log.notice(
                 "Regime rebalancing base: mode=net_liq_ex_options "
                 f"net_liq={dfmt(net_liq)} excluded_options={dfmt(excluded_value)} "
                 f"margin_usage={ffmt(regime_margin_usage)} "
                 f"base={dfmt(total_value)}"
             )
-        else:
-            net_liq = float(account_summary["NetLiquidation"].value)
-            excluded_tail_hedge_value = self._tail_hedge_market_value(
-                portfolio_positions,
-                tail_cohorts,
-            )
-            adjusted_net_liq = net_liq - excluded_tail_hedge_value
-            total_value = math.floor(adjusted_net_liq * regime_margin_usage)
+        elif weight_base == RegimeRebalanceBaseEnum.net_liq:
             log.notice(
                 "Regime rebalancing base: mode=net_liq "
                 f"net_liq={dfmt(net_liq)} "
-                f"excluded_tail_hedges={dfmt(excluded_tail_hedge_value)} "
+                f"excluded_tail_hedges={dfmt(excluded_value)} "
                 f"margin_usage={ffmt(regime_margin_usage)} "
                 f"base={dfmt(total_value)}"
             )
@@ -2490,8 +2548,7 @@ class RegimeRebalanceEngine:
 
         to_trade = await self._apply_tail_harvest(
             orders=to_trade,
-            account_summary=account_summary,
-            portfolio_positions=portfolio_positions,
+            net_liquidation=net_liquidation_value,
             market_prices=market_prices,
             regime_summary=regime_summary,
             hard_underweight_symbols=(

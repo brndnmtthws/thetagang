@@ -388,10 +388,17 @@ class TailHedgeConfig(BaseModel, DisplayMixin):
 
     enabled: bool = Field(default=False)
     annual_budget: float = Field(default=0.005, gt=0.0, le=1.0)
+    harvest_trigger_weight: float = Field(default=0.05, gt=0.0, le=1.0)
+    harvest_target_weight: float = Field(default=0.03, ge=0.0, le=1.0)
     targets: List[TailHedgeTargetConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_targets(self) -> Self:
+        if self.harvest_target_weight >= self.harvest_trigger_weight:
+            raise ValueError(
+                "tail_hedge.harvest_target_weight must be less than "
+                "harvest_trigger_weight"
+            )
         symbols = [target.symbol for target in self.targets]
         if len(set(symbols)) != len(symbols):
             raise ValueError("tail_hedge.targets symbols must be unique")
@@ -412,6 +419,18 @@ class TailHedgeConfig(BaseModel, DisplayMixin):
             "Annual estimated-cost budget (% NLV)",
             "=",
             pfmt(self.annual_budget),
+        )
+        table.add_row(
+            "",
+            "Harvest trigger (% regime base)",
+            "=",
+            pfmt(self.harvest_trigger_weight),
+        )
+        table.add_row(
+            "",
+            "Harvest target (% regime base)",
+            "=",
+            pfmt(self.harvest_target_weight),
         )
         if not self.targets:
             table.add_row("", "Targets", "=", "-")
