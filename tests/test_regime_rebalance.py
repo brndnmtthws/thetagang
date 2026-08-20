@@ -1249,6 +1249,45 @@ async def test_regime_rebalance_volatility_weight_state_payload_fields(
     }
 
 
+@pytest.mark.parametrize(
+    ("state_quantity", "live_quantity", "market_value", "expected_value"),
+    [
+        (1, 2, 240.0, 120.0),
+        (2, 1, 120.0, 120.0),
+        (1, float("nan"), 120.0, 0.0),
+        (1, 2, float("nan"), 0.0),
+    ],
+)
+def test_tail_hedge_market_value_counts_only_state_owned_quantity(
+    state_quantity,
+    live_quantity,
+    market_value,
+    expected_value,
+):
+    state_position = _option_position(
+        "BBB",
+        state_quantity,
+        market_value=120.0,
+        right="P",
+        con_id=801,
+        average_cost=50.0,
+    )
+    cohort = _tail_state(symbol="BBB", puts=[state_position]).open_cohorts[0]
+    live_position = _option_position(
+        "BBB",
+        live_quantity,
+        market_value=market_value,
+        right="P",
+        con_id=801,
+        average_cost=50.0,
+    )
+
+    assert regime_engine_module.RegimeRebalanceEngine._tail_hedge_market_value(
+        {"BBB": [live_position]},
+        [cohort],
+    ) == pytest.approx(expected_value)
+
+
 @pytest.mark.asyncio
 async def test_regime_rebalance_excludes_options_and_cash_fund_from_base(
     portfolio_manager, mocker

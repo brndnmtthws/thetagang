@@ -308,18 +308,48 @@ class RegimeRebalanceEngine:
         return self._tail_state_store.load().open_cohorts
 
     @staticmethod
+    def _owned_tail_position_value(
+        position: PortfolioItem,
+        cohort: TailHedgeCohort,
+    ) -> tuple[int, float] | None:
+        if (
+            not isinstance(position.contract, Option)
+            or position.contract.conId != cohort.con_id
+        ):
+            return None
+        try:
+            live_quantity = float(position.position)
+            reported_value = float(position.marketValue or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if (
+            not math.isfinite(live_quantity)
+            or live_quantity <= 0
+            or not math.isfinite(reported_value)
+        ):
+            return None
+        owned_quantity = min(cohort.quantity, math.floor(live_quantity))
+        if owned_quantity <= 0:
+            return None
+        return owned_quantity, reported_value * owned_quantity / live_quantity
+
+    @classmethod
     def _tail_hedge_market_value(
+        cls,
         portfolio_positions: Dict[str, List[PortfolioItem]],
         cohorts: list[TailHedgeCohort],
     ) -> float:
-        owned_con_ids = {cohort.con_id for cohort in cohorts}
-        return sum(
-            float(position.marketValue or 0.0)
-            for positions in portfolio_positions.values()
-            for position in positions
-            if isinstance(position.contract, Option)
-            and position.contract.conId in owned_con_ids
-        )
+        cohorts_by_con_id = {cohort.con_id: cohort for cohort in cohorts}
+        sleeve_value = 0.0
+        for positions in portfolio_positions.values():
+            for position in positions:
+                cohort = cohorts_by_con_id.get(position.contract.conId)
+                if cohort is None:
+                    continue
+                owned_position = cls._owned_tail_position_value(position, cohort)
+                if owned_position is not None:
+                    sleeve_value += owned_position[1]
+        return sleeve_value
 
     @staticmethod
     def _long_puts_by_con_id(
@@ -353,24 +383,16 @@ class RegimeRebalanceEngine:
             position = positions_by_con_id.get(key[1])
             if cohort is None or position is None:
                 continue
+            owned_position = cls._owned_tail_position_value(position, cohort)
+            if owned_position is None:
+                continue
+            owned_quantity, reported_owned_value = owned_position
             try:
-                live_quantity = float(position.position)
                 multiplier = float(position.contract.multiplier)
-                reported_value = float(position.marketValue or 0.0)
             except (TypeError, ValueError):
                 continue
-            if (
-                not math.isfinite(live_quantity)
-                or live_quantity <= 0
-                or not math.isfinite(multiplier)
-                or multiplier <= 0
-                or not math.isfinite(reported_value)
-            ):
+            if not math.isfinite(multiplier) or multiplier <= 0:
                 continue
-            owned_quantity = min(cohort.quantity, math.floor(live_quantity))
-            if owned_quantity <= 0:
-                continue
-            reported_owned_value = reported_value * owned_quantity / live_quantity
             quoted_owned_value = limit_price * multiplier * owned_quantity
             sleeve_value -= max(0.0, reported_owned_value - quoted_owned_value)
         return sleeve_value
