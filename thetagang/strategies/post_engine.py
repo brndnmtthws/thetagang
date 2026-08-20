@@ -219,7 +219,7 @@ class PostStrategyEngine:
                 transmit=True,
             )
             self.order_ops.enqueue_order(buy_ticker.contract, order)
-        except (RuntimeError, NoValidContractsError):
+        except (RuntimeError, TypeError, NoValidContractsError):
             log.error("VIX: Error occurred when VIX call hedging. Continuing anyway...")
 
     async def do_tail_hedging(

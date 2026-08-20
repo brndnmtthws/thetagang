@@ -749,3 +749,26 @@ async def test_do_vix_hedging_buys_new_hedge_from_allocation_band(mocker):
     order_ops.create_limit_order.assert_called_once()
     assert order_ops.create_limit_order.call_args.kwargs["action"] == "BUY"
     assert order_ops.create_limit_order.call_args.kwargs["quantity"] == 2
+
+
+@pytest.mark.asyncio
+async def test_do_vix_hedging_skips_invalid_contract(mocker):
+    engine, ibkr, order_ops, scanner = _make_engine(mocker)
+    engine.config.strategies.vix_call_hedge.enabled = True
+    engine.config.strategies.vix_call_hedge.allocation = [
+        SimpleNamespace(lower_bound=0.0, upper_bound=100.0, weight=0.01)
+    ]
+    mocker.patch(
+        "thetagang.strategies.post_engine.net_option_positions", return_value=0
+    )
+    ibkr.get_ticker_for_contract = AsyncMock(
+        return_value=SimpleNamespace(marketPrice=lambda: 15.0)
+    )
+    scanner.find_eligible_contracts = AsyncMock(
+        return_value=SimpleNamespace(contract=Contract())
+    )
+
+    await engine.do_vix_hedging({"NetLiquidation": SimpleNamespace(value="100000")}, {})
+
+    order_ops.create_limit_order.assert_not_called()
+    order_ops.enqueue_order.assert_not_called()
