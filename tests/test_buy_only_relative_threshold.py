@@ -87,7 +87,7 @@ class TestBuyOnlyRelativeThreshold:
 
         # Call the method
         (
-            buy_actions_table,
+            _buy_actions_table,
             to_buy,
         ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
@@ -145,7 +145,7 @@ class TestBuyOnlyRelativeThreshold:
 
         # Call the method
         (
-            buy_actions_table,
+            _buy_actions_table,
             to_buy,
         ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
@@ -208,7 +208,7 @@ class TestBuyOnlyRelativeThreshold:
 
         # Call the method
         (
-            buy_actions_table,
+            _buy_actions_table,
             to_buy,
         ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
@@ -272,7 +272,7 @@ class TestBuyOnlyRelativeThreshold:
 
         # Call the method
         (
-            buy_actions_table,
+            _buy_actions_table,
             to_buy,
         ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
@@ -331,7 +331,7 @@ class TestBuyOnlyRelativeThreshold:
 
         # Call the method
         (
-            buy_actions_table,
+            _buy_actions_table,
             to_buy,
         ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions

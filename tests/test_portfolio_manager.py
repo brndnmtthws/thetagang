@@ -1,5 +1,4 @@
-import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +12,20 @@ from thetagang.strategies.tail_hedge_state import (
     TailHedgeState,
     TailHedgeStateStore,
 )
+
+
+def _naive_utc(
+    year: int,
+    month: int,
+    day: int,
+    hour: int = 0,
+    minute: int = 0,
+    second: int = 0,
+) -> datetime:
+    """Build the naive UTC values used by persisted broker state."""
+    return datetime(year, month, day, hour, minute, second, tzinfo=UTC).replace(
+        tzinfo=None
+    )
 
 
 @pytest.fixture
@@ -75,7 +88,7 @@ def persist_tail_entry(portfolio_manager, tmp_path, contract):
     )
     portfolio_manager.data_store = data_store
     store = TailHedgeStateStore(data_store, portfolio_manager.account_number)
-    entered_at = datetime(2026, 8, 15, 12)
+    entered_at = _naive_utc(2026, 8, 15, 12)
     store.save(
         TailHedgeState(
             [
@@ -1314,7 +1327,7 @@ class TestPortfolioManager:
             return_value=[trade]
         )
         portfolio_manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(
-            side_effect=asyncio.TimeoutError()
+            side_effect=TimeoutError()
         )
 
         await portfolio_manager.adjust_prices()
@@ -1451,7 +1464,6 @@ class TestPortfolioManager:
         # 1. Checking if close is NaN
         # 2. Falling back to market price if it is
         # 3. This ensures the code continues to work with both versions
-        pass
 
     @pytest.mark.asyncio
     async def test_check_if_can_write_puts_skips_buy_only_symbols(
@@ -1515,8 +1527,8 @@ class TestPortfolioManager:
 
         # Call the method
         (
-            positions_table,
-            put_actions_table,
+            _positions_table,
+            _put_actions_table,
             to_write,
         ) = await portfolio_manager.options_engine.check_if_can_write_puts(
             account_summary, portfolio_positions
@@ -1655,7 +1667,7 @@ class TestPortfolioManager:
 
         # Call the method
         (
-            buy_actions_table,
+            _buy_actions_table,
             to_buy,
         ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
@@ -1793,7 +1805,7 @@ class TestPortfolioManager:
 
         # Call the method
         (
-            buy_actions_table,
+            _buy_actions_table,
             to_buy,
         ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
@@ -1892,7 +1904,7 @@ class TestPortfolioManager:
 
         # Call the method
         (
-            buy_actions_table,
+            _buy_actions_table,
             to_buy,
         ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
@@ -1947,7 +1959,7 @@ class TestPortfolioManager:
 
         # Call the method
         (
-            buy_actions_table,
+            _buy_actions_table,
             to_buy,
         ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
@@ -2004,7 +2016,7 @@ class TestPortfolioManager:
 
         # Call the method
         (
-            buy_actions_table,
+            _buy_actions_table,
             to_buy,
         ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions
@@ -2064,7 +2076,7 @@ class TestPortfolioManager:
 
         # Call the method
         (
-            buy_actions_table,
+            _buy_actions_table,
             to_buy,
         ) = await portfolio_manager.equity_engine.check_buy_only_positions(
             account_summary, portfolio_positions

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any
 
 from ib_async import Ticker
 
 from thetagang.accounting import AccountSummary
 
 
-def resolve_symbol_configs(config: Any, *, context: str) -> Dict[str, Any]:
+def resolve_symbol_configs(config: Any, *, context: str) -> dict[str, Any]:
     symbols = getattr(config, "symbols", None)
     if isinstance(symbols, dict):
         return symbols
@@ -25,7 +26,7 @@ def resolve_symbol_configs(config: Any, *, context: str) -> Dict[str, Any]:
 
 @dataclass(frozen=True)
 class OptionsRuntimeServiceAdapter:
-    get_symbols_fn: Callable[[], List[str]]
+    get_symbols_fn: Callable[[], list[str]]
     get_primary_exchange_fn: Callable[[str], str]
     get_buying_power_fn: Callable[[AccountSummary], int]
     get_maximum_new_contracts_for_fn: Callable[
@@ -34,7 +35,7 @@ class OptionsRuntimeServiceAdapter:
     get_write_threshold_fn: Callable[[Ticker, str], Awaitable[tuple[float, float]]]
     get_close_price_fn: Callable[[Ticker], float]
 
-    def get_symbols(self) -> List[str]:
+    def get_symbols(self) -> list[str]:
         return self.get_symbols_fn()
 
     def get_primary_exchange(self, symbol: str) -> str:

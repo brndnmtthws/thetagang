@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import math
 import sys
-from typing import Any, Coroutine, Dict, List, Optional, Protocol, Tuple
+from collections.abc import Coroutine
+from typing import Any, Protocol
 
 from ib_async import PortfolioItem, Ticker, util
 from ib_async.contract import ComboLeg, Contract, Index, Option, Stock
@@ -43,7 +44,7 @@ from thetagang.util import (
 
 
 class OptionsRuntimeServices(Protocol):
-    def get_symbols(self) -> List[str]: ...
+    def get_symbols(self) -> list[str]: ...
 
     def get_primary_exchange(self, symbol: str) -> str: ...
 
@@ -72,11 +73,11 @@ class OptionsStrategyEngine:
         option_scanner: OptionChainScanner,
         order_ops: OrderOperations,
         services: OptionsRuntimeServices,
-        target_quantities: Dict[str, int],
+        target_quantities: dict[str, int],
         has_excess_puts: set[str],
         has_excess_calls: set[str],
-        qualified_contracts: Dict[int, Contract],
-        data_store: Optional[DataStore] = None,
+        qualified_contracts: dict[int, Contract],
+        data_store: DataStore | None = None,
     ) -> None:
         self.config = config
         self.ibkr = ibkr
@@ -105,7 +106,7 @@ class OptionsStrategyEngine:
             .owned_con_ids
         )
 
-    def get_symbols(self) -> List[str]:
+    def get_symbols(self) -> list[str]:
         return self.services.get_symbols()
 
     def get_primary_exchange(self, symbol: str) -> str:
@@ -132,10 +133,10 @@ class OptionsStrategyEngine:
     def format_weight_info(
         self,
         symbol: str,
-        position_values: Dict[str, float],
+        position_values: dict[str, float],
         weight_base_value: float,
-        symbol_configs: Dict[str, Any],
-    ) -> Tuple[str, str]:
+        symbol_configs: dict[str, Any],
+    ) -> tuple[str, str]:
         if weight_base_value <= 0:
             return "", ""
 
@@ -162,8 +163,8 @@ class OptionsStrategyEngine:
     async def check_for_uncovered_positions(
         self,
         account_summary: AccountSummary,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> Tuple[Table, List[Tuple[str, str, int, int]]]:
+        portfolio_positions: dict[str, list[PortfolioItem]],
+    ) -> tuple[Table, list[tuple[str, str, int, int]]]:
         call_actions_table = Table(title="Call writing summary")
         call_actions_table.add_column("Symbol")
         call_actions_table.add_column("Action")
@@ -172,7 +173,7 @@ class OptionsStrategyEngine:
             self.config.strategies.wheel.defaults.write_when.calculate_net_contracts
         )
 
-        to_write: List[Tuple[str, str, int, int]] = []
+        to_write: list[tuple[str, str, int, int]] = []
         symbols = set(self.get_symbols())
         symbol_configs = resolve_symbol_configs(
             self.config, context="options uncovered position check"
@@ -245,7 +246,7 @@ class OptionsStrategyEngine:
 
             async def is_ok_to_write_calls(
                 symbol: str,
-                ticker: Optional[Ticker],
+                ticker: Ticker | None,
                 calls_to_write: int,
                 stock_count: int,
             ) -> bool:
@@ -372,13 +373,13 @@ class OptionsStrategyEngine:
                     "[cyan1]Skipping call writing for sell-only rebalancing symbol",
                 )
 
-        tasks: List[Coroutine[Any, Any, None]] = [
+        tasks: list[Coroutine[Any, Any, None]] = [
             update_to_write_task(symbol) for symbol in portfolio_positions
         ]
         await log.track_async(tasks, description="Checking for uncovered positions...")
         return (call_actions_table, to_write)
 
-    async def write_calls(self, calls: List[Any]) -> None:
+    async def write_calls(self, calls: list[Any]) -> None:
         for symbol, primary_exchange, quantity, strike_limit in calls:
             try:
                 sell_ticker = await self.option_scanner.find_eligible_contracts(
@@ -405,9 +406,7 @@ class OptionsStrategyEngine:
             )
             self.order_ops.enqueue_order(sell_ticker.contract, order)
 
-    async def write_puts(
-        self, puts: List[Tuple[str, str, int, Optional[float]]]
-    ) -> None:
+    async def write_puts(self, puts: list[tuple[str, str, int, float | None]]) -> None:
         try:
             tail_hedge_con_ids = self._tail_hedge_owned_con_ids() if puts else set()
         except RuntimeError:
@@ -445,8 +444,8 @@ class OptionsStrategyEngine:
     async def check_if_can_write_puts(
         self,
         account_summary: AccountSummary,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> Tuple[Table, Table, List[Tuple[str, str, int, Optional[float]]]]:
+        portfolio_positions: dict[str, list[PortfolioItem]],
+    ) -> tuple[Table, Table, list[tuple[str, str, int, float | None]]]:
         stock_positions = [
             position
             for symbol in portfolio_positions
@@ -456,7 +455,7 @@ class OptionsStrategyEngine:
 
         total_buying_power = self.get_buying_power(account_summary)
 
-        stock_symbols: Dict[str, PortfolioItem] = {}
+        stock_symbols: dict[str, PortfolioItem] = {}
         for stock in stock_positions:
             symbol = stock.contract.symbol
             stock_symbols[symbol] = stock
@@ -469,8 +468,8 @@ class OptionsStrategyEngine:
             and any(isinstance(position.contract, Stock) for position in positions)
         }
 
-        targets: Dict[str, float] = {}
-        target_additional_quantity: Dict[str, Dict[str, int | bool]] = {}
+        targets: dict[str, float] = {}
+        target_additional_quantity: dict[str, dict[str, int | bool]] = {}
         calculate_net_contracts = (
             self.config.strategies.wheel.defaults.write_when.calculate_net_contracts
         )
@@ -713,15 +712,15 @@ class OptionsStrategyEngine:
                 "ok_to_write": ok_to_write,
             }
 
-        tasks: List[Coroutine[Any, Any, None]] = [
-            calculate_target_position_task(symbol) for symbol in symbol_configs.keys()
+        tasks: list[Coroutine[Any, Any, None]] = [
+            calculate_target_position_task(symbol) for symbol in symbol_configs
         ]
         await log.track_async(tasks, description="Calculating target positions...")
 
-        to_write: List[Tuple[str, str, int, Optional[float]]] = []
+        to_write: list[tuple[str, str, int, float | None]] = []
 
         async def update_to_write_task(
-            symbol: str, target: Dict[str, int | bool]
+            symbol: str, target: dict[str, int | bool]
         ) -> None:
             ok_to_write = target["ok_to_write"]
             additional_quantity = target["qty"]
@@ -774,8 +773,8 @@ class OptionsStrategyEngine:
         return (positions_summary_table, put_actions_table, to_write)
 
     def get_short_contracts(
-        self, portfolio_positions: Dict[str, List[PortfolioItem]], right: str
-    ) -> List[PortfolioItem]:
+        self, portfolio_positions: dict[str, list[PortfolioItem]], right: str
+    ) -> list[PortfolioItem]:
         try:
             excluded_con_ids = (
                 self._tail_hedge_owned_con_ids() if right.startswith("P") else set()
@@ -786,23 +785,23 @@ class OptionsStrategyEngine:
                 "management."
             )
             return []
-        ret: List[PortfolioItem] = []
-        for symbol in portfolio_positions:
+        ret: list[PortfolioItem] = []
+        for positions in portfolio_positions.values():
             ret.extend(
                 position
-                for position in get_short_positions(portfolio_positions[symbol], right)
+                for position in get_short_positions(positions, right)
                 if position.contract.conId not in excluded_con_ids
             )
         return ret
 
     def get_short_calls(
-        self, portfolio_positions: Dict[str, List[PortfolioItem]]
-    ) -> List[PortfolioItem]:
+        self, portfolio_positions: dict[str, list[PortfolioItem]]
+    ) -> list[PortfolioItem]:
         return self.get_short_contracts(portfolio_positions, "C")
 
     def get_short_puts(
-        self, portfolio_positions: Dict[str, List[PortfolioItem]]
-    ) -> List[PortfolioItem]:
+        self, portfolio_positions: dict[str, list[PortfolioItem]]
+    ) -> list[PortfolioItem]:
         return self.get_short_contracts(portfolio_positions, "P")
 
     async def put_is_itm(self, contract: Contract) -> bool:
@@ -1006,12 +1005,12 @@ class OptionsStrategyEngine:
         return False
 
     async def check_puts(
-        self, portfolio_positions: Dict[str, List[PortfolioItem]]
-    ) -> Tuple[List[Any], List[Any], Group]:
+        self, portfolio_positions: dict[str, list[PortfolioItem]]
+    ) -> tuple[list[Any], list[Any], Group]:
         puts = self.get_short_puts(portfolio_positions)
         puts = [put for put in puts if put.contract.symbol != "VIX"]
-        rollable_puts: List[PortfolioItem] = []
-        closeable_puts: List[PortfolioItem] = []
+        rollable_puts: list[PortfolioItem] = []
+        closeable_puts: list[PortfolioItem] = []
 
         table = Table(title="Rollable & closeable puts")
         table.add_column("Contract")
@@ -1026,7 +1025,7 @@ class OptionsStrategyEngine:
             elif self.put_can_be_closed(put, table):
                 closeable_puts.append(put)
 
-        tasks: List[Coroutine[Any, Any, None]] = [
+        tasks: list[Coroutine[Any, Any, None]] = [
             check_put_can_be_rolled_task(put, table) for put in puts
         ]
         await log.track_async(tasks, "Checking rollable/closeable puts...")
@@ -1045,12 +1044,12 @@ class OptionsStrategyEngine:
         return (rollable_puts, closeable_puts, group)
 
     async def check_calls(
-        self, portfolio_positions: Dict[str, List[PortfolioItem]]
-    ) -> Tuple[List[Any], List[Any], Group]:
+        self, portfolio_positions: dict[str, list[PortfolioItem]]
+    ) -> tuple[list[Any], list[Any], Group]:
         calls = self.get_short_calls(portfolio_positions)
         calls = [call for call in calls if call.contract.symbol != "VIX"]
-        rollable_calls: List[PortfolioItem] = []
-        closeable_calls: List[PortfolioItem] = []
+        rollable_calls: list[PortfolioItem] = []
+        closeable_calls: list[PortfolioItem] = []
 
         table = Table(title="Rollable & closeable calls")
         table.add_column("Contract")
@@ -1065,7 +1064,7 @@ class OptionsStrategyEngine:
             elif self.call_can_be_closed(call, table):
                 closeable_calls.append(call)
 
-        tasks: List[Coroutine[Any, Any, None]] = [
+        tasks: list[Coroutine[Any, Any, None]] = [
             check_call_can_be_rolled_task(call, table) for call in calls
         ]
         await log.track_async(tasks, "Checking rollable/closeable calls...")
@@ -1085,30 +1084,30 @@ class OptionsStrategyEngine:
         )
         return (rollable_calls, closeable_calls, group)
 
-    async def close_puts(self, puts: List[PortfolioItem]) -> None:
+    async def close_puts(self, puts: list[PortfolioItem]) -> None:
         await self.close_positions("P", puts)
 
-    async def close_calls(self, calls: List[PortfolioItem]) -> None:
+    async def close_calls(self, calls: list[PortfolioItem]) -> None:
         await self.close_positions("C", calls)
 
     async def roll_puts(
         self,
-        puts: List[PortfolioItem],
+        puts: list[PortfolioItem],
         account_summary: AccountSummary,
-    ) -> List[PortfolioItem]:
+    ) -> list[PortfolioItem]:
         return await self.roll_positions(puts, "P", account_summary)
 
     async def roll_calls(
         self,
-        calls: List[PortfolioItem],
+        calls: list[PortfolioItem],
         account_summary: AccountSummary,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-    ) -> List[PortfolioItem]:
+        portfolio_positions: dict[str, list[PortfolioItem]],
+    ) -> list[PortfolioItem]:
         return await self.roll_positions(
             calls, "C", account_summary, portfolio_positions
         )
 
-    async def close_positions(self, right: str, positions: List[PortfolioItem]) -> None:
+    async def close_positions(self, right: str, positions: list[PortfolioItem]) -> None:
         log.notice(f"Close {right} positions...")
         for position in positions:
             try:
@@ -1149,12 +1148,12 @@ class OptionsStrategyEngine:
 
     async def roll_positions(
         self,
-        positions: List[PortfolioItem],
+        positions: list[PortfolioItem],
         right: str,
         account_summary: AccountSummary,
-        portfolio_positions: Optional[Dict[str, List[PortfolioItem]]] = None,
-    ) -> List[PortfolioItem]:
-        closeable_positions: List[PortfolioItem] = []
+        portfolio_positions: dict[str, list[PortfolioItem]] | None = None,
+    ) -> list[PortfolioItem]:
+        closeable_positions: list[PortfolioItem] = []
         log.notice(f"Rolling {right} positions...")
         try:
             tail_hedge_con_ids = (
@@ -1224,13 +1223,15 @@ class OptionsStrategyEngine:
                         self.config.strategies.wheel.defaults.roll_when, kind
                     ).credit_only
                     else (
-                        lambda: midpoint_or_market_price(buy_ticker)
-                        + self.config.runtime.orders.minimum_credit
+                        lambda ticker=buy_ticker: (
+                            midpoint_or_market_price(ticker)
+                            + self.config.runtime.orders.minimum_credit
+                        )
                     )
                 )
 
-                def fallback_minimum_price() -> float:
-                    return midpoint_or_market_price(buy_ticker)
+                def fallback_minimum_price(ticker: Ticker = buy_ticker) -> float:
+                    return midpoint_or_market_price(ticker)
 
                 sell_ticker = await self.option_scanner.find_eligible_contracts(
                     Stock(

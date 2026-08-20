@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
-from typing import Any, Iterable, Literal, Mapping
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
 from thetagang.db import DataStore
 from thetagang.options import contract_date_to_datetime
@@ -13,7 +14,7 @@ TAIL_HEDGE_CLOSE_ORDER_REF = "tg:tail-hedge:close"
 TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX = "tg:tail-harvest"
 TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR = "_thetagang_min_limit_price"
 
-_ORDER_REF_EPOCH = datetime(1970, 1, 1)
+_ORDER_REF_EPOCH = datetime(1970, 1, 1, tzinfo=UTC).replace(tzinfo=None)
 
 TailHedgeStatus = Literal["entry_enqueued", "active", "closed"]
 
@@ -21,8 +22,12 @@ TailHedgeStatus = Literal["entry_enqueued", "active", "closed"]
 def is_tail_reduction_ref(order_ref: Any) -> bool:
     return isinstance(order_ref, str) and (
         order_ref == TAIL_HEDGE_CLOSE_ORDER_REF
-        or order_ref.startswith(f"{TAIL_HEDGE_CLOSE_ORDER_REF}:")
-        or order_ref.startswith(f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:")
+        or order_ref.startswith(
+            (
+                f"{TAIL_HEDGE_CLOSE_ORDER_REF}:",
+                f"{TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX}:",
+            )
+        )
     )
 
 
@@ -102,7 +107,9 @@ class TailHedgeCohort:
     @staticmethod
     def _datetime(value: Any, description: str) -> datetime:
         if not isinstance(value, datetime):
-            raise RuntimeError(f"Tail-hedge cohort has an invalid {description}")
+            raise RuntimeError(  # noqa: TRY004
+                f"Tail-hedge cohort has an invalid {description}"
+            )
         parsed = parse_state_datetime(value)
         assert parsed is not None
         return parsed
@@ -324,7 +331,9 @@ class TailHedgeState:
     def validate(self) -> None:
         for cohort in self.cohorts:
             if not isinstance(cohort, TailHedgeCohort):
-                raise RuntimeError("Tail-hedge state contains invalid cohort data")
+                raise RuntimeError(  # noqa: TRY004
+                    "Tail-hedge state contains invalid cohort data"
+                )
             cohort.validate()
         self._validate_uniqueness()
 
@@ -333,7 +342,9 @@ class TailHedgeState:
         open_con_ids: set[int] = set()
         for cohort in self.cohorts:
             if not isinstance(cohort, TailHedgeCohort):
-                raise RuntimeError("Tail-hedge state contains invalid cohort data")
+                raise RuntimeError(  # noqa: TRY004
+                    "Tail-hedge state contains invalid cohort data"
+                )
             if cohort.entry_id in entry_ids or (
                 cohort.is_open and cohort.con_id in open_con_ids
             ):

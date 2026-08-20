@@ -1,5 +1,3 @@
-from typing import List, Optional
-
 from ib_async import Contract, LimitOrder, Trade
 from rich import box
 from rich.pretty import Pretty
@@ -12,22 +10,22 @@ from thetagang.ibkr import IBKR
 
 
 class Trades:
-    def __init__(self, ibkr: IBKR, data_store: Optional[DataStore] = None) -> None:
+    def __init__(self, ibkr: IBKR, data_store: DataStore | None = None) -> None:
         self.ibkr = ibkr
         self.data_store = data_store
-        self.__records: List[Trade] = []
+        self.__records: list[Trade] = []
 
     def submit_order(
         self,
         contract: Contract,
         order: LimitOrder,
-        idx: Optional[int] = None,
-        intent_id: Optional[int] = None,
+        idx: int | None = None,
+        intent_id: int | None = None,
     ) -> bool:
         """Submit an order, returning whether local placement succeeded."""
         try:
             trade = self.ibkr.place_order(contract, order)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.error(
                 f"{contract.symbol}: Failed to submit contract, order={order}, "
                 f"error={type(exc).__name__}: {exc}"
@@ -42,7 +40,7 @@ class Trades:
             self.__add_trade(trade)
         return True
 
-    def records(self) -> List[Trade]:
+    def records(self) -> list[Trade]:
         return self.__records
 
     def is_empty(self) -> bool:

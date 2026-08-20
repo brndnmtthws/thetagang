@@ -85,7 +85,7 @@ class TestSellOnlyRebalancing:
 
         # Call the method
         (
-            sell_actions_table,
+            _sell_actions_table,
             to_sell,
         ) = await portfolio_manager.equity_engine.check_sell_only_positions(
             account_summary, portfolio_positions
@@ -145,7 +145,7 @@ class TestSellOnlyRebalancing:
 
         # Call the method
         (
-            sell_actions_table,
+            _sell_actions_table,
             to_sell,
         ) = await portfolio_manager.equity_engine.check_sell_only_positions(
             account_summary, portfolio_positions
@@ -204,7 +204,7 @@ class TestSellOnlyRebalancing:
 
         # Call the method
         (
-            sell_actions_table,
+            _sell_actions_table,
             to_sell,
         ) = await portfolio_manager.equity_engine.check_sell_only_positions(
             account_summary, portfolio_positions
@@ -265,7 +265,7 @@ class TestSellOnlyRebalancing:
 
         # Call the method
         (
-            sell_actions_table,
+            _sell_actions_table,
             to_sell,
         ) = await portfolio_manager.equity_engine.check_sell_only_positions(
             account_summary, portfolio_positions
@@ -327,7 +327,7 @@ class TestSellOnlyRebalancing:
 
         # Call the method
         (
-            sell_actions_table,
+            _sell_actions_table,
             to_sell,
         ) = await portfolio_manager.equity_engine.check_sell_only_positions(
             account_summary, portfolio_positions

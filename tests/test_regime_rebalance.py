@@ -1,5 +1,5 @@
 import math
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
@@ -31,7 +31,22 @@ from thetagang.strategies.tail_hedge_state import (
     TailHedgeState,
 )
 
-REGIME_HISTORY_START = datetime(2024, 1, 2)
+
+def _naive_utc(
+    year: int,
+    month: int,
+    day: int,
+    hour: int = 0,
+    minute: int = 0,
+    second: int = 0,
+) -> datetime:
+    """Build the naive UTC values used by persisted broker state."""
+    return datetime(year, month, day, hour, minute, second, tzinfo=UTC).replace(
+        tzinfo=None
+    )
+
+
+REGIME_HISTORY_START = _naive_utc(2024, 1, 2)
 REGIME_SYMBOLS = ("AAA", "BBB")
 
 
@@ -250,7 +265,7 @@ def _enable_tail_hedge_stage(portfolio_manager) -> None:
 
 def _stock_position(
     symbol: str,
-    position: int | float,
+    position: float,
     market_value: float | None = None,
 ):
     return SimpleNamespace(
@@ -360,7 +375,7 @@ def _tail_state(
     cohorts = []
     for index, position in enumerate(positions):
         entry_id = f"{symbol}-tail-{position.contract.conId}"
-        entered_at = datetime(2026, 1, 1) + timedelta(days=index)
+        entered_at = _naive_utc(2026, 1, 1) + timedelta(days=index)
         quantity = int(position.position)
         average_cost = float(position.averageCost or 0.0)
         if not math.isfinite(average_cost) or average_cost <= 0:
@@ -436,7 +451,7 @@ def _ratio_gate_result(
     effective_weights,
     lookback_days=3,
 ):
-    start_date = datetime(2024, 1, 2)
+    start_date = _naive_utc(2024, 1, 2)
     symbols = list(closes_by_symbol.keys())
     dates = [
         (start_date + timedelta(days=offset)).date()
@@ -571,7 +586,7 @@ async def test_regime_rebalance_uses_fresh_cache_when_api_history_is_stale(
     _seed_regime_history_cache(portfolio_manager_with_db, [100.0, 110.0, 100.0, 110.0])
     stale_bars = _regime_bars(
         [100.0, 99.0, 98.0, 97.0],
-        start_date=datetime(2023, 12, 20),
+        start_date=_naive_utc(2023, 12, 20),
     )
     account_summary = _regime_account_summary()
     portfolio_positions = _regime_stock_positions()
@@ -1880,7 +1895,7 @@ async def test_regime_rebalance_ratio_gate_uses_effective_rest_weights(
 async def test_regime_rebalance_cooldown_blocks_trades(
     portfolio_manager, mocker, monkeypatch
 ):
-    now = datetime(2024, 1, 5, 12, 0, 0)
+    now = _naive_utc(2024, 1, 5, 12, 0, 0)
     _freeze_now(monkeypatch, now)
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
@@ -1917,7 +1932,7 @@ async def test_regime_rebalance_cooldown_blocks_trades(
 async def test_regime_rebalance_cooldown_allows_after_window(
     portfolio_manager, mocker, monkeypatch
 ):
-    now = datetime(2024, 1, 5, 12, 0, 0)
+    now = _naive_utc(2024, 1, 5, 12, 0, 0)
     _freeze_now(monkeypatch, now)
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
@@ -1954,7 +1969,7 @@ async def test_regime_rebalance_cooldown_allows_after_window(
 async def test_regime_rebalance_cooldown_blocks_same_day_missing_bar(
     portfolio_manager, mocker, monkeypatch
 ):
-    now = datetime(2024, 1, 10, 12, 0, 0)
+    now = _naive_utc(2024, 1, 10, 12, 0, 0)
     _freeze_now(monkeypatch, now)
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="400")}
@@ -1991,24 +2006,24 @@ async def test_regime_rebalance_ignores_non_matching_order_refs(
     fills = [
         SimpleNamespace(
             execution=SimpleNamespace(
-                orderRef="tg:other:AAA", time=datetime(2024, 1, 5)
+                orderRef="tg:other:AAA", time=_naive_utc(2024, 1, 5)
             ),
             contract=SimpleNamespace(symbol="AAA"),
-            time=datetime(2024, 1, 5),
+            time=_naive_utc(2024, 1, 5),
         ),
         SimpleNamespace(
             execution=SimpleNamespace(
-                orderRef="tg:regime-rebalance:CCC", time=datetime(2024, 1, 6)
+                orderRef="tg:regime-rebalance:CCC", time=_naive_utc(2024, 1, 6)
             ),
             contract=SimpleNamespace(symbol="CCC"),
-            time=datetime(2024, 1, 6),
+            time=_naive_utc(2024, 1, 6),
         ),
         SimpleNamespace(
             execution=SimpleNamespace(
-                orderRef="tg:regime-rebalance:BBB", time=datetime(2024, 1, 7)
+                orderRef="tg:regime-rebalance:BBB", time=_naive_utc(2024, 1, 7)
             ),
             contract=SimpleNamespace(symbol="BBB"),
-            time=datetime(2024, 1, 7),
+            time=_naive_utc(2024, 1, 7),
         ),
     ]
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=fills)
@@ -2019,7 +2034,7 @@ async def test_regime_rebalance_ignores_non_matching_order_refs(
         )
     )
 
-    assert last_rebalance == datetime(2024, 1, 7)
+    assert last_rebalance == _naive_utc(2024, 1, 7)
     exec_filter = portfolio_manager.ibkr.request_executions.await_args.args[0]
     assert exec_filter.acctCode == "TEST123"
 
@@ -2034,27 +2049,27 @@ async def test_regime_rebalance_uses_db_for_cooldown(
                 execId="1",
                 acctNumber="TEST123",
                 orderRef="tg:regime-rebalance:AAA",
-                time=datetime(2024, 1, 5, 12, 0, 0),
+                time=_naive_utc(2024, 1, 5, 12, 0, 0),
             ),
             contract=SimpleNamespace(symbol="AAA"),
-            time=datetime(2024, 1, 5, 12, 0, 0),
+            time=_naive_utc(2024, 1, 5, 12, 0, 0),
         ),
         SimpleNamespace(
             execution=SimpleNamespace(
                 execId="2",
                 acctNumber="TEST123",
                 orderRef="tg:regime-rebalance:BBB",
-                time=datetime(2024, 1, 7, 12, 0, 0),
+                time=_naive_utc(2024, 1, 7, 12, 0, 0),
             ),
             contract=SimpleNamespace(symbol="BBB"),
-            time=datetime(2024, 1, 7, 12, 0, 0),
+            time=_naive_utc(2024, 1, 7, 12, 0, 0),
         ),
     ]
     portfolio_manager_with_db.data_store.record_executions(fills)
     portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
         return_value=[]
     )
-    _freeze_now(monkeypatch, datetime(2024, 1, 10, 12, 0, 0))
+    _freeze_now(monkeypatch, _naive_utc(2024, 1, 10, 12, 0, 0))
 
     last_rebalance = (
         await portfolio_manager_with_db.regime_engine._get_last_regime_rebalance_time(
@@ -2062,7 +2077,7 @@ async def test_regime_rebalance_uses_db_for_cooldown(
         )
     )
 
-    assert last_rebalance == datetime(2024, 1, 7, 12, 0, 0)
+    assert last_rebalance == _naive_utc(2024, 1, 7, 12, 0, 0)
 
 
 @pytest.mark.asyncio
@@ -2070,16 +2085,16 @@ async def test_regime_cooldown_uses_live_fill_when_persistence_drops_it(
     portfolio_manager_with_db, mocker, monkeypatch
 ):
     portfolio_manager = portfolio_manager_with_db
-    _freeze_now(monkeypatch, datetime(2024, 1, 10, 12))
+    _freeze_now(monkeypatch, _naive_utc(2024, 1, 10, 12))
     fill = SimpleNamespace(
         execution=SimpleNamespace(
             execId="live-only",
             acctNumber="TEST123",
             orderRef="tg:regime-rebalance:AAA",
-            time=datetime(2024, 1, 9, 12),
+            time=_naive_utc(2024, 1, 9, 12),
         ),
         contract=SimpleNamespace(symbol="AAA"),
-        time=datetime(2024, 1, 9, 12),
+        time=_naive_utc(2024, 1, 9, 12),
     )
     portfolio_manager.ibkr.ib.reqExecutionsAsync = mocker.AsyncMock(return_value=[fill])
     record_executions = mocker.patch.object(
@@ -2092,7 +2107,7 @@ async def test_regime_cooldown_uses_live_fill_when_persistence_drops_it(
         await portfolio_manager.regime_engine._get_last_regime_rebalance_time(["AAA"])
     )
 
-    assert last_rebalance == datetime(2024, 1, 9, 12)
+    assert last_rebalance == _naive_utc(2024, 1, 9, 12)
     record_executions.assert_called_once_with([fill])
 
 
@@ -2102,7 +2117,7 @@ async def test_regime_cooldown_uses_legacy_history_without_scoped_rows(
     portfolio_manager_with_db, mocker, monkeypatch, refresh_fails
 ):
     portfolio_manager = portfolio_manager_with_db
-    _freeze_now(monkeypatch, datetime(2024, 1, 10, 12))
+    _freeze_now(monkeypatch, _naive_utc(2024, 1, 10, 12))
     with portfolio_manager.data_store.session_scope() as session:
         session.add(
             ExecutionRecord(
@@ -2111,7 +2126,7 @@ async def test_regime_cooldown_uses_legacy_history_without_scoped_rows(
                 account=None,
                 order_ref="tg:regime-rebalance:AAA",
                 symbol="AAA",
-                execution_time=datetime(2024, 1, 9, 12),
+                execution_time=_naive_utc(2024, 1, 9, 12),
             )
         )
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(
@@ -2123,14 +2138,14 @@ async def test_regime_cooldown_uses_legacy_history_without_scoped_rows(
         await portfolio_manager.regime_engine._get_last_regime_rebalance_time(["AAA"])
     )
 
-    assert last_rebalance == datetime(2024, 1, 9, 12)
+    assert last_rebalance == _naive_utc(2024, 1, 9, 12)
 
 
 @pytest.mark.asyncio
 async def test_regime_cooldown_fails_closed_when_history_is_unavailable(
     portfolio_manager_with_db, mocker, monkeypatch
 ):
-    fixed = datetime(2024, 1, 10, 12)
+    fixed = _naive_utc(2024, 1, 10, 12)
     _freeze_now(monkeypatch, fixed)
     portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
         side_effect=ConnectionError("offline")
@@ -2201,7 +2216,7 @@ async def test_regime_rebalance_band_thresholds(portfolio_manager, mocker):
 async def test_regime_rebalance_hard_band_ignores_regime_and_cooldown(
     portfolio_manager, mocker, monkeypatch
 ):
-    now = datetime(2024, 1, 5, 12, 0, 0)
+    now = _naive_utc(2024, 1, 5, 12, 0, 0)
     _freeze_now(monkeypatch, now)
 
     portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.30
@@ -2597,7 +2612,7 @@ async def test_regime_rebalance_cooldown_blocks_positive_flow(
     portfolio_manager, mocker, monkeypatch
 ):
     _configure_flow_rebalance(portfolio_manager)
-    now = datetime(2024, 1, 5, 12, 0, 0)
+    now = _naive_utc(2024, 1, 5, 12, 0, 0)
     _freeze_now(monkeypatch, now)
 
     account_summary = {"NetLiquidation": SimpleNamespace(value="2000")}
@@ -3359,7 +3374,7 @@ async def test_regime_rebalance_no_common_dates_raises(portfolio_manager, mocker
     _mock_regime_tickers(portfolio_manager, mocker)
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    start_date = datetime(2024, 1, 2)
+    start_date = _naive_utc(2024, 1, 2)
     aaa_bars = [
         SimpleNamespace(date=start_date + timedelta(days=offset), close=100.0)
         for offset in range(3)
@@ -3730,7 +3745,8 @@ async def test_pending_recovery_serializes_same_symbol_harvests(
     state.cohorts[0].begin_recovery(
         quantity=1,
         proceeds_per_contract=120.0,
-        enqueued_at=datetime.now() - timedelta(minutes=10),
+        enqueued_at=datetime.now().astimezone().replace(tzinfo=None)
+        - timedelta(minutes=10),
     )
     _save_tail_state(portfolio_manager, state)
     portfolio_manager.ibkr.ib.portfolio.return_value = [next_put]
@@ -3825,7 +3841,8 @@ async def test_pending_recovery_serializes_portfolio_wide_harvests(
     bbb_cohort.begin_recovery(
         quantity=1,
         proceeds_per_contract=120.0,
-        enqueued_at=datetime.now() - timedelta(minutes=10),
+        enqueued_at=datetime.now().astimezone().replace(tzinfo=None)
+        - timedelta(minutes=10),
     )
     store.save(state)
     portfolio_manager.ibkr.ib.portfolio.return_value = [aaa_put, bbb_put]

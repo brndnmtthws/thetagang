@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Callable, Dict, List, Optional
+from collections.abc import Callable
 
 from ib_async import AccountValue, PortfolioItem, Ticker, util
 from ib_async.contract import Contract, Index, Option, Stock
@@ -43,8 +43,8 @@ class PostStrategyEngine:
         order_ops: OrderOperations,
         option_scanner: OptionChainScanner,
         orders: Orders,
-        qualified_contracts: Dict[int, Contract],
-        data_store: Optional[DataStore] = None,
+        qualified_contracts: dict[int, Contract],
+        data_store: DataStore | None = None,
         get_reserved_cash_for_post_management: Callable[[], float] | None = None,
     ) -> None:
         self.config = config
@@ -121,12 +121,12 @@ class PostStrategyEngine:
     async def do_vix_hedging(
         self,
         account_summary: AccountSummary,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        portfolio_positions: dict[str, list[PortfolioItem]],
     ) -> None:
         log.notice("VIX: Checking on our VIX call hedge...")
 
         async def vix_calls_should_be_closed() -> tuple[
-            bool, Optional[Ticker], Optional[float]
+            bool, Ticker | None, float | None
         ]:
             if self.config.strategies.vix_call_hedge.close_hedges_when_vix_exceeds:
                 vix_contract = Index("VIX", "CBOE", "USD")
@@ -188,23 +188,21 @@ class PostStrategyEngine:
             weight = 0.0
             for allocation in self.config.strategies.vix_call_hedge.allocation:
                 if (
-                    allocation.lower_bound
-                    and allocation.upper_bound
-                    and allocation.lower_bound
-                    <= vixmo_ticker.marketPrice()
-                    < allocation.upper_bound
-                ):
-                    weight = allocation.weight
-                    break
-                elif (
-                    allocation.lower_bound
-                    and allocation.lower_bound <= vixmo_ticker.marketPrice()
-                ):
-                    weight = allocation.weight
-                    break
-                elif (
-                    allocation.upper_bound
-                    and vixmo_ticker.marketPrice() < allocation.upper_bound
+                    (
+                        allocation.lower_bound
+                        and allocation.upper_bound
+                        and allocation.lower_bound
+                        <= vixmo_ticker.marketPrice()
+                        < allocation.upper_bound
+                    )
+                    or (
+                        allocation.lower_bound
+                        and allocation.lower_bound <= vixmo_ticker.marketPrice()
+                    )
+                    or (
+                        allocation.upper_bound
+                        and vixmo_ticker.marketPrice() < allocation.upper_bound
+                    )
                 ):
                     weight = allocation.weight
                     break
@@ -222,7 +220,9 @@ class PostStrategyEngine:
                 minimum_price=lambda: self.config.runtime.orders.minimum_credit,
             )
             if not isinstance(buy_ticker.contract, Option):
-                raise RuntimeError(f"Something went wrong, buy_ticker={buy_ticker}")
+                raise RuntimeError(  # noqa: TRY004
+                    f"Something went wrong, buy_ticker={buy_ticker}"
+                )
             price = self.order_ops.round_vix_price(
                 round(get_lower_price(buy_ticker), 2)
             )
@@ -242,7 +242,7 @@ class PostStrategyEngine:
     async def do_tail_hedging(
         self,
         account_summary: AccountSummary,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        portfolio_positions: dict[str, list[PortfolioItem]],
     ) -> None:
         await self.tail_hedge_engine.manage(
             portfolio_positions,
@@ -252,7 +252,7 @@ class PostStrategyEngine:
     async def do_cashman(
         self,
         account_summary: AccountSummary,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        portfolio_positions: dict[str, list[PortfolioItem]],
     ) -> None:
         log.notice("Cash management...")
         if not self.config.strategies.cash_management.enabled:

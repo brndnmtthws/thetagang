@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Protocol
+from typing import Any, Protocol
 
 from rich.console import Group
 from rich.panel import Panel
@@ -13,8 +13,8 @@ from thetagang.accounting import AccountSummary, PortfolioBySymbol
 @dataclass
 class OptionsStrategyDeps:
     enabled_stages: set[str]
-    write_service: "OptionsWriteService"
-    manage_service: "OptionsManageService"
+    write_service: OptionsWriteService
+    manage_service: OptionsManageService
 
 
 class OptionsWriteService(Protocol):
@@ -22,13 +22,13 @@ class OptionsWriteService(Protocol):
         self, account_summary: AccountSummary, portfolio_positions: PortfolioBySymbol
     ) -> Any: ...
 
-    async def write_puts(self, puts_to_write: List[Any]) -> None: ...
+    async def write_puts(self, puts_to_write: list[Any]) -> None: ...
 
     async def check_for_uncovered_positions(
         self, account_summary: AccountSummary, portfolio_positions: PortfolioBySymbol
     ) -> Any: ...
 
-    async def write_calls(self, calls_to_write: List[Any]) -> None: ...
+    async def write_calls(self, calls_to_write: list[Any]) -> None: ...
 
 
 class OptionsManageService(Protocol):
@@ -37,19 +37,19 @@ class OptionsManageService(Protocol):
     async def check_calls(self, portfolio_positions: PortfolioBySymbol) -> Any: ...
 
     async def roll_puts(
-        self, puts: List[Any], account_summary: AccountSummary
-    ) -> List[Any]: ...
+        self, puts: list[Any], account_summary: AccountSummary
+    ) -> list[Any]: ...
 
     async def roll_calls(
         self,
-        calls: List[Any],
+        calls: list[Any],
         account_summary: AccountSummary,
         portfolio_positions: PortfolioBySymbol,
-    ) -> List[Any]: ...
+    ) -> list[Any]: ...
 
-    async def close_puts(self, puts: List[Any]) -> None: ...
+    async def close_puts(self, puts: list[Any]) -> None: ...
 
-    async def close_calls(self, calls: List[Any]) -> None: ...
+    async def close_calls(self, calls: list[Any]) -> None: ...
 
 
 async def run_option_write_stages(

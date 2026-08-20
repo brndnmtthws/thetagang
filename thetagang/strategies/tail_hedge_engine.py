@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 from ib_async import PortfolioItem, Ticker, Trade, util
 from ib_async.contract import Contract, Index, Option, Stock
@@ -120,7 +121,7 @@ class TailHedgeEngine:
         config: Config,
         ibkr: IBKR,
         order_ops: OrderOperations,
-        data_store: Optional[DataStore],
+        data_store: DataStore | None,
         now_provider: Callable[[], datetime] = datetime.now,
     ) -> None:
         self.config = config
@@ -136,7 +137,7 @@ class TailHedgeEngine:
             if data_store is not None
             else None
         )
-        self._cached_vix: Optional[float] = None
+        self._cached_vix: float | None = None
         self._run_outcomes: dict[str, str] = {}
 
     def _estimated_fee_per_contract(self) -> float:
@@ -157,7 +158,7 @@ class TailHedgeEngine:
 
     async def manage(
         self,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        portfolio_positions: dict[str, list[PortfolioItem]],
         *,
         net_liquidation: float,
     ) -> None:
@@ -185,7 +186,7 @@ class TailHedgeEngine:
 
     async def _manage_program(
         self,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        portfolio_positions: dict[str, list[PortfolioItem]],
         *,
         net_liquidation: float,
     ) -> None:
@@ -317,8 +318,8 @@ class TailHedgeEngine:
         self,
         *,
         state: TailHedgeState,
-        entry_trades: List[Trade],
-        account_trades: List[Trade],
+        entry_trades: list[Trade],
+        account_trades: list[Trade],
         pending_close_con_ids: set[int],
     ) -> set[int]:
         put_positions = self._account_put_positions_by_con_id()
@@ -354,8 +355,8 @@ class TailHedgeEngine:
         *,
         state: TailHedgeState,
         cohort: TailHedgeCohort,
-        entry_trades: List[Trade],
-        account_trades: List[Trade],
+        entry_trades: list[Trade],
+        account_trades: list[Trade],
         pending_close_con_ids: set[int],
     ) -> bool:
         if cohort.status == "entry_enqueued":
@@ -444,8 +445,8 @@ class TailHedgeEngine:
         *,
         cohort: TailHedgeCohort,
         position: PortfolioItem,
-        entry_trades: List[Trade],
-        account_trades: List[Trade],
+        entry_trades: list[Trade],
+        account_trades: list[Trade],
         pending_close_con_ids: set[int],
     ) -> bool:
         entry_working = cohort.status == "entry_enqueued" and self._entry_is_working(
@@ -563,7 +564,7 @@ class TailHedgeEngine:
         return cohort.apply_recovery(quantity)
 
     @staticmethod
-    def _entry_is_working(cohort: TailHedgeCohort, trades: List[Trade]) -> bool:
+    def _entry_is_working(cohort: TailHedgeCohort, trades: list[Trade]) -> bool:
         return any(
             trade.contract.symbol == cohort.symbol
             and (trade.contract.conId == cohort.con_id or trade.contract.conId <= 0)
@@ -573,7 +574,7 @@ class TailHedgeEngine:
     def _reduction_progress(
         self,
         cohort: TailHedgeCohort,
-        trades: List[Trade],
+        trades: list[Trade],
     ) -> BrokerOrderProgress | None:
         if not cohort.has_pending_recovery:
             return None
@@ -597,7 +598,7 @@ class TailHedgeEngine:
     async def _manage_existing_put(
         self,
         position: PortfolioItem,
-        target: Optional[TailHedgeTargetConfig],
+        target: TailHedgeTargetConfig | None,
         cohort: TailHedgeCohort,
         state: TailHedgeState,
     ) -> bool:
@@ -787,7 +788,7 @@ class TailHedgeEngine:
             self._record_evaluation("annual_budget_exhausted", symbol=symbol)
             return
 
-        vix: Optional[float] = None
+        vix: float | None = None
         if target.entry_gate == "vix":
             vix = await self._vix_price()
             if vix > target.entry_vix_max:
@@ -953,7 +954,7 @@ class TailHedgeEngine:
     def _quote_rejection(
         target: TailHedgeTargetConfig,
         quote: PutQuote,
-    ) -> Optional[str]:
+    ) -> str | None:
         if quote.open_interest < target.minimum_open_interest:
             return "insufficient_open_interest"
         if quote.bid < target.minimum_bid:
@@ -1272,7 +1273,7 @@ class TailHedgeEngine:
             model_price=self._optional_finite(getattr(model_greeks, "optPrice", None)),
         )
 
-    def _account_open_trades(self) -> List[Trade]:
+    def _account_open_trades(self) -> list[Trade]:
         account_number = self.config.runtime.account.number
         return [
             trade
@@ -1280,7 +1281,7 @@ class TailHedgeEngine:
             if getattr(getattr(trade, "order", None), "account", None) == account_number
         ]
 
-    def _account_trades(self) -> List[Trade]:
+    def _account_trades(self) -> list[Trade]:
         account_number = self.config.runtime.account.number
         return [
             trade
@@ -1290,7 +1291,7 @@ class TailHedgeEngine:
 
     def _latest_tail_order_progress(
         self,
-        trades: List[Trade],
+        trades: list[Trade],
         *,
         con_id: int,
         symbol: str,
@@ -1399,7 +1400,7 @@ class TailHedgeEngine:
             self._now() - enqueued_at < TAIL_ORDER_RECONCILIATION_GRACE
         )
 
-    def _account_put_positions_by_con_id(self) -> Dict[int, PortfolioItem]:
+    def _account_put_positions_by_con_id(self) -> dict[int, PortfolioItem]:
         account_number = self.config.runtime.account.number
         return {
             position.contract.conId: position
@@ -1410,7 +1411,7 @@ class TailHedgeEngine:
         }
 
     @staticmethod
-    def _working_put_con_ids(open_trades: List[Trade]) -> set[int]:
+    def _working_put_con_ids(open_trades: list[Trade]) -> set[int]:
         return {
             trade.contract.conId
             for trade in open_trades
@@ -1446,14 +1447,14 @@ class TailHedgeEngine:
         }
 
     @staticmethod
-    def _stock_exposure(symbol_positions: List[PortfolioItem]) -> float:
+    def _stock_exposure(symbol_positions: list[PortfolioItem]) -> float:
         return stock_market_value(symbol_positions, long_only=True)
 
     def _record_evaluation(
         self,
         outcome: str,
         *,
-        symbol: Optional[str] = None,
+        symbol: str | None = None,
         **payload: Any,
     ) -> None:
         if symbol is not None:

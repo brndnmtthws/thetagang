@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional, Tuple
+from typing import Any
 
 import exchange_calendars as xcals
 import numpy as np
@@ -44,11 +45,11 @@ from thetagang.strategies.tail_hedge_state import (
 from thetagang.trading_operations import OrderOperations
 from thetagang.util import midpoint_or_market_price, portfolio_positions_to_dict
 
-AlignedClosesResult = Tuple[List[date], Dict[str, List[float]]]
+AlignedClosesResult = tuple[list[date], dict[str, list[float]]]
 AlignedClosesFetcher = Callable[
-    [List[str], int, int], Coroutine[Any, Any, AlignedClosesResult]
+    [list[str], int, int], Coroutine[Any, Any, AlignedClosesResult]
 ]
-ClosesBySymbol = Dict[str, Dict[date, float]]
+ClosesBySymbol = dict[str, dict[date, float]]
 TRADING_DAYS_PER_YEAR = 252
 REGIME_HISTORY_TIMEFRAME = "1 day"
 REGIME_HISTORY_MAX_ATTEMPTS = 3
@@ -68,17 +69,17 @@ class RatioGateResult:
     ok: bool
     reason: str
     anchor: str
-    rest: List[str]
-    weights: Dict[str, float]
-    daily_mean: Optional[float]
-    daily_std: Optional[float]
-    daily_var: Optional[float]
-    annualized_vol: Optional[float]
+    rest: list[str]
+    weights: dict[str, float]
+    daily_mean: float | None
+    daily_std: float | None
+    daily_var: float | None
+    annualized_vol: float | None
     vol_min: float
     tstat: float
     drift_max: float
 
-    def to_payload(self, *, enabled: bool) -> Dict[str, Any]:
+    def to_payload(self, *, enabled: bool) -> dict[str, Any]:
         return {
             "enabled": enabled,
             "anchor": self.anchor,
@@ -134,22 +135,22 @@ class PlannedHarvest:
     minimum_net_proceeds: float
 
 
-def _ffmt_or_dash(value: Optional[float], precision: int = 2) -> str:
+def _ffmt_or_dash(value: float | None, precision: int = 2) -> str:
     return ffmt(value, precision) if value is not None else "-"
 
 
-def _pfmt_or_dash(value: Optional[float]) -> str:
+def _pfmt_or_dash(value: float | None) -> str:
     return pfmt(value) if value is not None else "-"
 
 
 class RegimeHistoryCache:
     def __init__(self, fetcher: AlignedClosesFetcher) -> None:
         self._fetcher = fetcher
-        self._cache: Dict[Tuple[Tuple[str, ...], int, int], AlignedClosesResult] = {}
+        self._cache: dict[tuple[tuple[str, ...], int, int], AlignedClosesResult] = {}
 
     async def get(
         self,
-        symbols: List[str],
+        symbols: list[str],
         lookback_days: int,
         cooldown_days: int,
     ) -> AlignedClosesResult:
@@ -169,7 +170,7 @@ class RegimeRebalanceEngine:
         config: Config,
         ibkr: IBKR,
         order_ops: OrderOperations,
-        data_store: Optional[DataStore],
+        data_store: DataStore | None,
         get_primary_exchange: Callable[[str], str],
         now_provider: Callable[[], datetime],
         tail_hedge_stage_enabled: Callable[[], bool] | None = None,
@@ -221,8 +222,8 @@ class RegimeRebalanceEngine:
         self,
         *,
         net_liquidation: float,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
-        market_prices: Dict[str, float],
+        portfolio_positions: dict[str, list[PortfolioItem]],
+        market_prices: dict[str, float],
         cohorts: list[TailHedgeCohort],
         tail_hedge_value_override: float | None = None,
     ) -> tuple[float, float]:
@@ -294,7 +295,7 @@ class RegimeRebalanceEngine:
     @classmethod
     def _tail_hedge_market_value(
         cls,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        portfolio_positions: dict[str, list[PortfolioItem]],
         cohorts: list[TailHedgeCohort],
     ) -> float:
         return sum(
@@ -306,7 +307,7 @@ class RegimeRebalanceEngine:
 
     @staticmethod
     def _long_puts_by_con_id(
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        portfolio_positions: dict[str, list[PortfolioItem]],
     ) -> dict[int, PortfolioItem]:
         return {
             int(position.contract.conId): position
@@ -322,7 +323,7 @@ class RegimeRebalanceEngine:
     @classmethod
     def _tail_hedge_market_value_at_quotes(
         cls,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        portfolio_positions: dict[str, list[PortfolioItem]],
         cohorts: list[TailHedgeCohort],
         quoted_limit_prices: dict[tuple[str, int], float],
     ) -> float:
@@ -513,7 +514,7 @@ class RegimeRebalanceEngine:
         *,
         symbols: set[str],
         cohorts: list[TailHedgeCohort],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        portfolio_positions: dict[str, list[PortfolioItem]],
     ) -> dict[tuple[str, int], float]:
         snapshot_positions = self._long_puts_by_con_id(portfolio_positions)
 
@@ -537,7 +538,7 @@ class RegimeRebalanceEngine:
                         TickerField.MARKET_PRICE,
                     ],
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.warning(
                     f"{cohort.symbol}: Unable to quote tail put {con_id} for harvesting "
                     f"({type(exc).__name__})."
@@ -552,10 +553,10 @@ class RegimeRebalanceEngine:
         self,
         *,
         net_liquidation: float,
-        rebalance_shares: Dict[str, int],
-        market_prices: Dict[str, float],
+        rebalance_shares: dict[str, int],
+        market_prices: dict[str, float],
         cohorts: list[TailHedgeCohort],
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        portfolio_positions: dict[str, list[PortfolioItem]],
     ) -> set[str]:
         if self._tail_state_store is None:
             return set()
@@ -811,13 +812,13 @@ class RegimeRebalanceEngine:
     async def _apply_tail_harvest(
         self,
         *,
-        orders: List[Tuple[str, str, int]],
+        orders: list[tuple[str, str, int]],
         net_liquidation: float,
-        market_prices: Dict[str, float],
-        regime_summary: List[Dict[str, Any]],
+        market_prices: dict[str, float],
+        regime_summary: list[dict[str, Any]],
         hard_underweight_symbols: set[str],
         cohorts: list[TailHedgeCohort],
-    ) -> List[Tuple[str, str, int]]:
+    ) -> list[tuple[str, str, int]]:
         targets = self._configured_tail_harvest_targets()
         if not targets or not cohorts or not hard_underweight_symbols:
             return orders
@@ -832,7 +833,7 @@ class RegimeRebalanceEngine:
             self.ibkr.portfolio(account=account_number)
         )
 
-        rebalance_shares: Dict[str, int] = {}
+        rebalance_shares: dict[str, int] = {}
         for symbol, _primary_exchange, quantity in orders:
             if (
                 quantity <= 0
@@ -920,7 +921,7 @@ class RegimeRebalanceEngine:
         return max(vol_min, 0.0)
 
     @staticmethod
-    def _normalize_weights(weights: Dict[str, float]) -> Dict[str, float]:
+    def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
         total_weight = sum(weights.values())
         if total_weight <= 0:
             raise ValueError("weights must sum to a positive value")
@@ -928,12 +929,12 @@ class RegimeRebalanceEngine:
 
     @staticmethod
     def _weighted_return_index(
-        symbols: List[str],
-        weights: Dict[str, float],
-        aligned_closes: Dict[str, List[float]],
+        symbols: list[str],
+        weights: dict[str, float],
+        aligned_closes: dict[str, list[float]],
         length: int,
         eps: float = 0.0,
-    ) -> List[float]:
+    ) -> list[float]:
         index = [1.0]
         for idx in range(1, length):
             daily_factor = 0.0
@@ -945,15 +946,15 @@ class RegimeRebalanceEngine:
         return index
 
     @staticmethod
-    def _bars_to_closes(bars: Iterable[Any]) -> Dict[date, float]:
-        closes: Dict[date, float] = {}
+    def _bars_to_closes(bars: Iterable[Any]) -> dict[date, float]:
+        closes: dict[date, float] = {}
         for bar in bars:
             bar_date = bar.date.date() if hasattr(bar.date, "date") else bar.date
             closes[bar_date] = float(bar.close)
         return closes
 
     @staticmethod
-    def _describe_history_closes(closes: Dict[date, float]) -> str:
+    def _describe_history_closes(closes: dict[date, float]) -> str:
         if not closes:
             return "0 bars"
         sorted_dates = sorted(closes)
@@ -963,10 +964,10 @@ class RegimeRebalanceEngine:
     def _align_regime_closes(
         cls,
         *,
-        symbols: List[str],
+        symbols: list[str],
         closes_by_symbol: ClosesBySymbol,
         required_points: int,
-        required_dates: List[date],
+        required_dates: list[date],
         missing_dates_cache_recoverable: bool,
     ) -> AlignedClosesResult:
         close_dates_by_symbol = {
@@ -1017,9 +1018,9 @@ class RegimeRebalanceEngine:
                 cache_recoverable=True,
             )
 
-        aligned_closes: Dict[str, List[float]] = {}
+        aligned_closes: dict[str, list[float]] = {}
         for symbol in symbols:
-            aligned: List[float] = []
+            aligned: list[float] = []
             for date_point in sorted_dates:
                 close = closes_by_symbol[symbol].get(date_point)
                 if close is None or math.isnan(close) or math.isclose(close, 0):
@@ -1038,11 +1039,11 @@ class RegimeRebalanceEngine:
     def _calculate_ratio_gate(
         self,
         *,
-        symbols: List[str],
-        dates: List[date],
-        aligned_closes: Dict[str, List[float]],
+        symbols: list[str],
+        dates: list[date],
+        aligned_closes: dict[str, list[float]],
         ratio_gate: Any,
-        effective_weights: Dict[str, float],
+        effective_weights: dict[str, float],
         lookback_days: int,
         eps: float,
     ) -> RatioGateResult:
@@ -1138,12 +1139,12 @@ class RegimeRebalanceEngine:
 
     async def _get_regime_proxy_series(
         self,
-        symbols: List[str],
+        symbols: list[str],
         lookback_days: int,
         cooldown_days: int,
-        weights_override: Optional[Dict[str, float]] = None,
-        history_cache: Optional[RegimeHistoryCache] = None,
-    ) -> Tuple[List[date], List[float]]:
+        weights_override: dict[str, float] | None = None,
+        history_cache: RegimeHistoryCache | None = None,
+    ) -> tuple[list[date], list[float]]:
         symbol_configs = resolve_symbol_configs(
             self.config, context="regime proxy series"
         )
@@ -1183,7 +1184,7 @@ class RegimeRebalanceEngine:
         )
         return (sorted_dates, normalized_series)
 
-    def _get_required_history_dates(self, required_points: int) -> Optional[List[date]]:
+    def _get_required_history_dates(self, required_points: int) -> list[date] | None:
         if required_points <= 0:
             return []
         try:
@@ -1211,7 +1212,7 @@ class RegimeRebalanceEngine:
                 session.date()
                 for session in calendar.sessions[first_index : latest_index + 1]
             ]
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(
                 f"Regime history freshness calculation failed ({type(exc).__name__})."
             )
@@ -1219,7 +1220,7 @@ class RegimeRebalanceEngine:
 
     async def _fetch_regime_history_bars(
         self, symbol: str, duration: str
-    ) -> Tuple[str, List[Any]]:
+    ) -> tuple[str, list[Any]]:
         contract = Stock(
             symbol,
             self.order_ops.get_order_exchange(),
@@ -1248,9 +1249,9 @@ class RegimeRebalanceEngine:
         return symbol, []
 
     async def _fetch_regime_history_closes(
-        self, symbols: List[str], duration: str
+        self, symbols: list[str], duration: str
     ) -> ClosesBySymbol:
-        tasks: List[Coroutine[Any, Any, Tuple[str, List[Any]]]] = [
+        tasks: list[Coroutine[Any, Any, tuple[str, list[Any]]]] = [
             self._fetch_regime_history_bars(symbol, duration) for symbol in symbols
         ]
         histories = await log.track_async(
@@ -1260,9 +1261,9 @@ class RegimeRebalanceEngine:
 
     def _merge_cached_regime_closes(
         self,
-        symbols: List[str],
+        symbols: list[str],
         api_closes_by_symbol: ClosesBySymbol,
-        required_dates: List[date],
+        required_dates: list[date],
     ) -> ClosesBySymbol:
         if self.data_store is None:
             raise RegimeHistoryValidationError(
@@ -1297,10 +1298,10 @@ class RegimeRebalanceEngine:
     def _recover_regime_history_from_cache(
         self,
         *,
-        symbols: List[str],
+        symbols: list[str],
         api_closes_by_symbol: ClosesBySymbol,
         required_points: int,
-        required_dates: List[date],
+        required_dates: list[date],
     ) -> AlignedClosesResult:
         merged_closes_by_symbol = self._merge_cached_regime_closes(
             symbols,
@@ -1322,10 +1323,10 @@ class RegimeRebalanceEngine:
 
     async def _get_regime_aligned_closes(
         self,
-        symbols: List[str],
+        symbols: list[str],
         lookback_days: int,
         cooldown_days: int,
-    ) -> Tuple[List[date], Dict[str, List[float]]]:
+    ) -> tuple[list[date], dict[str, list[float]]]:
         if not symbols:
             log.error("Regime-aware rebalancing has no symbols to build a proxy.")
             raise ValueError("Regime-aware rebalancing requires proxy symbols.")
@@ -1363,16 +1364,16 @@ class RegimeRebalanceEngine:
 
     async def _resolve_effective_weights(
         self,
-        symbols: List[str],
-        symbol_configs: Dict[str, Any],
-        history_cache: Optional[RegimeHistoryCache] = None,
+        symbols: list[str],
+        symbol_configs: dict[str, Any],
+        history_cache: RegimeHistoryCache | None = None,
         *,
         exclude_current_run_state: bool = False,
-    ) -> Tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
+    ) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
         effective_weights = {
             symbol: float(symbol_configs[symbol].weight) for symbol in symbols
         }
-        volatility_details: Dict[str, Dict[str, float]] = {}
+        volatility_details: dict[str, dict[str, float]] = {}
         previous_state = (
             self.data_store.get_last_event_payload(
                 "volatility_weight_state",
@@ -1386,7 +1387,7 @@ class RegimeRebalanceEngine:
             if isinstance(previous_state, dict)
             else {}
         )
-        volatility_symbols_by_lookback: Dict[int, List[str]] = {}
+        volatility_symbols_by_lookback: dict[int, list[str]] = {}
 
         for symbol in symbols:
             symbol_config = symbol_configs[symbol]
@@ -1412,7 +1413,7 @@ class RegimeRebalanceEngine:
                         lookback_days,
                         0,
                     )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 for symbol in group_symbols:
                     log.warning(
                         f"{symbol}: volatility weight history fetch failed ({type(exc).__name__}); using static weight."
@@ -1512,7 +1513,7 @@ class RegimeRebalanceEngine:
                         f"smoothing={ffmt(smoothing_factor)} "
                         f"effective={pfmt(effective_weight)}"
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     log.warning(
                         f"{symbol}: volatility weight calculation failed ({type(exc).__name__}); using static weight."
                     )
@@ -1520,8 +1521,8 @@ class RegimeRebalanceEngine:
         return effective_weights, volatility_details
 
     async def _get_last_regime_rebalance_time(
-        self, symbols: List[str]
-    ) -> Optional[datetime]:
+        self, symbols: list[str]
+    ) -> datetime | None:
         regime_rebalance = self.config.strategies.regime_rebalance
         if not regime_rebalance.enabled:
             return None
@@ -1539,7 +1540,7 @@ class RegimeRebalanceEngine:
             fills: Iterable[Any] = ()
             try:
                 fills = await self.ibkr.request_executions(exec_filter)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 refresh_failed = True
                 log.warning(
                     "Unable to refresh executions for regime rebalancing "
@@ -1574,9 +1575,9 @@ class RegimeRebalanceEngine:
         self,
         fills: Iterable[Any],
         symbols: Iterable[str],
-    ) -> Optional[datetime]:
+    ) -> datetime | None:
         symbols = set(symbols)
-        last_rebalance: Optional[datetime] = None
+        last_rebalance: datetime | None = None
         for fill in fills:
             execution = getattr(fill, "execution", None)
             order_ref = getattr(execution, "orderRef", None)
@@ -1624,7 +1625,7 @@ class RegimeRebalanceEngine:
             session_dates = [session.date() for session in sessions]
             sessions_after = [d for d in session_dates if d > start_date]
             return len(sessions_after) >= cooldown_days
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(
                 "Regime rebalancing cooldown calculation failed "
                 f"({type(exc).__name__}); using calendar days."
@@ -1634,10 +1635,10 @@ class RegimeRebalanceEngine:
     async def check_regime_rebalance_positions(
         self,
         account_summary: AccountSummary,
-        portfolio_positions: Dict[str, List[PortfolioItem]],
+        portfolio_positions: dict[str, list[PortfolioItem]],
         *,
         exclude_current_run_state: bool = False,
-    ) -> Tuple[Table, List[Tuple[str, str, int]]]:
+    ) -> tuple[Table, list[tuple[str, str, int]]]:
         symbol_configs = resolve_symbol_configs(
             self.config, context="regime rebalance check"
         )
@@ -1649,7 +1650,7 @@ class RegimeRebalanceEngine:
         table.add_column("Gate", justify="center")
         table.add_column("Action")
 
-        to_trade: List[Tuple[str, str, int]] = []
+        to_trade: list[tuple[str, str, int]] = []
         regime_rebalance = self.config.strategies.regime_rebalance
         if not regime_rebalance.enabled:
             return (table, to_trade)
@@ -1689,17 +1690,17 @@ class RegimeRebalanceEngine:
             for position in portfolio_positions[symbol]
             if isinstance(position.contract, Stock)
         ]
-        stock_symbols: Dict[str, PortfolioItem] = {
+        stock_symbols: dict[str, PortfolioItem] = {
             position.contract.symbol: position for position in stock_positions
         }
 
-        async def get_ticker_task(symbol: str) -> Tuple[str, Ticker]:
+        async def get_ticker_task(symbol: str) -> tuple[str, Ticker]:
             ticker = await self.ibkr.get_ticker_for_stock(
                 symbol, self.get_primary_exchange(symbol)
             )
             return symbol, ticker
 
-        ticker_tasks: List[Coroutine[Any, Any, Tuple[str, Ticker]]] = [
+        ticker_tasks: list[Coroutine[Any, Any, tuple[str, Ticker]]] = [
             get_ticker_task(symbol) for symbol in symbols
         ]
         ticker_results = await log.track_async(
@@ -1707,14 +1708,14 @@ class RegimeRebalanceEngine:
         )
         tickers = {symbol: ticker for symbol, ticker in ticker_results}
 
-        current_positions: Dict[str, int] = {}
-        current_values: Dict[str, float] = {}
-        market_prices: Dict[str, float] = {}
-        target_shares: Dict[str, int] = {}
-        target_values: Dict[str, float] = {}
-        relative_ratios: Dict[str, float] = {}
-        relative_drifts: Dict[str, float] = {}
-        share_gaps: Dict[str, int] = {}
+        current_positions: dict[str, int] = {}
+        current_values: dict[str, float] = {}
+        market_prices: dict[str, float] = {}
+        target_shares: dict[str, int] = {}
+        target_values: dict[str, float] = {}
+        relative_ratios: dict[str, float] = {}
+        relative_drifts: dict[str, float] = {}
+        share_gaps: dict[str, int] = {}
         for symbol in symbols:
             ticker = tickers[symbol]
             market_price = ticker.marketPrice()
@@ -1772,7 +1773,7 @@ class RegimeRebalanceEngine:
             raise ValueError("Regime-aware rebalancing requires a positive base value.")
 
         history_cache = RegimeHistoryCache(self._get_regime_aligned_closes)
-        current_weights: Dict[str, float] = {}
+        current_weights: dict[str, float] = {}
         effective_weights, volatility_details = await self._resolve_effective_weights(
             symbols,
             symbol_configs,
@@ -1844,7 +1845,7 @@ class RegimeRebalanceEngine:
 
         invested_value = sum(current_values.values())
         proxy_symbols = [symbol for symbol in symbols if current_values[symbol] > 0]
-        proxy_weights: Dict[str, float] = {}
+        proxy_weights: dict[str, float] = {}
         if proxy_symbols:
             proxy_invested = sum(current_values[symbol] for symbol in proxy_symbols)
             proxy_weights = {
@@ -1885,7 +1886,7 @@ class RegimeRebalanceEngine:
         regime_ok = chop_ok and er_ok
 
         ratio_gate = getattr(regime_rebalance, "ratio_gate", None)
-        ratio_result: Optional[RatioGateResult] = None
+        ratio_result: RatioGateResult | None = None
         if ratio_gate is not None:
             _, ratio_aligned_closes = await history_cache.get(
                 symbols,
@@ -2049,7 +2050,7 @@ class RegimeRebalanceEngine:
         flow_eligibility_gates_ok = not flow_eligibility_gate_blockers
         flow_rebalance_eligible = flow_gate and flow_eligibility_gates_ok
 
-        def build_flow_orders(amount: float) -> Dict[str, int]:
+        def build_flow_orders(amount: float) -> dict[str, int]:
             if amount == 0:
                 return {}
             if not flow_candidate_symbols:
@@ -2059,7 +2060,7 @@ class RegimeRebalanceEngine:
             if not directional_flow_is_allowed(amount):
                 return {}
 
-            orders: Dict[str, int] = {}
+            orders: dict[str, int] = {}
             if amount > 0:
                 deficits = {
                     symbol: max(share_gaps[symbol], 0)
@@ -2112,14 +2113,14 @@ class RegimeRebalanceEngine:
             return orders
 
         def build_deficit_orders(
-            shares_state: Dict[str, int],
+            shares_state: dict[str, int],
             amount: float,
             allow_below_target: bool,
             allowed_symbols: set[str],
-        ) -> Dict[str, int]:
+        ) -> dict[str, int]:
             if amount <= 0:
                 return {}
-            orders: Dict[str, int] = {}
+            orders: dict[str, int] = {}
             initial_amount = amount
 
             overweight_symbols = [
@@ -2195,7 +2196,7 @@ class RegimeRebalanceEngine:
                     break
             return orders
 
-        orders_by_symbol: Dict[str, int] = {}
+        orders_by_symbol: dict[str, int] = {}
         rebalance_mode = "no"
         deficit_gate_after = False
         if hard_rebalance or soft_rebalance:
@@ -2203,7 +2204,7 @@ class RegimeRebalanceEngine:
             for symbol in symbols:
                 desired = target_shares[symbol] - current_positions[symbol]
                 if hard_rebalance and not math.isclose(rebalance_fraction, 1.0):
-                    desired = int(round(desired * rebalance_fraction))
+                    desired = round(desired * rebalance_fraction)
                 if desired == 0:
                     continue
                 if symbol in allowed_symbols:
@@ -2286,7 +2287,7 @@ class RegimeRebalanceEngine:
         )
         flow_active_next = flow_gate and rebalance_mode in {"flow", "no"}
 
-        regime_summary: List[Dict[str, Any]] = []
+        regime_summary: list[dict[str, Any]] = []
         actionable_flow_buy_symbols: set[str] = set()
         net_liquidation_value = account.net_liquidation
         for symbol in symbols:
@@ -2310,13 +2311,15 @@ class RegimeRebalanceEngine:
                 rebalance_policy.mode.value if rebalance_policy is not None else "both"
             )
             min_shares = 1
-            min_amount: Optional[float] = None
-            min_percent_relative: Optional[float] = None
+            min_amount: float | None = None
+            min_percent_relative: float | None = None
 
-            if filtered_trade_shares > 0 and not allows_buy:
-                filtered_trade_shares = 0
-                action = f"[cyan]Skip (mode={mode_value})"
-            elif filtered_trade_shares < 0 and not allows_sell:
+            if (
+                filtered_trade_shares > 0
+                and not allows_buy
+                or filtered_trade_shares < 0
+                and not allows_sell
+            ):
                 filtered_trade_shares = 0
                 action = f"[cyan]Skip (mode={mode_value})"
             elif filtered_trade_shares != 0:

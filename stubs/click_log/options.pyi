@@ -9,4 +9,3 @@ def simple_verbosity_option(logger=..., *names, **kwargs):  # -> Callable[..., A
     Name can be configured through ``*names``. Keyword arguments are passed to
     the underlying ``click.option`` decorator.
     """
-    ...

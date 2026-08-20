@@ -7,21 +7,21 @@ obtained from config-files, forms, external services or command-line
 parsing, converted from JSON/YAML (or something else) to Python data-types."""
 __version__ = ...
 __all__ = [
-    "Schema",
     "And",
+    "Const",
+    "Forbidden",
+    "Literal",
+    "Optional",
     "Or",
     "Regex",
-    "Optional",
-    "Use",
-    "Forbidden",
-    "Const",
-    "Literal",
+    "Schema",
     "SchemaError",
-    "SchemaWrongKeyError",
-    "SchemaMissingKeyError",
     "SchemaForbiddenKeyError",
-    "SchemaUnexpectedTypeError",
+    "SchemaMissingKeyError",
     "SchemaOnlyOneAllowedError",
+    "SchemaUnexpectedTypeError",
+    "SchemaWrongKeyError",
+    "Use",
 ]
 
 class SchemaError(Exception):
@@ -33,36 +33,25 @@ class SchemaError(Exception):
         Removes duplicates values in auto and error list.
         parameters.
         """
-        ...
 
 class SchemaWrongKeyError(SchemaError):
     """Error Should be raised when an unexpected key is detected within the
     data set being."""
 
-    ...
-
 class SchemaMissingKeyError(SchemaError):
     """Error should be raised when a mandatory key is not found within the
     data set being validated"""
 
-    ...
-
 class SchemaOnlyOneAllowedError(SchemaError):
     """Error should be raised when an only_one Or key has multiple matching candidates"""
-
-    ...
 
 class SchemaForbiddenKeyError(SchemaError):
     """Error should be raised when a forbidden key is found within the
     data set being validated, and its value matches the value that was specified"""
 
-    ...
-
 class SchemaUnexpectedTypeError(SchemaError):
     """Error should be raised when a type mismatch is detected within the
     data set being validated."""
-
-    ...
 
 class And:
     """
@@ -74,7 +63,6 @@ class And:
     @property
     def args(self):  # -> tuple[Any, ...]:
         """The provided parameters"""
-        ...
 
     def validate(self, data, **kwargs):
         """
@@ -83,7 +71,6 @@ class And:
         :param data: to be validated with sub defined schemas.
         :return: returns validated data
         """
-        ...
 
 class Or(And):
     """Utility function to combine validation directives in a OR Boolean
@@ -98,7 +85,6 @@ class Or(And):
         :param data: data to be validated by provided schema.
         :return: return validated data if not validation
         """
-        ...
 
 class Regex:
     """
@@ -112,7 +98,6 @@ class Regex:
     @property
     def pattern_str(self):  # -> Any:
         """The pattern for the represented regular expression"""
-        ...
 
     def validate(self, data, **kwargs):
         """
@@ -120,7 +105,6 @@ class Regex:
         :param data: data to be validated
         :return: return validated data.
         """
-        ...
 
 class Use:
     """
@@ -164,7 +148,6 @@ class Schema:
         """Return whether the given data has passed all the validations
         that were specified in the given schema.
         """
-        ...
 
     def validate(self, data, **kwargs): ...
     def json_schema(self, schema_id, use_refs=..., **kwargs):
@@ -176,7 +159,6 @@ class Schema:
                          Schemas with references are harder to read by humans, but are a lot smaller when there
                          is a lot of reuse
         """
-        ...
 
 class Optional(Schema):
     """Marker for an optional part of the validation Schema."""
@@ -196,7 +178,6 @@ class Forbidden(Hook):
 
 class Literal:
     def __init__(self, value, description=...) -> None: ...
-    def __str__(self) -> str: ...
     def __repr__(self):  # -> LiteralString:
         ...
     @property

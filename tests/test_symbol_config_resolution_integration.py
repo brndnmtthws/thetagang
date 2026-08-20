@@ -59,7 +59,7 @@ async def test_options_engine_fails_fast_for_invalid_symbol_config_shape(
         ),
     )
     services = SimpleNamespace(
-        get_symbols=lambda: [],
+        get_symbols=list,
         get_primary_exchange=lambda _symbol: "SMART",
         get_buying_power=lambda _account_summary: 0,
         get_maximum_new_contracts_for=lambda *_args, **_kwargs: 0,
@@ -97,7 +97,7 @@ async def test_regime_engine_fails_fast_for_invalid_symbol_config_shape(mocker) 
         order_ops=mocker.Mock(),
         data_store=None,
         get_primary_exchange=lambda _symbol: "SMART",
-        now_provider=lambda: datetime.now(),
+        now_provider=lambda: datetime.now().astimezone().replace(tzinfo=None),
         tail_hedge_stage_enabled=lambda: False,
     )
 

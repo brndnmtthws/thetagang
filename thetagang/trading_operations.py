@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 from ib_async import TagValue, Ticker, util
 from ib_async.contract import Contract, Option
@@ -30,7 +31,7 @@ class OrderOperations:
         config: Config,
         account_number: str,
         orders: Orders,
-        data_store: Optional[DataStore],
+        data_store: DataStore | None,
     ) -> None:
         self.config = config
         self.account_number = account_number
@@ -40,10 +41,10 @@ class OrderOperations:
     def get_algo_strategy(self) -> str:
         return self.config.runtime.orders.algo.strategy
 
-    def algo_params_from(self, params: List[List[str]]) -> List[TagValue]:
+    def algo_params_from(self, params: list[list[str]]) -> list[TagValue]:
         return [TagValue(p[0], p[1]) for p in params]
 
-    def get_algo_params(self) -> List[TagValue]:
+    def get_algo_params(self) -> list[TagValue]:
         return self.algo_params_from(self.config.runtime.orders.algo.params)
 
     def get_order_exchange(self) -> str:
@@ -61,7 +62,7 @@ class OrderOperations:
         quantity: float,
         limit_price: float,
         algo_strategy: str | None = None,
-        algo_params: List[TagValue] | None = None,
+        algo_params: list[TagValue] | None = None,
         use_default_algo: bool = True,
         tif: str = "DAY",
         order_ref: str | None = None,
@@ -87,7 +88,7 @@ class OrderOperations:
             kwargs["orderId"] = order_id
         return LimitOrder(action, quantity, limit_price, **kwargs)
 
-    def enqueue_order(self, contract: Optional[Contract], order: LimitOrder) -> None:
+    def enqueue_order(self, contract: Contract | None, order: LimitOrder) -> None:
         if not contract:
             return
         intent_id = None
@@ -126,14 +127,14 @@ class OptionChainScanner:
         self,
         underlying: Contract,
         right: str,
-        strike_limit: Optional[float],
+        strike_limit: float | None,
         minimum_price: Callable[[], float],
-        exclude_expirations_before: Optional[str] = None,
-        exclude_exp_strike: Optional[Tuple[float, str]] = None,
-        fallback_minimum_price: Optional[Callable[[], float]] = None,
-        target_dte: Optional[int] = None,
-        target_delta: Optional[float] = None,
-        exclude_con_ids: Optional[set[int]] = None,
+        exclude_expirations_before: str | None = None,
+        exclude_exp_strike: tuple[float, str] | None = None,
+        fallback_minimum_price: Callable[[], float] | None = None,
+        target_dte: int | None = None,
+        target_delta: float | None = None,
+        exclude_con_ids: set[int] | None = None,
     ) -> Ticker:
         contract_target_dte: int = (
             target_dte if target_dte else self.config.get_target_dte(underlying.symbol)
@@ -191,7 +192,7 @@ class OptionChainScanner:
                 f"No valid contract expirations found for {underlying.symbol}. Continuing anyway..."
             )
 
-        def nearest_strikes(strikes: List[float]) -> List[float]:
+        def nearest_strikes(strikes: list[float]) -> list[float]:
             chain_strikes = self.config.runtime.option_chains.strikes
             if right.startswith("P"):
                 return strikes[-chain_strikes:]
@@ -299,8 +300,8 @@ class OptionChainScanner:
         tickers = new_tickers
 
         def filter_remaining_tickers(
-            tickers: List[Ticker], delta_ord_desc: bool
-        ) -> List[Ticker]:
+            tickers: list[Ticker], delta_ord_desc: bool
+        ) -> list[Ticker]:
             minimum_open_interest = (
                 self.config.strategies.wheel.defaults.target.minimum_open_interest
             )

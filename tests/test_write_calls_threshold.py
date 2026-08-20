@@ -1,4 +1,3 @@
-from typing import Dict
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -49,7 +48,7 @@ def portfolio_manager(mock_ib, mock_config, mocker):
     return PortfolioManager(mock_config, mock_ib, completion_future, dry_run=False)
 
 
-def create_account_summary(net_liquidation: float) -> Dict[str, AccountValue]:
+def create_account_summary(net_liquidation: float) -> dict[str, AccountValue]:
     """Create mock account summary."""
     return {
         "NetLiquidation": AccountValue(

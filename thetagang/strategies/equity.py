@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Protocol
+from typing import Any, Protocol
 
 from thetagang import log
 from thetagang.accounting import AccountSummary, PortfolioBySymbol
@@ -11,8 +11,8 @@ from thetagang.accounting import AccountSummary, PortfolioBySymbol
 class EquityStrategyDeps:
     enabled_stages: set[str]
     regime_rebalance_enabled: bool
-    regime_service: "RegimeRebalanceService"
-    rebalance_service: "EquityRebalanceService"
+    regime_service: RegimeRebalanceService
+    rebalance_service: EquityRebalanceService
 
 
 class RegimeRebalanceService(Protocol):
@@ -24,7 +24,7 @@ class RegimeRebalanceService(Protocol):
         exclude_current_run_state: bool = False,
     ) -> Any: ...
 
-    async def execute_regime_rebalance_orders(self, orders: List[Any]) -> int: ...
+    async def execute_regime_rebalance_orders(self, orders: list[Any]) -> int: ...
 
 
 class EquityRebalanceService(Protocol):
@@ -32,13 +32,13 @@ class EquityRebalanceService(Protocol):
         self, account_summary: AccountSummary, portfolio_positions: PortfolioBySymbol
     ) -> Any: ...
 
-    async def execute_buy_orders(self, orders: List[Any]) -> None: ...
+    async def execute_buy_orders(self, orders: list[Any]) -> None: ...
 
     async def check_sell_only_positions(
         self, account_summary: AccountSummary, portfolio_positions: PortfolioBySymbol
     ) -> Any: ...
 
-    async def execute_sell_orders(self, orders: List[Any]) -> None: ...
+    async def execute_sell_orders(self, orders: list[Any]) -> None: ...
 
 
 async def run_equity_rebalance_stages(

@@ -9,7 +9,7 @@ from thetagang.accounting import AccountSummary, PortfolioBySymbol
 @dataclass
 class PostStrategyDeps:
     enabled_stages: set[str]
-    service: "PostStageService"
+    service: PostStageService
 
 
 class PostStageService(Protocol):

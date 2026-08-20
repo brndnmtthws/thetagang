@@ -1,5 +1,5 @@
 import math
-from datetime import date, timedelta
+from datetime import datetime, timedelta
 
 from ib_async import Option, Order, PortfolioItem
 from ib_async.contract import Stock
@@ -267,7 +267,7 @@ def con(dte: str, strike: float, right: str, position: float) -> PortfolioItem:
 
 
 def test_calculate_net_short_positions() -> None:
-    today = date.today()
+    today = datetime.now().astimezone().date()
     exp3dte = (today + timedelta(days=3)).strftime("%Y%m%d")
     exp30dte = (today + timedelta(days=30)).strftime("%Y%m%d")
     exp90dte = (today + timedelta(days=90)).strftime("%Y%m%d")
@@ -522,7 +522,7 @@ def test_calculate_net_short_positions() -> None:
 
 
 def test_weighted_avg_strike() -> None:
-    today = date.today()
+    today = datetime.now().astimezone().date()
     exp3dte = (today + timedelta(days=3)).strftime("%Y%m%d")
     exp30dte = (today + timedelta(days=30)).strftime("%Y%m%d")
     exp90dte = (today + timedelta(days=90)).strftime("%Y%m%d")

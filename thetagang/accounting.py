@@ -15,7 +15,7 @@ from thetagang.config_models import RegimeRebalanceBaseEnum
 AccountSummary: TypeAlias = dict[str, AccountValue]
 PortfolioBySymbol: TypeAlias = dict[str, list[PortfolioItem]]
 
-__all__ = [
+__all__ = [  # noqa: RUF022
     "AccountingError",
     "AccountingPolicy",
     "AccountMetric",
@@ -353,7 +353,7 @@ def _resolve_margin_usage(config: Any, resolver_name: str) -> float:
         return fallback
     try:
         resolved = resolver()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return fallback
     try:
         return _nonnegative_number(resolved, description=f"{resolver_name} result")
