@@ -736,7 +736,6 @@ class TestPortfolioManager:
             },
         )
 
-        pm.options_trading_enabled = mocker.Mock(return_value=False)
         pm.initialize_account = mocker.Mock()
         pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
         pm.get_portfolio_positions = mocker.Mock(return_value={})
@@ -778,7 +777,8 @@ class TestPortfolioManager:
             ],
         )
 
-        pm.options_trading_enabled = mocker.Mock(return_value=True)
+        mock_config.strategies.regime_rebalance.enabled = True
+        mock_config.strategies.regime_rebalance.shares_only = True
         pm.initialize_account = mocker.Mock()
         pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
         pm.get_portfolio_positions = mocker.Mock(return_value={})
@@ -787,7 +787,7 @@ class TestPortfolioManager:
         calls: list[tuple[str, set[str]]] = []
 
         async def fake_run_option_write_stages(
-            deps, _account_summary, _portfolio_positions, _options_enabled
+            deps, _account_summary, _portfolio_positions
         ):
             calls.append(("write", set(deps.enabled_stages)))
 
@@ -1255,7 +1255,6 @@ class TestPortfolioManager:
         portfolio_manager.run_stage_order = ["equity_regime_rebalance"]
         portfolio_manager.initialize_account = mocker.Mock()
         portfolio_manager.summarize_account = mocker.AsyncMock(return_value=({}, {}))
-        portfolio_manager.options_trading_enabled = mocker.Mock(return_value=False)
         portfolio_manager._run_regime_rebalance_stage = mocker.AsyncMock(
             side_effect=RuntimeError("Tail-harvest execution did not fully fill")
         )

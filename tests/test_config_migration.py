@@ -661,6 +661,8 @@ weight = 1.0
     assert "strategies" in run
     assert "stages" not in run
     assert run["strategies"] == ["regime_rebalance"]
+    assert "shares_only" not in parsed["strategies"]["regime_rebalance"]
+    assert any("shares_only" in warning for warning in migrated.warnings)
     assert not any("explicit run.stages" in warning for warning in migrated.warnings)
 
 
@@ -697,6 +699,8 @@ weight = 1.0
     assert "strategies" in run
     assert "stages" not in run
     assert run["strategies"] == ["regime_rebalance"]
+    assert "shares_only" not in parsed["strategies"]["regime_rebalance"]
+    assert any("shares_only" in warning for warning in migrated.warnings)
 
 
 def test_migration_cash_management_enabled_does_not_force_wheel_strategy() -> None:

@@ -1,8 +1,13 @@
+from io import StringIO
+
 import pytest
+from rich.console import Console
 
 from thetagang.config import (
+    SHARES_ONLY_DEPRECATION_MESSAGE,
     Config,
     RebalanceMode,
+    config_deprecation_warnings,
     stage_enabled_map,
     stage_enabled_map_from_run,
 )
@@ -223,7 +228,7 @@ def test_enabled_tail_hedge_requires_a_managed_symbol() -> None:
         Config(**data)
 
 
-def test_tail_hedge_rejects_shares_only_regime_mode() -> None:
+def test_tail_hedge_accepts_deprecated_shares_only_regime_setting() -> None:
     data = _base_config({"strategies": ["regime_rebalance", "tail_hedge"]})
     data["strategies"]["regime_rebalance"] = {
         "enabled": True,
@@ -234,8 +239,41 @@ def test_tail_hedge_rejects_shares_only_regime_mode() -> None:
         "targets": [_tail_target()],
     }
 
-    with pytest.raises(ValueError, match="cannot be enabled when shares_only is true"):
-        Config(**data)
+    config = Config(**data)
+
+    flags = stage_enabled_map(config)
+    assert flags["equity_regime_rebalance"] is True
+    assert flags["post_tail_hedge"] is True
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_explicit_shares_only_setting_emits_deprecation_message(value: bool) -> None:
+    data = _base_config({"strategies": ["regime_rebalance"]})
+    data["strategies"]["regime_rebalance"] = {"shares_only": value}
+
+    warnings = config_deprecation_warnings(data)
+
+    assert warnings == [SHARES_ONLY_DEPRECATION_MESSAGE]
+
+
+def test_trading_capabilities_are_derived_from_resolved_stages() -> None:
+    data = _base_config(
+        {"strategies": ["regime_rebalance", "tail_hedge", "cash_management"]}
+    )
+    config = Config(**data)
+    output = StringIO()
+    console = Console(file=output, width=140, color_system=None)
+
+    console.print(config.create_trading_capabilities_table())
+
+    rendered = output.getvalue()
+    assert "Regime share rebalancing" in rendered
+    assert "Tail-hedge option trading" in rendered
+    assert "Cash management" in rendered
+    assert "Wheel put writing" in rendered
+    assert "equity_regime_rebalance" in rendered
+    assert "post_tail_hedge" in rendered
+    assert rendered.count("Enabled") == 3
 
 
 def test_tail_hedge_accepts_an_empty_desired_target_set_for_cleanup() -> None:

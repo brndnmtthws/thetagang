@@ -755,6 +755,7 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
     deficit_rail_stop: float = Field(default=0.03, ge=0.0, le=1.0)
     eps: float = Field(default=1e-8, gt=0.0)
     order_history_lookback_days: int = Field(default=30, ge=1)
+    # Schema-v2 compatibility only. Runtime behavior is selected by run stages.
     shares_only: bool = Field(default=False)
     weight_base: RegimeRebalanceBaseEnum = Field(
         default=RegimeRebalanceBaseEnum.net_liq_ex_options
@@ -824,7 +825,6 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
         )
         table.add_row("", "Deficit rail start", "=", f"{pfmt(self.deficit_rail_start)}")
         table.add_row("", "Deficit rail stop", "=", f"{pfmt(self.deficit_rail_stop)}")
-        table.add_row("", "Shares only", "=", f"{self.shares_only}")
         table.add_row("", "Weight base", "=", f"{self.weight_base.value}")
         if self.ratio_gate is not None:
             self.ratio_gate.add_to_table(table, section)

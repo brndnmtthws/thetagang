@@ -217,7 +217,10 @@ recent executions tagged with `tg:regime-rebalance`. When using this feature,
 run the script once per day.
 
 ```toml
-[regime_rebalance]
+[run]
+strategies = ["regime_rebalance"]
+
+[strategies.regime_rebalance]
 enabled = true
 symbols = ["QQQ", "BTAL"]
 lookback_days = 40
@@ -228,8 +231,14 @@ cooldown_days = 5
 choppiness_min = 3.0
 efficiency_max = 0.30
 order_history_lookback_days = 30
-shares_only = true  # disable option writes/rolls while rebalancing
 ```
+
+The resolved `run.strategies` or `run.stages` plan controls which trading
+capabilities execute. `regime_rebalance` enables only its equity-rebalance
+stage; it does not enable wheel option writing or management. The historical
+`strategies.regime_rebalance.shares_only` setting is deprecated and ignored.
+Existing schema-v2 configurations that still include it load with a warning and
+should remove it.
 
 ### Exchange Hours Management
 

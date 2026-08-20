@@ -9,7 +9,12 @@ from ib_async import IB, IBC, Contract, Watchdog, util
 from rich.console import Console
 
 from thetagang import log
-from thetagang.config import Config, enabled_stage_ids_from_run, stage_enabled_map
+from thetagang.config import (
+    Config,
+    config_deprecation_warnings,
+    enabled_stage_ids_from_run,
+    stage_enabled_map,
+)
 from thetagang.config_migration.startup_migration import (
     run_startup_migration,
 )
@@ -74,6 +79,8 @@ def start(
         return
 
     config_doc = tomlkit.parse(raw_config).unwrap()
+    for warning in config_deprecation_warnings(config_doc):
+        log.warning(warning)
     config = Config(**config_doc)
     run_stage_flags = stage_enabled_map(config)
     run_stage_order = enabled_stage_ids_from_run(config.run)
