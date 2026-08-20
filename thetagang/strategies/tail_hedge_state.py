@@ -107,7 +107,9 @@ class TailHedgeCohort:
     @staticmethod
     def _datetime(value: Any, description: str) -> datetime:
         if not isinstance(value, datetime):
-            raise TypeError(f"Tail-hedge cohort has an invalid {description}")
+            raise RuntimeError(  # noqa: TRY004
+                f"Tail-hedge cohort has an invalid {description}"
+            )
         parsed = parse_state_datetime(value)
         assert parsed is not None
         return parsed
@@ -329,7 +331,9 @@ class TailHedgeState:
     def validate(self) -> None:
         for cohort in self.cohorts:
             if not isinstance(cohort, TailHedgeCohort):
-                raise TypeError("Tail-hedge state contains invalid cohort data")
+                raise RuntimeError(  # noqa: TRY004
+                    "Tail-hedge state contains invalid cohort data"
+                )
             cohort.validate()
         self._validate_uniqueness()
 
@@ -338,7 +342,9 @@ class TailHedgeState:
         open_con_ids: set[int] = set()
         for cohort in self.cohorts:
             if not isinstance(cohort, TailHedgeCohort):
-                raise TypeError("Tail-hedge state contains invalid cohort data")
+                raise RuntimeError(  # noqa: TRY004
+                    "Tail-hedge state contains invalid cohort data"
+                )
             if cohort.entry_id in entry_ids or (
                 cohort.is_open and cohort.con_id in open_con_ids
             ):

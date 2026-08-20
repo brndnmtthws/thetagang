@@ -3,14 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ib_async import AccountValue, PortfolioItem
 from rich.console import Group
 from rich.panel import Panel
 
 from thetagang import log
-
-AccountSummary = dict[str, AccountValue]
-PortfolioBySymbol = dict[str, list[PortfolioItem]]
+from thetagang.accounting import AccountSummary, PortfolioBySymbol
 
 
 @dataclass

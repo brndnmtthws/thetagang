@@ -3,10 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from ib_async import AccountValue, PortfolioItem
-
-AccountSummary = dict[str, AccountValue]
-PortfolioBySymbol = dict[str, list[PortfolioItem]]
+from thetagang.accounting import AccountSummary, PortfolioBySymbol
 
 
 @dataclass

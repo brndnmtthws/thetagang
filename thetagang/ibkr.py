@@ -1,5 +1,4 @@
 import asyncio
-import math
 from collections.abc import Awaitable, Callable, Coroutine
 from enum import Enum
 from typing import Any, cast
@@ -25,6 +24,7 @@ from ib_async.wrapper import RequestError
 from rich.console import Console
 
 from thetagang import log
+from thetagang.accounting import AccountingError, AccountMetric, select_account_value
 from thetagang.db import DataStore
 
 console = Console()
@@ -43,16 +43,6 @@ class RequiredFieldValidationError(Exception):
     def __init__(self, message: str) -> None:
         self.message = message
         super().__init__(self.message)
-
-
-BROKER_REQUEST_ERRORS = (
-    OSError,
-    RuntimeError,
-    TypeError,
-    ValueError,
-    RequestError,
-    RequiredFieldValidationError,
-)
 
 
 class IBKR:
@@ -80,52 +70,19 @@ class IBKR:
 
     def cached_net_liquidation(self, account: str) -> float:
         """Read NLV from a newly materialized synchronized account-value cache."""
-        net_liquidation = self.cached_account_value(account, "NetLiquidation")
+        net_liquidation = self.cached_account_value(
+            account, AccountMetric.NET_LIQUIDATION.value
+        )
         if net_liquidation > 0:
             return net_liquidation
         raise RuntimeError("Net liquidation value is unavailable")
 
     def cached_account_value(self, account: str, tag: str) -> float:
         """Read one finite value from ib_async's synchronized account cache."""
-        candidates: list[tuple[str, str, float]] = []
-        for value in self.ib.accountValues(account):
-            if value.tag != tag:
-                continue
-            try:
-                numeric_value = float(value.value)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(numeric_value):
-                candidates.append(
-                    (
-                        str(value.currency).upper(),
-                        str(getattr(value, "modelCode", "") or ""),
-                        numeric_value,
-                    )
-                )
-
-        aggregate_base_values = [
-            numeric_value
-            for currency, model_code, numeric_value in candidates
-            if currency == "BASE" and not model_code
-        ]
-        if len(aggregate_base_values) == 1:
-            return aggregate_base_values[0]
-        if len(aggregate_base_values) > 1:
-            raise RuntimeError(f"{tag} account value is unavailable")
-
-        base_values = [
-            numeric_value
-            for currency, _model_code, numeric_value in candidates
-            if currency == "BASE"
-        ]
-        if len(base_values) == 1:
-            return base_values[0]
-        if len(base_values) > 1:
-            raise RuntimeError(f"{tag} account value is unavailable")
-        if len(candidates) == 1:
-            return candidates[0][2]
-        raise RuntimeError(f"{tag} account value is unavailable")
+        try:
+            return select_account_value(self.ib.accountValues(account), tag)
+        except AccountingError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     async def account_summary(self, account: str) -> list[AccountValue]:
         return await self.ib.accountSummaryAsync(account)

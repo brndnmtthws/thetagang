@@ -4,14 +4,15 @@ import math
 from collections.abc import Coroutine
 from typing import Any, Protocol
 
-from ib_async import AccountValue, PortfolioItem
+from ib_async import PortfolioItem
 from ib_async.contract import Stock
 from rich.table import Table
 
 from thetagang import log
+from thetagang.accounting import AccountSummary, BrokerAccountSnapshot
 from thetagang.config import Config
 from thetagang.fmt import ifmt
-from thetagang.ibkr import BROKER_REQUEST_ERRORS, IBKR, TickerField
+from thetagang.ibkr import IBKR, TickerField
 from thetagang.strategies.regime_engine import RegimeRebalanceEngine
 from thetagang.strategies.runtime_services import resolve_symbol_configs
 from thetagang.trading_operations import OrderOperations
@@ -20,7 +21,7 @@ from thetagang.trading_operations import OrderOperations
 class EquityRuntimeServices(Protocol):
     def get_primary_exchange(self, symbol: str) -> str: ...
 
-    def get_buying_power(self, account_summary: dict[str, AccountValue]) -> int: ...
+    def get_buying_power(self, account_summary: AccountSummary) -> int: ...
 
     def midpoint_or_market_price(self, ticker: Any) -> float: ...
 
@@ -53,7 +54,7 @@ class EquityRebalanceEngine:
     def get_primary_exchange(self, symbol: str) -> str:
         return self.services.get_primary_exchange(symbol)
 
-    def get_buying_power(self, account_summary: dict[str, AccountValue]) -> int:
+    def get_buying_power(self, account_summary: AccountSummary) -> int:
         return self.services.get_buying_power(account_summary)
 
     def _midpoint_or_market_price(self, ticker: Any) -> float:
@@ -106,7 +107,7 @@ class EquityRebalanceEngine:
                 )
                 self.order_ops.enqueue_order(stock_contract, order)
                 prepared += 1
-            except BROKER_REQUEST_ERRORS as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.error(
                     f"{symbol}: Failed to execute regime rebalance order. Error: {exc}"
                 )
@@ -115,7 +116,7 @@ class EquityRebalanceEngine:
 
     async def check_regime_rebalance_positions(
         self,
-        account_summary: dict[str, AccountValue],
+        account_summary: AccountSummary,
         portfolio_positions: dict[str, list[PortfolioItem]],
         *,
         exclude_current_run_state: bool = False,
@@ -128,7 +129,7 @@ class EquityRebalanceEngine:
 
     async def check_buy_only_positions(
         self,
-        account_summary: dict[str, AccountValue],
+        account_summary: AccountSummary,
         portfolio_positions: dict[str, list[PortfolioItem]],
     ) -> tuple[Table, list[tuple[str, str, int]]]:
         stock_positions = [
@@ -202,7 +203,9 @@ class EquityRebalanceEngine:
             )
 
             if min_percent is not None:
-                net_liquidation_value = float(account_summary["NetLiquidation"].value)
+                net_liquidation_value = BrokerAccountSnapshot(
+                    account_summary
+                ).net_liquidation
                 percent_min_amount = net_liquidation_value * min_percent
                 min_amount = (
                     max(min_amount, percent_min_amount)
@@ -354,7 +357,7 @@ class EquityRebalanceEngine:
                     f"Buy-only rebalancing: buying {quantity} shares of {symbol} @ ${limit_price}"
                 )
                 self.order_ops.enqueue_order(stock_contract, order)
-            except BROKER_REQUEST_ERRORS as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.error(
                     f"{symbol}: Failed to execute buy order for {quantity} shares. Error: {exc}"
                 )
@@ -362,7 +365,7 @@ class EquityRebalanceEngine:
 
     async def check_sell_only_positions(
         self,
-        account_summary: dict[str, AccountValue],
+        account_summary: AccountSummary,
         portfolio_positions: dict[str, list[PortfolioItem]],
     ) -> tuple[Table, list[tuple[str, str, int]]]:
         stock_positions = [
@@ -436,7 +439,9 @@ class EquityRebalanceEngine:
             )
 
             if min_percent is not None:
-                net_liquidation_value = float(account_summary["NetLiquidation"].value)
+                net_liquidation_value = BrokerAccountSnapshot(
+                    account_summary
+                ).net_liquidation
                 percent_min_amount = net_liquidation_value * min_percent
                 min_amount = (
                     max(min_amount, percent_min_amount)
@@ -534,7 +539,7 @@ class EquityRebalanceEngine:
                     f"Sell-only rebalancing: selling {quantity} shares of {symbol} @ ${limit_price}"
                 )
                 self.order_ops.enqueue_order(stock_contract, order)
-            except BROKER_REQUEST_ERRORS as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.error(
                     f"{symbol}: Failed to execute sell order for {quantity} shares. Error: {exc}"
                 )

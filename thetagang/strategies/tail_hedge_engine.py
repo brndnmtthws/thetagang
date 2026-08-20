@@ -11,6 +11,7 @@ from ib_async.contract import Contract, Index, Option, Stock
 from ib_async.wrapper import RequestError
 
 from thetagang import log
+from thetagang.accounting import stock_market_value
 from thetagang.config import Config
 from thetagang.config_models import TailHedgeTargetConfig
 from thetagang.db import DataStore
@@ -1447,18 +1448,7 @@ class TailHedgeEngine:
 
     @staticmethod
     def _stock_exposure(symbol_positions: list[PortfolioItem]) -> float:
-        total_value = 0.0
-        for position in symbol_positions:
-            if not isinstance(position.contract, Stock) or position.position <= 0:
-                continue
-            market_value = float(getattr(position, "marketValue", 0.0) or 0.0)
-            if not TailHedgeEngine._is_positive(market_value):
-                market_price = float(getattr(position, "marketPrice", 0.0) or 0.0)
-                if not TailHedgeEngine._is_positive(market_price):
-                    continue
-                market_value = float(position.position) * market_price
-            total_value += market_value
-        return total_value
+        return stock_market_value(symbol_positions, long_only=True)
 
     def _record_evaluation(
         self,

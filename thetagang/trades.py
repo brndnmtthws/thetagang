@@ -6,7 +6,7 @@ from rich.table import Table
 from thetagang import log
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ffmt, ifmt
-from thetagang.ibkr import BROKER_REQUEST_ERRORS, IBKR
+from thetagang.ibkr import IBKR
 
 
 class Trades:
@@ -25,7 +25,7 @@ class Trades:
         """Submit an order, returning whether local placement succeeded."""
         try:
             trade = self.ibkr.place_order(contract, order)
-        except BROKER_REQUEST_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001
             log.error(
                 f"{contract.symbol}: Failed to submit contract, order={order}, "
                 f"error={type(exc).__name__}: {exc}"

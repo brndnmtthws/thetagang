@@ -1,3 +1,2 @@
-from .main import cli
-
-__all__ = ["cli"]
+# Do not reorder imports
+from .main import *

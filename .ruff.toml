@@ -1,2 +1,3 @@
 [lint.per-file-ignores]
+"thetagang/entry.py" = ["F403"]
 "thetagang/test_*.py" = ["ANN"]

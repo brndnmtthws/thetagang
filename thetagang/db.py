@@ -8,7 +8,6 @@ import shutil
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
-from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,13 +29,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine.url import make_url
-from sqlalchemy.exc import ArgumentError, SQLAlchemyError
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from alembic import command
 from thetagang import log
-
-PERSISTENCE_ERRORS = (SQLAlchemyError, OSError, RuntimeError, TypeError, ValueError)
 
 
 class Base(DeclarativeBase):
@@ -292,20 +289,19 @@ def run_migrations(db_url: str) -> None:
             temp_path = sqlite_path.with_suffix(f"{sqlite_path.suffix}.tmp")
             migration_url = f"sqlite:///{temp_path}"
 
-    migration_succeeded = False
     try:
         _run_alembic_upgrade(alembic_cfg, migration_url)
         if sqlite_path and temp_path:
             if sqlite_path.exists():
                 sqlite_path.unlink()
             temp_path.replace(sqlite_path)
-        migration_succeeded = True
+    except Exception:
+        if sqlite_path and backup_path and backup_path.exists():
+            shutil.copy2(backup_path, sqlite_path)
+        if temp_path and temp_path.exists():
+            temp_path.unlink()
+        raise
     finally:
-        if not migration_succeeded:
-            if sqlite_path and backup_path and backup_path.exists():
-                shutil.copy2(backup_path, sqlite_path)
-            if temp_path and temp_path.exists():
-                temp_path.unlink()
         if backup_path and backup_path.exists():
             backup_path.unlink()
 
@@ -353,8 +349,15 @@ class DataStore:
 
     @contextmanager
     def session_scope(self) -> Iterator[Any]:
-        with self.Session.begin() as session:
+        session = self.Session()
+        try:
             yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def _create_run(
         self, config_path: str, dry_run: bool, config_text: str | None
@@ -362,10 +365,8 @@ class DataStore:
         version = os.getenv("THETAGANG_VERSION", "unknown")
         try:
             version = package_version("thetagang")
-        except PackageNotFoundError:
-            logging.getLogger(__name__).debug(
-                "Package metadata is unavailable; recording configured version."
-            )
+        except Exception:  # noqa: BLE001, S110
+            pass
         hostname = platform.node() or "unknown"
 
         with self.session_scope() as session:
@@ -400,7 +401,7 @@ class DataStore:
             if self.dry_run:
                 self._dry_run_event_overlay[(event_type, symbol)] = payload_json
             return True
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(f"Failed to record event {event_type}: {exc}")
             return False
 
@@ -425,7 +426,7 @@ class DataStore:
                     return None
                 decoded = json.loads(payload)
                 if not isinstance(decoded, dict):
-                    raise TypeError(f"Event {event_type} payload is not an object")
+                    raise ValueError(f"Event {event_type} payload is not an object")
                 return decoded
 
             with self.session_scope() as session:
@@ -447,9 +448,11 @@ class DataStore:
                 return None
             decoded = json.loads(payload)
             if not isinstance(decoded, dict):
-                raise TypeError(f"Event {event_type} payload is not an object")
+                raise ValueError(  # noqa: TRY004
+                    f"Event {event_type} payload is not an object"
+                )
             return decoded
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:
             log.warning(f"Failed to read event {event_type}: {exc}")
             if raise_on_error:
                 raise RuntimeError(f"Failed to read event {event_type}") from exc
@@ -471,7 +474,7 @@ class DataStore:
             for key in list(self._dry_run_event_overlay):
                 if key[0] in selected:
                     self._dry_run_event_overlay.pop(key, None)
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:
             raise RuntimeError("Failed to discard active-run state") from exc
 
     @staticmethod
@@ -502,7 +505,7 @@ class DataStore:
                     .all()
                 )
                 return [self._tail_hedge_entry_dict(entry) for entry in entries]
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:
             log.warning(f"Failed to read tail-hedge state: {exc}")
             if raise_on_error:
                 raise RuntimeError("Failed to read tail-hedge state") from exc
@@ -539,7 +542,7 @@ class DataStore:
                     for entry in current
                 )
             return True
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(f"Failed to persist tail-hedge state: {exc}")
             return False
 
@@ -558,7 +561,7 @@ class DataStore:
                         summary_json=json.dumps(payload, default=str),
                     )
                 )
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(f"Failed to record account snapshot: {exc}")
 
     def record_positions_snapshot(self, positions: Mapping[str, Iterable[Any]]) -> None:
@@ -594,7 +597,7 @@ class DataStore:
             if rows:
                 with self.session_scope() as session:
                     session.add_all(rows)
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(f"Failed to record positions snapshot: {exc}")
 
     def record_order_intent(self, contract: Any, order: Any) -> int | None:
@@ -630,7 +633,7 @@ class DataStore:
                 session.add(intent)
                 session.flush()
                 return int(intent.id)
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(f"Failed to record order intent: {exc}")
             return None
 
@@ -656,7 +659,7 @@ class DataStore:
                         order_id=getattr(order, "orderId", None),
                     )
                 )
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(f"Failed to record order: {exc}")
 
     def record_order_status(self, trade: Any) -> None:
@@ -676,7 +679,7 @@ class DataStore:
                         perm_id=getattr(order, "permId", None),
                     )
                 )
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(f"Failed to record order status: {exc}")
 
     def record_executions(self, fills: Iterable[Any]) -> None:
@@ -717,7 +720,7 @@ class DataStore:
                         },
                     )
                     session.execute(stmt)
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(f"Failed to record executions: {exc}")
 
     def record_historical_bars(
@@ -760,7 +763,7 @@ class DataStore:
                         },
                     )
                     session.execute(stmt)
-        except PERSISTENCE_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001
             log.warning(f"Failed to record historical bars: {exc}")
 
     def get_historical_bars(
@@ -850,7 +853,7 @@ def _parse_datetime(
             return datetime.combine(value.date(), datetime.min.time(), UTC).replace(
                 tzinfo=None
             )
-        except (AttributeError, OverflowError, TypeError, ValueError):
+        except Exception:  # noqa: BLE001
             return None
     if isinstance(value, str):
         raw = value.strip()

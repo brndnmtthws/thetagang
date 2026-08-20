@@ -8,6 +8,7 @@ import ib_async.ticker
 from ib_async import AccountValue, Order, PortfolioItem, Ticker, util
 from ib_async.contract import Option, Stock
 
+from thetagang.accounting import AccountSummary, account_summary_from_values
 from thetagang.config import Config
 from thetagang.options import option_dte
 
@@ -26,11 +27,8 @@ def working_stock_order_symbols(trades: Iterable[Any], account_number: str) -> s
 
 def account_summary_to_dict(
     account_summary: list[AccountValue],
-) -> dict[str, AccountValue]:
-    d: dict[str, AccountValue] = {}
-    for s in account_summary:
-        d[s.tag] = s
-    return d
+) -> AccountSummary:
+    return account_summary_from_values(account_summary)
 
 
 def portfolio_positions_to_dict(

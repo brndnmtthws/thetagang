@@ -23,6 +23,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 from thetagang import log
+from thetagang.accounting import (
+    AccountMetric,
+    AccountSummary,
+    BrokerAccountSnapshot,
+    CapitalBaseKind,
+    PortfolioAccounting,
+)
 from thetagang.config import (
     CANONICAL_STAGE_ORDER,
     DEFAULT_RUN_STRATEGIES,
@@ -458,33 +465,38 @@ class PortfolioManager:
     async def summarize_account(
         self,
     ) -> tuple[
-        dict[str, AccountValue],
+        AccountSummary,
         dict[str, list[PortfolioItem]],
     ]:
         account_summary = await self.ibkr.account_summary(self.account_number)
         account_summary = account_summary_to_dict(account_summary)
 
-        if "NetLiquidation" not in account_summary:
+        if AccountMetric.NET_LIQUIDATION.value not in account_summary:
             raise RuntimeError(
                 f"Account number {self.config.runtime.account.number} appears invalid (no account data returned)"
             )
 
+        account = BrokerAccountSnapshot(account_summary)
+
         table = Table(title="Account summary")
         table.add_column("Item")
         table.add_column("Value", justify="right")
+        table.add_row("Net liquidation", dfmt(account.net_liquidation, 0))
         table.add_row(
-            "Net liquidation", dfmt(account_summary["NetLiquidation"].value, 0)
+            "Excess liquidity", dfmt(account.value(AccountMetric.EXCESS_LIQUIDITY), 0)
         )
         table.add_row(
-            "Excess liquidity", dfmt(account_summary["ExcessLiquidity"].value, 0)
+            "Initial margin", dfmt(account.value(AccountMetric.INITIAL_MARGIN), 0)
         )
-        table.add_row("Initial margin", dfmt(account_summary["InitMarginReq"].value, 0))
         table.add_row(
-            "Maintenance margin", dfmt(account_summary["FullMaintMarginReq"].value, 0)
+            "Maintenance margin",
+            dfmt(account.value(AccountMetric.MAINTENANCE_MARGIN), 0),
         )
-        table.add_row("Buying power", dfmt(account_summary["BuyingPower"].value, 0))
-        table.add_row("Total cash", dfmt(account_summary["TotalCashValue"].value, 0))
-        table.add_row("Cushion", pfmt(account_summary["Cushion"].value, 0))
+        table.add_row(
+            "Buying power", dfmt(account.value(AccountMetric.BROKER_BUYING_POWER), 0)
+        )
+        table.add_row("Total cash", dfmt(account.total_cash, 0))
+        table.add_row("Cushion", pfmt(account.value(AccountMetric.CUSHION), 0))
         table.add_section()
         table.add_row(
             "Target buying power usage", dfmt(self.get_buying_power(account_summary), 0)
@@ -651,7 +663,7 @@ class PortfolioManager:
 
     async def _refresh_account_state(
         self,
-    ) -> tuple[dict[str, AccountValue], dict[str, list[PortfolioItem]]]:
+    ) -> tuple[AccountSummary, dict[str, list[PortfolioItem]]]:
         await asyncio.wait_for(
             self.ibkr.refresh_account(self.account_number),
             timeout=self.config.runtime.ib_async.api_response_wait_time,
@@ -659,7 +671,10 @@ class PortfolioManager:
         account_summary = account_summary_to_dict(
             await self.ibkr.account_summary(self.account_number)
         )
-        for tag in ("NetLiquidation", "TotalCashValue"):
+        for tag in (
+            AccountMetric.NET_LIQUIDATION.value,
+            AccountMetric.TOTAL_CASH.value,
+        ):
             value = self.ibkr.cached_account_value(self.account_number, tag)
             account_summary[tag] = AccountValue(
                 self.account_number,
@@ -676,7 +691,7 @@ class PortfolioManager:
 
     async def _plan_regime_rebalance(
         self,
-        account_summary: dict[str, AccountValue],
+        account_summary: AccountSummary,
         portfolio_positions: dict[str, list[PortfolioItem]],
         *,
         exclude_current_run_state: bool = False,
@@ -695,9 +710,9 @@ class PortfolioManager:
 
     async def _run_regime_rebalance_stage(
         self,
-        account_summary: dict[str, AccountValue],
+        account_summary: AccountSummary,
         portfolio_positions: dict[str, list[PortfolioItem]],
-    ) -> tuple[dict[str, AccountValue], dict[str, list[PortfolioItem]]]:
+    ) -> tuple[AccountSummary, dict[str, list[PortfolioItem]]]:
         records_before = len(self.orders.records())
         regime_orders = await self._plan_regime_rebalance(
             account_summary,
@@ -949,7 +964,7 @@ class PortfolioManager:
         self,
         symbol: str,
         primary_exchange: str,
-        account_summary: dict[str, AccountValue],
+        account_summary: AccountSummary,
     ) -> int:
         total_buying_power = self.get_buying_power(account_summary)
         max_buying_power = (
@@ -966,35 +981,14 @@ class PortfolioManager:
     def get_primary_exchange(self, symbol: str) -> str:
         return self.config.portfolio.symbols[symbol].primary_exchange
 
-    def _buying_power_with_margin(
-        self, account_summary: dict[str, AccountValue], margin_usage: float
-    ) -> int:
-        return math.floor(float(account_summary["NetLiquidation"].value) * margin_usage)
-
-    def _resolve_margin_usage(self, resolver_name: str) -> float:
-        fallback_raw = self.config.runtime.account.margin_usage
-        fallback = (
-            float(fallback_raw)
-            if isinstance(fallback_raw, (int, float))
-            and not isinstance(fallback_raw, bool)
-            else 1.0
+    def get_wheel_buying_power(self, account_summary: AccountSummary) -> int:
+        accounting = PortfolioAccounting.build(
+            config=self.config,
+            account_summary=account_summary,
         )
-        resolver = getattr(self.config, resolver_name, None)
-        if not callable(resolver):
-            return fallback
-        try:
-            resolved = resolver()
-        except (AttributeError, TypeError, ValueError):
-            return fallback
-        if isinstance(resolved, bool) or not isinstance(resolved, (int, float)):
-            return fallback
-        return float(resolved)
+        return int(accounting.capital_base(CapitalBaseKind.WHEEL_BUYING_POWER).value)
 
-    def get_wheel_buying_power(self, account_summary: dict[str, AccountValue]) -> int:
-        margin_usage = self._resolve_margin_usage("wheel_margin_usage")
-        return self._buying_power_with_margin(account_summary, margin_usage)
-
-    def get_buying_power(self, account_summary: dict[str, AccountValue]) -> int:
+    def get_buying_power(self, account_summary: AccountSummary) -> int:
         return self.get_wheel_buying_power(account_summary)
 
     def midpoint_or_market_price(self, ticker: Ticker) -> float:

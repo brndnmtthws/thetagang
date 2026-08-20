@@ -450,7 +450,7 @@ def normalize_config(config: dict[str, dict[str, Any]]) -> dict[str, dict[str, A
             "ERROR: all symbols should have either a weight or parts specified, but parts and weights cannot be mixed."
         )
 
-    if "parts" in next(iter(config["symbols"].values())):
+    if "parts" in list(config["symbols"].values())[0]:  # noqa: RUF015
         # If using "parts" instead of "weight", convert parts into weights
         total_parts = float(sum([s["parts"] for s in config["symbols"].values()]))
         for k in config["symbols"]:
