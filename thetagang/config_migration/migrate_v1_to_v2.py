@@ -319,7 +319,7 @@ def _rewrite_parts_to_weight(
 def _strip_legacy_symbol_strategy_keys(symbols_doc: Any) -> None:
     if not hasattr(symbols_doc, "items"):
         return
-    for symbol_cfg in symbols_doc.values():
+    for _symbol, symbol_cfg in symbols_doc.items():  # noqa: PERF102
         if not hasattr(symbol_cfg, "__contains__"):
             continue
         for key in (

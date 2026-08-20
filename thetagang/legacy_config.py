@@ -443,8 +443,10 @@ def normalize_config(config: dict[str, dict[str, Any]]) -> dict[str, dict[str, A
         del config["target"]["maximum_new_contracts"]
 
     # xor: should have weight OR parts, but not both
-    if any("weight" in s for s in config["symbols"].values()) == any(
-        "parts" in s for s in config["symbols"].values()
+    if any(
+        ["weight" in s for s in config["symbols"].values()]  # noqa: C419
+    ) == any(
+        ["parts" in s for s in config["symbols"].values()]  # noqa: C419
     ):
         raise RuntimeError(
             "ERROR: all symbols should have either a weight or parts specified, but parts and weights cannot be mixed."

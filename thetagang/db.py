@@ -8,7 +8,6 @@ import shutil
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
-from importlib.metadata import version as package_version
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -364,7 +363,9 @@ class DataStore:
     ) -> int:
         version = os.getenv("THETAGANG_VERSION", "unknown")
         try:
-            version = package_version("thetagang")
+            from importlib.metadata import version as pkg_version
+
+            version = pkg_version("thetagang")
         except Exception:  # noqa: BLE001, S110
             pass
         hostname = platform.node() or "unknown"
@@ -883,7 +884,7 @@ def _parse_datetime(
             except ValueError:
                 continue
         try:
-            parsed = datetime.fromisoformat(raw)
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))  # noqa: FURB162
         except ValueError:
             return None
         if isinstance(parsed, datetime) and parsed.tzinfo is not None:

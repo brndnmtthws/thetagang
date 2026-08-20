@@ -190,7 +190,7 @@ class PortfolioManager:
             order_ops=self.order_ops,
             data_store=self.data_store,
             get_primary_exchange=self.get_primary_exchange,
-            now_provider=lambda: datetime.now().astimezone().replace(tzinfo=None),
+            now_provider=lambda: datetime.now(),  # noqa: DTZ005
             tail_hedge_stage_enabled=lambda: self.stage_enabled("post_tail_hedge"),
             set_reserved_cash_for_post_management=(
                 self.set_reserved_cash_for_post_management
@@ -1495,8 +1495,10 @@ class PortfolioManager:
     async def adjust_prices(self) -> None:
         if (
             all(
-                not self.config.portfolio.symbols[symbol].adjust_price_after_delay
-                for symbol in self.config.portfolio.symbols
+                [  # noqa: C419
+                    not self.config.portfolio.symbols[symbol].adjust_price_after_delay
+                    for symbol in self.config.portfolio.symbols
+                ]
             )
             or self.trades.is_empty()
         ):
