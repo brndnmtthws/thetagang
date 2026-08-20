@@ -255,7 +255,7 @@ class VIXCallHedgeConfig(BaseModel, DisplayMixin):
     ignore_dte: int = Field(default=0, ge=0)
     max_dte: int | None = Field(default=None, ge=1)
     close_hedges_when_vix_exceeds: float | None = None
-    allocation: list["VIXCallHedgeConfig.Allocation"] = Field(
+    allocation: list[Allocation] = Field(
         default_factory=lambda: [
             VIXCallHedgeConfig.Allocation(
                 lower_bound=None, upper_bound=15.0, weight=0.0
