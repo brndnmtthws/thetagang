@@ -536,6 +536,17 @@ def test_symbol_accepts_volatility_weight_above_base_weight() -> None:
     assert volatility_weight.max_weight == 0.5
 
 
+def test_portfolio_configured_weights_must_sum_to_100() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"] = {
+        "AAA": {"weight": 0.65},
+        "BBB": {"weight": 0.40},
+    }
+
+    with pytest.raises(ValueError, match="Symbol weights must sum to 1.0"):
+        Config(**data)
+
+
 def test_v2_rejects_transitional_symbols_and_overrides() -> None:
     with pytest.raises(ValueError):
         Config.model_validate(

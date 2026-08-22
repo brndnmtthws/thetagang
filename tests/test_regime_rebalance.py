@@ -814,9 +814,123 @@ async def test_regime_rebalance_volatility_weight_can_scale_above_base(
 
 
 @pytest.mark.asyncio
-async def test_regime_rebalance_rejects_effective_weights_above_100(
+async def test_regime_rebalance_volatility_weight_stacks_above_100_on_margin(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.portfolio.symbols["AAA"].weight = 0.6
+    portfolio_manager.config.portfolio.symbols["BBB"].weight = 0.4
+    portfolio_manager.config.portfolio.symbols[
+        "AAA"
+    ].volatility_weight = _volatility_weight(
+        target_vol=0.32,
+        min_weight=0.25,
+        max_weight=0.65,
+        smoothing_factor=1.0,
+    )
+    regime_rebalance = portfolio_manager.config.strategies.regime_rebalance
+    regime_rebalance.soft_band = 0.0
+    regime_rebalance.choppiness_min = 0.0
+    regime_rebalance.efficiency_max = 1.0
+    regime_rebalance.deficit_rail_start = 0.01
+    regime_rebalance.deficit_rail_stop = 0.01
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="100000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 600)],
+        "BBB": [_stock_position("BBB", 400)],
+    }
+
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 101.0, 102.0, 103.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    assert orders == [("AAA", "NYSE", 50)]
+    payload = portfolio_manager.data_store.get_last_event_payload(
+        "volatility_weight_state"
+    )
+    assert payload["symbols"]["AAA"]["effective_weight"] == pytest.approx(0.65)
+    assert payload["total_effective_weight"] == pytest.approx(1.05)
+    assert payload["unallocated_target_weight"] == pytest.approx(0.0)
+    assert payload["stacked_target_weight"] == pytest.approx(0.05)
+    assert payload["stacked_target_value"] == pytest.approx(5000.0)
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_authorized_stack_is_not_a_flow_or_deficit(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    portfolio_manager.config.portfolio.symbols["AAA"].weight = 0.6
+    portfolio_manager.config.portfolio.symbols["BBB"].weight = 0.4
+    portfolio_manager.config.portfolio.symbols[
+        "AAA"
+    ].volatility_weight = _volatility_weight(
+        target_vol=0.32,
+        min_weight=0.25,
+        max_weight=0.65,
+        smoothing_factor=1.0,
+    )
+    regime_rebalance = portfolio_manager.config.strategies.regime_rebalance
+    regime_rebalance.deficit_rail_start = 0.01
+    regime_rebalance.deficit_rail_stop = 0.005
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="100000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 650)],
+        "BBB": [_stock_position("BBB", 400)],
+    }
+
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 101.0, 102.0, 103.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+
+    assert orders == []
+    payload = portfolio_manager.data_store.get_last_event_payload(
+        "regime_rebalance_gate"
+    )
+    assert payload["unallocated_rebalance_capacity"] == pytest.approx(-5000.0)
+    assert payload["flow"]["flow_rebalance_capacity"] == pytest.approx(0.0)
+    assert payload["flow"]["classification"] == "none"
+    assert payload["flow"]["gate"] is False
+    assert payload["deficit"]["gate"] is False
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_rejects_non_volatility_stack(portfolio_manager, mocker):
+    portfolio_manager.config.portfolio.symbols["AAA"].weight = 0.6
+    portfolio_manager.config.portfolio.symbols["BBB"].weight = 0.5
+
+    account_summary = {"NetLiquidation": SimpleNamespace(value="1000")}
+    portfolio_positions = {
+        "AAA": [_stock_position("AAA", 6)],
+        "BBB": [_stock_position("BBB", 5)],
+    }
+
+    _mock_regime_tickers(portfolio_manager, mocker)
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    with pytest.raises(ValueError, match="Only volatility-adjusted weights"):
+        await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+            account_summary, portfolio_positions
+        )
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_managed_stocks_rejects_volatility_stack(
     portfolio_manager, mocker
 ):
+    portfolio_manager.config.strategies.regime_rebalance.weight_base = (
+        RegimeRebalanceBaseEnum.managed_stocks
+    )
     portfolio_manager.config.portfolio.symbols[
         "AAA"
     ].volatility_weight = _volatility_weight(
@@ -836,7 +950,7 @@ async def test_regime_rebalance_rejects_effective_weights_above_100(
     _mock_regime_history(portfolio_manager, mocker, [100.0, 101.0, 102.0, 103.0])
     portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
 
-    with pytest.raises(ValueError, match="must not exceed 100%"):
+    with pytest.raises(ValueError, match="weight_base is managed_stocks"):
         await portfolio_manager.regime_engine.check_regime_rebalance_positions(
             account_summary, portfolio_positions
         )
@@ -2363,6 +2477,7 @@ async def test_regime_rebalance_positive_flow_bypasses_regime_gate(
         "rebalance_base": 2000,
         "managed_sleeve_value": 1600.0,
         "unallocated_rebalance_capacity": 400.0,
+        "flow_rebalance_capacity": 400.0,
         "direction": "buy",
         "gate": True,
         "decision_status": "selected",
