@@ -38,6 +38,14 @@ For `net_liq`, only the state-owned tail-option value is removed. For
 `managed_stocks`, the base is the marked value of active regime stocks and no
 margin multiplier is applied.
 
+Configured portfolio weights always sum to 100%. Volatility-adjusted regime
+weights remain absolute rather than being renormalized, so an increase from a
+configured 60%/40% allocation to 65%/40% targets 105% of the NLV-backed regime
+base. That 5% excess is intentional stacked exposure; the deficit rail measures
+only exposure beyond the resulting 105% gross target. `managed_stocks` does not
+support stacking because using the changing sleeve value as the base would
+compound an above-100% target on subsequent runs.
+
 Every `CapitalBase` retains its gross value, exclusions, selected multiplier,
 and final value so logs and telemetry can show how the number was derived.
 

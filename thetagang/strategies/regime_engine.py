@@ -1798,14 +1798,6 @@ class RegimeRebalanceEngine:
             raise ValueError(
                 "Regime-aware rebalancing requires positive effective weights."
             )
-        if total_effective_weight > 1.0 + regime_rebalance.eps:
-            log.error(
-                "Regime-aware rebalancing effective weights exceed 100%: "
-                f"{pfmt(total_effective_weight)}."
-            )
-            raise ValueError(
-                "Regime-aware rebalancing effective weights must not exceed 100%."
-            )
         if weight_base == RegimeRebalanceBaseEnum.managed_stocks and not math.isclose(
             total_effective_weight,
             1.0,
@@ -1820,11 +1812,35 @@ class RegimeRebalanceEngine:
                 "100% when weight_base is managed_stocks."
             )
         unallocated_target_weight = max(0.0, 1.0 - total_effective_weight)
+        stacked_target_weight = max(0.0, total_effective_weight - 1.0)
         if unallocated_target_weight > regime_rebalance.eps:
             log.notice(
                 "Regime-aware rebalancing leaving "
                 f"{pfmt(unallocated_target_weight)} outside managed targets for "
                 "cash reserves."
+            )
+        elif stacked_target_weight > regime_rebalance.eps:
+            volatility_increase_weight = sum(
+                max(
+                    0.0,
+                    details["effective_weight"] - details["base_weight"],
+                )
+                for details in volatility_details.values()
+            )
+            if stacked_target_weight > (
+                volatility_increase_weight + regime_rebalance.eps
+            ):
+                log.error(
+                    "Regime-aware rebalancing effective weights exceed 100% "
+                    "without a sufficient volatility-weight increase."
+                )
+                raise ValueError(
+                    "Only volatility-adjusted weights may stack above 100%."
+                )
+            log.notice(
+                "Regime-aware rebalancing stacking "
+                f"{pfmt(stacked_target_weight)} above the configured 100% "
+                "allocation using the NLV-backed margin base."
             )
         normalized_effective_weights = {
             symbol: weight / total_effective_weight
@@ -1961,11 +1977,22 @@ class RegimeRebalanceEngine:
                 deficit_was_active = bool(state.get("deficit_active", False))
 
         unallocated_rebalance_capacity = total_value - invested_value
+        stacked_target_value = stacked_target_weight * total_value
+        deficit_rebalance_capacity = (
+            unallocated_rebalance_capacity + stacked_target_value
+        )
+        # Preserve ordinary positive inferred capacity, but do not classify the
+        # authorized margin stack as a withdrawal or funding deficit.
+        flow_rebalance_capacity = (
+            unallocated_rebalance_capacity
+            if unallocated_rebalance_capacity >= 0
+            else min(0.0, deficit_rebalance_capacity)
+        )
         flow_classification = (
             "inferred_capacity_deployment"
-            if unallocated_rebalance_capacity > 0
+            if flow_rebalance_capacity > 0
             else "inferred_capacity_reduction"
-            if unallocated_rebalance_capacity < 0
+            if flow_rebalance_capacity < 0
             else "none"
         )
         flow_trade_min_amount = total_value * regime_rebalance.flow_trade_min
@@ -1974,19 +2001,15 @@ class RegimeRebalanceEngine:
         deficit_rail_stop_amount = total_value * regime_rebalance.deficit_rail_stop
         flow_gate = False
         deficit_gate = False
-        if unallocated_rebalance_capacity < 0:
-            deficit_amount = -unallocated_rebalance_capacity
+        if deficit_rebalance_capacity < 0:
+            deficit_amount = -deficit_rebalance_capacity
             deficit_gate = deficit_amount >= deficit_rail_start_amount or (
                 deficit_was_active and deficit_amount >= deficit_rail_stop_amount
             )
-            if not deficit_gate:
-                flow_gate = deficit_amount >= flow_trade_min_amount or (
-                    flow_was_active and deficit_amount >= flow_trade_stop_amount
-                )
-        else:
-            flow_gate = unallocated_rebalance_capacity >= flow_trade_min_amount or (
-                flow_was_active
-                and unallocated_rebalance_capacity >= flow_trade_stop_amount
+        if not deficit_gate:
+            flow_amount = abs(flow_rebalance_capacity)
+            flow_gate = flow_amount >= flow_trade_min_amount or (
+                flow_was_active and flow_amount >= flow_trade_stop_amount
             )
 
         flow_eligibility_gate_blockers = []
@@ -2043,7 +2066,7 @@ class RegimeRebalanceEngine:
             return False
 
         flow_directional_imbalance_ok = directional_flow_is_allowed(
-            unallocated_rebalance_capacity
+            flow_rebalance_capacity
         )
         if flow_gate and not flow_directional_imbalance_ok:
             flow_eligibility_gate_blockers.append("directional_imbalance")
@@ -2217,7 +2240,7 @@ class RegimeRebalanceEngine:
             invested_after = sum(
                 shares_after[symbol] * market_prices[symbol] for symbol in symbols
             )
-            excess_after = total_value - invested_after
+            excess_after = total_value + stacked_target_value - invested_after
             deficit_amount_after = max(0.0, -excess_after)
             deficit_gate_after = deficit_amount_after >= deficit_rail_stop_amount
             if deficit_gate_after:
@@ -2242,7 +2265,7 @@ class RegimeRebalanceEngine:
             rebalance_mode = "deficit"
             deficit_needed = max(
                 0.0,
-                -unallocated_rebalance_capacity - deficit_rail_stop_amount,
+                -deficit_rebalance_capacity - deficit_rail_stop_amount,
             )
             deficit_orders = build_deficit_orders(
                 current_positions,
@@ -2257,7 +2280,7 @@ class RegimeRebalanceEngine:
                     orders_by_symbol[symbol] = orders_by_symbol.get(symbol, 0) + delta
         elif flow_rebalance_eligible:
             rebalance_mode = "flow"
-            flow_orders = build_flow_orders(unallocated_rebalance_capacity)
+            flow_orders = build_flow_orders(flow_rebalance_capacity)
             for symbol, delta in flow_orders.items():
                 if delta == 0:
                     continue
@@ -2277,9 +2300,9 @@ class RegimeRebalanceEngine:
             flow_decision_status = "selected"
         flow_direction = (
             "buy"
-            if unallocated_rebalance_capacity > 0
+            if flow_rebalance_capacity > 0
             else "sell"
-            if unallocated_rebalance_capacity < 0
+            if flow_rebalance_capacity < 0
             else "flat"
         )
         deficit_active_next = (
@@ -2577,6 +2600,7 @@ class RegimeRebalanceEngine:
             "rebalance_base": total_value,
             "managed_sleeve_value": invested_value,
             "unallocated_rebalance_capacity": unallocated_rebalance_capacity,
+            "flow_rebalance_capacity": flow_rebalance_capacity,
             "direction": flow_direction,
             "gate": flow_gate,
             "decision_status": flow_decision_status,
@@ -2630,6 +2654,7 @@ class RegimeRebalanceEngine:
             f"rebalance_base={dfmt(total_value)} "
             f"managed_sleeves={dfmt(invested_value)} "
             f"unallocated_capacity={dfmt(unallocated_rebalance_capacity)} "
+            f"flow_capacity={dfmt(flow_rebalance_capacity)} "
             f"classification={flow_classification} "
             f"direction={flow_direction} gate={flow_gate} "
             f"decision={flow_decision_status} "
@@ -2677,6 +2702,8 @@ class RegimeRebalanceEngine:
                     "symbols": symbols,
                     "total_effective_weight": total_effective_weight,
                     "unallocated_target_weight": unallocated_target_weight,
+                    "stacked_target_weight": stacked_target_weight,
+                    "stacked_target_value": stacked_target_value,
                     "max_relative_drift": max_relative_drift,
                     "soft_band": regime_rebalance.soft_band,
                     "hard_band": regime_rebalance.hard_band,
@@ -2716,6 +2743,8 @@ class RegimeRebalanceEngine:
                     "total_value": total_value,
                     "total_effective_weight": total_effective_weight,
                     "unallocated_target_weight": unallocated_target_weight,
+                    "stacked_target_weight": stacked_target_weight,
+                    "stacked_target_value": stacked_target_value,
                     "hard_breach": hard_breach,
                     "soft_breach": soft_breach,
                     "regime_ok": regime_ok,
@@ -2748,6 +2777,8 @@ class RegimeRebalanceEngine:
                     {
                         "total_effective_weight": total_effective_weight,
                         "unallocated_target_weight": unallocated_target_weight,
+                        "stacked_target_weight": stacked_target_weight,
+                        "stacked_target_value": stacked_target_value,
                         "symbols": {
                             symbol: {
                                 "base_weight": details["base_weight"],

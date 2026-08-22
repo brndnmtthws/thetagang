@@ -645,9 +645,14 @@ daily_stddev_window = "30 D"
 # deficit_rail_start = 0.06  # deficit that triggers safety rail (fraction of base)
 # deficit_rail_stop = 0.03  # hysteresis stop once within this band (fraction of base)
 # order_history_lookback_days = 30  # look back this many calendar days for fills
-# Effective symbol weights are absolute targets and are not renormalized. A total
-# below 100% remains outside the managed targets as cash (or the configured cash
-# fund); a total above 100% aborts. The managed_stocks base requires exactly 100%.
+# Configured portfolio symbol weights must sum to 100%. Effective volatility-
+# adjusted weights are absolute targets and are not renormalized: a total below
+# 100% remains outside the managed targets as cash (or the configured cash fund),
+# while an increase above 100% stacks exposure using the NLV-backed margin base.
+# For example, configured 60%/40% weights may become 65%/40%, targeting 105% gross.
+# The selected margin_usage still scales that base. Because managed_stocks uses the
+# current sleeve value as its base, it requires effective weights to total 100% and
+# does not support stacking.
 #
 # # Optional regime stock execution policy, same shape as wheel:
 # [strategies.regime_rebalance.equity_rebalance.defaults]
