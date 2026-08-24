@@ -56,7 +56,10 @@ from thetagang.strategies.equity_engine import EquityRebalanceEngine
 from thetagang.strategies.options import OptionsManageService, OptionsWriteService
 from thetagang.strategies.options_engine import OptionsStrategyEngine
 from thetagang.strategies.post_engine import PostStrategyEngine
-from thetagang.strategies.regime_engine import RegimeRebalanceEngine
+from thetagang.strategies.regime_engine import (
+    ABSOLUTE_TREND_STATE_EVENT,
+    RegimeRebalanceEngine,
+)
 from thetagang.strategies.runtime_services import (
     EquityRuntimeServiceAdapter,
     OptionsRuntimeServiceAdapter,
@@ -92,6 +95,7 @@ logging.getLogger("ib_async.wrapper").setLevel(logging.CRITICAL)
 
 TAIL_HARVEST_FILL_TIMEOUT_SECONDS = 5 * 60
 REGIME_PLANNING_STATE_EVENTS = {
+    ABSOLUTE_TREND_STATE_EVENT,
     "regime_rebalance_state",
     "volatility_weight_state",
 }

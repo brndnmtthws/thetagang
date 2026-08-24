@@ -1670,6 +1670,8 @@ class RegimeRebalanceEngine:
         effective_weights: dict[str, float],
         symbol_configs: dict[str, Any],
         history_cache: RegimeHistoryCache,
+        *,
+        exclude_current_run_state: bool = False,
     ) -> tuple[dict[str, float], dict[str, dict[str, Any]]]:
         adjusted_weights = dict(effective_weights)
         trend_details: dict[str, dict[str, Any]] = {}
@@ -1690,15 +1692,17 @@ class RegimeRebalanceEngine:
         previous_state = (
             self.data_store.get_last_event_payload(
                 ABSOLUTE_TREND_STATE_EVENT,
+                exclude_current_run=exclude_current_run_state,
                 raise_on_error=True,
             )
             if self.data_store
             else None
         )
+        previous_symbols_raw = (
+            previous_state.get("symbols") if isinstance(previous_state, dict) else None
+        )
         previous_symbols = (
-            previous_state.get("symbols", {})
-            if isinstance(previous_state, dict)
-            else {}
+            previous_symbols_raw if isinstance(previous_symbols_raw, dict) else {}
         )
 
         def apply_signal(
@@ -1986,7 +1990,6 @@ class RegimeRebalanceEngine:
         market_prices: dict[str, float] = {}
         target_shares: dict[str, int] = {}
         target_values: dict[str, float] = {}
-        relative_ratios: dict[str, float] = {}
         relative_drifts: dict[str, float] = {}
         share_gaps: dict[str, int] = {}
         for symbol in symbols:
@@ -2053,11 +2056,13 @@ class RegimeRebalanceEngine:
             history_cache,
             exclude_current_run_state=exclude_current_run_state,
         )
-        pre_trend_total_effective_weight = sum(effective_weights.values())
+        pre_trend_effective_weights = dict(effective_weights)
+        pre_trend_total_effective_weight = sum(pre_trend_effective_weights.values())
         effective_weights, trend_details = await self._apply_absolute_trend(
             effective_weights,
             symbol_configs,
             history_cache,
+            exclude_current_run_state=exclude_current_run_state,
         )
         target_modifier_details = (
             ("volatility_weight", volatility_details),
@@ -2079,10 +2084,11 @@ class RegimeRebalanceEngine:
             )
         }
         total_effective_weight = sum(effective_weights.values())
-        if total_effective_weight <= 0:
-            log.error("Regime-aware rebalancing effective weights sum to zero.")
+        if not math.isfinite(total_effective_weight) or total_effective_weight < 0:
+            log.error("Regime-aware rebalancing effective weights are invalid.")
             raise ValueError(
-                "Regime-aware rebalancing requires positive effective weights."
+                "Regime-aware rebalancing requires finite non-negative "
+                "effective weights."
             )
         if weight_base == RegimeRebalanceBaseEnum.managed_stocks and not math.isclose(
             total_effective_weight,
@@ -2128,10 +2134,14 @@ class RegimeRebalanceEngine:
                 f"{pfmt(stacked_target_weight)} above the configured 100% "
                 "allocation using the NLV-backed margin base."
             )
-        normalized_effective_weights = {
-            symbol: weight / total_effective_weight
-            for symbol, weight in effective_weights.items()
-        }
+        normalized_effective_weights = (
+            {
+                symbol: weight / total_effective_weight
+                for symbol, weight in effective_weights.items()
+            }
+            if total_effective_weight > 0
+            else {symbol: 0.0 for symbol in symbols}
+        )
         for symbol in symbols:
             market_price = market_prices[symbol]
             current_position = current_positions[symbol]
@@ -2141,9 +2151,19 @@ class RegimeRebalanceEngine:
             target_values[symbol] = target_weight * total_value
             target_shares[symbol] = math.floor(target_values[symbol] / market_price)
             share_gaps[symbol] = target_shares[symbol] - current_position
-            relative_ratio = current_weights[symbol] / target_weight
-            relative_ratios[symbol] = relative_ratio
-            relative_drifts[symbol] = abs(relative_ratio - 1.0)
+            if target_weight > 0:
+                relative_drift = abs(current_weights[symbol] / target_weight - 1.0)
+            elif math.isclose(
+                current_weights[symbol],
+                0.0,
+                rel_tol=0.0,
+                abs_tol=regime_rebalance.eps,
+            ):
+                relative_drift = 0.0
+            else:
+                # A zero target with a live position is a full hard-band drift.
+                relative_drift = 1.0
+            relative_drifts[symbol] = relative_drift
 
         invested_value = sum(current_values.values())
         proxy_symbols = [symbol for symbol in symbols if current_values[symbol] > 0]
@@ -2158,7 +2178,13 @@ class RegimeRebalanceEngine:
             log.warning(
                 "Regime proxy has no invested symbols; falling back to target weights."
             )
-            proxy_weights = {symbol: effective_weights[symbol] for symbol in symbols}
+            # A zero trend multiplier can intentionally move every final target to
+            # cash. Keep the market proxy usable with the post-volatility weights.
+            proxy_weights = (
+                effective_weights
+                if total_effective_weight > 0
+                else pre_trend_effective_weights
+            )
 
         dates, values = await self._get_regime_proxy_series(
             symbols,
@@ -2190,6 +2216,16 @@ class RegimeRebalanceEngine:
         ratio_gate = getattr(regime_rebalance, "ratio_gate", None)
         ratio_result: RatioGateResult | None = None
         if ratio_gate is not None:
+            ratio_anchor = getattr(ratio_gate, "anchor", "")
+            ratio_rest = [symbol for symbol in symbols if symbol != ratio_anchor]
+            ratio_effective_weights = effective_weights
+            if (
+                ratio_rest
+                and sum(effective_weights[symbol] for symbol in ratio_rest) <= 0
+            ):
+                # Preserve a usable relative-market signal when zero trend
+                # multipliers intentionally move the entire rest basket to cash.
+                ratio_effective_weights = pre_trend_effective_weights
             _, ratio_aligned_closes = await history_cache.get(
                 symbols,
                 regime_rebalance.lookback_days,
@@ -2200,7 +2236,7 @@ class RegimeRebalanceEngine:
                 dates=dates,
                 aligned_closes=ratio_aligned_closes,
                 ratio_gate=ratio_gate,
-                effective_weights=effective_weights,
+                effective_weights=ratio_effective_weights,
                 lookback_days=regime_rebalance.lookback_days,
                 eps=regime_rebalance.eps,
             )

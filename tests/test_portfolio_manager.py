@@ -1141,7 +1141,11 @@ class TestPortfolioManager:
         assert result == (refreshed_summary, refreshed_positions)
         execute_harvest.assert_awaited_once_with([(contract, harvest_order, None)])
         portfolio_manager.data_store.discard_current_run_events.assert_called_once_with(
-            {"regime_rebalance_state", "volatility_weight_state"}
+            {
+                "absolute_trend_state",
+                "regime_rebalance_state",
+                "volatility_weight_state",
+            }
         )
         portfolio_manager.ibkr.refresh_account.assert_awaited_once_with("TEST123")
         assert (
