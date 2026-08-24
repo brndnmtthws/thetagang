@@ -1478,8 +1478,12 @@ class RegimeRebalanceEngine:
                 "Regime-aware rebalancing requires completed session dates.",
                 cache_recoverable=False,
             )
-        trading_days_needed = lookback_days + 1 + max(cooldown_days, 0)
-        calendar_days = math.ceil(trading_days_needed * 7 / 5) + 5
+        calendar_days = (self._now().date() - required_dates[0]).days + 1
+        if calendar_days <= 0:
+            raise RegimeHistoryValidationError(
+                "Regime-aware rebalancing requires a valid history request window.",
+                cache_recoverable=False,
+            )
         duration = f"{calendar_days} D"
         api_closes_by_symbol = await self._fetch_regime_history_closes(
             symbols, duration

@@ -680,6 +680,49 @@ async def test_regime_rebalance_ignores_history_after_required_sessions(
 
 
 @pytest.mark.asyncio
+async def test_regime_history_request_covers_200_completed_sessions(
+    portfolio_manager, mocker
+):
+    fixed_now = _naive_utc(2026, 8, 24, 10)
+    calendar = regime_engine_module.xcals.get_calendar("XNYS")
+    completed_sessions = calendar.sessions[
+        calendar.sessions <= regime_engine_module.pd.Timestamp("2026-08-21")
+    ][-201:]
+    required_dates = [session.date() for session in completed_sessions]
+    assert required_dates[0] == date(2025, 11, 3)
+
+    engine = portfolio_manager.regime_engine
+    required_dates_mock = mocker.patch.object(
+        engine,
+        "_get_required_history_dates",
+        return_value=required_dates,
+    )
+    mocker.patch.object(engine, "_now", return_value=fixed_now)
+    bars = [
+        SimpleNamespace(
+            date=datetime.combine(session, datetime.min.time()),
+            close=100.0,
+        )
+        for session in required_dates
+    ]
+    portfolio_manager.ibkr.request_historical_data = mocker.AsyncMock(return_value=bars)
+
+    dates, aligned_closes = await engine._get_regime_aligned_closes(
+        list(REGIME_SYMBOLS),
+        lookback_days=200,
+        cooldown_days=0,
+    )
+
+    required_dates_mock.assert_called_once_with(201)
+    assert dates == required_dates
+    assert all(len(closes) == 201 for closes in aligned_closes.values())
+    assert {
+        call.args[1]
+        for call in portfolio_manager.ibkr.request_historical_data.await_args_list
+    } == {"295 D"}
+
+
+@pytest.mark.asyncio
 async def test_regime_rebalance_rejects_incomplete_cached_history(
     portfolio_manager_with_db, mocker, monkeypatch
 ):
