@@ -22,6 +22,7 @@ from thetagang.strategies.regime_engine import (
     REGIME_HISTORY_MAX_ATTEMPTS,
     REGIME_HISTORY_TIMEFRAME,
     TAIL_HEDGE_HARVEST_EVENT,
+    RegimeHistoryCache,
 )
 from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_CLOSE_ORDER_REF,
@@ -441,6 +442,47 @@ def _volatility_weight(
     )
 
 
+def _absolute_trend(
+    *,
+    lookback_days: int = 168,
+    risk_off_multiplier: float = 0.15,
+    enabled: bool = True,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        enabled=enabled,
+        lookback_days=lookback_days,
+        risk_off_multiplier=risk_off_multiplier,
+    )
+
+
+def _absolute_trend_history_cache(
+    mocker,
+    closes: list[float],
+    *,
+    lookback_days: int,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        get=mocker.AsyncMock(
+            return_value=(
+                _required_regime_history_dates(lookback_days + 1),
+                {"AAA": closes},
+            )
+        )
+    )
+
+
+def _absolute_trend_signal_payload(*, risk_off: bool = True) -> dict[str, object]:
+    return {
+        "lookback_days": 168,
+        "latest_session": "2026-08-21",
+        "latest_close": 90.0,
+        "moving_average": 100.0,
+        "momentum_reference_close": 105.0,
+        "lookback_return": 90.0 / 105.0 - 1.0,
+        "risk_off": risk_off,
+    }
+
+
 def _ratio_gate_result(
     portfolio_manager,
     *,
@@ -635,6 +677,49 @@ async def test_regime_rebalance_ignores_history_after_required_sessions(
     assert portfolio_manager.ibkr.request_historical_data.call_count == len(
         REGIME_SYMBOLS
     )
+
+
+@pytest.mark.asyncio
+async def test_regime_history_request_covers_200_completed_sessions(
+    portfolio_manager, mocker
+):
+    fixed_now = _naive_utc(2026, 8, 24, 10)
+    calendar = regime_engine_module.xcals.get_calendar("XNYS")
+    completed_sessions = calendar.sessions[
+        calendar.sessions <= regime_engine_module.pd.Timestamp("2026-08-21")
+    ][-201:]
+    required_dates = [session.date() for session in completed_sessions]
+    assert required_dates[0] == date(2025, 11, 3)
+
+    engine = portfolio_manager.regime_engine
+    required_dates_mock = mocker.patch.object(
+        engine,
+        "_get_required_history_dates",
+        return_value=required_dates,
+    )
+    mocker.patch.object(engine, "_now", return_value=fixed_now)
+    bars = [
+        SimpleNamespace(
+            date=datetime.combine(session, datetime.min.time()),
+            close=100.0,
+        )
+        for session in required_dates
+    ]
+    portfolio_manager.ibkr.request_historical_data = mocker.AsyncMock(return_value=bars)
+
+    dates, aligned_closes = await engine._get_regime_aligned_closes(
+        list(REGIME_SYMBOLS),
+        lookback_days=200,
+        cooldown_days=0,
+    )
+
+    required_dates_mock.assert_called_once_with(201)
+    assert dates == required_dates
+    assert all(len(closes) == 201 for closes in aligned_closes.values())
+    assert {
+        call.args[1]
+        for call in portfolio_manager.ibkr.request_historical_data.await_args_list
+    } == {"295 D"}
 
 
 @pytest.mark.asyncio
@@ -1374,6 +1459,357 @@ async def test_regime_rebalance_volatility_weight_state_payload_fields(
         "realized_vol",
         "smoothing_factor",
     }
+
+
+@pytest.mark.parametrize(
+    ("closes", "expected_risk_off"),
+    [
+        pytest.param(
+            [100.0, 100.0, 100.0, 99.0],
+            True,
+            id="below-average-and-reference",
+        ),
+        pytest.param(
+            [110.0, 95.0, 95.0, 100.0],
+            False,
+            id="equal-average-boundary",
+        ),
+        pytest.param(
+            [100.0, 110.0, 110.0, 100.0],
+            False,
+            id="equal-reference-boundary",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_absolute_trend_risk_boundaries(
+    portfolio_manager, mocker, closes, expected_risk_off
+):
+    portfolio_manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3
+    )
+    history_cache = _absolute_trend_history_cache(
+        mocker,
+        closes,
+        lookback_days=3,
+    )
+
+    weights, details = await portfolio_manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        portfolio_manager.config.portfolio.symbols,
+        history_cache,
+    )
+
+    expected_multiplier = 0.15 if expected_risk_off else 1.0
+    assert details["AAA"]["risk_off"] is expected_risk_off
+    assert details["AAA"]["applied_multiplier"] == pytest.approx(expected_multiplier)
+    assert weights["AAA"] == pytest.approx(0.4 * expected_multiplier)
+
+
+@pytest.mark.parametrize(
+    ("pre_trend_target", "expected_final_target"),
+    [(0.30, 0.045), (0.40, 0.06), (0.45, 0.0675)],
+)
+@pytest.mark.asyncio
+async def test_absolute_trend_scales_volatility_targets(
+    portfolio_manager, mocker, pre_trend_target, expected_final_target
+):
+    portfolio_manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend()
+    completed_closes = [100.0] * 168 + [90.0]
+    history_cache = _absolute_trend_history_cache(
+        mocker,
+        completed_closes,
+        lookback_days=168,
+    )
+
+    weights, details = await portfolio_manager.regime_engine._apply_absolute_trend(
+        {"AAA": pre_trend_target},
+        portfolio_manager.config.portfolio.symbols,
+        history_cache,
+    )
+
+    history_cache.get.assert_awaited_once_with(["AAA"], 168, 0)
+    assert details["AAA"]["pre_trend_target"] == pytest.approx(pre_trend_target)
+    assert details["AAA"]["final_target"] == pytest.approx(expected_final_target)
+    assert weights["AAA"] == pytest.approx(expected_final_target)
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_excludes_incomplete_bar(
+    portfolio_manager, mocker, monkeypatch
+):
+    portfolio_manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend()
+    required_dates = _set_required_regime_history_dates(
+        portfolio_manager, monkeypatch, 169
+    )
+    completed_closes = [100.0] * 168 + [90.0]
+    bars = [
+        SimpleNamespace(
+            date=datetime.combine(bar_date, datetime.min.time()),
+            close=close,
+        )
+        for bar_date, close in zip(required_dates, completed_closes, strict=True)
+    ]
+    bars.append(
+        SimpleNamespace(
+            date=datetime.combine(
+                required_dates[-1] + timedelta(days=1), datetime.min.time()
+            ),
+            close=200.0,
+        )
+    )
+    portfolio_manager.ibkr.request_historical_data = mocker.AsyncMock(return_value=bars)
+    aligned_spy = mocker.spy(
+        portfolio_manager.regime_engine,
+        "_get_regime_aligned_closes",
+    )
+
+    _, details = await portfolio_manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        portfolio_manager.config.portfolio.symbols,
+        RegimeHistoryCache(portfolio_manager.regime_engine._get_regime_aligned_closes),
+    )
+
+    aligned_spy.assert_awaited_once_with(["AAA"], 168, 0)
+    assert details["AAA"]["latest_session"] == str(required_dates[-1])
+    assert details["AAA"]["latest_close"] == pytest.approx(90.0)
+    assert details["AAA"]["risk_off"] is True
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_reuses_persisted_state_when_history_fails(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager_with_db.config.portfolio.symbols[
+        "AAA"
+    ].absolute_trend = _absolute_trend()
+    portfolio_manager_with_db.data_store.record_event(
+        "absolute_trend_state",
+        {"symbols": {"AAA": _absolute_trend_signal_payload()}},
+    )
+    history_cache = SimpleNamespace(
+        get=mocker.AsyncMock(side_effect=TimeoutError("history unavailable"))
+    )
+
+    (
+        weights,
+        details,
+    ) = await portfolio_manager_with_db.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        portfolio_manager_with_db.config.portfolio.symbols,
+        history_cache,
+    )
+
+    assert weights["AAA"] == pytest.approx(0.06)
+    assert details["AAA"]["risk_off"] is True
+    assert details["AAA"]["history_source"] == "persisted"
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_excludes_current_run_state_when_requested(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager_with_db.config.portfolio.symbols[
+        "AAA"
+    ].absolute_trend = _absolute_trend(lookback_days=3)
+    history_cache = _absolute_trend_history_cache(
+        mocker,
+        [100.0, 100.0, 100.0, 90.0],
+        lookback_days=3,
+    )
+    get_last_event_payload = mocker.spy(
+        portfolio_manager_with_db.data_store,
+        "get_last_event_payload",
+    )
+
+    await portfolio_manager_with_db.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        portfolio_manager_with_db.config.portfolio.symbols,
+        history_cache,
+        exclude_current_run_state=True,
+    )
+
+    get_last_event_payload.assert_called_once_with(
+        "absolute_trend_state",
+        exclude_current_run=True,
+        raise_on_error=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "persisted_signal",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param(
+            _absolute_trend_signal_payload(risk_off=False),
+            id="inconsistent-risk-state",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_absolute_trend_history_failure_without_valid_state_aborts(
+    portfolio_manager_with_db, mocker, persisted_signal
+):
+    portfolio_manager_with_db.config.portfolio.symbols[
+        "AAA"
+    ].absolute_trend = _absolute_trend()
+    if persisted_signal is not None:
+        portfolio_manager_with_db.data_store.record_event(
+            "absolute_trend_state",
+            {"symbols": {"AAA": persisted_signal}},
+        )
+    history_cache = SimpleNamespace(
+        get=mocker.AsyncMock(side_effect=TimeoutError("history unavailable"))
+    )
+
+    with pytest.raises(RuntimeError, match="current history or a valid persisted"):
+        await portfolio_manager_with_db.regime_engine._apply_absolute_trend(
+            {"AAA": 0.4},
+            portfolio_manager_with_db.config.portfolio.symbols,
+            history_cache,
+        )
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_invalid_persisted_symbol_map_aborts_cleanly(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager_with_db.config.portfolio.symbols[
+        "AAA"
+    ].absolute_trend = _absolute_trend()
+    portfolio_manager_with_db.data_store.record_event(
+        "absolute_trend_state",
+        {"symbols": []},
+    )
+    history_cache = SimpleNamespace(
+        get=mocker.AsyncMock(side_effect=TimeoutError("history unavailable"))
+    )
+
+    with pytest.raises(RuntimeError, match="current history or a valid persisted"):
+        await portfolio_manager_with_db.regime_engine._apply_absolute_trend(
+            {"AAA": 0.4},
+            portfolio_manager_with_db.config.portfolio.symbols,
+            history_cache,
+        )
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_preserves_volatility_state_and_forces_hard_band_sell(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager_with_db.config.portfolio.symbols[
+        "AAA"
+    ].absolute_trend = _absolute_trend(lookback_days=3)
+    volatility_details = {
+        "AAA": {
+            "base_weight": 0.5,
+            "effective_weight": 0.4,
+            "target_weight": 0.4,
+            "realized_vol": 0.5,
+            "smoothing_factor": 0.3,
+        }
+    }
+    mocker.patch.object(
+        portfolio_manager_with_db.regime_engine,
+        "_resolve_effective_weights",
+        new=mocker.AsyncMock(
+            return_value=({"AAA": 0.4, "BBB": 0.5}, volatility_details)
+        ),
+    )
+    _mock_regime_tickers(portfolio_manager_with_db, mocker)
+    _mock_regime_histories(
+        portfolio_manager_with_db,
+        mocker,
+        {
+            "AAA": [100.0, 100.0, 100.0, 90.0],
+            "BBB": [100.0, 100.0, 100.0, 100.0],
+        },
+    )
+    portfolio_manager_with_db.ibkr.request_executions = mocker.AsyncMock(
+        return_value=[]
+    )
+
+    (
+        _,
+        orders,
+    ) = await portfolio_manager_with_db.regime_engine.check_regime_rebalance_positions(
+        _regime_account_summary(),
+        _regime_stock_positions(aaa=2, bbb=2),
+    )
+
+    assert orders == [("AAA", "NYSE", -2)]
+    volatility_state = portfolio_manager_with_db.data_store.get_last_event_payload(
+        "volatility_weight_state"
+    )
+    assert volatility_state["symbols"]["AAA"]["effective_weight"] == pytest.approx(0.4)
+    assert volatility_state["total_effective_weight"] == pytest.approx(0.9)
+
+    trend_state = portfolio_manager_with_db.data_store.get_last_event_payload(
+        "absolute_trend_state"
+    )
+    trend = trend_state["symbols"]["AAA"]
+    assert trend["latest_close"] == pytest.approx(90.0)
+    assert trend["moving_average"] == pytest.approx(100.0)
+    assert trend["lookback_return"] == pytest.approx(-0.1)
+    assert trend["state"] == "risk_off"
+    assert trend["pre_trend_target"] == pytest.approx(0.4)
+    assert trend["final_target"] == pytest.approx(0.06)
+    assert trend["applied_multiplier"] == pytest.approx(0.15)
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_zero_multiplier_can_exit_all_symbols(
+    portfolio_manager_with_db, mocker
+):
+    portfolio_manager = portfolio_manager_with_db
+    for symbol in ("AAA", "BBB"):
+        symbol_config = portfolio_manager.config.portfolio.symbols[symbol]
+        symbol_config.absolute_trend = _absolute_trend(
+            lookback_days=3,
+            risk_off_multiplier=0.0,
+        )
+        symbol_config.sell_only_min_threshold_percent_relative = 0.5
+    portfolio_manager.config.strategies.regime_rebalance.ratio_gate = (
+        _ratio_gate_config()
+    )
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_histories(
+        portfolio_manager,
+        mocker,
+        {
+            "AAA": [100.0, 100.0, 100.0, 90.0],
+            "BBB": [100.0, 100.0, 100.0, 90.0],
+        },
+    )
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+        _regime_account_summary(),
+        _regime_stock_positions(aaa=2, bbb=2),
+    )
+
+    assert orders == [("AAA", "NYSE", -2), ("BBB", "NYSE", -2)]
+    gate = portfolio_manager.data_store.get_last_event_payload("regime_rebalance_gate")
+    assert gate["max_relative_drift"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_disabled_is_noop(portfolio_manager, mocker):
+    portfolio_manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        enabled=False
+    )
+    history_cache = SimpleNamespace(get=mocker.AsyncMock())
+    original = {"AAA": 0.4, "BBB": 0.6}
+
+    weights, details = await portfolio_manager.regime_engine._apply_absolute_trend(
+        original,
+        portfolio_manager.config.portfolio.symbols,
+        history_cache,
+    )
+
+    assert weights == original
+    assert details == {}
+    history_cache.get.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

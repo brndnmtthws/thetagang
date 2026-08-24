@@ -31,6 +31,7 @@ class AccountConfigFactory(ModelFactory[AccountConfig]): ...
 
 
 class SymbolConfigFactory(ModelFactory[SymbolConfig]):
+    absolute_trend = None
     volatility_weight = None
 
 

@@ -519,6 +519,12 @@ daily_stddev_window = "30 D"
 
   [portfolio.symbols.QQQ]
   weight = 0.3
+  # Optional post-volatility absolute-trend target modifier. It uses only
+  # completed sessions and defaults to disabled when absent or enabled=false.
+  # [portfolio.symbols.QQQ.absolute_trend]
+  # enabled = false
+  # lookback_days = 168
+  # risk_off_multiplier = 0.15
   # The target DTE may also be specified per-symbol, and takes precedence over
   # `target.dte`
   dte = 60

@@ -536,6 +536,49 @@ def test_symbol_accepts_volatility_weight_above_base_weight() -> None:
     assert volatility_weight.max_weight == 0.5
 
 
+def test_symbol_accepts_absolute_trend_config() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["absolute_trend"] = {
+        "enabled": True,
+        "lookback_days": 168,
+        "risk_off_multiplier": 0.15,
+    }
+
+    config = Config(**data)
+
+    absolute_trend = config.portfolio.symbols["AAA"].absolute_trend
+    assert absolute_trend is not None
+    assert absolute_trend.enabled is True
+    assert absolute_trend.lookback_days == 168
+    assert absolute_trend.risk_off_multiplier == pytest.approx(0.15)
+
+
+def test_symbol_absolute_trend_defaults_disabled() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["absolute_trend"] = {}
+
+    config = Config(**data)
+
+    absolute_trend = config.portfolio.symbols["AAA"].absolute_trend
+    assert absolute_trend is not None
+    assert absolute_trend.enabled is False
+    assert absolute_trend.lookback_days == 168
+    assert absolute_trend.risk_off_multiplier == pytest.approx(0.15)
+
+
+def test_symbol_absolute_trend_allows_zero_risk_off_multiplier() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["absolute_trend"] = {
+        "risk_off_multiplier": 0.0,
+    }
+
+    config = Config(**data)
+
+    absolute_trend = config.portfolio.symbols["AAA"].absolute_trend
+    assert absolute_trend is not None
+    assert absolute_trend.risk_off_multiplier == pytest.approx(0.0)
+
+
 def test_portfolio_configured_weights_must_sum_to_100() -> None:
     data = _base_config({"strategies": ["wheel"]})
     data["portfolio"]["symbols"] = {
