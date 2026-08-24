@@ -54,6 +54,7 @@ TRADING_DAYS_PER_YEAR = 252
 REGIME_HISTORY_TIMEFRAME = "1 day"
 REGIME_HISTORY_MAX_ATTEMPTS = 3
 REGIME_HISTORY_RETRY_DELAY_SECONDS = 0.25
+ABSOLUTE_TREND_STATE_EVENT = "absolute_trend_state"
 TAIL_HEDGE_HARVEST_EVENT = "tail_hedge_harvest"
 TAIL_HEDGE_HARVEST_SCHEMA_VERSION = 2
 
@@ -107,6 +108,146 @@ class RatioGateResult:
             f"ratio_drift_max={_ffmt_or_dash(self.drift_max)} "
             f"anchor={self.anchor} rest={','.join(self.rest)}"
         )
+
+
+@dataclass(frozen=True)
+class _AbsoluteTrendSignal:
+    lookback_days: int
+    latest_session: str
+    latest_close: float
+    moving_average: float
+    momentum_reference_close: float
+    lookback_return: float
+    risk_off: bool
+
+    @classmethod
+    def from_history(
+        cls,
+        *,
+        dates: list[date],
+        closes: list[float],
+        lookback_days: int,
+    ) -> _AbsoluteTrendSignal:
+        required_points = lookback_days + 1
+        if len(dates) != len(closes):
+            raise ValueError("misaligned_history")
+        if len(dates) < required_points or len(closes) < required_points:
+            raise ValueError("insufficient_history")
+
+        window = np.asarray(closes[-required_points:], dtype=float)
+        if not np.all(np.isfinite(window)) or np.any(window <= 0):
+            raise ValueError("invalid_closes")
+
+        latest_close = float(window[-1])
+        moving_average = float(np.mean(window[:-1]))
+        momentum_reference_close = float(window[0])
+        return cls(
+            lookback_days=lookback_days,
+            latest_session=str(dates[-1]),
+            latest_close=latest_close,
+            moving_average=moving_average,
+            momentum_reference_close=momentum_reference_close,
+            lookback_return=latest_close / momentum_reference_close - 1.0,
+            risk_off=(
+                latest_close < moving_average
+                and latest_close < momentum_reference_close
+            ),
+        )
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: Any,
+        *,
+        lookback_days: int,
+    ) -> _AbsoluteTrendSignal:
+        if not isinstance(payload, dict):
+            raise TypeError("state_not_an_object")
+        if payload.get("lookback_days") != lookback_days:
+            raise ValueError("lookback_mismatch")
+
+        latest_session = payload.get("latest_session")
+        risk_off = payload.get("risk_off")
+        if not isinstance(latest_session, str):
+            raise TypeError("invalid_latest_session")
+        if not latest_session:
+            raise ValueError("invalid_latest_session")
+        try:
+            date.fromisoformat(latest_session)
+        except ValueError as exc:
+            raise ValueError("invalid_latest_session") from exc
+        if not isinstance(risk_off, bool):
+            raise TypeError("invalid_risk_state")
+
+        def finite_number(field: str, *, positive: bool = False) -> float:
+            value = payload.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"invalid_{field}")
+            normalized_value = float(value)
+            if not math.isfinite(normalized_value) or (
+                positive and normalized_value <= 0
+            ):
+                raise ValueError(f"invalid_{field}")
+            return normalized_value
+
+        latest_close = finite_number("latest_close", positive=True)
+        moving_average = finite_number("moving_average", positive=True)
+        momentum_reference_close = finite_number(
+            "momentum_reference_close", positive=True
+        )
+        lookback_return = finite_number("lookback_return")
+        if not math.isclose(
+            lookback_return,
+            latest_close / momentum_reference_close - 1.0,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("inconsistent_lookback_return")
+        if risk_off != (
+            latest_close < moving_average and latest_close < momentum_reference_close
+        ):
+            raise ValueError("inconsistent_risk_state")
+
+        return cls(
+            lookback_days=lookback_days,
+            latest_session=latest_session,
+            latest_close=latest_close,
+            moving_average=moving_average,
+            momentum_reference_close=momentum_reference_close,
+            lookback_return=lookback_return,
+            risk_off=risk_off,
+        )
+
+    @property
+    def state(self) -> str:
+        return "risk_off" if self.risk_off else "risk_on"
+
+    def target_details(
+        self,
+        *,
+        pre_trend_target: float,
+        risk_off_multiplier: float,
+        history_source: str,
+        history_failure: str | None = None,
+    ) -> dict[str, Any]:
+        applied_multiplier = risk_off_multiplier if self.risk_off else 1.0
+        details: dict[str, Any] = {
+            "lookback_days": self.lookback_days,
+            "latest_session": self.latest_session,
+            "latest_close": self.latest_close,
+            "moving_average": self.moving_average,
+            "momentum_reference_close": self.momentum_reference_close,
+            "lookback_return": self.lookback_return,
+            "risk_off": self.risk_off,
+            "state": self.state,
+            "pre_trend_target": pre_trend_target,
+            "final_target": pre_trend_target * applied_multiplier,
+            "applied_multiplier": applied_multiplier,
+            "history_source": history_source,
+        }
+        if history_failure is not None:
+            details["history_failure"] = history_failure
+        return details
 
 
 @dataclass(frozen=True)
@@ -1520,6 +1661,134 @@ class RegimeRebalanceEngine:
 
         return effective_weights, volatility_details
 
+    async def _apply_absolute_trend(
+        self,
+        effective_weights: dict[str, float],
+        symbol_configs: dict[str, Any],
+        history_cache: RegimeHistoryCache,
+    ) -> tuple[dict[str, float], dict[str, dict[str, Any]]]:
+        adjusted_weights = dict(effective_weights)
+        trend_details: dict[str, dict[str, Any]] = {}
+        trend_configs: dict[str, Any] = {}
+        trend_symbols_by_lookback: dict[int, list[str]] = {}
+
+        for symbol in effective_weights:
+            absolute_trend = getattr(symbol_configs[symbol], "absolute_trend", None)
+            if absolute_trend is None or not getattr(absolute_trend, "enabled", False):
+                continue
+            trend_configs[symbol] = absolute_trend
+            lookback_days = int(absolute_trend.lookback_days)
+            trend_symbols_by_lookback.setdefault(lookback_days, []).append(symbol)
+
+        if not trend_symbols_by_lookback:
+            return adjusted_weights, trend_details
+
+        previous_state = (
+            self.data_store.get_last_event_payload(
+                ABSOLUTE_TREND_STATE_EVENT,
+                raise_on_error=True,
+            )
+            if self.data_store
+            else None
+        )
+        previous_symbols = (
+            previous_state.get("symbols", {})
+            if isinstance(previous_state, dict)
+            else {}
+        )
+
+        def apply_signal(
+            symbol: str,
+            signal: _AbsoluteTrendSignal,
+            *,
+            history_source: str,
+            history_failure: str | None = None,
+        ) -> dict[str, Any]:
+            details = signal.target_details(
+                pre_trend_target=adjusted_weights[symbol],
+                risk_off_multiplier=float(trend_configs[symbol].risk_off_multiplier),
+                history_source=history_source,
+                history_failure=history_failure,
+            )
+            adjusted_weights[symbol] = float(details["final_target"])
+            trend_details[symbol] = details
+            return details
+
+        def apply_persisted_state(
+            symbol: str,
+            lookback_days: int,
+            failure_reason: str,
+        ) -> None:
+            try:
+                signal = _AbsoluteTrendSignal.from_payload(
+                    previous_symbols.get(symbol),
+                    lookback_days=lookback_days,
+                )
+            except (TypeError, ValueError) as exc:
+                log.error(
+                    f"{symbol}: absolute trend history is unavailable and no "
+                    "valid persisted state exists; aborting rebalancing."
+                )
+                raise RuntimeError(
+                    f"{symbol}: absolute trend requires current history or a "
+                    "valid persisted state."
+                ) from exc
+
+            details = apply_signal(
+                symbol,
+                signal,
+                history_source="persisted",
+                history_failure=failure_reason,
+            )
+            log.warning(
+                f"{symbol}: absolute trend history unavailable "
+                f"({failure_reason}); retaining persisted "
+                f"{signal.state.replace('_', '-')} state with target "
+                f"{pfmt(details['pre_trend_target'])}->"
+                f"{pfmt(details['final_target'])}."
+            )
+
+        for lookback_days, group_symbols in trend_symbols_by_lookback.items():
+            try:
+                dates, aligned_closes = await history_cache.get(
+                    group_symbols,
+                    lookback_days,
+                    0,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failure_reason = type(exc).__name__
+                for symbol in group_symbols:
+                    apply_persisted_state(symbol, lookback_days, failure_reason)
+                continue
+
+            for symbol in group_symbols:
+                try:
+                    signal = _AbsoluteTrendSignal.from_history(
+                        dates=dates,
+                        closes=aligned_closes[symbol],
+                        lookback_days=lookback_days,
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    apply_persisted_state(
+                        symbol,
+                        lookback_days,
+                        type(exc).__name__,
+                    )
+                    continue
+
+                details = apply_signal(symbol, signal, history_source="fresh")
+                log.notice(
+                    f"{symbol}: absolute trend latest={signal.latest_close:.4f} "
+                    f"average_{lookback_days}d={signal.moving_average:.4f} "
+                    f"return_{lookback_days}d={pfmt(signal.lookback_return)} "
+                    f"state={signal.state.replace('_', '-')} "
+                    f"multiplier={ffmt(details['applied_multiplier'])} "
+                    f"target={pfmt(details['pre_trend_target'])}->"
+                    f"{pfmt(details['final_target'])}"
+                )
+
+        return adjusted_weights, trend_details
+
     async def _get_last_regime_rebalance_time(
         self, symbols: list[str]
     ) -> datetime | None:
@@ -1780,17 +2049,30 @@ class RegimeRebalanceEngine:
             history_cache,
             exclude_current_run_state=exclude_current_run_state,
         )
+        pre_trend_total_effective_weight = sum(effective_weights.values())
+        effective_weights, trend_details = await self._apply_absolute_trend(
+            effective_weights,
+            symbol_configs,
+            history_cache,
+        )
+        target_modifier_details = (
+            ("volatility_weight", volatility_details),
+            ("absolute_trend", trend_details),
+        )
         harvest_risk_ready_symbols = {
             symbol
             for symbol in symbols
-            if not bool(
-                getattr(
-                    getattr(symbol_configs[symbol], "volatility_weight", None),
-                    "enabled",
-                    False,
+            if all(
+                not bool(
+                    getattr(
+                        getattr(symbol_configs[symbol], config_name, None),
+                        "enabled",
+                        False,
+                    )
                 )
+                or symbol in modifier_details
+                for config_name, modifier_details in target_modifier_details
             )
-            or symbol in volatility_details
         }
         total_effective_weight = sum(effective_weights.values())
         if total_effective_weight <= 0:
@@ -2475,6 +2757,7 @@ class RegimeRebalanceEngine:
             )
 
             volatility_detail = volatility_details.get(symbol)
+            trend_detail = trend_details.get(symbol)
             target_weight_display = pfmt(target_weight)
             if volatility_detail is not None:
                 target_weight_display = (
@@ -2482,31 +2765,37 @@ class RegimeRebalanceEngine:
                     f"(base {pfmt(volatility_detail['base_weight'])}, "
                     f"vol {pfmt(volatility_detail['realized_vol'])})"
                 )
+            if trend_detail is not None:
+                target_weight_display += (
+                    f" (trend {trend_detail['state']} "
+                    f"x{ffmt(trend_detail['applied_multiplier'])})"
+                )
 
-            regime_summary.append(
-                {
-                    "symbol": symbol,
-                    "market_price": market_prices[symbol],
-                    "current_weight": current_weights[symbol],
-                    "target_weight": target_weight,
-                    "current_value": current_values[symbol],
-                    "target_value": target_value,
-                    "current_shares": current_positions[symbol],
-                    "target_shares": target_share,
-                    "shares_to_trade": filtered_trade_shares,
-                    "weight_delta": weight_delta,
-                    "value_delta": value_delta,
-                    "shares_delta": shares_delta,
-                    "trading_allowed": trading_allowed,
-                    "minimum_trade_shares": min_shares,
-                    "minimum_trade_amount": min_amount,
-                    "minimum_trade_relative": min_percent_relative,
-                    "action": action,
-                    "target_weight_display": target_weight_display,
-                    "gate_status": gate_status,
-                    "volatility_weight": volatility_detail,
-                }
-            )
+            summary_details = {
+                "symbol": symbol,
+                "market_price": market_prices[symbol],
+                "current_weight": current_weights[symbol],
+                "target_weight": target_weight,
+                "current_value": current_values[symbol],
+                "target_value": target_value,
+                "current_shares": current_positions[symbol],
+                "target_shares": target_share,
+                "shares_to_trade": filtered_trade_shares,
+                "weight_delta": weight_delta,
+                "value_delta": value_delta,
+                "shares_delta": shares_delta,
+                "trading_allowed": trading_allowed,
+                "minimum_trade_shares": min_shares,
+                "minimum_trade_amount": min_amount,
+                "minimum_trade_relative": min_percent_relative,
+                "action": action,
+                "target_weight_display": target_weight_display,
+                "gate_status": gate_status,
+                "volatility_weight": volatility_detail,
+            }
+            if trend_detail is not None:
+                summary_details["absolute_trend"] = trend_detail
+            regime_summary.append(summary_details)
 
         to_trade = await self._apply_tail_harvest(
             orders=to_trade,
@@ -2771,14 +3060,35 @@ class RegimeRebalanceEngine:
                     "deficit_active": deficit_active_next,
                 },
             )
+            if trend_details and not self.data_store.record_event(
+                ABSOLUTE_TREND_STATE_EVENT,
+                {
+                    "pre_trend_total_effective_weight": (
+                        pre_trend_total_effective_weight
+                    ),
+                    "final_total_effective_weight": total_effective_weight,
+                    "symbols": trend_details,
+                },
+            ):
+                raise RuntimeError("Failed to persist absolute trend state.")
             if volatility_details:
+                volatility_unallocated_target_weight = max(
+                    0.0, 1.0 - pre_trend_total_effective_weight
+                )
+                volatility_stacked_target_weight = max(
+                    0.0, pre_trend_total_effective_weight - 1.0
+                )
                 self.data_store.record_event(
                     "volatility_weight_state",
                     {
-                        "total_effective_weight": total_effective_weight,
-                        "unallocated_target_weight": unallocated_target_weight,
-                        "stacked_target_weight": stacked_target_weight,
-                        "stacked_target_value": stacked_target_value,
+                        "total_effective_weight": pre_trend_total_effective_weight,
+                        "unallocated_target_weight": (
+                            volatility_unallocated_target_weight
+                        ),
+                        "stacked_target_weight": volatility_stacked_target_weight,
+                        "stacked_target_value": (
+                            volatility_stacked_target_weight * total_value
+                        ),
                         "symbols": {
                             symbol: {
                                 "base_weight": details["base_weight"],

@@ -665,6 +665,11 @@ class SymbolConfig(BaseModel):
                 raise ValueError("volatility_weight.max_weight must be >= min_weight")
             return self
 
+    class AbsoluteTrend(BaseModel):
+        enabled: bool = Field(default=False)
+        lookback_days: int = Field(default=168, ge=2)
+        risk_off_multiplier: float = Field(default=0.15, ge=0.0, le=1.0)
+
     weight: float = Field(..., ge=0, le=1)
     primary_exchange: str = Field(default="", min_length=1)
     delta: float | None = Field(default=None, ge=0, le=1)
@@ -676,6 +681,7 @@ class SymbolConfig(BaseModel):
     calls: Optional["SymbolConfig.Calls"] = None
     puts: Optional["SymbolConfig.Puts"] = None
     volatility_weight: Optional["SymbolConfig.VolatilityWeight"] = None
+    absolute_trend: Optional["SymbolConfig.AbsoluteTrend"] = None
     adjust_price_after_delay: bool = Field(default=False)
     no_trading: bool | None = None
     buy_only_rebalancing: bool | None = None
