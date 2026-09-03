@@ -119,16 +119,45 @@ class OrderExecutionManager:
         *,
         include_minimum_credit: bool = False,
     ) -> float:
-        if str(getattr(order, "action", "")).upper() != "SELL":
-            return price
-
-        minimum = getattr(order, TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR, None)
-        if include_minimum_credit and getattr(contract, "secType", None) == "OPT":
-            minimum_credit = self.config.runtime.orders.minimum_credit
-            minimum = max(float(minimum or 0.0), float(minimum_credit))
+        action = str(getattr(order, "action", "")).upper()
+        sec_type = getattr(contract, "secType", None)
+        minimum = (
+            getattr(order, TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR, None)
+            if action == "SELL"
+            else None
+        )
+        if include_minimum_credit and sec_type in {"OPT", "BAG"}:
+            minimum_credit = float(self.config.runtime.orders.minimum_credit)
+            if action == "SELL" and price > 0.0:
+                minimum = max(float(minimum or 0.0), minimum_credit)
+            elif action == "BUY" and price < 0.0:
+                return min(price, -minimum_credit)
         if isinstance(minimum, (int, float)) and math.isfinite(float(minimum)):
             return max(price, float(minimum))
         return price
+
+    def _configured_limit_price(
+        self,
+        contract: Contract,
+        order: Order,
+        quoted_price: float,
+    ) -> float:
+        current_price = float(order.lmtPrice or 0.0)
+        if (
+            getattr(contract, "secType", None) == "BAG"
+            and not math.isclose(current_price, 0.0, abs_tol=1e-12)
+            and np.sign(current_price) != np.sign(quoted_price)
+        ):
+            raise RequiredFieldValidationError(
+                f"configured quote changes the order sign for {contract.localSymbol}"
+            )
+        constrained_price = self._apply_price_floor(
+            contract,
+            order,
+            quoted_price,
+            include_minimum_credit=True,
+        )
+        return self._round_limit_price(contract, constrained_price)
 
     def _record_event(self, event_type: str, trade: Any, **details: Any) -> None:
         if self.data_store is None:
@@ -172,14 +201,9 @@ class OrderExecutionManager:
                     raise RequiredFieldValidationError(
                         f"{strategy} quote is invalid for {contract.localSymbol}"
                     )
-                configured_price = self._apply_price_floor(
+                configured_price = self._configured_limit_price(
                     contract,
                     order,
-                    configured_price,
-                    include_minimum_credit=True,
-                )
-                configured_price = self._round_limit_price(
-                    contract,
                     configured_price,
                 )
                 previous_price = float(order.lmtPrice or 0.0)
@@ -286,15 +310,19 @@ class OrderExecutionManager:
                     raise RequiredFieldValidationError(
                         f"{strategy} quote is invalid for {contract.localSymbol}"
                     )
-                updated_price = quoted_price
+                updated_price = self._configured_limit_price(
+                    contract,
+                    order,
+                    quoted_price,
+                )
 
-            updated_price = self._apply_price_floor(
-                contract,
-                order,
-                updated_price,
-                include_minimum_credit=strategy is not None,
-            )
-            updated_price = self._round_limit_price(contract, updated_price)
+            if strategy is None:
+                updated_price = self._apply_price_floor(
+                    contract,
+                    order,
+                    updated_price,
+                )
+                updated_price = self._round_limit_price(contract, updated_price)
 
             if would_increase_spread(order, updated_price):
                 log.warning(
@@ -416,9 +444,14 @@ class OrderExecutionManager:
         except (AttributeError, KeyError):
             legacy_reprice_enabled = False
 
-        wait_budget = policy.fill_timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + policy.fill_timeout
+        wait_budget = float(policy.fill_timeout)
         legacy_repriced = False
         while wait_budget > 0:
+            wait_budget = min(wait_budget, max(0.0, deadline - loop.time()))
+            if wait_budget <= 0:
+                break
             current_trade = trades.records()[idx]
             if self.trade_fully_filled(current_trade):
                 return
@@ -459,15 +492,17 @@ class OrderExecutionManager:
                 return
 
             if should_reprice:
+                wait_budget = min(wait_budget, max(0.0, deadline - loop.time()))
                 if wait_budget <= 0:
                     break
                 await self.reprice_trade(
                     trades,
                     idx,
                     current_trade,
-                    timeout=max(1, wait_budget),
+                    timeout=wait_budget,
                     strategy=strategy,
                 )
+                wait_budget = min(wait_budget, max(0.0, deadline - loop.time()))
                 if strategy is None:
                     legacy_repriced = True
 
@@ -567,13 +602,11 @@ class OrderExecutionManager:
                 raise RequiredFieldValidationError(
                     f"{strategy} quote is invalid for {trade.contract.localSymbol}"
                 )
-            price = self._apply_price_floor(
+            price = self._configured_limit_price(
                 trade.contract,
                 trade.order,
                 price,
-                include_minimum_credit=True,
             )
-            price = self._round_limit_price(trade.contract, price)
         except (
             TimeoutError,
             RequestError,

@@ -498,7 +498,7 @@ class IBKR:
             )
 
     async def wait_for_orders_complete(
-        self, trades: list[Trade], timetout: int = 60
+        self, trades: list[Trade], timetout: float = 60
     ) -> list[Trade]:
         tasks: list[Coroutine[Any, Any, bool]] = [
             self.__trade_wait_for_condition__(

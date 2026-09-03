@@ -125,6 +125,35 @@ async def test_prepare_orders_preserves_minimum_credit(mocker) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ask", "expected_price"),
+    [(-0.01, -0.05), (0.10, -0.50)],
+)
+async def test_prepare_orders_preserves_combo_credit_safeguards(
+    mocker,
+    ask,
+    expected_price,
+) -> None:
+    config = _config(execution={"buy_price": "ask"}, minimum_credit=0.05)
+    contract = Contract(
+        secType="BAG",
+        symbol="AAA",
+        exchange="SMART",
+        currency="USD",
+    )
+    ibkr = mocker.Mock()
+    ibkr.get_ticker_for_contract = mocker.AsyncMock(
+        return_value=_ticker(contract, ask=ask)
+    )
+    manager = OrderExecutionManager(config, ibkr)
+    order = LimitOrder("BUY", 1, -0.50, account="DUX")
+
+    await manager.prepare_orders([(contract, order, None)])
+
+    assert order.lmtPrice == pytest.approx(expected_price)
+
+
+@pytest.mark.asyncio
 async def test_prepare_orders_leaves_tail_orders_on_specialized_path(mocker) -> None:
     config = _config(execution={"buy_price": "ask"})
     contract = _option()
@@ -148,15 +177,27 @@ async def test_prepare_orders_leaves_tail_orders_on_specialized_path(mocker) -> 
 @pytest.mark.asyncio
 async def test_unconfigured_execution_does_not_wait_or_cancel(mocker) -> None:
     config = _config()
+    contract = _option()
+    order = LimitOrder("SELL", 1, 0.5, account="DUX")
+    trade = mocker.Mock(
+        contract=contract,
+        order=order,
+        orderStatus=SimpleNamespace(status="Submitted", filled=0.0, remaining=1.0),
+    )
+    trade.isDone.return_value = False
     ibkr = mocker.Mock()
+    ibkr.get_ticker_for_contract = mocker.AsyncMock()
     ibkr.wait_for_orders_complete = mocker.AsyncMock()
     trades = mocker.Mock(spec=Trades)
-    trades.records.return_value = []
-    trades.is_empty.return_value = True
+    trades.records.return_value = [trade]
+    trades.is_empty.return_value = False
     manager = OrderExecutionManager(config, ibkr)
 
+    await manager.prepare_orders([(contract, order, None)])
     await manager.execute(trades)
 
+    assert order.lmtPrice == pytest.approx(0.5)
+    ibkr.get_ticker_for_contract.assert_not_awaited()
     ibkr.wait_for_orders_complete.assert_not_awaited()
     ibkr.cancel_order.assert_not_called()
 
@@ -183,6 +224,52 @@ async def test_leave_open_timeout_preserves_working_order(mocker) -> None:
 
     ibkr.cancel_order.assert_not_called()
     trades.submit_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fill_timeout_includes_time_spent_repricing(mocker) -> None:
+    config = _config(
+        execution={"buy_price": "ask", "fill_timeout": 10},
+    )
+    policy = config.portfolio.symbols["AAA"].execution
+    assert policy is not None
+    contract = _option()
+    order = LimitOrder("BUY", 1, 0.5, account="DUX")
+    trade = mocker.Mock(
+        contract=contract,
+        order=order,
+        orderStatus=SimpleNamespace(status="Submitted", filled=0.0, remaining=1.0),
+    )
+    trade.isDone.return_value = False
+    trades = mocker.Mock(spec=Trades)
+    trades.records.return_value = [trade]
+    elapsed = 0.0
+
+    async def wait_for_orders_complete(_trades, timeout):
+        nonlocal elapsed
+        elapsed += timeout
+        return [trade]
+
+    async def reprice_trade(*_args, **_kwargs):
+        nonlocal elapsed
+        elapsed += 3.0
+        return True
+
+    ibkr = mocker.Mock()
+    ibkr.wait_for_orders_complete = wait_for_orders_complete
+    manager = OrderExecutionManager(config, ibkr)
+    mocker.patch.object(manager, "reprice_trade", side_effect=reprice_trade)
+    manager._handle_timeout = mocker.AsyncMock()
+    mocker.patch(
+        "thetagang.order_execution.asyncio.get_running_loop",
+        return_value=SimpleNamespace(time=lambda: elapsed),
+    )
+    mocker.patch("thetagang.order_execution.random.randrange", return_value=6)
+
+    await manager._supervise_trade(trades, 0, trade, policy)
+
+    assert elapsed == pytest.approx(10.0)
+    manager._handle_timeout.assert_awaited_once_with(trades, 0, policy)
 
 
 @pytest.mark.asyncio
@@ -253,6 +340,47 @@ async def test_marketable_limit_replaces_only_partially_filled_remainder(
     assert submitted_order.lmtPrice == pytest.approx(0.42)
     assert submitted_order.orderRef == "tg:test"
     assert submitted_order.algoStrategy == ""
+
+
+@pytest.mark.asyncio
+async def test_marketable_limit_does_not_flip_combo_credit_to_debit(mocker) -> None:
+    config = _config(
+        execution={
+            "fill_timeout": 300,
+            "on_timeout": "marketable_limit",
+            "final_wait": 1,
+        }
+    )
+    policy = config.portfolio.symbols["AAA"].execution
+    assert policy is not None
+    contract = Contract(
+        secType="BAG",
+        symbol="AAA",
+        exchange="SMART",
+        currency="USD",
+    )
+    order = LimitOrder("BUY", 1, -0.5, account="DUX")
+    status = SimpleNamespace(status="Submitted", filled=0.0, remaining=1.0)
+    trade = mocker.Mock(contract=contract, order=order, orderStatus=status)
+    trade.isDone.side_effect = lambda: status.status == "Cancelled"
+    ibkr = mocker.Mock()
+
+    def cancel_order(_order):
+        status.status = "Cancelled"
+
+    ibkr.cancel_order.side_effect = cancel_order
+    ibkr.wait_for_orders_complete = mocker.AsyncMock(return_value=[])
+    ibkr.get_ticker_for_contract = mocker.AsyncMock(
+        return_value=_ticker(contract, ask=0.10)
+    )
+    trades = mocker.Mock(spec=Trades)
+    trades.records.return_value = [trade]
+    manager = OrderExecutionManager(config, ibkr)
+
+    await manager._handle_timeout(trades, 0, policy)
+
+    ibkr.cancel_order.assert_called_once_with(order)
+    trades.submit_order.assert_not_called()
 
 
 @pytest.mark.asyncio

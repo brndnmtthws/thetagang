@@ -322,14 +322,17 @@ on_timeout = "marketable_limit"  # leave_open | cancel | marketable_limit | mark
 final_wait = 30                   # Cancel an incomplete replacement after 30 seconds
 ```
 
-The configured quote is used for initial submission and subsequent repricing.
-Using the ask for buys and the bid for sells is the aggressive, marketable
-configuration. At the timeout, a `marketable_limit` replacement retains price
-protection by using the current ask or bid. A raw `market` fallback is explicitly
-opt-in and is not supported for combo orders. ThetaGang confirms cancellation of
-the original order and replaces only its unfilled quantity; if cancellation or
-fill state is ambiguous, no replacement is submitted. Tail-hedge orders retain
-their separate execution safeguards.
+The configured quote is used for initial submission and, when `fill_timeout`
+enables supervision, subsequent repricing. Using the ask for buys and the bid for
+sells is the aggressive, marketable configuration. At the timeout, a
+`marketable_limit` replacement retains price protection by using the current ask
+or bid. A raw `market` fallback is explicitly opt-in and is not supported for
+combo orders. ThetaGang confirms cancellation of the original order and replaces
+only its unfilled quantity; if cancellation or fill state is ambiguous, no
+replacement is submitted. Tail-hedge orders retain their separate execution
+safeguards. Configured limit prices also preserve the sign of combo orders and the
+`minimum_credit` floor, so a credit order cannot be silently converted into a
+debit.
 
 #### Algorithm Configuration
 Customize order execution algorithms:

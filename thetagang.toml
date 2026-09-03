@@ -522,9 +522,10 @@ daily_stddev_window = "30 D"
   # existing behavior is unchanged: orders may receive the legacy one-time price
   # adjustment above, then unfinished DAY limit orders remain open at the broker.
   #
-  # `buy_price` and `sell_price` select the quote used for initial submission and
-  # subsequent repricing. Valid values are "bid", "ask", and "mid". For a more
-  # aggressive policy, use the ask for buys and the bid for sells.
+  # `buy_price` and `sell_price` select the quote used for initial submission and,
+  # when `fill_timeout` enables supervision, subsequent repricing. Valid values
+  # are "bid", "ask", and "mid". For a more aggressive policy, use the ask for
+  # buys and the bid for sells.
   #
   # `fill_timeout` enables bounded supervision. At the timeout, `on_timeout` may
   # be "leave_open", "cancel", "marketable_limit", or "market". Marketable-limit
