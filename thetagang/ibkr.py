@@ -1,4 +1,5 @@
 import asyncio
+import math
 from collections.abc import Awaitable, Callable, Coroutine
 from enum import Enum
 from typing import Any, cast
@@ -35,6 +36,8 @@ MAX_CONCURRENT_MARKET_DATA_STREAMS = 50
 class TickerField(Enum):
     MIDPOINT = "midpoint"
     MARKET_PRICE = "market_price"
+    BID = "bid"
+    ASK = "ask"
     GREEKS = "greeks"
     OPEN_INTEREST = "open_interest"
 
@@ -307,6 +310,33 @@ class IBKR:
             self.api_response_wait_time,
         )
 
+    @staticmethod
+    def __valid_execution_quote__(ticker: Ticker, price: Any) -> bool:
+        try:
+            value = float(price)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(value):
+            return False
+        contract = getattr(ticker, "contract", None)
+        if getattr(contract, "secType", None) == "BAG":
+            return not math.isclose(value, 0.0, abs_tol=1e-12)
+        return value > 0.0
+
+    async def __wait_for_bid__(self, ticker: Ticker) -> bool:
+        return await self.__ticker_wait_for_condition__(
+            ticker,
+            lambda t: self.__valid_execution_quote__(t, t.bid),
+            self.api_response_wait_time,
+        )
+
+    async def __wait_for_ask__(self, ticker: Ticker) -> bool:
+        return await self.__ticker_wait_for_condition__(
+            ticker,
+            lambda t: self.__valid_execution_quote__(t, t.ask),
+            self.api_response_wait_time,
+        )
+
     async def __wait_for_greeks__(self, ticker: Ticker) -> bool:
         return await self.__ticker_wait_for_condition__(
             ticker,
@@ -535,6 +565,10 @@ class IBKR:
             return self.__wait_for_midpoint_price__
         if ticker_field == TickerField.MARKET_PRICE:
             return self.__wait_for_market_price__
+        if ticker_field == TickerField.BID:
+            return self.__wait_for_bid__
+        if ticker_field == TickerField.ASK:
+            return self.__wait_for_ask__
         if ticker_field == TickerField.GREEKS:
             return self.__wait_for_greeks__
         if ticker_field == TickerField.OPEN_INTEREST:

@@ -93,7 +93,8 @@ delay_before_close = 1800
 exchange = "SMART"
 
 # Range of time to delay, in seconds, before resubmitting an order with updated
-# midpoint price if `symbol.<symbol>.adjust_price_after_delay = true`.
+# pricing. This is used by the legacy `adjust_price_after_delay` behavior and by
+# configured per-symbol execution state machines.
 price_update_delay = [30, 60]
 
 # Set a minimum credit order price, to avoid orders where the credit (or debit)
@@ -516,6 +517,27 @@ daily_stddev_window = "30 D"
   # manually) without actually trading them.
   #
   # no_trading = true
+
+  # Optional per-symbol execution policy. When this table is absent, ThetaGang's
+  # existing behavior is unchanged: orders may receive the legacy one-time price
+  # adjustment above, then unfinished DAY limit orders remain open at the broker.
+  #
+  # `buy_price` and `sell_price` select the quote used for initial submission and
+  # subsequent repricing. Valid values are "bid", "ask", and "mid". For a more
+  # aggressive policy, use the ask for buys and the bid for sells.
+  #
+  # `fill_timeout` enables bounded supervision. At the timeout, `on_timeout` may
+  # be "leave_open", "cancel", "marketable_limit", or "market". Marketable-limit
+  # replacements use the current ask for buys and bid for sells. A raw market
+  # fallback is opt-in and is not supported for combo orders. Any replacement that
+  # remains incomplete after `final_wait` seconds is canceled.
+  #
+  # [portfolio.symbols.SPY.execution]
+  # buy_price = "ask"
+  # sell_price = "bid"
+  # fill_timeout = 300
+  # on_timeout = "marketable_limit"
+  # final_wait = 30
 
   [portfolio.symbols.QQQ]
   weight = 0.3

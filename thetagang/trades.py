@@ -1,4 +1,4 @@
-from ib_async import Contract, LimitOrder, Trade
+from ib_async import Contract, Order, Trade
 from rich import box
 from rich.pretty import Pretty
 from rich.table import Table
@@ -18,7 +18,7 @@ class Trades:
     def submit_order(
         self,
         contract: Contract,
-        order: LimitOrder,
+        order: Order,
         idx: int | None = None,
         intent_id: int | None = None,
     ) -> bool:
