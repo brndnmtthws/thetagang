@@ -86,6 +86,41 @@ def test_orders_reject_invalid_price_update_delay_ranges(
         Config(**data)
 
 
+def test_symbol_execution_is_opt_in() -> None:
+    config = Config(**_base_config({"strategies": ["wheel"]}))
+
+    assert config.portfolio.symbols["AAA"].execution is None
+
+
+def test_symbol_execution_accepts_per_side_pricing_and_timeout_policy() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["execution"] = {
+        "buy_price": "ask",
+        "sell_price": "bid",
+        "fill_timeout": 300,
+        "on_timeout": "marketable_limit",
+        "final_wait": 20,
+    }
+
+    config = Config(**data)
+    execution = config.portfolio.symbols["AAA"].execution
+
+    assert execution is not None
+    assert execution.buy_price == "ask"
+    assert execution.sell_price == "bid"
+    assert execution.fill_timeout == 300
+    assert execution.on_timeout == "marketable_limit"
+    assert execution.final_wait == 20
+
+
+def test_symbol_execution_timeout_action_requires_timeout() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["execution"] = {"on_timeout": "market"}
+
+    with pytest.raises(ValueError, match="execution.fill_timeout"):
+        Config(**data)
+
+
 def test_tail_hedge_rejects_removed_strike_ratio() -> None:
     data = _base_config({"strategies": ["tail_hedge"]})
     data["strategies"]["tail_hedge"] = {

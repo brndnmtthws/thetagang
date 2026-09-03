@@ -40,7 +40,8 @@ from thetagang.config import (
 )
 from thetagang.db import DataStore
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
-from thetagang.ibkr import IBKR, RequiredFieldValidationError, TickerField
+from thetagang.ibkr import IBKR
+from thetagang.order_execution import OrderExecutionManager
 from thetagang.orders import Orders
 from thetagang.strategies import (
     EquityStrategyDeps,
@@ -68,7 +69,6 @@ from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_CLOSE_ORDER_REF,
     TAIL_HEDGE_ENTRY_ORDER_REF,
     TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
-    TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR,
     TailHedgeStateStore,
     is_tail_order_ref,
     is_tail_reduction_ref,
@@ -84,7 +84,6 @@ from thetagang.util import (
     portfolio_positions_to_dict,
     position_pnl,
     working_stock_order_symbols,
-    would_increase_spread,
 )
 
 from .options import option_dte
@@ -135,6 +134,11 @@ class PortfolioManager:
         self.has_excess_puts: set[str] = set()
         self.orders: Orders = Orders()
         self.trades: Trades = Trades(self.ibkr, data_store=data_store)
+        self.execution_manager = OrderExecutionManager(
+            config=self.config,
+            ibkr=self.ibkr,
+            data_store=self.data_store,
+        )
         self.target_quantities: dict[str, int] = {}
         self.qualified_contracts: dict[int, Contract] = {}
         self.dry_run = dry_run
@@ -880,6 +884,8 @@ class PortfolioManager:
                 if stage_id in pre_management_trade_stage_ids:
                     positions_might_be_stale = True
 
+            await self.execution_manager.prepare_orders(self.orders.records())
+
             if self.dry_run:
                 log.warning("Dry run enabled, no trades will be executed.")
 
@@ -1087,28 +1093,7 @@ class PortfolioManager:
 
     @staticmethod
     def _trade_fully_filled(trade: Any) -> bool:
-        status = str(
-            getattr(getattr(trade, "orderStatus", None), "status", "")
-        ).casefold()
-        try:
-            filled = float(getattr(trade.orderStatus, "filled", 0) or 0)
-            remaining = float(getattr(trade.orderStatus, "remaining", 0) or 0)
-            requested = float(getattr(trade.order, "totalQuantity", 0) or 0)
-        except (AttributeError, TypeError, ValueError):
-            return False
-        if (
-            status != "filled"
-            or not math.isfinite(requested)
-            or requested <= 0
-            or not math.isfinite(filled)
-            or filled < requested
-        ):
-            return False
-        return not math.isfinite(remaining) or math.isclose(
-            remaining,
-            0.0,
-            abs_tol=1e-9,
-        )
+        return OrderExecutionManager.trade_fully_filled(trade)
 
     async def _cancel_incomplete_trades(self, trades: list[Any]) -> None:
         canceled_trades = []
@@ -1395,123 +1380,15 @@ class PortfolioManager:
         *,
         timeout: float | None = None,
     ) -> bool:
-        response_timeout = self.config.runtime.ib_async.api_response_wait_time
-        if timeout is not None:
-            response_timeout = min(response_timeout, timeout)
-        try:
-            ticker = await asyncio.wait_for(
-                self.ibkr.get_ticker_for_contract(
-                    trade.contract,
-                    required_fields=[TickerField.MIDPOINT],
-                    optional_fields=[TickerField.MARKET_PRICE],
-                ),
-                timeout=response_timeout,
-            )
-
-            contract, order = trade.contract, trade.order
-            updated_price = np.sign(float(order.lmtPrice or 0)) * max(
-                [
-                    (
-                        self.config.runtime.orders.minimum_credit
-                        if order.action == "BUY" and float(order.lmtPrice or 0) <= 0.0
-                        else 0.0
-                    ),
-                    math.fabs(
-                        round(
-                            (float(order.lmtPrice or 0) + ticker.midpoint()) / 2.0,
-                            2,
-                        )
-                    ),
-                ]
-            )
-            minimum_limit_price = getattr(
-                order,
-                TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR,
-                None,
-            )
-            if (
-                order.action == "SELL"
-                and isinstance(minimum_limit_price, (int, float))
-                and math.isfinite(float(minimum_limit_price))
-            ):
-                updated_price = max(updated_price, float(minimum_limit_price))
-
-            if trade.contract.symbol == "VIX":
-                updated_price = self.order_ops.round_vix_price(updated_price)
-
-            if would_increase_spread(order, updated_price):
-                log.warning(
-                    f"Skipping order for {contract.symbol}"
-                    f" with old lmtPrice={dfmt(float(order.lmtPrice or 0))} "
-                    f"updated lmtPrice={dfmt(updated_price)}, because updated "
-                    "price would increase spread"
-                )
-                return False
-
-            if float(order.lmtPrice or 0) != updated_price and np.sign(
-                float(order.lmtPrice or 0)
-            ) == np.sign(updated_price):
-                log.info(
-                    f"{contract.symbol}: Resubmitting {order.action} "
-                    f"{contract.secType} order with old "
-                    f"lmtPrice={dfmt(float(order.lmtPrice or 0))} "
-                    f"updated lmtPrice={dfmt(updated_price)}"
-                )
-                updated_order = copy.deepcopy(cast(LimitOrder, order))
-                updated_order.lmtPrice = float(updated_price)
-                self.trades.submit_order(contract, updated_order, idx)
-                log.info(f"{contract.symbol}: Order updated, order={updated_order}")
-        except (TimeoutError, RuntimeError, RequiredFieldValidationError) as exc:
-            log.warning(
-                f"Couldn't generate midpoint price for {trade.contract}, "
-                "skipping repricing"
-            )
-            if self.data_store:
-                self.data_store.record_event(
-                    "order_price_adjustment_skipped",
-                    {
-                        "symbol": getattr(trade.contract, "symbol", ""),
-                        "secType": getattr(trade.contract, "secType", ""),
-                        "reason": type(exc).__name__,
-                    },
-                )
-        return True
-
-    async def adjust_prices(self) -> None:
-        if (
-            all(
-                [  # noqa: C419
-                    not self.config.portfolio.symbols[symbol].adjust_price_after_delay
-                    for symbol in self.config.portfolio.symbols
-                ]
-            )
-            or self.trades.is_empty()
-        ):
-            log.warning("Skipping order price adjustments...")
-            return
-
-        delay = random.randrange(
-            self.config.runtime.orders.price_update_delay[0],
-            self.config.runtime.orders.price_update_delay[1],
+        return await self.execution_manager.reprice_trade(
+            self.trades,
+            idx,
+            trade,
+            timeout=timeout,
         )
 
-        await self.ibkr.wait_for_orders_complete(self.trades.records(), delay)
-
-        unfilled = [
-            (idx, trade)
-            for idx, trade in enumerate(self.trades.records())
-            if trade
-            and trade.contract.symbol in self.config.portfolio.symbols
-            and self.config.portfolio.symbols[
-                trade.contract.symbol
-            ].adjust_price_after_delay
-            and not is_tail_order_ref(getattr(trade.order, "orderRef", None))
-            and not trade.isDone()
-        ]
-
-        for idx, trade in unfilled:
-            if not await self._reprice_trade(idx, trade):
-                return
+    async def adjust_prices(self) -> None:
+        await self.execution_manager.execute(self.trades)
 
     async def get_write_threshold(
         self, ticker: Ticker, right: str

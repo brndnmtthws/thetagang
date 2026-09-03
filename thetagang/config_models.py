@@ -622,6 +622,26 @@ class TargetConfig(BaseModel, DisplayMixin):
 
 
 class SymbolConfig(BaseModel):
+    class Execution(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        buy_price: Literal["bid", "ask", "mid"] | None = None
+        sell_price: Literal["bid", "ask", "mid"] | None = None
+        fill_timeout: int | None = Field(default=None, gt=0)
+        on_timeout: Literal["leave_open", "cancel", "marketable_limit", "market"] = (
+            "leave_open"
+        )
+        final_wait: int = Field(default=30, ge=1)
+
+        @model_validator(mode="after")
+        def validate_timeout_action(self) -> Self:
+            if self.fill_timeout is None and self.on_timeout != "leave_open":
+                raise ValueError(
+                    "execution.fill_timeout is required when on_timeout is not "
+                    "leave_open"
+                )
+            return self
+
     class WriteWhen(BaseModel):
         green: bool | None = None
         red: bool | None = None
@@ -682,6 +702,7 @@ class SymbolConfig(BaseModel):
     puts: Optional["SymbolConfig.Puts"] = None
     volatility_weight: Optional["SymbolConfig.VolatilityWeight"] = None
     absolute_trend: Optional["SymbolConfig.AbsoluteTrend"] = None
+    execution: Optional["SymbolConfig.Execution"] = None
     adjust_price_after_delay: bool = Field(default=False)
     no_trading: bool | None = None
     buy_only_rebalancing: bool | None = None
