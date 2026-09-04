@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "request_id": "example-regime_target_weights-v1",
+  "decision_type": "regime_target_weights",
+  "as_of_session": "2026-09-03",
+  "producer": {
+    "name": "reference-provider",
+    "version": "1"
+  },
+  "output": {
+    "adjustments": {
+      "TQQQ": {
+        "multiplier": 1.0,
+        "reason": "reference-baseline"
+      }
+    }
+  }
+}

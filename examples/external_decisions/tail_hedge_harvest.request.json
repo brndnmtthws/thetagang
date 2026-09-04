@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "request_id": "example-tail_hedge_harvest-v1",
+  "decision_type": "tail_hedge_harvest",
+  "generated_at": "2026-09-04T14:30:00Z",
+  "dry_run": true,
+  "input": {
+    "strategy": {
+      "name": "tail_hedge",
+      "annual_budget": 0.005,
+      "regime_weight_base": "net_liq_ex_options",
+      "regime_margin_usage": 1.0
+    },
+    "host_constraints": {
+      "baseline_band_triggered": true,
+      "requires_approved_same_symbol_hard_underweight_buy": true,
+      "state_owned_active_profitable_puts_only": true,
+      "host_selects_contracts_quantities_and_limit_prices": true
+    },
+    "account": {
+      "net_liquidation": 100000.0,
+      "regime_rebalance_base": 94000.0,
+      "excluded_option_value": 6000.0
+    },
+    "opportunity": {
+      "sleeve_value": 6000.0,
+      "sleeve_weight": 0.06382978723404255,
+      "harvest_trigger_weight": 0.05,
+      "harvest_target_weight": 0.03,
+      "target_sleeve_value": 2820.0,
+      "sale_budget": 3180.0,
+      "approved_rebalance_value": 28000.0,
+      "planned_sales": [
+        {
+          "entry_id": "TQQQ-tail-example",
+          "symbol": "TQQQ",
+          "con_id": 123456,
+          "expiration": "20261120",
+          "quantity": 3,
+          "limit_price": 15.0,
+          "estimated_gross_proceeds": 4500.0,
+          "estimated_fees": 3.0,
+          "estimated_net_proceeds": 4497.0
+        }
+      ]
+    },
+    "underlyings": {
+      "TQQQ": {
+        "configured_weight": 0.5,
+        "primary_exchange": "NASDAQ",
+        "market_price": 40.0,
+        "current_shares": 400.0,
+        "current_value": 16000.0,
+        "broker_position": {
+          "shares": 400.0,
+          "market_value": 16000.0,
+          "average_cost_per_share": 60.0,
+          "unrealized_pnl": -8000.0,
+          "realized_pnl": 0.0
+        },
+        "current_weight": 0.1702127659574468,
+        "target_weight": 0.5,
+        "target_value": 47000.0,
+        "target_shares": 1175.0,
+        "approved_buy_shares": 700,
+        "approved_buy_value": 28000.0,
+        "tail_program": {
+          "budget_weight": 1.0,
+          "entries_per_year": 6,
+          "entry_gate": "vix",
+          "entry_vix_max": 20.0,
+          "target_dte": 180,
+          "min_dte": 120,
+          "max_dte": 240,
+          "exit_dte": 30,
+          "minimum_open_interest": 50,
+          "minimum_bid": 0.01,
+          "max_bid_ask_ratio": 0.5,
+          "max_premium_ratio": 0.05,
+          "catastrophe_drawdowns": [
+            0.4,
+            0.5,
+            0.6
+          ]
+        },
+        "target_modifiers": {
+          "volatility_weight": null,
+          "target_weight_policy": null,
+          "absolute_trend": null
+        }
+      }
+    },
+    "hedge_positions": [
+      {
+        "entry_id": "TQQQ-tail-example",
+        "symbol": "TQQQ",
+        "status": "active",
+        "contract": {
+          "con_id": 123456,
+          "expiration": "20261120",
+          "strike": 50.0,
+          "right": "P",
+          "multiplier": 100.0
+        },
+        "state_owned_quantity": 4,
+        "live_position_quantity": 4.0,
+        "reported_owned_market_value": 6000.0,
+        "live_position_market_value": 6000.0,
+        "live_average_cost_per_contract": 300.0,
+        "live_realized_pnl": 0.0,
+        "state_owned_unrealized_pnl": 4800.0,
+        "quoted_limit_price": 15.0,
+        "entered_at": "2026-06-01T14:30:00Z",
+        "entry_limit_price": 3.0,
+        "estimated_cost": 1200.0,
+        "recovered_cost": 0.0,
+        "unrecovered_cost": 1200.0,
+        "host_candidate": true,
+        "candidate": {
+          "quantity": 4,
+          "gross_proceeds_per_contract": 1500.0,
+          "estimated_fee_per_contract": 1.0,
+          "net_proceeds_per_contract": 1499.0,
+          "cost_basis_per_contract": 300.0,
+          "profit_multiple": 4.996666666666667
+        }
+      }
+    ],
+    "market_data": {
+      "source": "ibkr",
+      "timeframe": "1 day",
+      "what_to_show": "TRADES",
+      "regular_trading_hours_only": true,
+      "sessions": [
+        "2026-08-31",
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03"
+      ],
+      "closes": {
+        "TQQQ": [
+          50.0,
+          46.0,
+          43.0,
+          40.0
+        ]
+      },
+      "primary_exchanges": {
+        "TQQQ": "NASDAQ"
+      }
+    }
+  }
+}

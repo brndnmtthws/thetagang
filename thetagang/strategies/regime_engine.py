@@ -16,9 +16,7 @@ from rich.table import Table
 
 from thetagang import log
 from thetagang.accounting import (
-    AccountingError,
     AccountingPolicy,
-    AccountMetric,
     AccountSummary,
     BrokerAccountSnapshot,
     CapitalBaseKind,
@@ -34,7 +32,6 @@ from thetagang.external_decisions import (
     ExternalDecisionMarketData,
     ExternalDecisionProviders,
     ExternalDecisionResponse,
-    build_external_decision_request,
     external_decision_response_metadata,
     validate_decision_expiry,
 )
@@ -56,13 +53,14 @@ from thetagang.strategies.tail_hedge_state import (
     parse_state_datetime,
 )
 from thetagang.tail_harvest_decision import (
-    TAIL_HARVEST_DECISION_TYPE,
+    build_tail_harvest_request,
     validate_tail_harvest_response,
 )
 from thetagang.target_weight_policy import (
-    TARGET_WEIGHT_DECISION_TYPE,
     TARGET_WEIGHT_POLICY_STATE_EVENT,
     TargetWeightMultiplier,
+    apply_target_weight_adjustments,
+    build_target_weight_request,
     validate_target_weight_response,
 )
 from thetagang.trading_operations import OrderOperations
@@ -1223,55 +1221,39 @@ class RegimeRebalanceEngine:
                 rebalance_shares=rebalance_shares,
                 market_prices=market_prices,
             )
-            request = build_external_decision_request(
-                decision_type=TAIL_HARVEST_DECISION_TYPE,
+            request = build_tail_harvest_request(
                 generated_at=self._as_utc(self._now()),
                 dry_run=self.dry_run,
-                input_data={
-                    "strategy": {
-                        "name": "tail_hedge",
-                        "annual_budget": float(tail_hedge.annual_budget),
-                        "regime_weight_base": (
-                            self.config.strategies.regime_rebalance.weight_base.value
-                        ),
-                        "regime_margin_usage": (
-                            AccountingPolicy.from_config(
-                                self.config
-                            ).regime_margin_usage
-                        ),
-                    },
-                    "host_constraints": {
-                        "baseline_band_triggered": True,
-                        "requires_approved_same_symbol_hard_underweight_buy": True,
-                        "state_owned_active_profitable_puts_only": True,
-                        "host_selects_contracts_quantities_and_limit_prices": True,
-                    },
-                    "account": {
-                        "net_liquidation": snapshot.net_liquidation,
-                        "regime_rebalance_base": snapshot.regime_base,
-                        "excluded_option_value": snapshot.excluded_option_value,
-                    },
-                    "opportunity": {
-                        "sleeve_value": snapshot.band.sleeve_value,
-                        "sleeve_weight": snapshot.band.sleeve_weight,
-                        "harvest_trigger_weight": tail_hedge.harvest_trigger_weight,
-                        "harvest_target_weight": tail_hedge.harvest_target_weight,
-                        "target_sleeve_value": snapshot.band.target_value,
-                        "sale_budget": snapshot.band.sale_budget,
-                        "approved_rebalance_value": band_payload[
-                            "approved_rebalance_value"
-                        ],
-                        "planned_sales": self._tail_harvest_planned_sales(snapshot),
-                    },
-                    "underlyings": self._tail_harvest_underlying_inputs(
-                        snapshot,
-                        rebalance_shares=rebalance_shares,
-                        market_prices=market_prices,
-                        regime_summary=regime_summary,
-                    ),
-                    "hedge_positions": self._tail_harvest_hedge_inputs(snapshot),
-                    "market_data": market_data.request_input(),
+                tail_hedge=tail_hedge,
+                regime_weight_base=self.config.strategies.regime_rebalance.weight_base.value,
+                regime_margin_usage=AccountingPolicy.from_config(
+                    self.config
+                ).regime_margin_usage,
+                account={
+                    "net_liquidation": snapshot.net_liquidation,
+                    "regime_rebalance_base": snapshot.regime_base,
+                    "excluded_option_value": snapshot.excluded_option_value,
                 },
+                opportunity={
+                    "sleeve_value": snapshot.band.sleeve_value,
+                    "sleeve_weight": snapshot.band.sleeve_weight,
+                    "harvest_trigger_weight": tail_hedge.harvest_trigger_weight,
+                    "harvest_target_weight": tail_hedge.harvest_target_weight,
+                    "target_sleeve_value": snapshot.band.target_value,
+                    "sale_budget": snapshot.band.sale_budget,
+                    "approved_rebalance_value": band_payload[
+                        "approved_rebalance_value"
+                    ],
+                    "planned_sales": self._tail_harvest_planned_sales(snapshot),
+                },
+                underlyings=self._tail_harvest_underlying_inputs(
+                    snapshot,
+                    rebalance_shares=rebalance_shares,
+                    market_prices=market_prices,
+                    regime_summary=regime_summary,
+                ),
+                hedge_positions=self._tail_harvest_hedge_inputs(snapshot),
+                market_data=market_data,
             )
             response = await self.external_decisions.decide(policy.provider, request)
             output = validate_tail_harvest_response(
@@ -2416,107 +2398,6 @@ class RegimeRebalanceEngine:
             },
         )
 
-    @staticmethod
-    def _target_weight_policy_total_limit(
-        effective_weights: dict[str, float], policy: Any
-    ) -> float:
-        return max(sum(effective_weights.values()), policy.max_total_weight or 1.0)
-
-    def _target_weight_symbol_input(
-        self,
-        symbol: str,
-        *,
-        symbol_config: Any,
-        volatility_detail: dict[str, float] | None,
-        effective_weight: float,
-        total_value: float,
-        current_position: int,
-        current_value: float,
-        market_price: float,
-    ) -> dict[str, Any]:
-        volatility_weight = getattr(symbol_config, "volatility_weight", None)
-        volatility_config = None
-        if volatility_weight is not None:
-            volatility_config = {
-                "enabled": bool(volatility_weight.enabled),
-                "target_vol": float(volatility_weight.target_vol),
-                "lookback_days": int(volatility_weight.lookback_days),
-                "min_weight": float(volatility_weight.min_weight),
-                "max_weight": float(volatility_weight.max_weight),
-                "rebalance_band": float(volatility_weight.rebalance_band),
-                "smoothing_factor": float(volatility_weight.smoothing_factor),
-                "increase_smoothing_factor": (
-                    float(volatility_weight.increase_smoothing_factor)
-                    if volatility_weight.increase_smoothing_factor is not None
-                    else None
-                ),
-                "decrease_smoothing_factor": (
-                    float(volatility_weight.decrease_smoothing_factor)
-                    if volatility_weight.decrease_smoothing_factor is not None
-                    else None
-                ),
-            }
-
-        absolute_trend = getattr(symbol_config, "absolute_trend", None)
-        absolute_trend_config = None
-        if absolute_trend is not None:
-            absolute_trend_config = {
-                "enabled": bool(absolute_trend.enabled),
-                "lookback_days": int(absolute_trend.lookback_days),
-                "risk_off_multiplier": float(absolute_trend.risk_off_multiplier),
-            }
-
-        rebalance_policy_fn = getattr(self.config, "regime_rebalance_policy", None)
-        rebalance_policy = (
-            rebalance_policy_fn(symbol) if callable(rebalance_policy_fn) else None
-        )
-
-        def resolved_threshold(name: str) -> Any:
-            policy_value = getattr(rebalance_policy, name, None)
-            if policy_value is not None:
-                return policy_value
-            suffix = name.removeprefix("min_threshold_")
-            buy_value = getattr(
-                symbol_config,
-                f"buy_only_min_threshold_{suffix}",
-                None,
-            )
-            if buy_value is not None:
-                return buy_value
-            return getattr(
-                symbol_config,
-                f"sell_only_min_threshold_{suffix}",
-                None,
-            )
-
-        return {
-            "configured_weight": float(symbol_config.weight),
-            "post_volatility_weight": effective_weight,
-            "current_weight": current_value / total_value,
-            "current_value": current_value,
-            "current_shares": current_position,
-            "market_price": market_price,
-            "volatility_weight": {
-                "config": volatility_config,
-                "calculation": volatility_detail,
-            },
-            "absolute_trend": absolute_trend_config,
-            "execution_constraints": {
-                "trading_allowed": bool(self.config.trading_is_allowed(symbol)),
-                "rebalance_mode": (
-                    rebalance_policy.mode.value
-                    if rebalance_policy is not None
-                    else "both"
-                ),
-                "min_threshold_shares": resolved_threshold("min_threshold_shares"),
-                "min_threshold_amount": resolved_threshold("min_threshold_amount"),
-                "min_threshold_percent": resolved_threshold("min_threshold_percent"),
-                "min_threshold_percent_relative": resolved_threshold(
-                    "min_threshold_percent_relative"
-                ),
-            },
-        }
-
     async def _apply_target_weight_policy(
         self,
         effective_weights: dict[str, float],
@@ -2538,8 +2419,6 @@ class RegimeRebalanceEngine:
         policy = getattr(regime_rebalance, "target_weight_policy", None)
         if policy is None or not getattr(policy, "enabled", False):
             return dict(effective_weights), {}
-        ratio_gate = getattr(regime_rebalance, "ratio_gate", None)
-
         if (
             self._target_weight_policy_outcome is not None
             and self._target_weight_policy_outcome.response is not None
@@ -2564,112 +2443,23 @@ class RegimeRebalanceEngine:
                     decision_name="target weight policy",
                     history_cache=history_cache,
                 )
-                account_metrics: dict[str, float] = {}
-                for metric in AccountMetric:
-                    try:
-                        account_metrics[metric.value] = account.value(metric)
-                    except AccountingError:
-                        continue
-
-                allowed_total_weight = self._target_weight_policy_total_limit(
-                    effective_weights,
-                    policy,
-                )
-                request = build_external_decision_request(
-                    decision_type=TARGET_WEIGHT_DECISION_TYPE,
+                request = build_target_weight_request(
                     generated_at=self._as_utc(self._now()),
                     dry_run=self.dry_run,
-                    input_data={
-                        "strategy": {
-                            "name": "regime_rebalance",
-                            "weight_base": regime_rebalance.weight_base.value,
-                            "margin_usage": regime_margin_usage,
-                            "lookback_days": int(regime_rebalance.lookback_days),
-                            "soft_band": float(regime_rebalance.soft_band),
-                            "hard_band": float(regime_rebalance.hard_band),
-                            "hard_band_rebalance_fraction": float(
-                                regime_rebalance.hard_band_rebalance_fraction
-                            ),
-                            "cooldown_days": int(regime_rebalance.cooldown_days),
-                            "last_rebalance_at": (
-                                self._as_utc(last_rebalance).isoformat()
-                                if last_rebalance is not None
-                                else None
-                            ),
-                            "choppiness_min": float(regime_rebalance.choppiness_min),
-                            "efficiency_max": float(regime_rebalance.efficiency_max),
-                            "flow_trade_min": float(regime_rebalance.flow_trade_min),
-                            "flow_trade_stop": float(regime_rebalance.flow_trade_stop),
-                            "flow_imbalance_tau": float(
-                                regime_rebalance.flow_imbalance_tau
-                            ),
-                            "deficit_rail_start": float(
-                                regime_rebalance.deficit_rail_start
-                            ),
-                            "deficit_rail_stop": float(
-                                regime_rebalance.deficit_rail_stop
-                            ),
-                            "ratio_gate": (
-                                {
-                                    "enabled": bool(ratio_gate.enabled),
-                                    "anchor": str(ratio_gate.anchor),
-                                    "drift_max": float(ratio_gate.drift_max),
-                                    "vol_min": (
-                                        float(ratio_gate.vol_min)
-                                        if ratio_gate.vol_min is not None
-                                        else None
-                                    ),
-                                }
-                                if ratio_gate is not None
-                                else None
-                            ),
-                        },
-                        "account": {
-                            "metrics": account_metrics,
-                            "rebalance_base_value": total_value,
-                            "excluded_option_value": excluded_value,
-                        },
-                        "portfolio": {
-                            "configured_total_weight": sum(
-                                float(symbol_configs[symbol].weight)
-                                for symbol in symbols
-                            ),
-                            "post_volatility_total_weight": sum(
-                                effective_weights.values()
-                            ),
-                        },
-                        "symbols": {
-                            symbol: self._target_weight_symbol_input(
-                                symbol,
-                                symbol_config=symbol_configs[symbol],
-                                volatility_detail=volatility_details.get(symbol),
-                                effective_weight=effective_weights[symbol],
-                                total_value=total_value,
-                                current_position=current_positions[symbol],
-                                current_value=current_values[symbol],
-                                market_price=market_prices[symbol],
-                            )
-                            for symbol in symbols
-                        },
-                        "adjustment_constraints": {
-                            symbol: {
-                                "min_multiplier": limits.min_multiplier,
-                                "max_multiplier": limits.max_multiplier,
-                                "clamp_to_volatility_bounds": (
-                                    limits.clamp_to_volatility_bounds
-                                ),
-                            }
-                            for symbol, limits in policy.symbols.items()
-                        },
-                        "total_weight_constraint": {
-                            "max_total_weight": policy.max_total_weight,
-                            "effective_max_total_weight": allowed_total_weight,
-                            "default_prevents_additional_leverage": (
-                                policy.max_total_weight is None
-                            ),
-                        },
-                        "market_data": market_data.request_input(),
-                    },
+                    config=self.config,
+                    effective_weights=effective_weights,
+                    symbols=symbols,
+                    symbol_configs=symbol_configs,
+                    volatility_details=volatility_details,
+                    account=account,
+                    regime_margin_usage=regime_margin_usage,
+                    total_value=total_value,
+                    excluded_value=excluded_value,
+                    last_rebalance=last_rebalance,
+                    current_positions=current_positions,
+                    current_values=current_values,
+                    market_prices=market_prices,
+                    market_data=market_data,
                 )
                 response = await self.external_decisions.decide(
                     policy.provider,
@@ -2705,36 +2495,26 @@ class RegimeRebalanceEngine:
                 error=outcome.error or "provider returned no adjustments",
             )
 
-        adjusted_weights = dict(effective_weights)
-        details: dict[str, dict[str, Any]] = {}
         try:
-            for symbol, adjustment in outcome.adjustments.items():
-                baseline_weight = effective_weights[symbol]
-                raw_weight = baseline_weight * adjustment.multiplier
-                if not math.isfinite(raw_weight) or raw_weight < 0:
-                    raise ExternalDecisionError(
-                        f"target weight policy produced an invalid weight for {symbol}"
+            adjusted_weights, weight_details = apply_target_weight_adjustments(
+                effective_weights,
+                outcome.adjustments,
+                policy=policy,
+                volatility_bounds={
+                    symbol: (
+                        float(symbol_configs[symbol].volatility_weight.min_weight),
+                        float(symbol_configs[symbol].volatility_weight.max_weight),
                     )
-
-                effective_weight = raw_weight
-                limits = policy.symbols[symbol]
-                if limits.clamp_to_volatility_bounds:
-                    volatility_weight = symbol_configs[symbol].volatility_weight
-                    effective_weight = max(
-                        float(volatility_weight.min_weight),
-                        min(effective_weight, float(volatility_weight.max_weight)),
-                    )
-                if effective_weight > 1:
-                    raise ExternalDecisionError(
-                        f"target weight policy produced an invalid weight for {symbol}"
-                    )
-                adjusted_weights[symbol] = effective_weight
-                details[symbol] = {
+                    for symbol in outcome.adjustments
+                    if policy.symbols[symbol].clamp_to_volatility_bounds
+                },
+                eps=regime_rebalance.eps,
+            )
+            details: dict[str, dict[str, Any]] = {
+                symbol: {
                     "status": "applied",
-                    "baseline_weight": baseline_weight,
+                    **weight_details[symbol],
                     "multiplier": adjustment.multiplier,
-                    "raw_weight": raw_weight,
-                    "effective_weight": effective_weight,
                     "reason": adjustment.reason,
                     **external_decision_response_metadata(
                         outcome.response,
@@ -2742,16 +2522,8 @@ class RegimeRebalanceEngine:
                     ),
                     "risk_ready": True,
                 }
-
-            adjusted_total = sum(adjusted_weights.values())
-            allowed_total = self._target_weight_policy_total_limit(
-                effective_weights,
-                policy,
-            )
-            if adjusted_total > allowed_total + regime_rebalance.eps:
-                raise ExternalDecisionError(
-                    "target weight policy exceeds the permitted total weight"
-                )
+                for symbol, adjustment in outcome.adjustments.items()
+            }
         except (AttributeError, KeyError, TypeError, ExternalDecisionError) as exc:
             return self._target_weight_policy_fallback(
                 effective_weights,

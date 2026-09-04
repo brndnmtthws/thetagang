@@ -1,0 +1,958 @@
+{
+  "$defs": {
+    "ExternalDecisionMarketData": {
+      "additionalProperties": false,
+      "description": "Aligned completed-session data shared by market-based decisions.",
+      "properties": {
+        "closes": {
+          "additionalProperties": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "minProperties": 1,
+          "title": "Closes",
+          "type": "object"
+        },
+        "primary_exchanges": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "minProperties": 1,
+          "title": "Primary Exchanges",
+          "type": "object"
+        },
+        "regular_trading_hours_only": {
+          "default": true,
+          "title": "Regular Trading Hours Only",
+          "type": "boolean"
+        },
+        "sessions": {
+          "items": {
+            "format": "date",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Sessions",
+          "type": "array"
+        },
+        "source": {
+          "default": "ibkr",
+          "title": "Source",
+          "type": "string"
+        },
+        "timeframe": {
+          "title": "Timeframe",
+          "type": "string"
+        },
+        "what_to_show": {
+          "default": "TRADES",
+          "title": "What To Show",
+          "type": "string"
+        }
+      },
+      "required": [
+        "timeframe",
+        "sessions",
+        "closes",
+        "primary_exchanges"
+      ],
+      "title": "ExternalDecisionMarketData",
+      "type": "object"
+    },
+    "HarvestCandidateInput": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_basis_per_contract": {
+          "title": "Cost Basis Per Contract",
+          "type": "number"
+        },
+        "estimated_fee_per_contract": {
+          "title": "Estimated Fee Per Contract",
+          "type": "number"
+        },
+        "gross_proceeds_per_contract": {
+          "title": "Gross Proceeds Per Contract",
+          "type": "number"
+        },
+        "net_proceeds_per_contract": {
+          "title": "Net Proceeds Per Contract",
+          "type": "number"
+        },
+        "profit_multiple": {
+          "title": "Profit Multiple",
+          "type": "number"
+        },
+        "quantity": {
+          "title": "Quantity",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "quantity",
+        "gross_proceeds_per_contract",
+        "estimated_fee_per_contract",
+        "net_proceeds_per_contract",
+        "cost_basis_per_contract",
+        "profit_multiple"
+      ],
+      "title": "HarvestCandidateInput",
+      "type": "object"
+    },
+    "HarvestOpportunityInput": {
+      "additionalProperties": false,
+      "properties": {
+        "approved_rebalance_value": {
+          "title": "Approved Rebalance Value",
+          "type": "number"
+        },
+        "harvest_target_weight": {
+          "title": "Harvest Target Weight",
+          "type": "number"
+        },
+        "harvest_trigger_weight": {
+          "title": "Harvest Trigger Weight",
+          "type": "number"
+        },
+        "planned_sales": {
+          "items": {
+            "$ref": "#/$defs/PlannedHarvestSale"
+          },
+          "title": "Planned Sales",
+          "type": "array"
+        },
+        "sale_budget": {
+          "title": "Sale Budget",
+          "type": "number"
+        },
+        "sleeve_value": {
+          "title": "Sleeve Value",
+          "type": "number"
+        },
+        "sleeve_weight": {
+          "title": "Sleeve Weight",
+          "type": "number"
+        },
+        "target_sleeve_value": {
+          "title": "Target Sleeve Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "sleeve_value",
+        "sleeve_weight",
+        "harvest_trigger_weight",
+        "harvest_target_weight",
+        "target_sleeve_value",
+        "sale_budget",
+        "approved_rebalance_value",
+        "planned_sales"
+      ],
+      "title": "HarvestOpportunityInput",
+      "type": "object"
+    },
+    "HedgeContractInput": {
+      "additionalProperties": false,
+      "properties": {
+        "con_id": {
+          "title": "Con Id",
+          "type": "integer"
+        },
+        "expiration": {
+          "title": "Expiration",
+          "type": "string"
+        },
+        "multiplier": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Multiplier"
+        },
+        "right": {
+          "const": "P",
+          "title": "Right",
+          "type": "string"
+        },
+        "strike": {
+          "title": "Strike",
+          "type": "number"
+        }
+      },
+      "required": [
+        "con_id",
+        "expiration",
+        "strike",
+        "right",
+        "multiplier"
+      ],
+      "title": "HedgeContractInput",
+      "type": "object"
+    },
+    "HedgePositionInput": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HarvestCandidateInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contract": {
+          "$ref": "#/$defs/HedgeContractInput"
+        },
+        "entered_at": {
+          "format": "date-time",
+          "title": "Entered At",
+          "type": "string"
+        },
+        "entry_id": {
+          "title": "Entry Id",
+          "type": "string"
+        },
+        "entry_limit_price": {
+          "title": "Entry Limit Price",
+          "type": "number"
+        },
+        "estimated_cost": {
+          "title": "Estimated Cost",
+          "type": "number"
+        },
+        "host_candidate": {
+          "title": "Host Candidate",
+          "type": "boolean"
+        },
+        "live_average_cost_per_contract": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Live Average Cost Per Contract"
+        },
+        "live_position_market_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Live Position Market Value"
+        },
+        "live_position_quantity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Live Position Quantity"
+        },
+        "live_realized_pnl": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Live Realized Pnl"
+        },
+        "quoted_limit_price": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Quoted Limit Price"
+        },
+        "recovered_cost": {
+          "title": "Recovered Cost",
+          "type": "number"
+        },
+        "reported_owned_market_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reported Owned Market Value"
+        },
+        "state_owned_quantity": {
+          "title": "State Owned Quantity",
+          "type": "integer"
+        },
+        "state_owned_unrealized_pnl": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "State Owned Unrealized Pnl"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "unrecovered_cost": {
+          "title": "Unrecovered Cost",
+          "type": "number"
+        }
+      },
+      "required": [
+        "entry_id",
+        "symbol",
+        "status",
+        "contract",
+        "state_owned_quantity",
+        "live_position_quantity",
+        "reported_owned_market_value",
+        "live_position_market_value",
+        "live_average_cost_per_contract",
+        "live_realized_pnl",
+        "state_owned_unrealized_pnl",
+        "quoted_limit_price",
+        "entered_at",
+        "entry_limit_price",
+        "estimated_cost",
+        "recovered_cost",
+        "unrecovered_cost",
+        "host_candidate",
+        "candidate"
+      ],
+      "title": "HedgePositionInput",
+      "type": "object"
+    },
+    "PlannedHarvestSale": {
+      "additionalProperties": false,
+      "properties": {
+        "con_id": {
+          "title": "Con Id",
+          "type": "integer"
+        },
+        "entry_id": {
+          "title": "Entry Id",
+          "type": "string"
+        },
+        "estimated_fees": {
+          "title": "Estimated Fees",
+          "type": "number"
+        },
+        "estimated_gross_proceeds": {
+          "title": "Estimated Gross Proceeds",
+          "type": "number"
+        },
+        "estimated_net_proceeds": {
+          "title": "Estimated Net Proceeds",
+          "type": "number"
+        },
+        "expiration": {
+          "title": "Expiration",
+          "type": "string"
+        },
+        "limit_price": {
+          "title": "Limit Price",
+          "type": "number"
+        },
+        "quantity": {
+          "title": "Quantity",
+          "type": "integer"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entry_id",
+        "symbol",
+        "con_id",
+        "expiration",
+        "quantity",
+        "limit_price",
+        "estimated_gross_proceeds",
+        "estimated_fees",
+        "estimated_net_proceeds"
+      ],
+      "title": "PlannedHarvestSale",
+      "type": "object"
+    },
+    "ProtectedUnderlyingInput": {
+      "additionalProperties": false,
+      "properties": {
+        "approved_buy_shares": {
+          "title": "Approved Buy Shares",
+          "type": "integer"
+        },
+        "approved_buy_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Approved Buy Value"
+        },
+        "broker_position": {
+          "$ref": "#/$defs/UnderlyingBrokerPosition"
+        },
+        "configured_weight": {
+          "title": "Configured Weight",
+          "type": "number"
+        },
+        "current_shares": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Current Shares"
+        },
+        "current_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Current Value"
+        },
+        "current_weight": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Current Weight"
+        },
+        "market_price": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Market Price"
+        },
+        "primary_exchange": {
+          "title": "Primary Exchange",
+          "type": "string"
+        },
+        "tail_program": {
+          "$ref": "#/$defs/TailProgramInput"
+        },
+        "target_modifiers": {
+          "$ref": "#/$defs/TargetModifierInputs"
+        },
+        "target_shares": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Target Shares"
+        },
+        "target_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Target Value"
+        },
+        "target_weight": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Target Weight"
+        }
+      },
+      "required": [
+        "configured_weight",
+        "primary_exchange",
+        "market_price",
+        "current_shares",
+        "current_value",
+        "broker_position",
+        "current_weight",
+        "target_weight",
+        "target_value",
+        "target_shares",
+        "approved_buy_shares",
+        "approved_buy_value",
+        "tail_program",
+        "target_modifiers"
+      ],
+      "title": "ProtectedUnderlyingInput",
+      "type": "object"
+    },
+    "TailHarvestAccountInput": {
+      "additionalProperties": false,
+      "properties": {
+        "excluded_option_value": {
+          "title": "Excluded Option Value",
+          "type": "number"
+        },
+        "net_liquidation": {
+          "title": "Net Liquidation",
+          "type": "number"
+        },
+        "regime_rebalance_base": {
+          "title": "Regime Rebalance Base",
+          "type": "number"
+        }
+      },
+      "required": [
+        "net_liquidation",
+        "regime_rebalance_base",
+        "excluded_option_value"
+      ],
+      "title": "TailHarvestAccountInput",
+      "type": "object"
+    },
+    "TailHarvestDecisionInput": {
+      "additionalProperties": false,
+      "description": "USD values, fractional weights, and whole option contract quantities.",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/TailHarvestAccountInput"
+        },
+        "hedge_positions": {
+          "items": {
+            "$ref": "#/$defs/HedgePositionInput"
+          },
+          "title": "Hedge Positions",
+          "type": "array"
+        },
+        "host_constraints": {
+          "$ref": "#/$defs/TailHarvestHostConstraints"
+        },
+        "market_data": {
+          "$ref": "#/$defs/ExternalDecisionMarketData"
+        },
+        "opportunity": {
+          "$ref": "#/$defs/HarvestOpportunityInput"
+        },
+        "strategy": {
+          "$ref": "#/$defs/TailHarvestStrategyInput"
+        },
+        "underlyings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ProtectedUnderlyingInput"
+          },
+          "title": "Underlyings",
+          "type": "object"
+        }
+      },
+      "required": [
+        "strategy",
+        "host_constraints",
+        "account",
+        "opportunity",
+        "underlyings",
+        "hedge_positions",
+        "market_data"
+      ],
+      "title": "TailHarvestDecisionInput",
+      "type": "object"
+    },
+    "TailHarvestHostConstraints": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline_band_triggered": {
+          "const": true,
+          "title": "Baseline Band Triggered",
+          "type": "boolean"
+        },
+        "host_selects_contracts_quantities_and_limit_prices": {
+          "const": true,
+          "title": "Host Selects Contracts Quantities And Limit Prices",
+          "type": "boolean"
+        },
+        "requires_approved_same_symbol_hard_underweight_buy": {
+          "const": true,
+          "title": "Requires Approved Same Symbol Hard Underweight Buy",
+          "type": "boolean"
+        },
+        "state_owned_active_profitable_puts_only": {
+          "const": true,
+          "title": "State Owned Active Profitable Puts Only",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "baseline_band_triggered",
+        "requires_approved_same_symbol_hard_underweight_buy",
+        "state_owned_active_profitable_puts_only",
+        "host_selects_contracts_quantities_and_limit_prices"
+      ],
+      "title": "TailHarvestHostConstraints",
+      "type": "object"
+    },
+    "TailHarvestStrategyInput": {
+      "additionalProperties": false,
+      "properties": {
+        "annual_budget": {
+          "title": "Annual Budget",
+          "type": "number"
+        },
+        "name": {
+          "const": "tail_hedge",
+          "title": "Name",
+          "type": "string"
+        },
+        "regime_margin_usage": {
+          "title": "Regime Margin Usage",
+          "type": "number"
+        },
+        "regime_weight_base": {
+          "enum": [
+            "net_liq",
+            "net_liq_ex_options",
+            "managed_stocks"
+          ],
+          "title": "Regime Weight Base",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "annual_budget",
+        "regime_weight_base",
+        "regime_margin_usage"
+      ],
+      "title": "TailHarvestStrategyInput",
+      "type": "object"
+    },
+    "TailProgramInput": {
+      "additionalProperties": false,
+      "properties": {
+        "budget_weight": {
+          "title": "Budget Weight",
+          "type": "number"
+        },
+        "catastrophe_drawdowns": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Catastrophe Drawdowns",
+          "type": "array"
+        },
+        "entries_per_year": {
+          "title": "Entries Per Year",
+          "type": "integer"
+        },
+        "entry_gate": {
+          "enum": [
+            "vix",
+            "none"
+          ],
+          "title": "Entry Gate",
+          "type": "string"
+        },
+        "entry_vix_max": {
+          "title": "Entry Vix Max",
+          "type": "number"
+        },
+        "exit_dte": {
+          "title": "Exit Dte",
+          "type": "integer"
+        },
+        "max_bid_ask_ratio": {
+          "title": "Max Bid Ask Ratio",
+          "type": "number"
+        },
+        "max_dte": {
+          "title": "Max Dte",
+          "type": "integer"
+        },
+        "max_premium_ratio": {
+          "title": "Max Premium Ratio",
+          "type": "number"
+        },
+        "min_dte": {
+          "title": "Min Dte",
+          "type": "integer"
+        },
+        "minimum_bid": {
+          "title": "Minimum Bid",
+          "type": "number"
+        },
+        "minimum_open_interest": {
+          "title": "Minimum Open Interest",
+          "type": "integer"
+        },
+        "target_dte": {
+          "title": "Target Dte",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "budget_weight",
+        "entries_per_year",
+        "entry_gate",
+        "entry_vix_max",
+        "target_dte",
+        "min_dte",
+        "max_dte",
+        "exit_dte",
+        "minimum_open_interest",
+        "minimum_bid",
+        "max_bid_ask_ratio",
+        "max_premium_ratio",
+        "catastrophe_drawdowns"
+      ],
+      "title": "TailProgramInput",
+      "type": "object"
+    },
+    "TargetModifierInputs": {
+      "additionalProperties": false,
+      "properties": {
+        "absolute_trend": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Absolute Trend"
+        },
+        "target_weight_policy": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Target Weight Policy"
+        },
+        "volatility_weight": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Volatility Weight"
+        }
+      },
+      "required": [
+        "volatility_weight",
+        "target_weight_policy",
+        "absolute_trend"
+      ],
+      "title": "TargetModifierInputs",
+      "type": "object"
+    },
+    "UnderlyingBrokerPosition": {
+      "additionalProperties": false,
+      "properties": {
+        "average_cost_per_share": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Average Cost Per Share"
+        },
+        "market_value": {
+          "title": "Market Value",
+          "type": "number"
+        },
+        "realized_pnl": {
+          "title": "Realized Pnl",
+          "type": "number"
+        },
+        "shares": {
+          "title": "Shares",
+          "type": "number"
+        },
+        "unrealized_pnl": {
+          "title": "Unrealized Pnl",
+          "type": "number"
+        }
+      },
+      "required": [
+        "shares",
+        "market_value",
+        "average_cost_per_share",
+        "unrealized_pnl",
+        "realized_pnl"
+      ],
+      "title": "UnderlyingBrokerPosition",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "decision_type": {
+      "const": "tail_hedge_harvest",
+      "title": "Decision Type",
+      "type": "string"
+    },
+    "dry_run": {
+      "title": "Dry Run",
+      "type": "boolean"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "input": {
+      "$ref": "#/$defs/TailHarvestDecisionInput"
+    },
+    "request_id": {
+      "minLength": 1,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "request_id",
+    "decision_type",
+    "generated_at",
+    "dry_run",
+    "input"
+  ],
+  "title": "TailHarvestDecisionRequest",
+  "type": "object"
+}

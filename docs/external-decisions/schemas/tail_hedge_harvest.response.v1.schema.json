@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "ExternalDecisionProducer": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "ExternalDecisionProducer",
+      "type": "object"
+    },
+    "TailHarvestDecisionOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "harvest": {
+          "title": "Harvest",
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "harvest"
+      ],
+      "title": "TailHarvestDecisionOutput",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "as_of_session": {
+      "format": "date",
+      "title": "As Of Session",
+      "type": "string"
+    },
+    "decision_type": {
+      "const": "tail_hedge_harvest",
+      "title": "Decision Type",
+      "type": "string"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expires At"
+    },
+    "output": {
+      "$ref": "#/$defs/TailHarvestDecisionOutput"
+    },
+    "producer": {
+      "$ref": "#/$defs/ExternalDecisionProducer"
+    },
+    "request_id": {
+      "minLength": 1,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "request_id",
+    "decision_type",
+    "as_of_session",
+    "producer",
+    "output"
+  ],
+  "title": "TailHarvestDecisionResponse",
+  "type": "object"
+}

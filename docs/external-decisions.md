@@ -6,6 +6,10 @@ registered once under `runtime.external_decisions.providers`, so future decision
 points can reuse the same transport without sharing their decision-specific
 schemas.
 
+The versioned [JSON schemas](external-decisions/schemas/) and
+[complete request/response examples](../examples/external_decisions/) are the
+provider-facing contract. Providers do not need to import or install ThetaGang.
+
 The supported decision types are `regime_target_weights` and
 `tail_hedge_harvest`. Target-weight decisions apply bounded per-symbol
 multipliers after volatility weighting and before the built-in absolute-trend
@@ -18,9 +22,11 @@ or execution policies.
 
 A command provider is executed directly without a shell. ThetaGang writes one
 JSON request to stdin, waits for the process to exit, and reads one JSON response
-from stdout. Provider diagnostics should be written to stderr. Each invocation
-must be side-effect free and deterministic for the supplied completed-session
-data.
+from stdout. Provider diagnostics should be written to stderr. Inference must not
+submit trades or mutate ThetaGang's strategy state. Keep training, feature
+engineering, model artifacts, and model dependencies in the provider project.
+With a fixed model artifact, inference should be deterministic for the complete
+supplied request context; the request ID is for correlation, not a model feature.
 
 Timeouts, cancellation, and oversized responses terminate the command and drain
 its pipes. On POSIX systems, cleanup also terminates its process group so child
@@ -230,3 +236,102 @@ error and is honored regardless of the failure setting.
 The provider is trusted local code and runs with the same operating-system
 permissions as ThetaGang. Process separation isolates Python dependencies; it is
 not a security sandbox.
+
+## Build and check a provider offline
+
+The [reference provider](../examples/external_decisions/provider.py) uses only
+Python's standard library. It returns a neutral target multiplier and vetoes
+harvesting, demonstrating both response shapes. Replace its `decide()` function
+in your own project with feature preparation and inference using a fixed model
+artifact. Use `producer.version` to identify the code/model artifact that
+produced a decision.
+
+From the repository root, run the real command transport and validators without
+starting the trading runtime or connecting to IBKR:
+
+```sh
+uv run python -m thetagang.decision_check check \
+  --request examples/external_decisions/regime_target_weights.request.json \
+  -- python3 -I -S examples/external_decisions/provider.py
+
+uv run python -m thetagang.decision_check check \
+  --request examples/external_decisions/tail_hedge_harvest.request.json \
+  -- python3 -I -S examples/external_decisions/provider.py
+```
+
+`-I -S` demonstrates that the reference provider needs no installed packages.
+For your real provider, replace the command after `--` with its environment's
+Python and entry point, for example `/opt/my-policy/.venv/bin/python -m my_policy`.
+Options such as `--timeout-seconds`, `--max-response-bytes`, and
+`--working-directory` configure the same transport used during live planning.
+
+You can also replay a captured response without executing a provider:
+
+```sh
+uv run python -m thetagang.decision_check check \
+  --request examples/external_decisions/regime_target_weights.request.json \
+  --response examples/external_decisions/regime_target_weights.response.json \
+  --at 2026-09-04T14:30:00Z
+```
+
+The checker defaults to the request's `generated_at` as the replay validation
+time and prints the time it used. Use `--at` to reproduce validation at a later
+instant, including expiry during inference. Historical replay does not establish
+that a signal is fresh today. `--max-signal-age-sessions` defaults to `0` and
+`--weight-epsilon` to `1e-8`; set these to the deployment's policy age limit and
+regime `eps` when they differ. Multiplier limits and volatility bounds come from
+the saved request.
+
+A successful check prints JSON and exits `0`. Invalid requests, failed commands,
+and rejected responses exit nonzero; the checker does not hide errors behind the
+deployment's baseline fallback. Target checks include the production multiplier,
+clamping, and total-exposure checks. `post_policy_weights` are the targets before
+absolute-trend controls and subsequent trading gates. A valid harvest response
+only passes the external approval contract; it does not replay live ownership,
+quotes, allocation bands, or order execution.
+
+## Field semantics and compatibility
+
+Both requests contain all named fields shown in the examples. Nullable fields
+are explicitly `null` when that context is unavailable or inapplicable. An
+unavailable account metric is omitted from `account.metrics`. Optional response
+fields (`expires_at` and `reason`) may be omitted or null.
+
+| Field group | Meaning |
+| --- | --- |
+| Weights, allocation bands, budgets, drawdowns and percentage thresholds | Fractions: `0.05` means 5%. Regime drift bands compare relative deviation from the target. `margin_usage` is the host capital-base multiplier. |
+| Market closes and stock `market_price` | Per-share prices. The current history adapter requests USD stock contracts and regular-hours `TRADES` closes. |
+| Stock values, capital bases, costs, proceeds and P&L | Monetary amounts in the host/broker accounting units. Account metrics retain broker units; `Cushion` is a fraction. The decision adapter performs no currency conversion. |
+| Option `limit_price`, `quoted_limit_price`, `entry_limit_price` | Quote price before the contract multiplier. Per-contract proceeds/cost fields already include it. Multiply by contract quantity for totals. |
+| `current_shares`, broker `shares`, option `quantity` | Stock share counts and option contract counts respectively. `state_owned_quantity` may be less than the full broker position. |
+| `sessions` and `closes` | Strictly aligned completed-session history, ordered oldest to newest. A history lookback of N returns normally supplies N+1 closes. No intraday bars are included. |
+| Lookbacks, cooldowns and signal age | Trading-session counts. DTE settings use calendar days. Option `expiration` is an IBKR `YYYYMMDD` string. |
+| Volatility settings/calculations | Annualized fractional volatility, using 252 trading days. Smoothing factors and efficiency values are dimensionless fractions; choppiness and ratio drift statistics are dimensionless. |
+| Datetimes and snapshot context | Offset-aware instants; requests emit `generated_at` in UTC. It is the assembly time, not a guarantee that every broker observation arrived simultaneously. |
+
+`volatility_weight.config = null` means no volatility configuration;
+`calculation = null` means no successful calculation is supplied. Protected
+underlyings outside the active regime may have null target fields. Underlying
+`broker_position` aggregates retain the host's existing zero-filled sums: a zero
+does not distinguish an empty position set from unavailable marks. Individual
+hedge observations retain nulls for unavailable/non-finite broker values.
+
+Calculation diagnostics (`volatility_weight.calculation` and
+`target_modifiers`) have variable keys describing host calculations. Providers
+should tolerate new diagnostic keys and use the explicit target and constraint
+fields for allocation decisions.
+
+`schema_version = 1` covers both the envelope and the decision-specific shape.
+Changes to defined fields, types, units, or meanings require a new contract
+version; entries in the explicitly open symbol, metric, and diagnostic maps may
+vary within v1. `producer.version` identifies the provider artifact independently
+of the protocol version. The checker and runtime request builders validate
+against the same models. Regenerate the published schemas with:
+
+```sh
+uv run python -m thetagang.decision_check schemas \
+  --output-dir docs/external-decisions/schemas
+```
+
+Tests check that the published schemas match the models, the complete examples
+validate, and the reference provider runs without third-party dependencies.

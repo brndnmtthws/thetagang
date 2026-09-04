@@ -25,7 +25,7 @@ class _ResponseTooLargeError(RuntimeError):
     pass
 
 
-class ExternalDecisionRequest(BaseModel):
+class ExternalDecisionRequestEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = EXTERNAL_DECISION_SCHEMA_VERSION
@@ -33,7 +33,6 @@ class ExternalDecisionRequest(BaseModel):
     decision_type: str = Field(..., min_length=1)
     generated_at: datetime
     dry_run: bool
-    input: dict[str, Any]
 
     @field_validator("generated_at")
     @classmethod
@@ -41,6 +40,16 @@ class ExternalDecisionRequest(BaseModel):
         if value.utcoffset() is None:
             raise ValueError("generated_at must include a timezone")
         return value
+
+
+class ExternalDecisionRequest(ExternalDecisionRequestEnvelope):
+    input: dict[str, Any]
+
+
+class DecisionInput(BaseModel):
+    """JSON contract fields shared by the published decision-specific requests."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class ExternalDecisionMarketData(BaseModel):
@@ -76,7 +85,7 @@ class ExternalDecisionProducer(BaseModel):
     version: str = Field(..., min_length=1)
 
 
-class ExternalDecisionResponse(BaseModel):
+class ExternalDecisionResponseEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = EXTERNAL_DECISION_SCHEMA_VERSION
@@ -87,7 +96,6 @@ class ExternalDecisionResponse(BaseModel):
     as_of_session: date | None = None
     expires_at: datetime | None = None
     producer: ExternalDecisionProducer
-    output: dict[str, Any]
 
     @field_validator("expires_at")
     @classmethod
@@ -95,6 +103,10 @@ class ExternalDecisionResponse(BaseModel):
         if value is not None and value.utcoffset() is None:
             raise ValueError("expires_at must include a timezone")
         return value
+
+
+class ExternalDecisionResponse(ExternalDecisionResponseEnvelope):
+    output: dict[str, Any]
 
 
 def build_external_decision_request(
@@ -281,25 +293,29 @@ class CommandExternalDecisionProvider:
                 f"external decision provider exited with status "
                 f"{process.returncode}{error_suffix}"
             )
-        try:
-            decoded = json.loads(
-                stdout.decode("utf-8"),
-                parse_constant=lambda value: _raise_invalid_constant(value),
-            )
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-            raise ExternalDecisionError(
-                "external decision provider returned invalid JSON"
-            ) from exc
-        if not isinstance(decoded, dict):
-            raise ExternalDecisionError(
-                "external decision provider response must be a JSON object"
-            )
-        try:
-            return ExternalDecisionResponse.model_validate(decoded)
-        except ValueError as exc:
-            raise ExternalDecisionError(
-                "external decision provider returned an invalid response envelope"
-            ) from exc
+        return parse_external_decision_response(stdout)
+
+
+def parse_external_decision_response(stdout: bytes) -> ExternalDecisionResponse:
+    try:
+        decoded = json.loads(
+            stdout.decode("utf-8"),
+            parse_constant=lambda value: _raise_invalid_constant(value),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ExternalDecisionError(
+            "external decision provider returned invalid JSON"
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise ExternalDecisionError(
+            "external decision provider response must be a JSON object"
+        )
+    try:
+        return ExternalDecisionResponse.model_validate(decoded)
+    except ValueError as exc:
+        raise ExternalDecisionError(
+            "external decision provider returned an invalid response envelope"
+        ) from exc
 
 
 def _raise_invalid_constant(value: str) -> Any:
@@ -332,13 +348,17 @@ class ExternalDecisionProviders:
                 f"external decision provider is not configured: {provider_name}"
             )
         response = await provider.decide(request)
-        if response.request_id != request.request_id:
-            raise ExternalDecisionError(
-                "external decision response request_id mismatch"
-            )
-        if response.decision_type != request.decision_type:
-            raise ExternalDecisionError("external decision response type mismatch")
+        validate_response_identity(response, request)
         return response
+
+
+def validate_response_identity(
+    response: ExternalDecisionResponse, request: ExternalDecisionRequest
+) -> None:
+    if response.request_id != request.request_id:
+        raise ExternalDecisionError("external decision response request_id mismatch")
+    if response.decision_type != request.decision_type:
+        raise ExternalDecisionError("external decision response type mismatch")
 
 
 def validate_market_decision_response(
