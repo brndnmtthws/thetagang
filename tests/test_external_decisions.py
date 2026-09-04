@@ -1,3 +1,5 @@
+import os
+import subprocess
 import sys
 from datetime import UTC, datetime
 
@@ -145,6 +147,63 @@ async def test_command_provider_stops_oversized_response() -> None:
 
     with pytest.raises(ExternalDecisionError, match="too large"):
         await providers.decide("fixture", _request())
+
+
+@pytest.mark.parametrize("failure", ["stdout", "stderr", "descendant", "cancel"])
+def test_command_provider_cleanup_cannot_hang(failure: str) -> None:
+    if failure == "descendant" and os.name != "posix":
+        pytest.skip("Process-group cleanup requires POSIX")
+    # Isolate the event loop so a pipe-draining regression fails within a hard
+    # deadline, even if cancellation of decide() itself deadlocks.
+    driver = """
+import asyncio
+import sys
+import time
+from datetime import UTC, datetime
+from thetagang.config_models import ExternalDecisionProviderConfig
+from thetagang.external_decisions import (
+    CommandExternalDecisionProvider, ExternalDecisionError, ExternalDecisionRequest,
+)
+
+async def main():
+    failure = sys.argv[1]
+    scripts = {
+        'stdout': 'import sys; sys.stdout.write("x" * 2_000_000); sys.stdout.flush()',
+        'stderr': 'import sys, time; sys.stderr.write("x" * 2_000_000); time.sleep(2)',
+        'descendant': 'import subprocess, sys; subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2)"])',
+        'cancel': 'import time; time.sleep(2)',
+    }
+    provider = CommandExternalDecisionProvider(ExternalDecisionProviderConfig(
+        command=[sys.executable, '-c', scripts[failure]],
+        max_response_bytes=1024, timeout_seconds=0.3 if failure != 'stdout' else 1,
+    ))
+    request = ExternalDecisionRequest(request_id='test', decision_type='test',
+        generated_at=datetime.now(UTC), dry_run=True, input={})
+    start = time.monotonic()
+    task = asyncio.create_task(provider.decide(request))
+    if failure == 'cancel':
+        await asyncio.sleep(0.1)
+        task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        assert failure == 'cancel'
+    except ExternalDecisionError as exc:
+        assert ('too large' if failure == 'stdout' else 'timed out') in str(exc)
+    else:
+        raise AssertionError('Provider unexpectedly succeeded')
+    assert time.monotonic() - start < 1.5
+
+asyncio.run(main())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", driver, failure],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.asyncio

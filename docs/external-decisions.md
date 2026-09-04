@@ -22,6 +22,10 @@ from stdout. Provider diagnostics should be written to stderr. Each invocation
 must be side-effect free and deterministic for the supplied completed-session
 data.
 
+Timeouts, cancellation, and oversized responses terminate the command and drain
+its pipes. On POSIX systems, cleanup also terminates its process group so child
+processes cannot keep those pipes open.
+
 Every request uses a generic versioned envelope:
 
 ```json
@@ -52,6 +56,9 @@ The `input` for `regime_target_weights` contains:
 - Aligned completed-session daily close history for the configured feature
   universe. All close arrays correspond exactly to the supplied `sessions`
   array. Data is fetched from IBKR as regular-trading-hours `TRADES` bars.
+
+Explicit primary-exchange overrides use separate persistent history entries,
+so missing API bars cannot be filled with another listing's cached prices.
 
 The listed TQQQ sizing features—returns, moving-average distance, trend,
 realized volatility, volatility acceleration, drawdown, close-based choppiness,
@@ -106,6 +113,8 @@ would violate that mode's required 100% total.
 The accepted decision is reused for any replanning within the same ThetaGang
 run. This prevents a tail-harvest replan from receiving a different model signal
 mid-execution.
+Its expiry is checked again before reuse; an expired decision follows the
+configured failure policy without invoking the provider again.
 
 ## Tail-harvest decision
 
@@ -128,7 +137,8 @@ current host-selected limit-price quote. The request `input` contains:
   plus optional feature-only reference symbols.
 
 The response must match the request identity, use the latest permitted supplied
-session, and return a JSON boolean:
+session, and return a JSON boolean. Expiry is rechecked after the final quote
+refresh; if it has elapsed, the configured failure policy applies:
 
 ```json
 {

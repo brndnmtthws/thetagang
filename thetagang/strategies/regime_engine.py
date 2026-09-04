@@ -36,6 +36,7 @@ from thetagang.external_decisions import (
     ExternalDecisionResponse,
     build_external_decision_request,
     external_decision_response_metadata,
+    validate_decision_expiry,
 )
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import IBKR, TickerField
@@ -1365,6 +1366,35 @@ class RegimeRebalanceEngine:
             regime_summary=regime_summary,
             history_cache=history_cache,
         )
+        if should_harvest and policy.enabled:
+            # The provider and market-history requests yield. Re-quote and
+            # rebuild the snapshot before any state or order mutation.
+            quoted_limit_prices = await self._quote_tail_puts(
+                symbols=set(rebalance_shares),
+                cohorts=snapshot.cohorts,
+                portfolio_positions=snapshot.portfolio_positions,
+            )
+            snapshot = self._build_tail_harvest_snapshot(
+                net_liquidation=net_liquidation,
+                rebalance_shares=rebalance_shares,
+                market_prices=market_prices,
+                quoted_limit_prices=quoted_limit_prices,
+                record_unprofitable=True,
+            )
+            if snapshot is None:
+                return set()
+            expires_at = external_decision.get("expires_at")
+            try:
+                validate_decision_expiry(
+                    datetime.fromisoformat(expires_at) if expires_at else None,
+                    now=self._as_utc(self._now()),
+                    decision_name="tail harvest decision",
+                )
+            except ExternalDecisionError as exc:
+                should_harvest, external_decision = (
+                    self._tail_harvest_decision_fallback(policy=policy, error=str(exc))
+                )
+
         if external_decision:
             band_payload = self._tail_harvest_band_payload(
                 snapshot,
@@ -1386,26 +1416,6 @@ class RegimeRebalanceEngine:
                 "harvest opportunity."
             )
             return set()
-
-        if policy.enabled:
-            # The provider and market-history requests yield. Re-quote and
-            # rebuild the complete snapshot before any state or order mutation;
-            # the external result cannot bypass changed ownership, conflicts,
-            # profitability, or the allocation band.
-            quoted_limit_prices = await self._quote_tail_puts(
-                symbols=set(rebalance_shares),
-                cohorts=snapshot.cohorts,
-                portfolio_positions=snapshot.portfolio_positions,
-            )
-            snapshot = self._build_tail_harvest_snapshot(
-                net_liquidation=net_liquidation,
-                rebalance_shares=rebalance_shares,
-                market_prices=market_prices,
-                quoted_limit_prices=quoted_limit_prices,
-                record_unprofitable=True,
-            )
-            if snapshot is None:
-                return set()
 
         candidates = snapshot.candidates
         state = snapshot.state
@@ -1969,7 +1979,18 @@ class RegimeRebalanceEngine:
             primaryExchange=primary_exchange or self.get_primary_exchange(symbol),
         )
         for attempt in range(1, REGIME_HISTORY_MAX_ATTEMPTS + 1):
-            bars = list(await self.ibkr.request_historical_data(contract, duration))
+            if primary_exchange:
+                bars = list(
+                    await self.ibkr.request_historical_data(
+                        contract,
+                        duration,
+                        cache_symbol=self._history_cache_symbol(
+                            symbol, primary_exchange
+                        ),
+                    )
+                )
+            else:
+                bars = list(await self.ibkr.request_historical_data(contract, duration))
             if bars:
                 if attempt > 1:
                     log.warning(
@@ -2008,11 +2029,18 @@ class RegimeRebalanceEngine:
         )
         return {symbol: self._bars_to_closes(bars) for symbol, bars in histories}
 
+    @staticmethod
+    def _history_cache_symbol(symbol: str, primary_exchange: str | None) -> str:
+        # The legacy cache is keyed by ticker alone. Explicit listing overrides
+        # must neither consume nor overwrite that ticker's default history.
+        return f"{symbol}@{primary_exchange}" if primary_exchange else symbol
+
     def _merge_cached_regime_closes(
         self,
         symbols: list[str],
         api_closes_by_symbol: ClosesBySymbol,
         required_dates: list[date],
+        primary_exchanges: dict[str, str] | None = None,
     ) -> ClosesBySymbol:
         if self.data_store is None:
             raise RegimeHistoryValidationError(
@@ -2025,7 +2053,12 @@ class RegimeRebalanceEngine:
         for symbol in symbols:
             try:
                 cached_bars = self.data_store.get_historical_bars(
-                    symbol, REGIME_HISTORY_TIMEFRAME, start_time, end_time
+                    self._history_cache_symbol(
+                        symbol, (primary_exchanges or {}).get(symbol)
+                    ),
+                    REGIME_HISTORY_TIMEFRAME,
+                    start_time,
+                    end_time,
                 )
             except Exception as exc:
                 log.error(f"{symbol}: failed to read cached regime history.")
@@ -2051,11 +2084,13 @@ class RegimeRebalanceEngine:
         api_closes_by_symbol: ClosesBySymbol,
         required_points: int,
         required_dates: list[date],
+        primary_exchanges: dict[str, str] | None = None,
     ) -> AlignedClosesResult:
         merged_closes_by_symbol = self._merge_cached_regime_closes(
             symbols,
             api_closes_by_symbol,
             required_dates,
+            primary_exchanges,
         )
         dates, aligned_closes = self._align_regime_closes(
             symbols=symbols,
@@ -2117,6 +2152,7 @@ class RegimeRebalanceEngine:
                 api_closes_by_symbol=api_closes_by_symbol,
                 required_points=required_points,
                 required_dates=required_dates,
+                primary_exchanges=primary_exchanges,
             )
 
     async def _resolve_effective_weights(
@@ -2504,6 +2540,21 @@ class RegimeRebalanceEngine:
             return dict(effective_weights), {}
         ratio_gate = getattr(regime_rebalance, "ratio_gate", None)
 
+        if (
+            self._target_weight_policy_outcome is not None
+            and self._target_weight_policy_outcome.response is not None
+        ):
+            try:
+                validate_decision_expiry(
+                    self._target_weight_policy_outcome.response.expires_at,
+                    now=self._as_utc(self._now()),
+                    decision_name="target weight policy",
+                )
+            except ExternalDecisionError as exc:
+                self._target_weight_policy_outcome = _TargetWeightPolicyOutcome(
+                    adjustments=None, response=None, error=str(exc)
+                )
+
         if self._target_weight_policy_outcome is None:
             try:
                 market_data = await self._load_external_market_data(
@@ -2660,7 +2711,7 @@ class RegimeRebalanceEngine:
             for symbol, adjustment in outcome.adjustments.items():
                 baseline_weight = effective_weights[symbol]
                 raw_weight = baseline_weight * adjustment.multiplier
-                if not math.isfinite(raw_weight) or raw_weight < 0 or raw_weight > 1:
+                if not math.isfinite(raw_weight) or raw_weight < 0:
                     raise ExternalDecisionError(
                         f"target weight policy produced an invalid weight for {symbol}"
                     )
@@ -2672,6 +2723,10 @@ class RegimeRebalanceEngine:
                     effective_weight = max(
                         float(volatility_weight.min_weight),
                         min(effective_weight, float(volatility_weight.max_weight)),
+                    )
+                if effective_weight > 1:
+                    raise ExternalDecisionError(
+                        f"target weight policy produced an invalid weight for {symbol}"
                     )
                 adjusted_weights[symbol] = effective_weight
                 details[symbol] = {
@@ -3139,6 +3194,7 @@ class RegimeRebalanceEngine:
             ("volatility_weight", volatility_details),
             ("absolute_trend", trend_details),
         )
+        target_policy = getattr(regime_rebalance, "target_weight_policy", None)
         harvest_risk_ready_symbols = {
             symbol
             for symbol in symbols
@@ -3154,12 +3210,9 @@ class RegimeRebalanceEngine:
                 for config_name, modifier_details in target_modifier_details
             )
             and (
-                symbol
-                not in getattr(
-                    getattr(regime_rebalance, "target_weight_policy", None),
-                    "symbols",
-                    {},
-                )
+                target_policy is None
+                or not target_policy.enabled
+                or symbol not in target_policy.symbols
                 or bool(
                     target_weight_policy_details.get(symbol, {}).get(
                         "risk_ready", False

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -179,13 +181,30 @@ class CommandExternalDecisionProvider:
         return bytes(captured)
 
     @staticmethod
-    async def _kill_and_wait(process: asyncio.subprocess.Process) -> None:
-        if process.returncode is None:
-            try:
+    async def _discard_output(stream: asyncio.StreamReader) -> None:
+        while await stream.read(65_536):
+            pass
+
+    @classmethod
+    async def _kill_and_wait(cls, process: asyncio.subprocess.Process) -> None:
+        try:
+            if os.name == "posix":
+                # Descendants can inherit the pipes even after the command exits.
+                os.killpg(process.pid, signal.SIGKILL)
+            elif process.returncode is None:
                 process.kill()
-            except ProcessLookupError:
-                pass
-        await process.wait()
+        except ProcessLookupError:
+            pass
+        # wait() alone can deadlock when a pipe's reader paused its transport
+        # after hitting the buffer limit. Drain without retaining more output.
+        await asyncio.gather(
+            *(
+                cls._discard_output(stream)
+                for stream in (process.stdout, process.stderr)
+                if stream is not None
+            ),
+            process.wait(),
+        )
 
     async def decide(
         self, request: ExternalDecisionRequest
@@ -212,6 +231,7 @@ class CommandExternalDecisionProvider:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
+                start_new_session=os.name == "posix",
             )
         except OSError as exc:
             raise ExternalDecisionError(
@@ -242,23 +262,17 @@ class CommandExternalDecisionProvider:
                 timeout=self._config.timeout_seconds,
             )
         except TimeoutError as exc:
-            await self._kill_and_wait(process)
-            await asyncio.gather(*tasks, return_exceptions=True)
             raise ExternalDecisionError("external decision provider timed out") from exc
         except _ResponseTooLargeError as exc:
-            await self._kill_and_wait(process)
-            await asyncio.gather(*tasks, return_exceptions=True)
             raise ExternalDecisionError(
                 "external decision response is too large"
             ) from exc
-        except asyncio.CancelledError:
-            await self._kill_and_wait(process)
+        finally:
+            # Stop all readers before cleanup takes ownership of the pipes.
+            for task in tasks:
+                task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            raise
-        except Exception:
             await self._kill_and_wait(process)
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
 
         if process.returncode != 0:
             error_text = stderr.decode("utf-8", errors="replace").strip()
@@ -357,12 +371,17 @@ def validate_market_decision_response(
     if signal_age_sessions > max_signal_age_sessions:
         raise ExternalDecisionError(f"{decision_name} signal is stale")
 
-    if response.expires_at is not None:
-        expires_at = response.expires_at
+    validate_decision_expiry(response.expires_at, now=now, decision_name=decision_name)
+    return signal_session
+
+
+def validate_decision_expiry(
+    expires_at: datetime | None, *, now: datetime, decision_name: str
+) -> None:
+    if expires_at is not None:
         if expires_at.utcoffset() is None:
             raise ExternalDecisionError(
                 f"{decision_name} expires_at must include a timezone"
             )
         if expires_at.astimezone(UTC) <= now.astimezone(UTC):
             raise ExternalDecisionError(f"{decision_name} signal has expired")
-    return signal_session

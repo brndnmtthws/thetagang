@@ -93,8 +93,9 @@ class _FixedTargetWeightProvider:
 
 
 class _FixedTailHarvestProvider:
-    def __init__(self, harvest: object) -> None:
+    def __init__(self, harvest: object, expires_at: datetime | None = None) -> None:
         self.harvest = harvest
+        self.expires_at = expires_at
         self.requests: list[ExternalDecisionRequest] = []
 
     async def decide(
@@ -106,6 +107,7 @@ class _FixedTailHarvestProvider:
             request_id=request.request_id,
             decision_type=request.decision_type,
             as_of_session=sessions[-1],
+            expires_at=self.expires_at,
             producer={"name": "fixture-harvest", "version": "policy-1"},
             output={"harvest": self.harvest, "reason": "test-signal"},
         )
@@ -1156,6 +1158,114 @@ async def test_external_target_weight_policy_checks_expiry_after_provider_return
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("on_error", ["baseline", "abort"])
+async def test_cached_target_weight_decision_expires_during_replanning(
+    portfolio_manager: Any, mocker: Any, on_error: str
+) -> None:
+    engine = portfolio_manager.regime_engine
+    policy = _target_weight_policy()
+    policy.on_error = on_error
+    portfolio_manager.config.strategies.regime_rebalance.target_weight_policy = policy
+    now = datetime(2026, 9, 3, 14, 30, tzinfo=UTC)
+    engine._now = mocker.Mock(return_value=now)
+    provider = _FixedTargetWeightProvider(1.07, expires_at=now + timedelta(seconds=5))
+    portfolio_manager.external_decisions.replace("fixture", provider)
+    engine._get_regime_aligned_closes = mocker.AsyncMock(
+        return_value=(
+            _required_regime_history_dates(4),
+            {"AAA": [100.0] * 4, "BBB": [100.0] * 4},
+        )
+    )
+    baseline = {"AAA": 0.36, "BBB": 0.45}
+    context = _target_weight_policy_context(portfolio_manager)
+    first, _ = await engine._apply_target_weight_policy(baseline, **context)
+    assert first["AAA"] == pytest.approx(0.3852)
+
+    engine._now.return_value = now + timedelta(seconds=5)
+    if on_error == "abort":
+        with pytest.raises(RuntimeError, match="expired"):
+            await engine._apply_target_weight_policy(baseline, **context)
+    else:
+        second, details = await engine._apply_target_weight_policy(baseline, **context)
+        assert second == baseline
+        assert details["AAA"]["risk_ready"] is False
+        assert "expired" in details["AAA"]["error"]
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_disabled_target_weight_policy_preserves_harvest_eligibility(
+    portfolio_manager: Any, mocker: Any
+) -> None:
+    regime = portfolio_manager.config.strategies.regime_rebalance
+    regime.hard_band = 0.4
+    regime.target_weight_policy = _target_weight_policy(symbols=("BBB",))
+    regime.target_weight_policy.enabled = False
+    _mock_regime_tickers(portfolio_manager, mocker)
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    apply_harvest = mocker.patch.object(
+        portfolio_manager.regime_engine,
+        "_apply_tail_harvest",
+        new=mocker.AsyncMock(return_value=[]),
+    )
+
+    await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+        _regime_account_summary(),
+        _regime_stock_positions(),
+    )
+
+    assert apply_harvest.call_args.kwargs["hard_underweight_symbols"] == {"BBB"}
+
+
+@pytest.mark.asyncio
+async def test_exchange_override_history_does_not_mix_persisted_listings(
+    portfolio_manager_with_db: PortfolioManager, mocker: Any, monkeypatch: Any
+) -> None:
+    manager = portfolio_manager_with_db
+    _disable_regime_history_retry_delay(monkeypatch)
+    dates = _set_required_regime_history_dates(manager, monkeypatch, required_points=4)
+    _seed_regime_history_cache(manager, [100.0] * 4, symbols=("AAA",))
+    bars = _regime_bars([200.0] * 4)
+    manager.ibkr.ib.reqHistoricalDataAsync = mocker.AsyncMock(return_value=bars)
+
+    _, prices = await manager.regime_engine._get_regime_aligned_closes(
+        ["AAA"],
+        3,
+        0,
+        primary_exchanges={"AAA": "NASDAQ"},
+    )
+    assert prices == {"AAA": [200.0] * 4}
+
+    manager.ibkr.ib.reqHistoricalDataAsync.return_value = []
+    # Exercise the persistent fallback, bypassing the per-plan memory cache.
+    _, default_prices = await manager.regime_engine._get_regime_aligned_closes(
+        ["AAA"],
+        3,
+        0,
+    )
+    (
+        cached_dates,
+        override_prices,
+    ) = await manager.regime_engine._get_regime_aligned_closes(
+        ["AAA"],
+        3,
+        0,
+        primary_exchanges={"AAA": "NASDAQ"},
+    )
+    assert default_prices == {"AAA": [100.0] * 4}
+    assert cached_dates == dates
+    assert override_prices == prices
+    with pytest.raises(ValueError, match="aligned history|fresh historical data"):
+        await manager.regime_engine._get_regime_aligned_closes(
+            ["AAA"],
+            3,
+            0,
+            primary_exchanges={"AAA": "ARCA"},
+        )
+
+
+@pytest.mark.asyncio
 async def test_external_target_weight_policy_clamps_to_volatility_bounds(
     portfolio_manager, mocker
 ):
@@ -1188,6 +1298,42 @@ async def test_external_target_weight_policy_clamps_to_volatility_bounds(
 
     assert details["AAA"]["raw_weight"] == pytest.approx(0.396)
     assert adjusted["AAA"] == pytest.approx(0.38)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clamp", [True, False])
+async def test_external_target_weight_policy_caps_before_checking_final_weight(
+    portfolio_manager: Any, mocker: Any, clamp: bool
+) -> None:
+    manager = portfolio_manager
+    manager.config.portfolio.symbols["AAA"].volatility_weight = _volatility_weight(
+        max_weight=1.0
+    )
+    manager.config.strategies.regime_rebalance.target_weight_policy = (
+        _target_weight_policy(clamp_to_volatility_bounds=clamp)
+    )
+    manager.external_decisions.replace("fixture", _FixedTargetWeightProvider(1.1))
+    manager.regime_engine._get_regime_aligned_closes = mocker.AsyncMock(
+        return_value=(
+            _required_regime_history_dates(4),
+            {"AAA": [100.0] * 4, "BBB": [100.0] * 4},
+        )
+    )
+    baseline = {"AAA": 0.95, "BBB": 0.0}
+
+    weights, details = await manager.regime_engine._apply_target_weight_policy(
+        baseline,
+        **_target_weight_policy_context(manager),
+    )
+
+    if clamp:
+        assert weights == {"AAA": 1.0, "BBB": 0.0}
+        assert details["AAA"]["raw_weight"] == pytest.approx(1.045)
+        assert details["AAA"]["status"] == "applied"
+    else:
+        assert weights == baseline
+        assert details["AAA"]["status"] == "baseline"
+        assert "invalid weight" in details["AAA"]["error"]
 
 
 @pytest.mark.asyncio
@@ -4685,6 +4831,56 @@ async def test_external_tail_harvest_approval_is_revalidated_before_order(
     store = portfolio_manager.regime_engine._tail_state_store
     assert store is not None
     assert store.load().open_cohorts[0].pending_recovery_quantity is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("on_error", ["baseline", "skip", "abort"])
+async def test_tail_harvest_approval_expiring_during_requote_uses_failure_policy(
+    portfolio_manager_with_db: Any, mocker: Any, on_error: str
+) -> None:
+    manager = portfolio_manager_with_db
+    engine = manager.regime_engine
+    now = datetime(2026, 9, 3, 14, 30, tzinfo=UTC)
+    provider = _FixedTailHarvestProvider(True, expires_at=now + timedelta(seconds=5))
+    payload, _ = _prepare_external_tail_harvest(
+        manager,
+        mocker,
+        provider=provider,
+        con_id=802,
+    )
+    manager.config.strategies.tail_hedge.harvest_decision.on_error = on_error
+    engine._now = mocker.Mock(return_value=now)
+    quotes = 0
+
+    async def quote(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        nonlocal quotes
+        quotes += 1
+        if quotes == 2:
+            engine._now.return_value = now + timedelta(seconds=5)
+        return _option_ticker(1.20)
+
+    manager.ibkr.get_ticker_for_contract = mocker.AsyncMock(side_effect=quote)
+    kwargs = {
+        "orders": [("BBB", "NYSE", 7)],
+        "net_liquidation": 2_000.0,
+        "market_prices": {"BBB": 85.0},
+        "regime_summary": _tail_harvest_regime_summary(),
+        "hard_underweight_symbols": {"BBB"},
+        "cohorts": payload.open_cohorts,
+    }
+    if on_error == "abort":
+        with pytest.raises(RuntimeError, match="expired"):
+            await engine._apply_tail_harvest(**kwargs)
+    else:
+        await engine._apply_tail_harvest(**kwargs)
+
+    assert len(provider.requests) == 1
+    assert quotes == 2
+    assert bool(manager.orders.records()) is (on_error == "baseline")
+    state = engine._tail_state_store.load()
+    assert (state.open_cohorts[0].pending_recovery_quantity is not None) is (
+        on_error == "baseline"
+    )
 
 
 @pytest.mark.asyncio
