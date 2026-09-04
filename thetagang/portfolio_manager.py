@@ -39,6 +39,7 @@ from thetagang.config import (
     stage_enabled_map_from_run,
 )
 from thetagang.db import DataStore
+from thetagang.external_decisions import ExternalDecisionProviders
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import IBKR
 from thetagang.order_execution import OrderExecutionManager
@@ -73,6 +74,7 @@ from thetagang.strategies.tail_hedge_state import (
     is_tail_order_ref,
     is_tail_reduction_ref,
 )
+from thetagang.target_weight_policy import TARGET_WEIGHT_POLICY_STATE_EVENT
 from thetagang.trades import Trades
 from thetagang.trading_operations import (
     OptionChainScanner,
@@ -95,6 +97,7 @@ logging.getLogger("ib_async.wrapper").setLevel(logging.CRITICAL)
 TAIL_HARVEST_FILL_TIMEOUT_SECONDS = 5 * 60
 REGIME_PLANNING_STATE_EVENTS = {
     ABSOLUTE_TREND_STATE_EVENT,
+    TARGET_WEIGHT_POLICY_STATE_EVENT,
     "regime_rebalance_state",
     "volatility_weight_state",
 }
@@ -122,6 +125,12 @@ class PortfolioManager:
         self.account_number = config.runtime.account.number
         self.config = config
         self.data_store = data_store
+        external_decision_config = getattr(
+            self.config.runtime, "external_decisions", None
+        )
+        self.external_decisions = ExternalDecisionProviders(
+            getattr(external_decision_config, "providers", {})
+        )
         self.ibkr = IBKR(
             ib,
             config.runtime.ib_async.api_response_wait_time,
@@ -197,6 +206,8 @@ class PortfolioManager:
             ibkr=self.ibkr,
             order_ops=self.order_ops,
             data_store=self.data_store,
+            external_decisions=self.external_decisions,
+            dry_run=self.dry_run,
             get_primary_exchange=self.get_primary_exchange,
             now_provider=lambda: datetime.now(),  # noqa: DTZ005
             tail_hedge_stage_enabled=lambda: self.stage_enabled("post_tail_hedge"),
@@ -780,6 +791,7 @@ class PortfolioManager:
     async def manage(self) -> None:
         had_error = False
         try:
+            self.regime_engine.begin_run()
             self.set_reserved_cash_for_post_management(0.0)
             if self.data_store:
                 self.data_store.record_event("run_start", {"dry_run": self.dry_run})

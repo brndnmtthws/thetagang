@@ -20,10 +20,12 @@ from thetagang.config_models import (
     DatabaseConfig,
     DisplayMixin,
     ExchangeHoursConfig,
+    ExternalDecisionsConfig,
     IBAsyncConfig,
     IBCConfig,
     OptionChainsConfig,
     OrdersConfig,
+    RegimeRebalanceBaseEnum,
     RegimeRebalanceConfig,
     RollWhenConfig,
     SymbolConfig,
@@ -297,6 +299,9 @@ class RuntimeConfig(BaseModel):
     ib_async: IBAsyncConfig = Field(default_factory=IBAsyncConfig)
     ibc: IBCConfig = Field(default_factory=IBCConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
+    external_decisions: ExternalDecisionsConfig = Field(
+        default_factory=ExternalDecisionsConfig
+    )
 
 
 class PortfolioConfig(BaseModel):
@@ -454,6 +459,23 @@ class Config(BaseModel, DisplayMixin):
     portfolio: PortfolioConfig
     strategies: StrategiesConfig
 
+    def _validate_external_market_decision(self, policy: Any) -> None:
+        decision_name = policy.decision_name
+        if policy.provider not in self.runtime.external_decisions.providers:
+            raise ValueError(
+                f"{decision_name} provider must exist in "
+                "runtime.external_decisions.providers"
+            )
+        for symbol, market_symbol in policy.market_data.symbols.items():
+            if (
+                symbol not in self.portfolio.symbols
+                and not market_symbol.primary_exchange.strip()
+            ):
+                raise ValueError(
+                    f"{decision_name} market data symbol {symbol} requires "
+                    "primary_exchange when it is not in portfolio.symbols"
+                )
+
     @model_validator(mode="after")
     def apply_strategy_overrides(self) -> Config:
         symbols = self.portfolio.symbols
@@ -520,6 +542,86 @@ class Config(BaseModel, DisplayMixin):
             raise ValueError(
                 "tail_hedge target symbols must be in portfolio.symbols: "
                 + ", ".join(missing_symbols)
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_target_weight_policy(self) -> Config:
+        policy = self.strategies.regime_rebalance.target_weight_policy
+        if not policy.enabled:
+            return self
+        self._validate_external_market_decision(policy)
+        regime = self.strategies.regime_rebalance
+        if regime.weight_base == RegimeRebalanceBaseEnum.managed_stocks:
+            raise ValueError(
+                "target weight policy does not support weight_base=managed_stocks"
+            )
+        unknown_targets = [
+            symbol for symbol in policy.symbols if symbol not in regime.symbols
+        ]
+        if unknown_targets:
+            raise ValueError(
+                "target weight policy symbols must be regime_rebalance symbols: "
+                + ", ".join(unknown_targets)
+            )
+        missing_targets = [
+            symbol for symbol in policy.symbols if symbol not in self.portfolio.symbols
+        ]
+        if missing_targets:
+            raise ValueError(
+                "target weight policy symbols must be in portfolio.symbols: "
+                + ", ".join(missing_targets)
+            )
+        zero_weight_targets = [
+            symbol
+            for symbol in policy.symbols
+            if self.portfolio.symbols[symbol].weight <= 0
+        ]
+        if zero_weight_targets:
+            raise ValueError(
+                "target weight policy symbols must have positive configured weights: "
+                + ", ".join(zero_weight_targets)
+            )
+        for symbol, symbol_policy in policy.symbols.items():
+            symbol_config = self.portfolio.symbols[symbol]
+            if symbol_policy.clamp_to_volatility_bounds and (
+                symbol_config.volatility_weight is None
+                or not symbol_config.volatility_weight.enabled
+            ):
+                raise ValueError(
+                    f"target weight policy for {symbol} requires enabled "
+                    "volatility_weight when clamp_to_volatility_bounds=true"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_tail_harvest_decision(self) -> Config:
+        tail_hedge = self.strategies.tail_hedge
+        policy = tail_hedge.harvest_decision
+        if not policy.enabled:
+            return self
+        self._validate_external_market_decision(policy)
+        if not tail_hedge.enabled:
+            raise ValueError(
+                "tail harvest decision requires strategies.tail_hedge.enabled = true"
+            )
+        regime = self.strategies.regime_rebalance
+        if not regime.enabled:
+            raise ValueError(
+                "tail harvest decision requires "
+                "strategies.regime_rebalance.enabled = true"
+            )
+        eligible_underlyings = {
+            target.symbol
+            for target in tail_hedge.targets
+            if target.symbol in regime.symbols
+            and target.symbol in self.portfolio.symbols
+            and self.portfolio.symbols[target.symbol].weight > 0
+        }
+        if not eligible_underlyings:
+            raise ValueError(
+                "tail harvest decision requires a positive-weight tail target in "
+                "regime_rebalance.symbols"
             )
         return self
 

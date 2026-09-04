@@ -1,5 +1,6 @@
 from polyfactory.factories.pydantic_factory import ModelFactory
 
+from thetagang.config_models import TargetWeightPolicyConfig
 from thetagang.legacy_config import (
     AccountConfig,
     LegacyConfig,
@@ -51,6 +52,7 @@ class RegimeRebalanceConfigFactory(ModelFactory[RegimeRebalanceConfig]):
     deficit_rail_start = 0.06
     deficit_rail_stop = 0.03
     ratio_gate = None
+    target_weight_policy = TargetWeightPolicyConfig()
 
 
 class LegacyConfigFactory(ModelFactory[LegacyConfig]):

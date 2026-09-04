@@ -1,4 +1,5 @@
 from io import StringIO
+from typing import Any
 
 import pytest
 from rich.console import Console
@@ -612,6 +613,203 @@ def test_symbol_absolute_trend_allows_zero_risk_off_multiplier() -> None:
     absolute_trend = config.portfolio.symbols["AAA"].absolute_trend
     assert absolute_trend is not None
     assert absolute_trend.risk_off_multiplier == pytest.approx(0.0)
+
+
+def _enable_target_weight_policy(data: dict[str, Any]) -> None:
+    data["runtime"]["external_decisions"] = {
+        "providers": {
+            "tqqq_sizing": {
+                "command": ["/opt/tqqq-policy/bin/predict"],
+                "timeout_seconds": 5,
+            }
+        }
+    }
+    data["portfolio"]["symbols"]["AAA"]["volatility_weight"] = {
+        "enabled": True,
+        "target_vol": 0.55,
+        "lookback_days": 20,
+        "min_weight": 0.25,
+        "max_weight": 1.0,
+    }
+    data["strategies"]["regime_rebalance"] = {
+        "enabled": True,
+        "symbols": ["AAA"],
+        "target_weight_policy": {
+            "enabled": True,
+            "provider": "tqqq_sizing",
+            "symbols": {"AAA": {"min_multiplier": 0.8, "max_multiplier": 1.1}},
+            "market_data": {
+                "lookback_days": 252,
+                "symbols": {"QQQ": {"primary_exchange": "NASDAQ"}},
+            },
+        },
+    }
+
+
+def test_target_weight_policy_accepts_named_provider_and_market_universe() -> None:
+    data = _base_config({"strategies": ["regime_rebalance"]})
+    _enable_target_weight_policy(data)
+
+    config = Config(**data)
+    policy = config.strategies.regime_rebalance.target_weight_policy
+
+    assert policy.provider == "tqqq_sizing"
+    assert policy.symbols["AAA"].min_multiplier == pytest.approx(0.8)
+    assert policy.market_data.lookback_days == 252
+    assert policy.market_data.symbols["QQQ"].primary_exchange == "NASDAQ"
+
+
+def test_target_weight_policy_rejects_unknown_provider() -> None:
+    data = _base_config({"strategies": ["regime_rebalance"]})
+    _enable_target_weight_policy(data)
+    data["strategies"]["regime_rebalance"]["target_weight_policy"]["provider"] = (
+        "missing"
+    )
+
+    with pytest.raises(ValueError, match="provider must exist"):
+        Config(**data)
+
+
+def test_target_weight_policy_rejects_managed_stocks_weight_base() -> None:
+    data = _base_config({"strategies": ["regime_rebalance"]})
+    _enable_target_weight_policy(data)
+    data["strategies"]["regime_rebalance"]["weight_base"] = "managed_stocks"
+
+    with pytest.raises(ValueError, match="does not support weight_base=managed_stocks"):
+        Config(**data)
+
+
+def test_target_weight_policy_rejects_total_weight_ceiling_below_one() -> None:
+    data = _base_config({"strategies": ["regime_rebalance"]})
+    _enable_target_weight_policy(data)
+    data["strategies"]["regime_rebalance"]["target_weight_policy"][
+        "max_total_weight"
+    ] = 0.9
+
+    with pytest.raises(ValueError, match="max_total_weight"):
+        Config(**data)
+
+
+def test_target_weight_policy_rejects_signal_age_beyond_supplied_history() -> None:
+    data = _base_config({"strategies": ["regime_rebalance"]})
+    _enable_target_weight_policy(data)
+    policy = data["strategies"]["regime_rebalance"]["target_weight_policy"]
+    policy["max_signal_age_sessions"] = 253
+    policy["market_data"]["lookback_days"] = 252
+
+    with pytest.raises(ValueError, match="max_signal_age_sessions"):
+        Config(**data)
+
+
+def test_target_weight_policy_requires_exchange_for_reference_symbol() -> None:
+    data = _base_config({"strategies": ["regime_rebalance"]})
+    _enable_target_weight_policy(data)
+    data["strategies"]["regime_rebalance"]["target_weight_policy"]["market_data"][
+        "symbols"
+    ]["QQQ"] = {}
+
+    with pytest.raises(ValueError, match="QQQ requires primary_exchange"):
+        Config(**data)
+
+
+def test_target_weight_policy_rejects_target_missing_from_portfolio() -> None:
+    data = _base_config({"strategies": ["regime_rebalance"]})
+    _enable_target_weight_policy(data)
+    policy = data["strategies"]["regime_rebalance"]["target_weight_policy"]
+    policy["symbols"] = {
+        "ZZZ": {
+            "min_multiplier": 0.8,
+            "max_multiplier": 1.1,
+            "clamp_to_volatility_bounds": False,
+        }
+    }
+    data["strategies"]["regime_rebalance"]["symbols"] = ["AAA", "ZZZ"]
+
+    with pytest.raises(ValueError, match="must be in portfolio.symbols: ZZZ"):
+        Config(**data)
+
+
+def test_target_weight_policy_rejects_zero_weight_target() -> None:
+    data = _base_config({"strategies": ["regime_rebalance"]})
+    data["portfolio"]["symbols"] = {
+        "AAA": {"weight": 0.0},
+        "BBB": {"weight": 1.0},
+    }
+    _enable_target_weight_policy(data)
+
+    with pytest.raises(ValueError, match="must have positive configured weights: AAA"):
+        Config(**data)
+
+
+def _enable_tail_harvest_decision(data: dict[str, Any]) -> None:
+    data["runtime"]["external_decisions"] = {
+        "providers": {
+            "tail_harvest": {
+                "command": ["/opt/tail-policy/bin/decide"],
+                "timeout_seconds": 5,
+            }
+        }
+    }
+    data["strategies"]["regime_rebalance"] = {
+        "enabled": True,
+        "symbols": ["AAA"],
+    }
+    data["strategies"]["tail_hedge"] = {
+        "enabled": True,
+        "targets": [_tail_target()],
+        "harvest_decision": {
+            "enabled": True,
+            "provider": "tail_harvest",
+            "on_error": "skip",
+            "market_data": {
+                "lookback_days": 100,
+                "symbols": {"QQQ": {"primary_exchange": "NASDAQ"}},
+            },
+        },
+    }
+
+
+def test_tail_harvest_decision_accepts_named_provider_and_market_data() -> None:
+    data = _base_config({"strategies": ["regime_rebalance", "tail_hedge"]})
+    _enable_tail_harvest_decision(data)
+
+    config = Config(**data)
+    policy = config.strategies.tail_hedge.harvest_decision
+
+    assert policy.provider == "tail_harvest"
+    assert policy.on_error == "skip"
+    assert policy.market_data.include_strategy_symbols is True
+    assert policy.market_data.lookback_days == 100
+    assert policy.market_data.symbols["QQQ"].primary_exchange == "NASDAQ"
+
+
+def test_tail_harvest_decision_rejects_unknown_provider() -> None:
+    data = _base_config({"strategies": ["regime_rebalance", "tail_hedge"]})
+    _enable_tail_harvest_decision(data)
+    data["strategies"]["tail_hedge"]["harvest_decision"]["provider"] = "missing"
+
+    with pytest.raises(ValueError, match="provider must exist"):
+        Config(**data)
+
+
+def test_tail_harvest_decision_requires_tail_hedge_strategy() -> None:
+    data = _base_config({"strategies": ["regime_rebalance"]})
+    _enable_tail_harvest_decision(data)
+    data["strategies"]["tail_hedge"]["enabled"] = False
+
+    with pytest.raises(ValueError, match="requires strategies.tail_hedge.enabled"):
+        Config(**data)
+
+
+def test_tail_harvest_decision_requires_exchange_for_reference_symbol() -> None:
+    data = _base_config({"strategies": ["regime_rebalance", "tail_hedge"]})
+    _enable_tail_harvest_decision(data)
+    data["strategies"]["tail_hedge"]["harvest_decision"]["market_data"]["symbols"][
+        "QQQ"
+    ] = {}
+
+    with pytest.raises(ValueError, match="QQQ requires primary_exchange"):
+        Config(**data)
 
 
 def test_portfolio_configured_weights_must_sum_to_100() -> None:
