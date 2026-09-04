@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from thetagang.config_models import TailHarvestDecisionConfig, TailHedgeConfig
 from thetagang.external_decisions import (
@@ -175,7 +175,7 @@ class TailHarvestDecisionRequest(ExternalDecisionRequestEnvelope):
 class TailHarvestDecisionOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    harvest: bool
+    harvest: bool = Field(strict=True)
     reason: str | None = None
 
 
@@ -240,10 +240,6 @@ def validate_tail_harvest_response(
         now=now,
         decision_name="tail harvest decision",
     )
-    if type(response.output.get("harvest")) is not bool:
-        raise ExternalDecisionError(
-            "tail harvest decision returned an invalid harvest value"
-        )
     try:
         return TailHarvestDecisionOutput.model_validate(response.output)
     except ValueError as exc:

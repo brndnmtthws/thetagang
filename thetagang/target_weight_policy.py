@@ -145,7 +145,7 @@ class TargetWeightDecisionRequest(ExternalDecisionRequestEnvelope):
 class TargetWeightMultiplier(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    multiplier: float = Field(..., ge=0.0)
+    multiplier: float = Field(..., ge=0.0, strict=True)
     reason: str | None = None
 
 
@@ -176,16 +176,6 @@ def validate_target_weight_response(
         decision_name="target weight policy",
     )
 
-    raw_adjustments = response.output.get("adjustments")
-    if isinstance(raw_adjustments, dict):
-        for raw_adjustment in raw_adjustments.values():
-            if not isinstance(raw_adjustment, dict):
-                continue
-            multiplier = raw_adjustment.get("multiplier")
-            if isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)):
-                raise ExternalDecisionError(
-                    "target weight policy returned invalid adjustments"
-                )
     try:
         output = TargetWeightDecisionOutput.model_validate(response.output)
     except ValueError as exc:
@@ -211,10 +201,6 @@ def validate_target_weight_response(
     for symbol, adjustment in output.adjustments.items():
         multiplier = adjustment.multiplier
         limits = policy.symbols[symbol]
-        if not math.isfinite(multiplier):
-            raise ExternalDecisionError(
-                f"target weight policy multiplier for {symbol} is not finite"
-            )
         if multiplier < limits.min_multiplier or multiplier > limits.max_multiplier:
             raise ExternalDecisionError(
                 f"target weight policy multiplier for {symbol} is outside "
@@ -224,7 +210,7 @@ def validate_target_weight_response(
 
 
 def target_weight_policy_total_limit(
-    effective_weights: dict[str, float], policy: Any
+    effective_weights: dict[str, float], policy: TargetWeightPolicyConfig
 ) -> float:
     return max(sum(effective_weights.values()), policy.max_total_weight or 1.0)
 
@@ -287,34 +273,16 @@ def build_target_weight_symbol_input(
     volatility_weight = getattr(symbol_config, "volatility_weight", None)
     volatility_config = None
     if volatility_weight is not None:
-        volatility_config = {
-            "enabled": bool(volatility_weight.enabled),
-            "target_vol": float(volatility_weight.target_vol),
-            "lookback_days": int(volatility_weight.lookback_days),
-            "min_weight": float(volatility_weight.min_weight),
-            "max_weight": float(volatility_weight.max_weight),
-            "rebalance_band": float(volatility_weight.rebalance_band),
-            "smoothing_factor": float(volatility_weight.smoothing_factor),
-            "increase_smoothing_factor": (
-                float(volatility_weight.increase_smoothing_factor)
-                if volatility_weight.increase_smoothing_factor is not None
-                else None
-            ),
-            "decrease_smoothing_factor": (
-                float(volatility_weight.decrease_smoothing_factor)
-                if volatility_weight.decrease_smoothing_factor is not None
-                else None
-            ),
-        }
+        volatility_config = VolatilityWeightInput.model_validate(
+            volatility_weight, from_attributes=True
+        ).model_dump(mode="json")
 
     absolute_trend = getattr(symbol_config, "absolute_trend", None)
     absolute_trend_config = None
     if absolute_trend is not None:
-        absolute_trend_config = {
-            "enabled": bool(absolute_trend.enabled),
-            "lookback_days": int(absolute_trend.lookback_days),
-            "risk_off_multiplier": float(absolute_trend.risk_off_multiplier),
-        }
+        absolute_trend_config = AbsoluteTrendInput.model_validate(
+            absolute_trend, from_attributes=True
+        ).model_dump(mode="json")
 
     rebalance_policy_fn = getattr(config, "regime_rebalance_policy", None)
     rebalance_policy = (
@@ -428,16 +396,9 @@ def build_target_weight_request(
                 "deficit_rail_start": float(regime_rebalance.deficit_rail_start),
                 "deficit_rail_stop": float(regime_rebalance.deficit_rail_stop),
                 "ratio_gate": (
-                    {
-                        "enabled": bool(ratio_gate.enabled),
-                        "anchor": str(ratio_gate.anchor),
-                        "drift_max": float(ratio_gate.drift_max),
-                        "vol_min": (
-                            float(ratio_gate.vol_min)
-                            if ratio_gate.vol_min is not None
-                            else None
-                        ),
-                    }
+                    RatioGateInput.model_validate(
+                        ratio_gate, from_attributes=True
+                    ).model_dump(mode="json")
                     if ratio_gate is not None
                     else None
                 ),
@@ -468,11 +429,9 @@ def build_target_weight_request(
                 for symbol in symbols
             },
             "adjustment_constraints": {
-                symbol: {
-                    "min_multiplier": limits.min_multiplier,
-                    "max_multiplier": limits.max_multiplier,
-                    "clamp_to_volatility_bounds": (limits.clamp_to_volatility_bounds),
-                }
+                symbol: MultiplierConstraints.model_validate(
+                    limits, from_attributes=True
+                ).model_dump(mode="json")
                 for symbol, limits in policy.symbols.items()
             },
             "total_weight_constraint": {

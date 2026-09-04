@@ -25,12 +25,17 @@ class _ResponseTooLargeError(RuntimeError):
     pass
 
 
-class ExternalDecisionRequestEnvelope(BaseModel):
+class ExternalDecisionEnvelope(BaseModel):
+    """Protocol identity shared by requests and responses."""
+
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = EXTERNAL_DECISION_SCHEMA_VERSION
     request_id: str = Field(..., min_length=1)
     decision_type: str = Field(..., min_length=1)
+
+
+class ExternalDecisionRequestEnvelope(ExternalDecisionEnvelope):
     generated_at: datetime
     dry_run: bool
 
@@ -52,10 +57,8 @@ class DecisionInput(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
-class ExternalDecisionMarketData(BaseModel):
+class ExternalDecisionMarketData(DecisionInput):
     """Aligned completed-session data shared by market-based decisions."""
-
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     source: str = "ibkr"
     timeframe: str
@@ -85,12 +88,7 @@ class ExternalDecisionProducer(BaseModel):
     version: str = Field(..., min_length=1)
 
 
-class ExternalDecisionResponseEnvelope(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal[1] = EXTERNAL_DECISION_SCHEMA_VERSION
-    request_id: str = Field(..., min_length=1)
-    decision_type: str = Field(..., min_length=1)
+class ExternalDecisionResponseEnvelope(ExternalDecisionEnvelope):
     # Decision-specific validators may require a completed market session, but
     # the generic transport also supports decisions that are not market-based.
     as_of_session: date | None = None
@@ -353,7 +351,7 @@ class ExternalDecisionProviders:
 
 
 def validate_response_identity(
-    response: ExternalDecisionResponse, request: ExternalDecisionRequest
+    response: ExternalDecisionResponseEnvelope, request: ExternalDecisionRequestEnvelope
 ) -> None:
     if response.request_id != request.request_id:
         raise ExternalDecisionError("external decision response request_id mismatch")

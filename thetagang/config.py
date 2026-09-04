@@ -23,6 +23,7 @@ from thetagang.config_models import (
     ExternalDecisionsConfig,
     IBAsyncConfig,
     IBCConfig,
+    MarketDecisionConfig,
     OptionChainsConfig,
     OrdersConfig,
     RegimeRebalanceBaseEnum,
@@ -459,7 +460,7 @@ class Config(BaseModel, DisplayMixin):
     portfolio: PortfolioConfig
     strategies: StrategiesConfig
 
-    def _validate_external_market_decision(self, policy: Any) -> None:
+    def _validate_external_market_decision(self, policy: MarketDecisionConfig) -> None:
         decision_name = policy.decision_name
         if policy.provider not in self.runtime.external_decisions.providers:
             raise ValueError(

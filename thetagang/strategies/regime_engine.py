@@ -26,6 +26,11 @@ from thetagang.accounting import (
     state_owned_option_values,
 )
 from thetagang.config import Config
+from thetagang.config_models import (
+    DecisionMarketDataConfig,
+    TailHarvestDecisionConfig,
+    TargetWeightPolicyConfig,
+)
 from thetagang.db import DataStore
 from thetagang.external_decisions import (
     ExternalDecisionError,
@@ -53,6 +58,8 @@ from thetagang.strategies.tail_hedge_state import (
     parse_state_datetime,
 )
 from thetagang.tail_harvest_decision import (
+    HarvestCandidateInput,
+    TailProgramInput,
     build_tail_harvest_request,
     validate_tail_harvest_response,
 )
@@ -1036,22 +1043,9 @@ class RegimeRebalanceEngine:
                     "unrecovered_cost": cohort.net_charge,
                     "host_candidate": candidate is not None,
                     "candidate": (
-                        {
-                            "quantity": candidate.quantity,
-                            "gross_proceeds_per_contract": (
-                                candidate.gross_proceeds_per_contract
-                            ),
-                            "estimated_fee_per_contract": (
-                                candidate.estimated_fee_per_contract
-                            ),
-                            "net_proceeds_per_contract": (
-                                candidate.net_proceeds_per_contract
-                            ),
-                            "cost_basis_per_contract": (
-                                candidate.cost_basis_per_contract
-                            ),
-                            "profit_multiple": candidate.profit_multiple,
-                        }
+                        HarvestCandidateInput.model_validate(
+                            candidate, from_attributes=True
+                        ).model_dump(mode="json")
                         if candidate is not None
                         else None
                     ),
@@ -1110,14 +1104,12 @@ class RegimeRebalanceEngine:
             market_price = market_prices.get(symbol)
             current_value = self._finite_float_or_none(summary.get("current_value"))
             if current_value is None:
-                current_value = sum(
-                    self._finite_float_or_none(position.marketValue) or 0.0
-                    for position in stock_positions
-                )
+                current_value = reported_market_value
             current_shares = self._finite_float_or_none(summary.get("current_shares"))
             if current_shares is None:
                 current_shares = live_shares
             symbol_config = self.config.portfolio.symbols[symbol]
+            approved_buy_shares = rebalance_shares.get(symbol, 0)
             result[symbol] = {
                 "configured_weight": float(symbol_config.weight),
                 "primary_exchange": str(symbol_config.primary_exchange),
@@ -1143,27 +1135,15 @@ class RegimeRebalanceEngine:
                 "target_shares": self._finite_float_or_none(
                     summary.get("target_shares")
                 ),
-                "approved_buy_shares": rebalance_shares.get(symbol, 0),
+                "approved_buy_shares": approved_buy_shares,
                 "approved_buy_value": (
-                    rebalance_shares.get(symbol, 0) * market_price
+                    approved_buy_shares * market_price
                     if market_price is not None
                     else None
                 ),
-                "tail_program": {
-                    "budget_weight": target.budget_weight,
-                    "entries_per_year": target.entries_per_year,
-                    "entry_gate": target.entry_gate,
-                    "entry_vix_max": target.entry_vix_max,
-                    "target_dte": target.target_dte,
-                    "min_dte": target.min_dte,
-                    "max_dte": target.max_dte,
-                    "exit_dte": target.exit_dte,
-                    "minimum_open_interest": target.minimum_open_interest,
-                    "minimum_bid": target.minimum_bid,
-                    "max_bid_ask_ratio": target.max_bid_ask_ratio,
-                    "max_premium_ratio": target.max_premium_ratio,
-                    "catastrophe_drawdowns": target.catastrophe_drawdowns,
-                },
+                "tail_program": TailProgramInput.model_validate(
+                    target, from_attributes=True
+                ).model_dump(mode="json"),
                 "target_modifiers": {
                     "volatility_weight": summary.get("volatility_weight"),
                     "target_weight_policy": summary.get("target_weight_policy"),
@@ -1175,7 +1155,7 @@ class RegimeRebalanceEngine:
     def _tail_harvest_decision_fallback(
         self,
         *,
-        policy: Any,
+        policy: TailHarvestDecisionConfig,
         error: str,
     ) -> tuple[bool, dict[str, Any]]:
         if policy.on_error == "abort":
@@ -2305,7 +2285,7 @@ class RegimeRebalanceEngine:
     async def _load_external_market_data(
         self,
         *,
-        market_data_config: Any,
+        market_data_config: DecisionMarketDataConfig,
         strategy_symbols: Iterable[str],
         symbol_configs: dict[str, Any],
         decision_name: str,
@@ -2345,20 +2325,17 @@ class RegimeRebalanceEngine:
                 history_exchange_overrides[symbol] = configured_exchange
 
         lookback_days = int(market_data_config.lookback_days)
-        if history_cache is None:
-            history_dates, aligned_closes = await self._get_regime_aligned_closes(
-                history_symbols,
-                lookback_days,
-                0,
-                primary_exchanges=history_exchange_overrides or None,
-            )
-        else:
-            history_dates, aligned_closes = await history_cache.get(
-                history_symbols,
-                lookback_days,
-                0,
-                primary_exchanges=history_exchange_overrides or None,
-            )
+        fetch_history: AlignedClosesFetcher = (
+            self._get_regime_aligned_closes
+            if history_cache is None
+            else history_cache.get
+        )
+        history_dates, aligned_closes = await fetch_history(
+            history_symbols,
+            lookback_days,
+            0,
+            primary_exchanges=history_exchange_overrides or None,
+        )
         return ExternalDecisionMarketData(
             timeframe=REGIME_HISTORY_TIMEFRAME,
             sessions=history_dates,
@@ -2370,7 +2347,7 @@ class RegimeRebalanceEngine:
         self,
         effective_weights: dict[str, float],
         *,
-        policy: Any,
+        policy: TargetWeightPolicyConfig,
         error: str,
     ) -> tuple[dict[str, float], dict[str, dict[str, Any]]]:
         if policy.on_error == "abort":
@@ -2510,16 +2487,16 @@ class RegimeRebalanceEngine:
                 },
                 eps=regime_rebalance.eps,
             )
+            response_metadata = external_decision_response_metadata(
+                outcome.response, provider=policy.provider
+            )
             details: dict[str, dict[str, Any]] = {
                 symbol: {
                     "status": "applied",
                     **weight_details[symbol],
                     "multiplier": adjustment.multiplier,
                     "reason": adjustment.reason,
-                    **external_decision_response_metadata(
-                        outcome.response,
-                        provider=policy.provider,
-                    ),
+                    **response_metadata,
                     "risk_ready": True,
                 }
                 for symbol, adjustment in outcome.adjustments.items()

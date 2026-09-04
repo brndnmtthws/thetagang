@@ -39,15 +39,18 @@ def _response(
     )
 
 
-def test_target_weight_response_accepts_current_bounded_signal() -> None:
+@pytest.mark.parametrize("multiplier", [1, 1.07])
+def test_target_weight_response_accepts_current_bounded_signal(
+    multiplier: float,
+) -> None:
     adjustments = validate_target_weight_response(
-        _response(),
+        _response(multiplier=multiplier),
         policy=_policy(),
         history_dates=[date(2026, 9, 1), date(2026, 9, 2)],
         now=datetime(2026, 9, 3, tzinfo=UTC),
     )
 
-    assert adjustments["TQQQ"].multiplier == pytest.approx(1.07)
+    assert adjustments["TQQQ"].multiplier == pytest.approx(multiplier)
 
 
 @pytest.mark.parametrize("multiplier", [0.79, 1.11, True, "1.0", float("nan")])

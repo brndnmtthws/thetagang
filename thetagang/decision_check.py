@@ -78,10 +78,7 @@ def check_response(
 ) -> dict[str, Any]:
     """Use production validators and target allocation math against saved context."""
 
-    validate_response_identity(
-        response,
-        ExternalDecisionRequest.model_validate(request.model_dump(mode="json")),
-    )
+    validate_response_identity(response, request)
     result: dict[str, Any] = {
         "valid": True,
         "decision_type": request.decision_type,

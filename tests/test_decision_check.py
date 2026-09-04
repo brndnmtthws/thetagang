@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from thetagang.decision_check import (
     CONTRACT_MODELS,
@@ -26,6 +26,23 @@ def test_published_fixtures_and_schemas_match_contract(name: str) -> None:
     filename = f"{name}.v1.schema.json"
     checked_in = ROOT / "docs" / "external-decisions" / "schemas" / filename
     assert json.loads(checked_in.read_text()) == published_schemas()[filename]
+
+
+@pytest.mark.parametrize(
+    ("decision", "output"),
+    [
+        ("regime_target_weights", {"adjustments": {"TQQQ": {"multiplier": value}}})
+        for value in (True, "1.0", float("nan"), float("inf"))
+    ]
+    + [("tail_hedge_harvest", {"harvest": value}) for value in (1, 0, "true", None)],
+)
+def test_response_contract_rejects_coerced_decisions(
+    decision: str, output: dict[str, Any]
+) -> None:
+    response = json.loads((EXAMPLES / f"{decision}.response.json").read_text())
+    response["output"] = output
+    with pytest.raises(ValueError):
+        CONTRACT_MODELS[f"{decision}.response"].model_validate(response)
 
 
 @pytest.mark.parametrize("decision", DECISIONS)
@@ -60,7 +77,7 @@ def replay(
     request: dict[str, Any] | None = None,
     response: dict[str, Any] | None = None,
     options: tuple[str, ...] = (),
-) -> Any:
+) -> Result:
     request_path = EXAMPLES / f"{decision}.request.json"
     if request is not None:
         request_path = tmp_path / "request.json"

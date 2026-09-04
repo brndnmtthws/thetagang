@@ -44,7 +44,7 @@ def test_tail_harvest_response_accepts_boolean_decision(harvest: bool) -> None:
 def test_tail_harvest_response_rejects_non_boolean_decision(
     harvest: object,
 ) -> None:
-    with pytest.raises(ExternalDecisionError, match="invalid harvest"):
+    with pytest.raises(ExternalDecisionError, match="invalid output"):
         validate_tail_harvest_response(
             _response(harvest=harvest),
             policy=_policy(),
