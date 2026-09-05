@@ -160,6 +160,16 @@ harvest in a flat or recovering market. A later sale requires the remaining
 sleeve to be above 5% again and the same-symbol hard-underweight buy to remain
 approved. No crash episode, trough, profit-tier, or recovery state is needed.
 
+An optional external decision provider can add an approval gate after these
+conditions are satisfied. It receives the current state-owned hedge cohorts,
+broker position values and P&L, host-selected put limit-price quotes,
+host-computed profitable candidates, underlying allocation and sizing context,
+and aligned completed-session closes for the protected assets and configured
+reference symbols. Its response is only `harvest = true` or `false`: it cannot
+create an opportunity, select a contract, choose a quantity or limit price, or
+submit an order. See
+[External decision providers](external-decisions.md) for the protocol.
+
 Harvesting uses the exact same `weight_base` calculation as regime rebalancing.
 With the default `net_liq_ex_options`, options on active regime symbols and all
 state-owned tail puts are removed from broker `NetLiquidation`. Unrelated
@@ -178,6 +188,12 @@ preliminary size of the stock order. After option quotes return, ThetaGang
 rechecks both the live sleeve and the latest available NLV and rebuilds the
 regime base before committing a sale, so the two sides of the ratio are not
 intentionally taken from different market moments.
+
+When the external gate is enabled and approves a harvest, ThetaGang quotes the
+puts again and repeats the ownership, conflict, profitability, allocation-band,
+and sizing checks after the provider returns. A stale approval therefore cannot
+bypass a material state or price change while history and policy evaluation are
+in flight.
 
 After a fill, excluded put value has become included cash, so the refreshed
 regime base can increase. The target weight is therefore a sale-sizing reference
@@ -274,6 +290,20 @@ annual_budget = 0.005
 harvest_trigger_weight = 0.05
 harvest_target_weight = 0.03
 
+# Optional when regime_rebalance is also configured and running:
+# [strategies.tail_hedge.harvest_decision]
+# enabled = true
+# provider = "tail_harvest"
+# on_error = "baseline" # baseline | skip | abort
+# max_signal_age_sessions = 0
+#
+# [strategies.tail_hedge.harvest_decision.market_data]
+# lookback_days = 252
+# include_strategy_symbols = true
+#
+# [strategies.tail_hedge.harvest_decision.market_data.symbols.SPY]
+# primary_exchange = "ARCA"
+
 [[strategies.tail_hedge.targets]]
 symbol = "QQQ"
 budget_weight = 1.0
@@ -290,6 +320,12 @@ max_bid_ask_ratio = 0.50
 max_premium_ratio = 0.05
 catastrophe_drawdowns = [0.40, 0.50, 0.60]
 ```
+
+The named provider must be configured under
+`runtime.external_decisions.providers`. `on_error = "baseline"` keeps the
+existing harvest behavior if the provider fails, `skip` declines that harvest,
+and `abort` stops regime-rebalance planning. These are failure policies only; a
+valid `harvest = false` always vetoes the opportunity.
 
 When tail hedging is enabled, each target symbol must also appear in
 `portfolio.symbols`. Enable `regime_rebalance` and add it alongside `tail_hedge`

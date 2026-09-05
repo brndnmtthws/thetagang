@@ -137,6 +137,22 @@ enabled = true
 # Path to the SQLite file, relative to the config file location unless absolute.
 path = "data/thetagang.db"
 
+# External decision providers are named runtime transports that can be reused by
+# narrowly scoped strategy decision points. Commands receive one JSON request on
+# stdin and must emit one JSON response on stdout. They are executed directly,
+# without a shell.
+#
+# [runtime.external_decisions.providers.tqqq_sizing]
+# transport = "command"
+# command = ["/opt/tqqq-policy/.venv/bin/python", "-m", "tqqq_policy"]
+# timeout_seconds = 10
+# max_response_bytes = 1048576
+# working_directory = "/opt/tqqq-policy"
+#
+# [runtime.external_decisions.providers.tail_harvest]
+# command = ["/opt/tail-policy/.venv/bin/python", "-m", "tail_policy"]
+# timeout_seconds = 10
+
 # Optional SQLAlchemy URL override, e.g. "sqlite:////abs/path/thetagang.db".
 # url = "sqlite:////path/to/thetagang.db"
 
@@ -674,6 +690,41 @@ daily_stddev_window = "30 D"
 # deficit_rail_start = 0.06  # deficit that triggers safety rail (fraction of base)
 # deficit_rail_stop = 0.03  # hysteresis stop once within this band (fraction of base)
 # order_history_lookback_days = 30  # look back this many calendar days for fills
+#
+# # Optional external multiplier applied after volatility weighting and before
+# # absolute trend. The provider receives aligned completed-session closes for
+# # this feature universe plus portfolio, account, target, and constraint data.
+# [strategies.regime_rebalance.target_weight_policy]
+# enabled = true
+# provider = "tqqq_sizing"
+# on_error = "baseline" # baseline | abort
+# max_signal_age_sessions = 0
+# # max_total_weight = 1.10 # explicit authorization for policy-created leverage
+#
+# [strategies.regime_rebalance.target_weight_policy.symbols.TQQQ]
+# min_multiplier = 0.50
+# max_multiplier = 1.20
+# min_target_weight = 0.15 # optional fraction of the configured regime capital base
+# max_target_weight = 0.55 # applied after multiplication, before absolute trend
+# clamp_to_volatility_bounds = false # true intersects these with volatility bounds
+#
+# [strategies.regime_rebalance.target_weight_policy.symbols.IBIT]
+# min_multiplier = 0.50
+# max_multiplier = 1.20
+# min_target_weight = 0.10
+# max_target_weight = 0.36
+# clamp_to_volatility_bounds = false
+#
+# [strategies.regime_rebalance.target_weight_policy.market_data]
+# lookback_days = 252
+# include_strategy_symbols = true
+#
+# # Feature-only symbols that are absent from portfolio.symbols need an explicit
+# # primary exchange for IBKR contract resolution.
+# [strategies.regime_rebalance.target_weight_policy.market_data.symbols.QQQ]
+# primary_exchange = "NASDAQ"
+# [strategies.regime_rebalance.target_weight_policy.market_data.symbols.IBIT]
+# primary_exchange = "NASDAQ"
 # Configured portfolio symbol weights must sum to 100%. Effective volatility-
 # adjusted weights are absolute targets and are not renormalized: a total below
 # 100% remains outside the managed targets as cash (or the configured cash fund),
@@ -817,6 +868,22 @@ ignore_dte = 0
 # annual_budget = 0.005  # estimated all-in cost over 365 days / net liquidation
 # harvest_trigger_weight = 0.05  # trim only above 5% of the regime base
 # harvest_target_weight = 0.03  # size sales toward 3% of the regime base
+#
+# # Optional external approval gate for an otherwise eligible harvest. The
+# # provider cannot select contracts, quantities, prices, or create a harvest.
+# [strategies.tail_hedge.harvest_decision]
+# enabled = true
+# provider = "tail_harvest"
+# on_error = "baseline"  # baseline | skip | abort
+# max_signal_age_sessions = 0
+#
+# [strategies.tail_hedge.harvest_decision.market_data]
+# lookback_days = 252
+# include_strategy_symbols = true
+#
+# # Feature-only reference symbols require a primary exchange.
+# [strategies.tail_hedge.harvest_decision.market_data.symbols.SPY]
+# primary_exchange = "ARCA"
 #
 # [[strategies.tail_hedge.targets]]
 # symbol = "QQQ"

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "example-tail_hedge_harvest-v1",
+  "decision_type": "tail_hedge_harvest",
+  "as_of_session": "2026-09-03",
+  "producer": {
+    "name": "reference-provider",
+    "version": "1"
+  },
+  "output": {
+    "harvest": false,
+    "reason": "reference-veto"
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "ExternalDecisionProducer": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "ExternalDecisionProducer",
+      "type": "object"
+    },
+    "TargetWeightDecisionOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "adjustments": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TargetWeightMultiplier"
+          },
+          "title": "Adjustments",
+          "type": "object"
+        }
+      },
+      "required": [
+        "adjustments"
+      ],
+      "title": "TargetWeightDecisionOutput",
+      "type": "object"
+    },
+    "TargetWeightMultiplier": {
+      "additionalProperties": false,
+      "properties": {
+        "multiplier": {
+          "minimum": 0.0,
+          "title": "Multiplier",
+          "type": "number"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "multiplier"
+      ],
+      "title": "TargetWeightMultiplier",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "as_of_session": {
+      "format": "date",
+      "title": "As Of Session",
+      "type": "string"
+    },
+    "decision_type": {
+      "const": "regime_target_weights",
+      "title": "Decision Type",
+      "type": "string"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expires At"
+    },
+    "output": {
+      "$ref": "#/$defs/TargetWeightDecisionOutput"
+    },
+    "producer": {
+      "$ref": "#/$defs/ExternalDecisionProducer"
+    },
+    "request_id": {
+      "minLength": 1,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "request_id",
+    "decision_type",
+    "as_of_session",
+    "producer",
+    "output"
+  ],
+  "title": "TargetWeightDecisionResponse",
+  "type": "object"
+}

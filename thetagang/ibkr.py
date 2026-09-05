@@ -104,6 +104,8 @@ class IBKR:
         self,
         contract: Contract,
         duration: str,
+        *,
+        cache_symbol: str | None = None,
     ) -> BarDataList:
         bars = await self.ib.reqHistoricalDataAsync(
             contract,
@@ -114,7 +116,9 @@ class IBKR:
             True,
         )
         if self.data_store:
-            self.data_store.record_historical_bars(contract.symbol, "1 day", bars)
+            self.data_store.record_historical_bars(
+                cache_symbol or contract.symbol, "1 day", bars
+            )
         return bars
 
     async def request_executions(

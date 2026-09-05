@@ -1,0 +1,694 @@
+{
+  "$defs": {
+    "AbsoluteTrendInput": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "lookback_days": {
+          "title": "Lookback Days",
+          "type": "integer"
+        },
+        "risk_off_multiplier": {
+          "title": "Risk Off Multiplier",
+          "type": "number"
+        }
+      },
+      "required": [
+        "enabled",
+        "lookback_days",
+        "risk_off_multiplier"
+      ],
+      "title": "AbsoluteTrendInput",
+      "type": "object"
+    },
+    "ExecutionConstraints": {
+      "additionalProperties": false,
+      "properties": {
+        "min_threshold_amount": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Min Threshold Amount"
+        },
+        "min_threshold_percent": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Min Threshold Percent"
+        },
+        "min_threshold_percent_relative": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Min Threshold Percent Relative"
+        },
+        "min_threshold_shares": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Min Threshold Shares"
+        },
+        "rebalance_mode": {
+          "enum": [
+            "both",
+            "buy_only",
+            "sell_only",
+            "off"
+          ],
+          "title": "Rebalance Mode",
+          "type": "string"
+        },
+        "trading_allowed": {
+          "title": "Trading Allowed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "trading_allowed",
+        "rebalance_mode",
+        "min_threshold_shares",
+        "min_threshold_amount",
+        "min_threshold_percent",
+        "min_threshold_percent_relative"
+      ],
+      "title": "ExecutionConstraints",
+      "type": "object"
+    },
+    "ExternalDecisionMarketData": {
+      "additionalProperties": false,
+      "description": "Aligned completed-session data shared by market-based decisions.",
+      "properties": {
+        "closes": {
+          "additionalProperties": {
+            "items": {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "minProperties": 1,
+          "title": "Closes",
+          "type": "object"
+        },
+        "primary_exchanges": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "minProperties": 1,
+          "title": "Primary Exchanges",
+          "type": "object"
+        },
+        "regular_trading_hours_only": {
+          "default": true,
+          "title": "Regular Trading Hours Only",
+          "type": "boolean"
+        },
+        "sessions": {
+          "description": "Unique sessions ordered oldest to newest.",
+          "items": {
+            "format": "date",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Sessions",
+          "type": "array"
+        },
+        "source": {
+          "default": "ibkr",
+          "title": "Source",
+          "type": "string"
+        },
+        "timeframe": {
+          "title": "Timeframe",
+          "type": "string"
+        },
+        "what_to_show": {
+          "default": "TRADES",
+          "title": "What To Show",
+          "type": "string"
+        }
+      },
+      "required": [
+        "timeframe",
+        "sessions",
+        "closes",
+        "primary_exchanges"
+      ],
+      "title": "ExternalDecisionMarketData",
+      "type": "object"
+    },
+    "MultiplierConstraints": {
+      "additionalProperties": false,
+      "properties": {
+        "clamp_to_volatility_bounds": {
+          "title": "Clamp To Volatility Bounds",
+          "type": "boolean"
+        },
+        "max_multiplier": {
+          "title": "Max Multiplier",
+          "type": "number"
+        },
+        "max_target_weight": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional ceiling as a fraction of the regime capital base, before absolute trend.",
+          "title": "Max Target Weight"
+        },
+        "min_multiplier": {
+          "title": "Min Multiplier",
+          "type": "number"
+        },
+        "min_target_weight": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional floor as a fraction of the regime capital base, before absolute trend.",
+          "title": "Min Target Weight"
+        }
+      },
+      "required": [
+        "min_multiplier",
+        "max_multiplier",
+        "clamp_to_volatility_bounds"
+      ],
+      "title": "MultiplierConstraints",
+      "type": "object"
+    },
+    "RatioGateInput": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "title": "Anchor",
+          "type": "string"
+        },
+        "drift_max": {
+          "title": "Drift Max",
+          "type": "number"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "vol_min": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Vol Min"
+        }
+      },
+      "required": [
+        "enabled",
+        "anchor",
+        "drift_max",
+        "vol_min"
+      ],
+      "title": "RatioGateInput",
+      "type": "object"
+    },
+    "TargetWeightAccountInput": {
+      "additionalProperties": false,
+      "properties": {
+        "excluded_option_value": {
+          "title": "Excluded Option Value",
+          "type": "number"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "Available IBKR metrics; missing metrics are omitted, never zero-filled.",
+          "title": "Metrics",
+          "type": "object"
+        },
+        "rebalance_base_value": {
+          "title": "Rebalance Base Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "metrics",
+        "rebalance_base_value",
+        "excluded_option_value"
+      ],
+      "title": "TargetWeightAccountInput",
+      "type": "object"
+    },
+    "TargetWeightDecisionInput": {
+      "additionalProperties": false,
+      "description": "USD values and fractional weights for the regime target multiplier hook.",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/TargetWeightAccountInput"
+        },
+        "adjustment_constraints": {
+          "additionalProperties": {
+            "$ref": "#/$defs/MultiplierConstraints"
+          },
+          "title": "Adjustment Constraints",
+          "type": "object"
+        },
+        "market_data": {
+          "$ref": "#/$defs/ExternalDecisionMarketData"
+        },
+        "portfolio": {
+          "$ref": "#/$defs/TargetWeightPortfolioInput"
+        },
+        "strategy": {
+          "$ref": "#/$defs/TargetWeightStrategyInput"
+        },
+        "symbols": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TargetWeightSymbolInput"
+          },
+          "title": "Symbols",
+          "type": "object"
+        },
+        "total_weight_constraint": {
+          "$ref": "#/$defs/TotalWeightConstraint"
+        }
+      },
+      "required": [
+        "strategy",
+        "account",
+        "portfolio",
+        "symbols",
+        "adjustment_constraints",
+        "total_weight_constraint",
+        "market_data"
+      ],
+      "title": "TargetWeightDecisionInput",
+      "type": "object"
+    },
+    "TargetWeightPortfolioInput": {
+      "additionalProperties": false,
+      "properties": {
+        "configured_total_weight": {
+          "title": "Configured Total Weight",
+          "type": "number"
+        },
+        "post_volatility_total_weight": {
+          "title": "Post Volatility Total Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "configured_total_weight",
+        "post_volatility_total_weight"
+      ],
+      "title": "TargetWeightPortfolioInput",
+      "type": "object"
+    },
+    "TargetWeightStrategyInput": {
+      "additionalProperties": false,
+      "properties": {
+        "choppiness_min": {
+          "title": "Choppiness Min",
+          "type": "number"
+        },
+        "cooldown_days": {
+          "title": "Cooldown Days",
+          "type": "integer"
+        },
+        "deficit_rail_start": {
+          "title": "Deficit Rail Start",
+          "type": "number"
+        },
+        "deficit_rail_stop": {
+          "title": "Deficit Rail Stop",
+          "type": "number"
+        },
+        "efficiency_max": {
+          "title": "Efficiency Max",
+          "type": "number"
+        },
+        "flow_imbalance_tau": {
+          "title": "Flow Imbalance Tau",
+          "type": "number"
+        },
+        "flow_trade_min": {
+          "title": "Flow Trade Min",
+          "type": "number"
+        },
+        "flow_trade_stop": {
+          "title": "Flow Trade Stop",
+          "type": "number"
+        },
+        "hard_band": {
+          "title": "Hard Band",
+          "type": "number"
+        },
+        "hard_band_rebalance_fraction": {
+          "title": "Hard Band Rebalance Fraction",
+          "type": "number"
+        },
+        "last_rebalance_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Rebalance At"
+        },
+        "lookback_days": {
+          "title": "Lookback Days",
+          "type": "integer"
+        },
+        "margin_usage": {
+          "title": "Margin Usage",
+          "type": "number"
+        },
+        "name": {
+          "const": "regime_rebalance",
+          "title": "Name",
+          "type": "string"
+        },
+        "ratio_gate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RatioGateInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "soft_band": {
+          "title": "Soft Band",
+          "type": "number"
+        },
+        "weight_base": {
+          "enum": [
+            "net_liq",
+            "net_liq_ex_options"
+          ],
+          "title": "Weight Base",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "weight_base",
+        "margin_usage",
+        "lookback_days",
+        "soft_band",
+        "hard_band",
+        "hard_band_rebalance_fraction",
+        "cooldown_days",
+        "last_rebalance_at",
+        "choppiness_min",
+        "efficiency_max",
+        "flow_trade_min",
+        "flow_trade_stop",
+        "flow_imbalance_tau",
+        "deficit_rail_start",
+        "deficit_rail_stop",
+        "ratio_gate"
+      ],
+      "title": "TargetWeightStrategyInput",
+      "type": "object"
+    },
+    "TargetWeightSymbolInput": {
+      "additionalProperties": false,
+      "properties": {
+        "absolute_trend": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsoluteTrendInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "configured_weight": {
+          "title": "Configured Weight",
+          "type": "number"
+        },
+        "current_shares": {
+          "title": "Current Shares",
+          "type": "integer"
+        },
+        "current_value": {
+          "title": "Current Value",
+          "type": "number"
+        },
+        "current_weight": {
+          "title": "Current Weight",
+          "type": "number"
+        },
+        "execution_constraints": {
+          "$ref": "#/$defs/ExecutionConstraints"
+        },
+        "market_price": {
+          "title": "Market Price",
+          "type": "number"
+        },
+        "post_volatility_weight": {
+          "title": "Post Volatility Weight",
+          "type": "number"
+        },
+        "volatility_weight": {
+          "$ref": "#/$defs/VolatilityContext"
+        }
+      },
+      "required": [
+        "configured_weight",
+        "post_volatility_weight",
+        "current_weight",
+        "current_value",
+        "current_shares",
+        "market_price",
+        "volatility_weight",
+        "absolute_trend",
+        "execution_constraints"
+      ],
+      "title": "TargetWeightSymbolInput",
+      "type": "object"
+    },
+    "TotalWeightConstraint": {
+      "additionalProperties": false,
+      "properties": {
+        "default_prevents_additional_leverage": {
+          "title": "Default Prevents Additional Leverage",
+          "type": "boolean"
+        },
+        "effective_max_total_weight": {
+          "title": "Effective Max Total Weight",
+          "type": "number"
+        },
+        "max_total_weight": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Total Weight"
+        }
+      },
+      "required": [
+        "max_total_weight",
+        "effective_max_total_weight",
+        "default_prevents_additional_leverage"
+      ],
+      "title": "TotalWeightConstraint",
+      "type": "object"
+    },
+    "VolatilityContext": {
+      "additionalProperties": false,
+      "properties": {
+        "calculation": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Host calculation diagnostics; absent when unavailable.",
+          "title": "Calculation"
+        },
+        "config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VolatilityWeightInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "config",
+        "calculation"
+      ],
+      "title": "VolatilityContext",
+      "type": "object"
+    },
+    "VolatilityWeightInput": {
+      "additionalProperties": false,
+      "properties": {
+        "decrease_smoothing_factor": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Decrease Smoothing Factor"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "increase_smoothing_factor": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Increase Smoothing Factor"
+        },
+        "lookback_days": {
+          "title": "Lookback Days",
+          "type": "integer"
+        },
+        "max_weight": {
+          "title": "Max Weight",
+          "type": "number"
+        },
+        "min_weight": {
+          "title": "Min Weight",
+          "type": "number"
+        },
+        "rebalance_band": {
+          "title": "Rebalance Band",
+          "type": "number"
+        },
+        "smoothing_factor": {
+          "title": "Smoothing Factor",
+          "type": "number"
+        },
+        "target_vol": {
+          "title": "Target Vol",
+          "type": "number"
+        }
+      },
+      "required": [
+        "enabled",
+        "target_vol",
+        "lookback_days",
+        "min_weight",
+        "max_weight",
+        "rebalance_band",
+        "smoothing_factor",
+        "increase_smoothing_factor",
+        "decrease_smoothing_factor"
+      ],
+      "title": "VolatilityWeightInput",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "decision_type": {
+      "const": "regime_target_weights",
+      "title": "Decision Type",
+      "type": "string"
+    },
+    "dry_run": {
+      "title": "Dry Run",
+      "type": "boolean"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "input": {
+      "$ref": "#/$defs/TargetWeightDecisionInput"
+    },
+    "request_id": {
+      "minLength": 1,
+      "title": "Request Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "request_id",
+    "decision_type",
+    "generated_at",
+    "dry_run",
+    "input"
+  ],
+  "title": "TargetWeightDecisionRequest",
+  "type": "object"
+}

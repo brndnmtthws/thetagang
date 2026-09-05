@@ -4,8 +4,8 @@ import asyncio
 import math
 from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, Protocol
 
 import exchange_calendars as xcals
 import numpy as np
@@ -26,11 +26,25 @@ from thetagang.accounting import (
     state_owned_option_values,
 )
 from thetagang.config import Config
+from thetagang.config_models import (
+    DecisionMarketDataConfig,
+    TailHarvestDecisionConfig,
+    TargetWeightPolicyConfig,
+)
 from thetagang.db import DataStore
+from thetagang.external_decisions import (
+    ExternalDecisionError,
+    ExternalDecisionMarketData,
+    ExternalDecisionProviders,
+    ExternalDecisionResponse,
+    external_decision_response_metadata,
+    validate_decision_expiry,
+)
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import IBKR, TickerField
 from thetagang.strategies.runtime_services import resolve_symbol_configs
 from thetagang.strategies.tail_harvest_policy import (
+    HarvestBandDecision,
     evaluate_harvest_band,
     minimum_harvest_limit_price,
 )
@@ -38,17 +52,41 @@ from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_HARVEST_ORDER_REF_PREFIX,
     TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR,
     TailHedgeCohort,
+    TailHedgeState,
     TailHedgeStateStore,
     build_tail_reduction_order_ref,
     parse_state_datetime,
+)
+from thetagang.tail_harvest_decision import (
+    HarvestCandidateInput,
+    TailProgramInput,
+    build_tail_harvest_request,
+    validate_tail_harvest_response,
+)
+from thetagang.target_weight_policy import (
+    TARGET_WEIGHT_POLICY_STATE_EVENT,
+    TargetWeightMultiplier,
+    apply_target_weight_adjustments,
+    build_target_weight_request,
+    validate_target_weight_response,
 )
 from thetagang.trading_operations import OrderOperations
 from thetagang.util import midpoint_or_market_price, portfolio_positions_to_dict
 
 AlignedClosesResult = tuple[list[date], dict[str, list[float]]]
-AlignedClosesFetcher = Callable[
-    [list[str], int, int], Coroutine[Any, Any, AlignedClosesResult]
-]
+
+
+class AlignedClosesFetcher(Protocol):
+    def __call__(
+        self,
+        symbols: list[str],
+        lookback_days: int,
+        cooldown_days: int,
+        *,
+        primary_exchanges: dict[str, str] | None = None,
+    ) -> Coroutine[Any, Any, AlignedClosesResult]: ...
+
+
 ClosesBySymbol = dict[str, dict[date, float]]
 TRADING_DAYS_PER_YEAR = 252
 REGIME_HISTORY_TIMEFRAME = "1 day"
@@ -63,6 +101,26 @@ class RegimeHistoryValidationError(ValueError):
     def __init__(self, message: str, *, cache_recoverable: bool) -> None:
         super().__init__(message)
         self.cache_recoverable = cache_recoverable
+
+
+@dataclass(frozen=True)
+class _TargetWeightPolicyOutcome:
+    adjustments: dict[str, TargetWeightMultiplier] | None
+    response: ExternalDecisionResponse | None
+    error: str | None
+
+
+@dataclass(frozen=True)
+class _TailHarvestSnapshot:
+    portfolio_positions: dict[str, list[PortfolioItem]]
+    state: TailHedgeState
+    cohorts: list[TailHedgeCohort]
+    candidates: list[HarvestPut]
+    live_quotes: dict[tuple[str, int], float]
+    net_liquidation: float
+    regime_base: float
+    excluded_option_value: float
+    band: HarvestBandDecision
 
 
 @dataclass(frozen=True)
@@ -287,19 +345,33 @@ def _pfmt_or_dash(value: float | None) -> str:
 class RegimeHistoryCache:
     def __init__(self, fetcher: AlignedClosesFetcher) -> None:
         self._fetcher = fetcher
-        self._cache: dict[tuple[tuple[str, ...], int, int], AlignedClosesResult] = {}
+        self._cache: dict[
+            tuple[tuple[str, ...], int, int, tuple[tuple[str, str], ...]],
+            AlignedClosesResult,
+        ] = {}
 
     async def get(
         self,
         symbols: list[str],
         lookback_days: int,
         cooldown_days: int,
+        *,
+        primary_exchanges: dict[str, str] | None = None,
     ) -> AlignedClosesResult:
-        key = (tuple(symbols), lookback_days, cooldown_days)
+        exchange_key = tuple(sorted((primary_exchanges or {}).items()))
+        key = (tuple(symbols), lookback_days, cooldown_days, exchange_key)
         cached = self._cache.get(key)
         if cached is not None:
             return cached
-        result = await self._fetcher(symbols, lookback_days, cooldown_days)
+        if primary_exchanges:
+            result = await self._fetcher(
+                symbols,
+                lookback_days,
+                cooldown_days,
+                primary_exchanges=primary_exchanges,
+            )
+        else:
+            result = await self._fetcher(symbols, lookback_days, cooldown_days)
         self._cache[key] = result
         return result
 
@@ -312,6 +384,8 @@ class RegimeRebalanceEngine:
         ibkr: IBKR,
         order_ops: OrderOperations,
         data_store: DataStore | None,
+        external_decisions: ExternalDecisionProviders | None = None,
+        dry_run: bool = False,
         get_primary_exchange: Callable[[str], str],
         now_provider: Callable[[], datetime],
         tail_hedge_stage_enabled: Callable[[], bool] | None = None,
@@ -321,6 +395,9 @@ class RegimeRebalanceEngine:
         self.ibkr = ibkr
         self.order_ops = order_ops
         self.data_store = data_store
+        self.external_decisions = external_decisions or ExternalDecisionProviders()
+        self.dry_run = dry_run
+        self._target_weight_policy_outcome: _TargetWeightPolicyOutcome | None = None
         self._get_primary_exchange = get_primary_exchange
         self._now = now_provider
         self._tail_hedge_stage_enabled = tail_hedge_stage_enabled or (lambda: False)
@@ -336,6 +413,11 @@ class RegimeRebalanceEngine:
             else None
         )
         self.regime_rebalance_order_ref_prefix = "tg:regime-rebalance"
+
+    def begin_run(self) -> None:
+        """Clear decisions that may only be reused within one manager run."""
+
+        self._target_weight_policy_outcome = None
 
     def _reserve_cash_for_post_management(self, amount: float) -> None:
         if self._set_reserved_cash_for_post_management is None:
@@ -584,6 +666,7 @@ class RegimeRebalanceEngine:
         cohort: TailHedgeCohort,
         position: PortfolioItem,
         limit_price: float,
+        record_unprofitable: bool = True,
     ) -> HarvestPut | None:
         symbol = cohort.symbol
         contract = position.contract
@@ -621,20 +704,21 @@ class RegimeRebalanceEngine:
             or average_cost <= 0
             or net_proceeds <= average_cost
         ):
-            self._record_tail_harvest(
-                "candidate_not_net_profitable",
-                symbol=symbol,
-                entry_id=cohort.entry_id,
-                con_id=cohort.con_id,
-                gross_proceeds_per_contract=gross_proceeds,
-                estimated_fee_per_contract=estimated_fee,
-                net_proceeds_per_contract=net_proceeds,
-                cost_basis_per_contract=average_cost,
-            )
-            log.info(
-                f"{symbol}: Tail put conId={cohort.con_id} is not profitable "
-                "after its estimated sell fee."
-            )
+            if record_unprofitable:
+                self._record_tail_harvest(
+                    "candidate_not_net_profitable",
+                    symbol=symbol,
+                    entry_id=cohort.entry_id,
+                    con_id=cohort.con_id,
+                    gross_proceeds_per_contract=gross_proceeds,
+                    estimated_fee_per_contract=estimated_fee,
+                    net_proceeds_per_contract=net_proceeds,
+                    cost_basis_per_contract=average_cost,
+                )
+                log.info(
+                    f"{symbol}: Tail put conId={cohort.con_id} is not profitable "
+                    "after its estimated sell fee."
+                )
             return None
 
         contract.exchange = self.order_ops.get_order_exchange()
@@ -690,34 +774,26 @@ class RegimeRebalanceEngine:
                 quoted[(cohort.entry_id, con_id)] = limit_price
         return quoted
 
-    async def _enqueue_tail_harvest(
+    def _build_tail_harvest_snapshot(
         self,
         *,
         net_liquidation: float,
         rebalance_shares: dict[str, int],
         market_prices: dict[str, float],
-        cohorts: list[TailHedgeCohort],
-        portfolio_positions: dict[str, list[PortfolioItem]],
-    ) -> set[str]:
+        quoted_limit_prices: dict[tuple[str, int], float],
+        record_unprofitable: bool,
+    ) -> _TailHarvestSnapshot | None:
         if self._tail_state_store is None:
-            return set()
+            return None
 
-        quoted_limit_prices = await self._quote_tail_puts(
-            symbols=set(rebalance_shares),
-            cohorts=cohorts,
-            portfolio_positions=portfolio_positions,
-        )
-
-        # Quote requests yield to ib_async. Re-evaluate the portfolio-level
-        # band from its current cache before persisting or queuing a sale.
         account_number = self.config.runtime.account.number
-        refreshed_positions = portfolio_positions_to_dict(
+        portfolio_positions = portfolio_positions_to_dict(
             self.ibkr.portfolio(account=account_number)
         )
         state = self._tail_state_store.load()
-        live_cohorts = state.open_cohorts
+        cohorts = state.open_cohorts
         unavailable_con_ids, blocked_symbols, blocked_reason = (
-            self._tail_harvest_conflicts(live_cohorts)
+            self._tail_harvest_conflicts(cohorts)
         )
         if blocked_reason is not None:
             self._record_tail_harvest_blocked(
@@ -725,17 +801,18 @@ class RegimeRebalanceEngine:
                 blocked_symbols=blocked_symbols,
                 reason=blocked_reason,
             )
-            return set()
-        refreshed_puts = self._long_puts_by_con_id(refreshed_positions)
+            return None
+
+        positions_by_con_id = self._long_puts_by_con_id(portfolio_positions)
         cohorts_by_key = {
-            (cohort.entry_id, cohort.con_id): cohort for cohort in live_cohorts
+            (cohort.entry_id, cohort.con_id): cohort for cohort in cohorts
         }
         candidates: list[HarvestPut] = []
         live_quotes: dict[tuple[str, int], float] = {}
         for key, limit_price in quoted_limit_prices.items():
             cohort = cohorts_by_key.get(key)
             con_id = key[1]
-            position = refreshed_puts.get(con_id)
+            position = positions_by_con_id.get(con_id)
             if (
                 cohort is None
                 or cohort.status != "active"
@@ -751,6 +828,7 @@ class RegimeRebalanceEngine:
                 cohort=cohort,
                 position=position,
                 limit_price=limit_price,
+                record_unprofitable=record_unprofitable,
             )
             if candidate is not None:
                 candidates.append(candidate)
@@ -763,51 +841,72 @@ class RegimeRebalanceEngine:
             ),
         )
         sleeve_value = self._tail_hedge_market_value_at_quotes(
-            refreshed_positions,
-            live_cohorts,
+            portfolio_positions,
+            cohorts,
             live_quotes,
         )
-        refreshed_net_liquidation = self._latest_net_liquidation(net_liquidation)
-        refreshed_regime_base, excluded_option_value = (
-            self._regime_rebalance_base_value(
-                net_liquidation=refreshed_net_liquidation,
-                portfolio_positions=refreshed_positions,
-                market_prices=market_prices,
-                cohorts=live_cohorts,
-                # Use the conservative quote-aware tail mark on both sides of
-                # the ratio. This keeps the shared option-exclusion formula
-                # coherent even when IBKR's portfolio mark lags the quote.
-                tail_hedge_value_override=sleeve_value,
-            )
+        current_net_liquidation = self._latest_net_liquidation(net_liquidation)
+        regime_base, excluded_option_value = self._regime_rebalance_base_value(
+            net_liquidation=current_net_liquidation,
+            portfolio_positions=portfolio_positions,
+            market_prices=market_prices,
+            cohorts=cohorts,
+            # Use the conservative quote-aware tail mark on both sides of the
+            # ratio. This keeps the shared option-exclusion formula coherent.
+            tail_hedge_value_override=sleeve_value,
         )
         tail_hedge = self.config.strategies.tail_hedge
-        decision = evaluate_harvest_band(
-            portfolio_base_value=refreshed_regime_base,
+        band = evaluate_harvest_band(
+            portfolio_base_value=regime_base,
             sleeve_value=sleeve_value,
             trigger_weight=tail_hedge.harvest_trigger_weight,
             target_weight=tail_hedge.harvest_target_weight,
         )
-        if decision is None:
-            return set()
-        sale_budget = decision.sale_budget
-        band_payload = {
-            "net_liquidation": refreshed_net_liquidation,
-            "regime_rebalance_base": refreshed_regime_base,
+        if band is None:
+            return None
+        return _TailHarvestSnapshot(
+            portfolio_positions=portfolio_positions,
+            state=state,
+            cohorts=cohorts,
+            candidates=candidates,
+            live_quotes=live_quotes,
+            net_liquidation=current_net_liquidation,
+            regime_base=regime_base,
+            excluded_option_value=excluded_option_value,
+            band=band,
+        )
+
+    def _tail_harvest_band_payload(
+        self,
+        snapshot: _TailHarvestSnapshot,
+        *,
+        rebalance_shares: dict[str, int],
+        market_prices: dict[str, float],
+    ) -> dict[str, Any]:
+        tail_hedge = self.config.strategies.tail_hedge
+        return {
+            "net_liquidation": snapshot.net_liquidation,
+            "regime_rebalance_base": snapshot.regime_base,
             "regime_weight_base": (
                 self.config.strategies.regime_rebalance.weight_base.value
             ),
-            "excluded_option_value": excluded_option_value,
-            "sleeve_value": decision.sleeve_value,
-            "sleeve_weight": decision.sleeve_weight,
+            "excluded_option_value": snapshot.excluded_option_value,
+            "sleeve_value": snapshot.band.sleeve_value,
+            "sleeve_weight": snapshot.band.sleeve_weight,
             "harvest_trigger_weight": tail_hedge.harvest_trigger_weight,
             "harvest_target_weight": tail_hedge.harvest_target_weight,
-            "target_sleeve_value": decision.target_value,
+            "target_sleeve_value": snapshot.band.target_value,
             "approved_rebalance_value": sum(
                 shares * market_prices[symbol]
                 for symbol, shares in rebalance_shares.items()
             ),
         }
 
+    @staticmethod
+    def _select_tail_harvest_candidates(
+        candidates: list[HarvestPut],
+        sale_budget: float,
+    ) -> list[tuple[HarvestPut, int]]:
         selected: list[tuple[HarvestPut, int]] = []
         selected_con_ids: set[int] = set()
         remaining = sale_budget
@@ -826,6 +925,473 @@ class RegimeRebalanceEngine:
             selected.append((candidate, quantity))
             selected_con_ids.add(con_id)
             remaining -= quantity * candidate.gross_proceeds_per_contract
+        return selected
+
+    def _tail_harvest_planned_sales(
+        self,
+        snapshot: _TailHarvestSnapshot,
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "entry_id": candidate.entry_id,
+                "symbol": candidate.contract.symbol,
+                "con_id": candidate.contract.conId,
+                "expiration": candidate.expiration,
+                "quantity": quantity,
+                "limit_price": candidate.limit_price,
+                "estimated_gross_proceeds": (
+                    quantity * candidate.gross_proceeds_per_contract
+                ),
+                "estimated_fees": quantity * candidate.estimated_fee_per_contract,
+                "estimated_net_proceeds": (
+                    quantity * candidate.net_proceeds_per_contract
+                ),
+            }
+            for candidate, quantity in self._select_tail_harvest_candidates(
+                snapshot.candidates,
+                snapshot.band.sale_budget,
+            )
+        ]
+
+    @staticmethod
+    def _finite_float_or_none(value: Any) -> float | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return number if math.isfinite(number) else None
+
+    def _tail_harvest_hedge_inputs(
+        self, snapshot: _TailHarvestSnapshot
+    ) -> list[dict[str, Any]]:
+        positions_by_con_id = self._long_puts_by_con_id(snapshot.portfolio_positions)
+        candidates_by_key = {
+            (candidate.entry_id, candidate.contract.conId): candidate
+            for candidate in snapshot.candidates
+        }
+        inputs: list[dict[str, Any]] = []
+        for cohort in snapshot.cohorts:
+            key = (cohort.entry_id, cohort.con_id)
+            position = positions_by_con_id.get(cohort.con_id)
+            owned_position = (
+                self._owned_tail_position_value(position, cohort)
+                if position is not None
+                else None
+            )
+            owned_quantity = owned_position[0] if owned_position is not None else 0
+            reported_owned_value = (
+                owned_position[1] if owned_position is not None else None
+            )
+            live_quantity = self._finite_float_or_none(
+                getattr(position, "position", None)
+            )
+            live_market_value = self._finite_float_or_none(
+                getattr(position, "marketValue", None)
+            )
+            live_unrealized_pnl = self._finite_float_or_none(
+                getattr(position, "unrealizedPNL", None)
+            )
+            live_realized_pnl = self._finite_float_or_none(
+                getattr(position, "realizedPNL", None)
+            )
+            live_average_cost = self._finite_float_or_none(
+                getattr(position, "averageCost", None)
+            )
+            ownership_ratio = (
+                owned_quantity / live_quantity
+                if live_quantity is not None and live_quantity > 0
+                else None
+            )
+            candidate = candidates_by_key.get(key)
+            inputs.append(
+                {
+                    "entry_id": cohort.entry_id,
+                    "symbol": cohort.symbol,
+                    "status": cohort.status,
+                    "contract": {
+                        "con_id": cohort.con_id,
+                        "expiration": cohort.expiration,
+                        "strike": cohort.strike,
+                        "right": "P",
+                        "multiplier": self._finite_float_or_none(
+                            getattr(
+                                getattr(position, "contract", None),
+                                "multiplier",
+                                None,
+                            )
+                        ),
+                    },
+                    "state_owned_quantity": owned_quantity,
+                    "live_position_quantity": live_quantity,
+                    "reported_owned_market_value": reported_owned_value,
+                    "live_position_market_value": live_market_value,
+                    "live_average_cost_per_contract": live_average_cost,
+                    "live_realized_pnl": live_realized_pnl,
+                    "state_owned_unrealized_pnl": (
+                        live_unrealized_pnl * ownership_ratio
+                        if live_unrealized_pnl is not None
+                        and ownership_ratio is not None
+                        else None
+                    ),
+                    "quoted_limit_price": snapshot.live_quotes.get(key),
+                    "entered_at": self._as_utc(cohort.entered_at).isoformat(),
+                    "entry_limit_price": cohort.entry_limit_price,
+                    "estimated_cost": cohort.estimated_cost,
+                    "recovered_cost": cohort.recovered_cost,
+                    "unrecovered_cost": cohort.net_charge,
+                    "host_candidate": candidate is not None,
+                    "candidate": (
+                        HarvestCandidateInput.model_validate(
+                            candidate, from_attributes=True
+                        ).model_dump(mode="json")
+                        if candidate is not None
+                        else None
+                    ),
+                }
+            )
+        return inputs
+
+    def _tail_harvest_underlying_inputs(
+        self,
+        snapshot: _TailHarvestSnapshot,
+        *,
+        rebalance_shares: dict[str, int],
+        market_prices: dict[str, float],
+        regime_summary: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        summaries = {str(item["symbol"]): item for item in regime_summary}
+        result: dict[str, dict[str, Any]] = {}
+        for target in self.config.strategies.tail_hedge.targets:
+            symbol = target.symbol
+            summary = summaries.get(symbol, {})
+            stock_positions = [
+                position
+                for position in snapshot.portfolio_positions.get(symbol, [])
+                if isinstance(position.contract, Stock)
+            ]
+            live_shares = sum(
+                self._finite_float_or_none(position.position) or 0.0
+                for position in stock_positions
+            )
+            reported_market_value = sum(
+                self._finite_float_or_none(position.marketValue) or 0.0
+                for position in stock_positions
+            )
+            reported_unrealized_pnl = sum(
+                self._finite_float_or_none(getattr(position, "unrealizedPNL", None))
+                or 0.0
+                for position in stock_positions
+            )
+            reported_realized_pnl = sum(
+                self._finite_float_or_none(getattr(position, "realizedPNL", None))
+                or 0.0
+                for position in stock_positions
+            )
+            gross_shares = sum(
+                abs(self._finite_float_or_none(position.position) or 0.0)
+                for position in stock_positions
+            )
+            weighted_cost = sum(
+                abs(self._finite_float_or_none(position.position) or 0.0)
+                * (
+                    self._finite_float_or_none(getattr(position, "averageCost", None))
+                    or 0.0
+                )
+                for position in stock_positions
+            )
+            market_price = market_prices.get(symbol)
+            current_value = self._finite_float_or_none(summary.get("current_value"))
+            if current_value is None:
+                current_value = reported_market_value
+            current_shares = self._finite_float_or_none(summary.get("current_shares"))
+            if current_shares is None:
+                current_shares = live_shares
+            symbol_config = self.config.portfolio.symbols[symbol]
+            approved_buy_shares = rebalance_shares.get(symbol, 0)
+            result[symbol] = {
+                "configured_weight": float(symbol_config.weight),
+                "primary_exchange": str(symbol_config.primary_exchange),
+                "market_price": market_price,
+                "current_shares": current_shares,
+                "current_value": current_value,
+                "broker_position": {
+                    "shares": live_shares,
+                    "market_value": reported_market_value,
+                    "average_cost_per_share": (
+                        weighted_cost / gross_shares if gross_shares > 0 else None
+                    ),
+                    "unrealized_pnl": reported_unrealized_pnl,
+                    "realized_pnl": reported_realized_pnl,
+                },
+                "current_weight": self._finite_float_or_none(
+                    summary.get("current_weight")
+                ),
+                "target_weight": self._finite_float_or_none(
+                    summary.get("target_weight")
+                ),
+                "target_value": self._finite_float_or_none(summary.get("target_value")),
+                "target_shares": self._finite_float_or_none(
+                    summary.get("target_shares")
+                ),
+                "approved_buy_shares": approved_buy_shares,
+                "approved_buy_value": (
+                    approved_buy_shares * market_price
+                    if market_price is not None
+                    else None
+                ),
+                "tail_program": TailProgramInput.model_validate(
+                    target, from_attributes=True
+                ).model_dump(mode="json"),
+                "target_modifiers": {
+                    "volatility_weight": summary.get("volatility_weight"),
+                    "target_weight_policy": summary.get("target_weight_policy"),
+                    "absolute_trend": summary.get("absolute_trend"),
+                },
+            }
+        return result
+
+    def _tail_harvest_decision_fallback(
+        self,
+        *,
+        policy: TailHarvestDecisionConfig,
+        error: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        if policy.on_error == "abort":
+            raise RuntimeError(f"External tail harvest decision failed: {error}")
+        harvest = policy.on_error == "baseline"
+        status = "baseline" if harvest else "skipped"
+        log.warning(
+            f"External tail harvest decision failed; using {status} behavior ({error})."
+        )
+        return harvest, {
+            "status": status,
+            "harvest": harvest,
+            "reason": None,
+            "error": error,
+            "provider": policy.provider,
+        }
+
+    async def _evaluate_tail_harvest_decision(
+        self,
+        snapshot: _TailHarvestSnapshot,
+        *,
+        rebalance_shares: dict[str, int],
+        market_prices: dict[str, float],
+        regime_summary: list[dict[str, Any]],
+        history_cache: RegimeHistoryCache | None = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        tail_hedge = self.config.strategies.tail_hedge
+        policy = getattr(tail_hedge, "harvest_decision", None)
+        if policy is None or not getattr(policy, "enabled", False):
+            return True, {}
+
+        try:
+            market_data_config = policy.market_data
+            market_data = await self._load_external_market_data(
+                market_data_config=market_data_config,
+                strategy_symbols=(target.symbol for target in tail_hedge.targets),
+                symbol_configs=self.config.portfolio.symbols,
+                decision_name="tail harvest decision",
+                history_cache=history_cache,
+            )
+            band_payload = self._tail_harvest_band_payload(
+                snapshot,
+                rebalance_shares=rebalance_shares,
+                market_prices=market_prices,
+            )
+            request = build_tail_harvest_request(
+                generated_at=self._as_utc(self._now()),
+                dry_run=self.dry_run,
+                tail_hedge=tail_hedge,
+                regime_weight_base=self.config.strategies.regime_rebalance.weight_base.value,
+                regime_margin_usage=AccountingPolicy.from_config(
+                    self.config
+                ).regime_margin_usage,
+                account={
+                    "net_liquidation": snapshot.net_liquidation,
+                    "regime_rebalance_base": snapshot.regime_base,
+                    "excluded_option_value": snapshot.excluded_option_value,
+                },
+                opportunity={
+                    "sleeve_value": snapshot.band.sleeve_value,
+                    "sleeve_weight": snapshot.band.sleeve_weight,
+                    "harvest_trigger_weight": tail_hedge.harvest_trigger_weight,
+                    "harvest_target_weight": tail_hedge.harvest_target_weight,
+                    "target_sleeve_value": snapshot.band.target_value,
+                    "sale_budget": snapshot.band.sale_budget,
+                    "approved_rebalance_value": band_payload[
+                        "approved_rebalance_value"
+                    ],
+                    "planned_sales": self._tail_harvest_planned_sales(snapshot),
+                },
+                underlyings=self._tail_harvest_underlying_inputs(
+                    snapshot,
+                    rebalance_shares=rebalance_shares,
+                    market_prices=market_prices,
+                    regime_summary=regime_summary,
+                ),
+                hedge_positions=self._tail_harvest_hedge_inputs(snapshot),
+                market_data=market_data,
+            )
+            response = await self.external_decisions.decide(policy.provider, request)
+            output = validate_tail_harvest_response(
+                response,
+                policy=policy,
+                history_dates=market_data.sessions,
+                now=self._as_utc(self._now()),
+            )
+            return output.harvest, {
+                "status": "applied",
+                "harvest": output.harvest,
+                "reason": output.reason,
+                "error": None,
+                **external_decision_response_metadata(
+                    response,
+                    provider=policy.provider,
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return self._tail_harvest_decision_fallback(
+                policy=policy,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    async def _enqueue_tail_harvest(
+        self,
+        *,
+        net_liquidation: float,
+        rebalance_shares: dict[str, int],
+        market_prices: dict[str, float],
+        regime_summary: list[dict[str, Any]],
+        cohorts: list[TailHedgeCohort],
+        portfolio_positions: dict[str, list[PortfolioItem]],
+        history_cache: RegimeHistoryCache | None = None,
+    ) -> set[str]:
+        if self._tail_state_store is None:
+            return set()
+
+        quoted_limit_prices = await self._quote_tail_puts(
+            symbols=set(rebalance_shares),
+            cohorts=cohorts,
+            portfolio_positions=portfolio_positions,
+        )
+
+        # Quote requests yield to ib_async. Re-evaluate all host-owned safety
+        # constraints from the current cache before consulting an external
+        # decision provider.
+        policy = self.config.strategies.tail_hedge.harvest_decision
+        snapshot = self._build_tail_harvest_snapshot(
+            net_liquidation=net_liquidation,
+            rebalance_shares=rebalance_shares,
+            market_prices=market_prices,
+            quoted_limit_prices=quoted_limit_prices,
+            record_unprofitable=not policy.enabled,
+        )
+        if snapshot is None:
+            return set()
+
+        if not snapshot.candidates:
+            # The first snapshot suppresses this per-cohort telemetry while an
+            # external policy is enabled so an approved result will not record
+            # it twice. Restore the baseline event when there is nothing to ask.
+            if policy.enabled:
+                snapshot = self._build_tail_harvest_snapshot(
+                    net_liquidation=net_liquidation,
+                    rebalance_shares=rebalance_shares,
+                    market_prices=market_prices,
+                    quoted_limit_prices=quoted_limit_prices,
+                    record_unprofitable=True,
+                )
+                if snapshot is None:
+                    return set()
+            band_payload = self._tail_harvest_band_payload(
+                snapshot,
+                rebalance_shares=rebalance_shares,
+                market_prices=market_prices,
+            )
+            for symbol, shares in rebalance_shares.items():
+                self._record_tail_harvest(
+                    "no_eligible_cohort",
+                    symbol=symbol,
+                    rebalance_shares=shares,
+                    sale_budget=snapshot.band.sale_budget,
+                    **band_payload,
+                )
+            return set()
+
+        should_harvest, external_decision = await self._evaluate_tail_harvest_decision(
+            snapshot,
+            rebalance_shares=rebalance_shares,
+            market_prices=market_prices,
+            regime_summary=regime_summary,
+            history_cache=history_cache,
+        )
+        if should_harvest and policy.enabled:
+            # The provider and market-history requests yield. Re-quote and
+            # rebuild the snapshot before any state or order mutation.
+            quoted_limit_prices = await self._quote_tail_puts(
+                symbols=set(rebalance_shares),
+                cohorts=snapshot.cohorts,
+                portfolio_positions=snapshot.portfolio_positions,
+            )
+            snapshot = self._build_tail_harvest_snapshot(
+                net_liquidation=net_liquidation,
+                rebalance_shares=rebalance_shares,
+                market_prices=market_prices,
+                quoted_limit_prices=quoted_limit_prices,
+                record_unprofitable=True,
+            )
+            if snapshot is None:
+                return set()
+            expires_at = external_decision.get("expires_at")
+            try:
+                validate_decision_expiry(
+                    datetime.fromisoformat(expires_at) if expires_at else None,
+                    now=self._as_utc(self._now()),
+                    decision_name="tail harvest decision",
+                )
+            except ExternalDecisionError as exc:
+                should_harvest, external_decision = (
+                    self._tail_harvest_decision_fallback(policy=policy, error=str(exc))
+                )
+
+        if external_decision:
+            band_payload = self._tail_harvest_band_payload(
+                snapshot,
+                rebalance_shares=rebalance_shares,
+                market_prices=market_prices,
+            )
+            for symbol, shares in rebalance_shares.items():
+                self._record_tail_harvest(
+                    "external_policy_decision",
+                    symbol=symbol,
+                    rebalance_shares=shares,
+                    sale_budget=snapshot.band.sale_budget,
+                    external_decision=external_decision,
+                    **band_payload,
+                )
+        if not should_harvest:
+            log.notice(
+                "External tail-harvest policy declined the eligible baseline "
+                "harvest opportunity."
+            )
+            return set()
+
+        candidates = snapshot.candidates
+        state = snapshot.state
+        decision = snapshot.band
+        sale_budget = decision.sale_budget
+        band_payload = self._tail_harvest_band_payload(
+            snapshot,
+            rebalance_shares=rebalance_shares,
+            market_prices=market_prices,
+        )
+        if external_decision:
+            band_payload["external_decision"] = external_decision
+
+        selected = self._select_tail_harvest_candidates(candidates, sale_budget)
 
         if not selected:
             for symbol, shares in rebalance_shares.items():
@@ -959,6 +1525,7 @@ class RegimeRebalanceEngine:
         regime_summary: list[dict[str, Any]],
         hard_underweight_symbols: set[str],
         cohorts: list[TailHedgeCohort],
+        history_cache: RegimeHistoryCache | None = None,
     ) -> list[tuple[str, str, int]]:
         targets = self._configured_tail_harvest_targets()
         if not targets or not cohorts or not hard_underweight_symbols:
@@ -1024,8 +1591,10 @@ class RegimeRebalanceEngine:
             net_liquidation=current_net_liquidation,
             rebalance_shares=rebalance_shares,
             market_prices=market_prices,
+            regime_summary=regime_summary,
             cohorts=cohorts,
             portfolio_positions=portfolio_positions,
+            history_cache=history_cache,
         )
         summaries = {str(item["symbol"]): item for item in regime_summary}
         for symbol in enqueued_symbols:
@@ -1360,16 +1929,30 @@ class RegimeRebalanceEngine:
             return None
 
     async def _fetch_regime_history_bars(
-        self, symbol: str, duration: str
+        self,
+        symbol: str,
+        duration: str,
+        primary_exchange: str | None = None,
     ) -> tuple[str, list[Any]]:
         contract = Stock(
             symbol,
             self.order_ops.get_order_exchange(),
             currency="USD",
-            primaryExchange=self.get_primary_exchange(symbol),
+            primaryExchange=primary_exchange or self.get_primary_exchange(symbol),
         )
         for attempt in range(1, REGIME_HISTORY_MAX_ATTEMPTS + 1):
-            bars = list(await self.ibkr.request_historical_data(contract, duration))
+            if primary_exchange:
+                bars = list(
+                    await self.ibkr.request_historical_data(
+                        contract,
+                        duration,
+                        cache_symbol=self._history_cache_symbol(
+                            symbol, primary_exchange
+                        ),
+                    )
+                )
+            else:
+                bars = list(await self.ibkr.request_historical_data(contract, duration))
             if bars:
                 if attempt > 1:
                     log.warning(
@@ -1390,21 +1973,36 @@ class RegimeRebalanceEngine:
         return symbol, []
 
     async def _fetch_regime_history_closes(
-        self, symbols: list[str], duration: str
+        self,
+        symbols: list[str],
+        duration: str,
+        primary_exchanges: dict[str, str] | None = None,
     ) -> ClosesBySymbol:
         tasks: list[Coroutine[Any, Any, tuple[str, list[Any]]]] = [
-            self._fetch_regime_history_bars(symbol, duration) for symbol in symbols
+            self._fetch_regime_history_bars(
+                symbol,
+                duration,
+                (primary_exchanges or {}).get(symbol),
+            )
+            for symbol in symbols
         ]
         histories = await log.track_async(
             tasks, description="Fetching regime rebalancing history..."
         )
         return {symbol: self._bars_to_closes(bars) for symbol, bars in histories}
 
+    @staticmethod
+    def _history_cache_symbol(symbol: str, primary_exchange: str | None) -> str:
+        # The legacy cache is keyed by ticker alone. Explicit listing overrides
+        # must neither consume nor overwrite that ticker's default history.
+        return f"{symbol}@{primary_exchange}" if primary_exchange else symbol
+
     def _merge_cached_regime_closes(
         self,
         symbols: list[str],
         api_closes_by_symbol: ClosesBySymbol,
         required_dates: list[date],
+        primary_exchanges: dict[str, str] | None = None,
     ) -> ClosesBySymbol:
         if self.data_store is None:
             raise RegimeHistoryValidationError(
@@ -1417,7 +2015,12 @@ class RegimeRebalanceEngine:
         for symbol in symbols:
             try:
                 cached_bars = self.data_store.get_historical_bars(
-                    symbol, REGIME_HISTORY_TIMEFRAME, start_time, end_time
+                    self._history_cache_symbol(
+                        symbol, (primary_exchanges or {}).get(symbol)
+                    ),
+                    REGIME_HISTORY_TIMEFRAME,
+                    start_time,
+                    end_time,
                 )
             except Exception as exc:
                 log.error(f"{symbol}: failed to read cached regime history.")
@@ -1443,11 +2046,13 @@ class RegimeRebalanceEngine:
         api_closes_by_symbol: ClosesBySymbol,
         required_points: int,
         required_dates: list[date],
+        primary_exchanges: dict[str, str] | None = None,
     ) -> AlignedClosesResult:
         merged_closes_by_symbol = self._merge_cached_regime_closes(
             symbols,
             api_closes_by_symbol,
             required_dates,
+            primary_exchanges,
         )
         dates, aligned_closes = self._align_regime_closes(
             symbols=symbols,
@@ -1467,6 +2072,8 @@ class RegimeRebalanceEngine:
         symbols: list[str],
         lookback_days: int,
         cooldown_days: int,
+        *,
+        primary_exchanges: dict[str, str] | None = None,
     ) -> tuple[list[date], dict[str, list[float]]]:
         if not symbols:
             log.error("Regime-aware rebalancing has no symbols to build a proxy.")
@@ -1486,7 +2093,9 @@ class RegimeRebalanceEngine:
             )
         duration = f"{calendar_days} D"
         api_closes_by_symbol = await self._fetch_regime_history_closes(
-            symbols, duration
+            symbols,
+            duration,
+            primary_exchanges,
         )
 
         try:
@@ -1505,6 +2114,7 @@ class RegimeRebalanceEngine:
                 api_closes_by_symbol=api_closes_by_symbol,
                 required_points=required_points,
                 required_dates=required_dates,
+                primary_exchanges=primary_exchanges,
             )
 
     async def _resolve_effective_weights(
@@ -1664,6 +2274,254 @@ class RegimeRebalanceEngine:
                     )
 
         return effective_weights, volatility_details
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        # datetime.astimezone() correctly interprets a naive value in the
+        # process-local timezone. Replacing tzinfo would merely relabel local
+        # wall time as UTC and could make expiry checks several hours late.
+        return value.astimezone(UTC)
+
+    async def _load_external_market_data(
+        self,
+        *,
+        market_data_config: DecisionMarketDataConfig,
+        strategy_symbols: Iterable[str],
+        symbol_configs: dict[str, Any],
+        decision_name: str,
+        history_cache: RegimeHistoryCache | None = None,
+    ) -> ExternalDecisionMarketData:
+        history_symbols: list[str] = []
+        if market_data_config.include_strategy_symbols:
+            history_symbols.extend(strategy_symbols)
+        history_symbols.extend(market_data_config.symbols)
+        history_symbols = list(dict.fromkeys(history_symbols))
+        if not history_symbols:
+            raise ExternalDecisionError(
+                f"{decision_name} market data universe is empty"
+            )
+
+        primary_exchanges: dict[str, str] = {}
+        history_exchange_overrides: dict[str, str] = {}
+        for symbol in history_symbols:
+            market_symbol = market_data_config.symbols.get(symbol)
+            explicit_exchange = (
+                market_symbol.primary_exchange.strip()
+                if market_symbol is not None
+                else ""
+            )
+            configured_exchange = explicit_exchange
+            if not configured_exchange and symbol in symbol_configs:
+                configured_exchange = str(
+                    symbol_configs[symbol].primary_exchange
+                ).strip()
+            if not configured_exchange:
+                raise ExternalDecisionError(
+                    f"{decision_name} market data symbol {symbol} does not have "
+                    "a primary exchange"
+                )
+            primary_exchanges[symbol] = configured_exchange
+            if explicit_exchange:
+                history_exchange_overrides[symbol] = configured_exchange
+
+        lookback_days = int(market_data_config.lookback_days)
+        fetch_history: AlignedClosesFetcher = (
+            self._get_regime_aligned_closes
+            if history_cache is None
+            else history_cache.get
+        )
+        history_dates, aligned_closes = await fetch_history(
+            history_symbols,
+            lookback_days,
+            0,
+            primary_exchanges=history_exchange_overrides or None,
+        )
+        return ExternalDecisionMarketData(
+            timeframe=REGIME_HISTORY_TIMEFRAME,
+            sessions=history_dates,
+            closes=aligned_closes,
+            primary_exchanges=primary_exchanges,
+        )
+
+    def _target_weight_policy_fallback(
+        self,
+        effective_weights: dict[str, float],
+        *,
+        policy: TargetWeightPolicyConfig,
+        error: str,
+    ) -> tuple[dict[str, float], dict[str, dict[str, Any]]]:
+        # A failed application invalidates the signal for the rest of this run,
+        # just like a failed response. Replanning must not revive rejected risk.
+        self._target_weight_policy_outcome = _TargetWeightPolicyOutcome(
+            adjustments=None, response=None, error=error
+        )
+        if policy.on_error == "abort":
+            raise RuntimeError(
+                f"External target weight policy failed: {error}"
+            ) from None
+        log.warning(
+            "External target weight policy failed; using post-volatility "
+            f"baseline targets ({error})."
+        )
+        return (
+            dict(effective_weights),
+            {
+                symbol: {
+                    "status": "baseline",
+                    "baseline_weight": effective_weights[symbol],
+                    "multiplier": 1.0,
+                    "raw_weight": effective_weights[symbol],
+                    "effective_weight": effective_weights[symbol],
+                    "reason": None,
+                    "error": error,
+                    "risk_ready": False,
+                }
+                for symbol in policy.symbols
+            },
+        )
+
+    async def _apply_target_weight_policy(
+        self,
+        effective_weights: dict[str, float],
+        *,
+        symbols: list[str],
+        symbol_configs: dict[str, Any],
+        volatility_details: dict[str, dict[str, float]],
+        account: BrokerAccountSnapshot,
+        regime_margin_usage: float,
+        total_value: float,
+        excluded_value: float,
+        last_rebalance: datetime | None,
+        current_positions: dict[str, int],
+        current_values: dict[str, float],
+        market_prices: dict[str, float],
+        history_cache: RegimeHistoryCache | None = None,
+    ) -> tuple[dict[str, float], dict[str, dict[str, Any]]]:
+        regime_rebalance = self.config.strategies.regime_rebalance
+        policy = getattr(regime_rebalance, "target_weight_policy", None)
+        if policy is None or not getattr(policy, "enabled", False):
+            return dict(effective_weights), {}
+        if (
+            self._target_weight_policy_outcome is not None
+            and self._target_weight_policy_outcome.response is not None
+        ):
+            try:
+                validate_decision_expiry(
+                    self._target_weight_policy_outcome.response.expires_at,
+                    now=self._as_utc(self._now()),
+                    decision_name="target weight policy",
+                )
+            except ExternalDecisionError as exc:
+                self._target_weight_policy_outcome = _TargetWeightPolicyOutcome(
+                    adjustments=None, response=None, error=str(exc)
+                )
+
+        if self._target_weight_policy_outcome is None:
+            try:
+                market_data = await self._load_external_market_data(
+                    market_data_config=policy.market_data,
+                    strategy_symbols=symbols,
+                    symbol_configs=symbol_configs,
+                    decision_name="target weight policy",
+                    history_cache=history_cache,
+                )
+                request = build_target_weight_request(
+                    generated_at=self._as_utc(self._now()),
+                    dry_run=self.dry_run,
+                    config=self.config,
+                    effective_weights=effective_weights,
+                    symbols=symbols,
+                    symbol_configs=symbol_configs,
+                    volatility_details=volatility_details,
+                    account=account,
+                    regime_margin_usage=regime_margin_usage,
+                    total_value=total_value,
+                    excluded_value=excluded_value,
+                    last_rebalance=last_rebalance,
+                    current_positions=current_positions,
+                    current_values=current_values,
+                    market_prices=market_prices,
+                    market_data=market_data,
+                )
+                response = await self.external_decisions.decide(
+                    policy.provider,
+                    request,
+                )
+                adjustments = validate_target_weight_response(
+                    response,
+                    policy=policy,
+                    history_dates=market_data.sessions,
+                    now=self._as_utc(self._now()),
+                )
+                self._target_weight_policy_outcome = _TargetWeightPolicyOutcome(
+                    adjustments=adjustments,
+                    response=response,
+                    error=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._target_weight_policy_outcome = _TargetWeightPolicyOutcome(
+                    adjustments=None,
+                    response=None,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+
+        outcome = self._target_weight_policy_outcome
+        if (
+            outcome.error is not None
+            or outcome.adjustments is None
+            or outcome.response is None
+        ):
+            return self._target_weight_policy_fallback(
+                effective_weights,
+                policy=policy,
+                error=outcome.error or "provider returned no adjustments",
+            )
+
+        try:
+            adjusted_weights, weight_details = apply_target_weight_adjustments(
+                effective_weights,
+                outcome.adjustments,
+                policy=policy,
+                volatility_bounds={
+                    symbol: (
+                        float(symbol_configs[symbol].volatility_weight.min_weight),
+                        float(symbol_configs[symbol].volatility_weight.max_weight),
+                    )
+                    for symbol in outcome.adjustments
+                    if policy.symbols[symbol].clamp_to_volatility_bounds
+                },
+                eps=regime_rebalance.eps,
+            )
+            response_metadata = external_decision_response_metadata(
+                outcome.response, provider=policy.provider
+            )
+            details: dict[str, dict[str, Any]] = {
+                symbol: {
+                    "status": "applied",
+                    **weight_details[symbol],
+                    "multiplier": adjustment.multiplier,
+                    "reason": adjustment.reason,
+                    **response_metadata,
+                    "risk_ready": True,
+                }
+                for symbol, adjustment in outcome.adjustments.items()
+            }
+        except (AttributeError, KeyError, TypeError, ExternalDecisionError) as exc:
+            return self._target_weight_policy_fallback(
+                effective_weights,
+                policy=policy,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+        for symbol, detail in details.items():
+            log.notice(
+                f"{symbol}: external target policy provider={policy.provider} "
+                f"producer={detail['producer']}@{detail['producer_version']} "
+                f"multiplier={ffmt(detail['multiplier'])} "
+                f"target={pfmt(detail['baseline_weight'])}->"
+                f"{pfmt(detail['effective_weight'])}"
+            )
+        return adjusted_weights, details
 
     async def _apply_absolute_trend(
         self,
@@ -2056,6 +2914,28 @@ class RegimeRebalanceEngine:
             history_cache,
             exclude_current_run_state=exclude_current_run_state,
         )
+        post_volatility_effective_weights = dict(effective_weights)
+        post_volatility_total_effective_weight = sum(
+            post_volatility_effective_weights.values()
+        )
+        (
+            effective_weights,
+            target_weight_policy_details,
+        ) = await self._apply_target_weight_policy(
+            effective_weights,
+            symbols=symbols,
+            symbol_configs=symbol_configs,
+            volatility_details=volatility_details,
+            account=account,
+            regime_margin_usage=regime_margin_usage,
+            total_value=total_value,
+            excluded_value=excluded_value,
+            last_rebalance=last_rebalance,
+            current_positions=current_positions,
+            current_values=current_values,
+            market_prices=market_prices,
+            history_cache=history_cache,
+        )
         pre_trend_effective_weights = dict(effective_weights)
         pre_trend_total_effective_weight = sum(pre_trend_effective_weights.values())
         effective_weights, trend_details = await self._apply_absolute_trend(
@@ -2068,6 +2948,7 @@ class RegimeRebalanceEngine:
             ("volatility_weight", volatility_details),
             ("absolute_trend", trend_details),
         )
+        target_policy = getattr(regime_rebalance, "target_weight_policy", None)
         harvest_risk_ready_symbols = {
             symbol
             for symbol in symbols
@@ -2081,6 +2962,16 @@ class RegimeRebalanceEngine:
                 )
                 or symbol in modifier_details
                 for config_name, modifier_details in target_modifier_details
+            )
+            and (
+                target_policy is None
+                or not target_policy.enabled
+                or symbol not in target_policy.symbols
+                or bool(
+                    target_weight_policy_details.get(symbol, {}).get(
+                        "risk_ready", False
+                    )
+                )
             )
         }
         total_effective_weight = sum(effective_weights.values())
@@ -2119,15 +3010,26 @@ class RegimeRebalanceEngine:
                 )
                 for details in volatility_details.values()
             )
+            target_policy_increase_weight = sum(
+                max(
+                    0.0,
+                    details["effective_weight"] - details["baseline_weight"],
+                )
+                for details in target_weight_policy_details.values()
+                if details.get("status") == "applied"
+            )
             if stacked_target_weight > (
-                volatility_increase_weight + regime_rebalance.eps
+                volatility_increase_weight
+                + target_policy_increase_weight
+                + regime_rebalance.eps
             ):
                 log.error(
                     "Regime-aware rebalancing effective weights exceed 100% "
-                    "without a sufficient volatility-weight increase."
+                    "without a sufficient bounded dynamic-weight increase."
                 )
                 raise ValueError(
-                    "Only volatility-adjusted weights may stack above 100%."
+                    "Only volatility-adjusted weights or explicitly bounded external "
+                    "weights may stack above 100%."
                 )
             log.notice(
                 "Regime-aware rebalancing stacking "
@@ -2183,7 +3085,7 @@ class RegimeRebalanceEngine:
             proxy_weights = (
                 effective_weights
                 if total_effective_weight > 0
-                else pre_trend_effective_weights
+                else post_volatility_effective_weights
             )
 
         dates, values = await self._get_regime_proxy_series(
@@ -2225,7 +3127,7 @@ class RegimeRebalanceEngine:
             ):
                 # Preserve a usable relative-market signal when zero trend
                 # multipliers intentionally move the entire rest basket to cash.
-                ratio_effective_weights = pre_trend_effective_weights
+                ratio_effective_weights = post_volatility_effective_weights
             _, ratio_aligned_closes = await history_cache.get(
                 symbols,
                 regime_rebalance.lookback_days,
@@ -2797,6 +3699,7 @@ class RegimeRebalanceEngine:
             )
 
             volatility_detail = volatility_details.get(symbol)
+            target_weight_policy_detail = target_weight_policy_details.get(symbol)
             trend_detail = trend_details.get(symbol)
             target_weight_display = pfmt(target_weight)
             if volatility_detail is not None:
@@ -2804,6 +3707,12 @@ class RegimeRebalanceEngine:
                     f"{pfmt(target_weight)} "
                     f"(base {pfmt(volatility_detail['base_weight'])}, "
                     f"vol {pfmt(volatility_detail['realized_vol'])})"
+                )
+            if target_weight_policy_detail is not None:
+                target_weight_display += (
+                    " (external "
+                    f"{target_weight_policy_detail['status']} "
+                    f"x{ffmt(target_weight_policy_detail['multiplier'])})"
                 )
             if trend_detail is not None:
                 target_weight_display += (
@@ -2833,6 +3742,8 @@ class RegimeRebalanceEngine:
                 "gate_status": gate_status,
                 "volatility_weight": volatility_detail,
             }
+            if target_weight_policy_detail is not None:
+                summary_details["target_weight_policy"] = target_weight_policy_detail
             if trend_detail is not None:
                 summary_details["absolute_trend"] = trend_detail
             regime_summary.append(summary_details)
@@ -2846,6 +3757,7 @@ class RegimeRebalanceEngine:
                 hard_underweight_symbols & harvest_risk_ready_symbols
             ),
             cohorts=tail_cohorts,
+            history_cache=history_cache,
         )
         for details in regime_summary:
             symbol = str(details["symbol"])
@@ -3100,6 +4012,19 @@ class RegimeRebalanceEngine:
                     "deficit_active": deficit_active_next,
                 },
             )
+            if target_weight_policy_details:
+                self.data_store.record_event(
+                    TARGET_WEIGHT_POLICY_STATE_EVENT,
+                    {
+                        "post_volatility_total_effective_weight": (
+                            post_volatility_total_effective_weight
+                        ),
+                        "post_policy_total_effective_weight": (
+                            pre_trend_total_effective_weight
+                        ),
+                        "symbols": target_weight_policy_details,
+                    },
+                )
             if trend_details and not self.data_store.record_event(
                 ABSOLUTE_TREND_STATE_EVENT,
                 {
@@ -3113,15 +4038,17 @@ class RegimeRebalanceEngine:
                 raise RuntimeError("Failed to persist absolute trend state.")
             if volatility_details:
                 volatility_unallocated_target_weight = max(
-                    0.0, 1.0 - pre_trend_total_effective_weight
+                    0.0, 1.0 - post_volatility_total_effective_weight
                 )
                 volatility_stacked_target_weight = max(
-                    0.0, pre_trend_total_effective_weight - 1.0
+                    0.0, post_volatility_total_effective_weight - 1.0
                 )
                 self.data_store.record_event(
                     "volatility_weight_state",
                     {
-                        "total_effective_weight": pre_trend_total_effective_weight,
+                        "total_effective_weight": (
+                            post_volatility_total_effective_weight
+                        ),
                         "unallocated_target_weight": (
                             volatility_unallocated_target_weight
                         ),

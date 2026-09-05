@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "request_id": "example-regime_target_weights-v1",
+  "decision_type": "regime_target_weights",
+  "generated_at": "2026-09-04T14:30:00Z",
+  "dry_run": true,
+  "input": {
+    "strategy": {
+      "name": "regime_rebalance",
+      "weight_base": "net_liq_ex_options",
+      "margin_usage": 1.0,
+      "lookback_days": 40,
+      "soft_band": 0.1,
+      "hard_band": 0.5,
+      "hard_band_rebalance_fraction": 1.0,
+      "cooldown_days": 5,
+      "last_rebalance_at": null,
+      "choppiness_min": 3.0,
+      "efficiency_max": 0.3,
+      "flow_trade_min": 0.025,
+      "flow_trade_stop": 0.0125,
+      "flow_imbalance_tau": 0.7,
+      "deficit_rail_start": 0.06,
+      "deficit_rail_stop": 0.03,
+      "ratio_gate": null
+    },
+    "account": {
+      "metrics": {
+        "NetLiquidation": 100000.0,
+        "TotalCashValue": 7000.0,
+        "Cushion": 0.9
+      },
+      "rebalance_base_value": 98000.0,
+      "excluded_option_value": 2000.0
+    },
+    "portfolio": {
+      "configured_total_weight": 1.0,
+      "post_volatility_total_weight": 0.9
+    },
+    "symbols": {
+      "TQQQ": {
+        "configured_weight": 0.5,
+        "post_volatility_weight": 0.4,
+        "current_weight": 0.42857142857142855,
+        "current_value": 42000.0,
+        "current_shares": 1000,
+        "market_price": 42.0,
+        "volatility_weight": {
+          "config": {
+            "enabled": true,
+            "target_vol": 0.55,
+            "lookback_days": 3,
+            "min_weight": 0.25,
+            "max_weight": 0.5,
+            "rebalance_band": 0.0,
+            "smoothing_factor": 1.0,
+            "increase_smoothing_factor": null,
+            "decrease_smoothing_factor": null
+          },
+          "calculation": {
+            "base_weight": 0.5,
+            "effective_weight": 0.4,
+            "realized_vol": 0.6875,
+            "raw_weight": 0.4,
+            "target_weight": 0.4,
+            "previous_weight": 0.5,
+            "smoothing_factor": 1.0
+          }
+        },
+        "absolute_trend": {
+          "enabled": true,
+          "lookback_days": 168,
+          "risk_off_multiplier": 0.15
+        },
+        "execution_constraints": {
+          "trading_allowed": true,
+          "rebalance_mode": "both",
+          "min_threshold_shares": null,
+          "min_threshold_amount": null,
+          "min_threshold_percent": null,
+          "min_threshold_percent_relative": null
+        }
+      },
+      "QQQ": {
+        "configured_weight": 0.5,
+        "post_volatility_weight": 0.5,
+        "current_weight": 0.5,
+        "current_value": 49000.0,
+        "current_shares": 100,
+        "market_price": 490.0,
+        "volatility_weight": {
+          "config": null,
+          "calculation": null
+        },
+        "absolute_trend": null,
+        "execution_constraints": {
+          "trading_allowed": true,
+          "rebalance_mode": "both",
+          "min_threshold_shares": null,
+          "min_threshold_amount": null,
+          "min_threshold_percent": null,
+          "min_threshold_percent_relative": null
+        }
+      }
+    },
+    "adjustment_constraints": {
+      "TQQQ": {
+        "min_multiplier": 0.8,
+        "max_multiplier": 1.1,
+        "min_target_weight": null,
+        "max_target_weight": null,
+        "clamp_to_volatility_bounds": true
+      }
+    },
+    "total_weight_constraint": {
+      "max_total_weight": null,
+      "effective_max_total_weight": 1.0,
+      "default_prevents_additional_leverage": true
+    },
+    "market_data": {
+      "source": "ibkr",
+      "timeframe": "1 day",
+      "what_to_show": "TRADES",
+      "regular_trading_hours_only": true,
+      "sessions": [
+        "2026-08-31",
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03"
+      ],
+      "closes": {
+        "TQQQ": [
+          45.0,
+          44.0,
+          43.0,
+          42.0
+        ],
+        "QQQ": [
+          505.0,
+          500.0,
+          495.0,
+          490.0
+        ]
+      },
+      "primary_exchanges": {
+        "TQQQ": "NASDAQ",
+        "QQQ": "NASDAQ"
+      }
+    }
+  }
+}

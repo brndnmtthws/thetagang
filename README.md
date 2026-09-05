@@ -89,6 +89,7 @@ config:
 - [Long-put tail hedging](docs/tail-hedging.md)
 - [Portfolio accounting model](docs/accounting.md)
 - Regime-aware rebalancing gates
+- [External decision providers](docs/external-decisions.md)
 - Exchange-hours enforcement
 
 ThetaGang will try to acquire your desired allocation of each stock or ETF
@@ -239,6 +240,15 @@ stage; it does not enable wheel option writing or management. The historical
 `strategies.regime_rebalance.shares_only` setting is deprecated and ignored.
 Existing schema-v2 configurations that still include it load with a warning and
 should remove it.
+
+Regime target weights can be adjusted by a bounded external decision provider
+after volatility targeting. An external provider can also approve or veto an
+otherwise eligible tail-hedge harvest. ThetaGang supplies completed-session
+market history and the decision-specific portfolio context, then retains
+authority over allocation bounds, risk gates, contract selection, sizing, and
+order execution. See
+[External decision providers](docs/external-decisions.md) for the command
+protocol and configuration.
 
 ### Exchange Hours Management
 

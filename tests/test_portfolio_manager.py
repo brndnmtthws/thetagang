@@ -1144,6 +1144,7 @@ class TestPortfolioManager:
             {
                 "absolute_trend_state",
                 "regime_rebalance_state",
+                "target_weight_policy_state",
                 "volatility_weight_state",
             }
         )

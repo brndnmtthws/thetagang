@@ -1,7 +1,7 @@
 import math
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Optional, Self
+from typing import Any, ClassVar, Literal, Optional, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rich.console import Console
@@ -305,6 +305,62 @@ class VIXCallHedgeConfig(BaseModel, DisplayMixin):
                     )
 
 
+class DecisionMarketDataSymbolConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    primary_exchange: str = ""
+
+
+class DecisionMarketDataConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lookback_days: int = Field(default=252, ge=2)
+    include_strategy_symbols: bool = True
+    symbols: dict[str, DecisionMarketDataSymbolConfig] = Field(default_factory=dict)
+
+
+class MarketDecisionConfig(BaseModel):
+    """Shared configuration for decisions based on completed market sessions."""
+
+    decision_name: ClassVar[str] = "external market decision"
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    provider: str = ""
+    max_signal_age_sessions: int = Field(default=0, ge=0)
+    market_data: DecisionMarketDataConfig = Field(
+        default_factory=DecisionMarketDataConfig
+    )
+
+    @model_validator(mode="after")
+    def validate_enabled_policy(self) -> Self:
+        if not self.enabled:
+            return self
+        if not self.provider:
+            raise ValueError(f"{self.decision_name} provider is required when enabled")
+        if (
+            not self.market_data.include_strategy_symbols
+            and not self.market_data.symbols
+        ):
+            raise ValueError(
+                f"{self.decision_name} market data universe cannot be empty"
+            )
+        if self.max_signal_age_sessions > self.market_data.lookback_days:
+            raise ValueError(
+                f"{self.decision_name} max_signal_age_sessions cannot exceed "
+                "market_data.lookback_days"
+            )
+        return self
+
+
+class TailHarvestDecisionConfig(MarketDecisionConfig):
+    """External approval gate for an otherwise eligible tail harvest."""
+
+    decision_name: ClassVar[str] = "tail harvest decision"
+
+    on_error: Literal["baseline", "skip", "abort"] = "baseline"
+
+
 class TailHedgeTargetConfig(BaseModel, DisplayMixin):
     model_config = ConfigDict(extra="forbid")
 
@@ -389,6 +445,9 @@ class TailHedgeConfig(BaseModel, DisplayMixin):
     annual_budget: float = Field(default=0.005, gt=0.0, le=1.0)
     harvest_trigger_weight: float = Field(default=0.05, gt=0.0, le=1.0)
     harvest_target_weight: float = Field(default=0.03, ge=0.0, le=1.0)
+    harvest_decision: TailHarvestDecisionConfig = Field(
+        default_factory=TailHarvestDecisionConfig
+    )
     targets: list[TailHedgeTargetConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -430,6 +489,16 @@ class TailHedgeConfig(BaseModel, DisplayMixin):
             "Harvest target (% regime base)",
             "=",
             pfmt(self.harvest_target_weight),
+        )
+        table.add_row(
+            "",
+            "External harvest decision",
+            "=",
+            (
+                self.harvest_decision.provider
+                if self.harvest_decision.enabled
+                else "disabled"
+            ),
         )
         if not self.targets:
             table.add_row("", "Targets", "=", "-")
@@ -759,6 +828,81 @@ class RatioGateConfig(BaseModel, DisplayMixin):
         )
 
 
+class ExternalDecisionProviderConfig(BaseModel):
+    """Runtime transport for an out-of-process decision provider."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    transport: Literal["command"] = "command"
+    command: list[str] = Field(..., min_length=1)
+    timeout_seconds: float = Field(default=10.0, gt=0.0, le=300.0)
+    max_response_bytes: int = Field(default=1_048_576, ge=1_024, le=16_777_216)
+    working_directory: str | None = None
+
+    @model_validator(mode="after")
+    def validate_command(self) -> Self:
+        if any(not part.strip() for part in self.command):
+            raise ValueError(
+                "external decision provider command entries cannot be empty"
+            )
+        return self
+
+
+class ExternalDecisionsConfig(BaseModel):
+    """Named providers reusable by strategy-specific decision points."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    providers: dict[str, ExternalDecisionProviderConfig] = Field(default_factory=dict)
+
+
+class TargetWeightPolicySymbolConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    min_multiplier: float = Field(default=0.0, ge=0.0)
+    max_multiplier: float = Field(default=1.0, ge=0.0)
+    min_target_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_target_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+    clamp_to_volatility_bounds: bool = True
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> Self:
+        if self.max_multiplier < self.min_multiplier:
+            raise ValueError(
+                "target weight policy max_multiplier must be >= min_multiplier"
+            )
+        if (
+            self.min_target_weight is not None
+            and self.max_target_weight is not None
+            and self.max_target_weight < self.min_target_weight
+        ):
+            raise ValueError(
+                "target weight policy max_target_weight must be >= min_target_weight"
+            )
+        return self
+
+
+class TargetWeightPolicyConfig(MarketDecisionConfig):
+    """A bounded external overlay on regime-rebalance target weights."""
+
+    decision_name: ClassVar[str] = "target weight policy"
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    on_error: Literal["baseline", "abort"] = "baseline"
+    max_total_weight: float | None = Field(default=None, ge=1.0)
+    symbols: dict[str, TargetWeightPolicySymbolConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_symbols(self) -> Self:
+        if not self.enabled:
+            return self
+        if not self.symbols:
+            raise ValueError(
+                "target weight policy requires at least one configured symbol"
+            )
+        return self
+
+
 class RegimeRebalanceBaseEnum(str, Enum):
     net_liq = "net_liq"
     managed_stocks = "managed_stocks"
@@ -788,6 +932,9 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
         default=RegimeRebalanceBaseEnum.net_liq_ex_options
     )
     ratio_gate: RatioGateConfig | None = None
+    target_weight_policy: TargetWeightPolicyConfig = Field(
+        default_factory=TargetWeightPolicyConfig
+    )
 
     @model_validator(mode="after")
     def validate_bands(self) -> Self:
@@ -853,6 +1000,16 @@ class RegimeRebalanceConfig(BaseModel, DisplayMixin):
         table.add_row("", "Deficit rail start", "=", f"{pfmt(self.deficit_rail_start)}")
         table.add_row("", "Deficit rail stop", "=", f"{pfmt(self.deficit_rail_stop)}")
         table.add_row("", "Weight base", "=", f"{self.weight_base.value}")
+        table.add_row(
+            "",
+            "External target weight policy",
+            "=",
+            (
+                self.target_weight_policy.provider
+                if self.target_weight_policy.enabled
+                else "disabled"
+            ),
+        )
         if self.ratio_gate is not None:
             self.ratio_gate.add_to_table(table, section)
 
