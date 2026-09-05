@@ -702,9 +702,18 @@ daily_stddev_window = "30 D"
 # # max_total_weight = 1.10 # explicit authorization for policy-created leverage
 #
 # [strategies.regime_rebalance.target_weight_policy.symbols.TQQQ]
-# min_multiplier = 0.80
-# max_multiplier = 1.10
-# clamp_to_volatility_bounds = true
+# min_multiplier = 0.50
+# max_multiplier = 1.20
+# min_target_weight = 0.15 # optional fraction of the configured regime capital base
+# max_target_weight = 0.55 # applied after multiplication, before absolute trend
+# clamp_to_volatility_bounds = false # true intersects these with volatility bounds
+#
+# [strategies.regime_rebalance.target_weight_policy.symbols.IBIT]
+# min_multiplier = 0.50
+# max_multiplier = 1.20
+# min_target_weight = 0.10
+# max_target_weight = 0.36
+# clamp_to_volatility_bounds = false
 #
 # [strategies.regime_rebalance.target_weight_policy.market_data]
 # lookback_days = 252

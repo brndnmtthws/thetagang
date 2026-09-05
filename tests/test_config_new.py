@@ -12,6 +12,7 @@ from thetagang.config import (
     stage_enabled_map,
     stage_enabled_map_from_run,
 )
+from thetagang.config_models import TargetWeightPolicySymbolConfig
 
 
 def _base_config(run):
@@ -657,6 +658,47 @@ def test_target_weight_policy_accepts_named_provider_and_market_universe() -> No
     assert policy.symbols["AAA"].min_multiplier == pytest.approx(0.8)
     assert policy.market_data.lookback_days == 252
     assert policy.market_data.symbols["QQQ"].primary_exchange == "NASDAQ"
+    assert policy.symbols["AAA"].min_target_weight is None
+    assert policy.symbols["AAA"].max_target_weight is None
+
+
+@pytest.mark.parametrize("field", ["min_target_weight", "max_target_weight"])
+@pytest.mark.parametrize("value", [-0.01, 1.01, float("nan"), float("inf")])
+def test_target_weight_policy_rejects_invalid_target_bound(
+    field: str, value: float
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        TargetWeightPolicySymbolConfig.model_validate({field: value})
+
+
+def test_target_weight_policy_rejects_reversed_target_bounds() -> None:
+    with pytest.raises(ValueError, match="max_target_weight must be >="):
+        TargetWeightPolicySymbolConfig(min_target_weight=0.36, max_target_weight=0.10)
+
+
+@pytest.mark.parametrize(
+    "bounds", [{"min_target_weight": 0.6}, {"max_target_weight": 0.2}]
+)
+def test_target_weight_bounds_must_overlap_enabled_volatility_clamp(
+    bounds: dict[str, float],
+) -> None:
+    data = _base_config({"strategies": ["regime_rebalance"]})
+    _enable_target_weight_policy(data)
+    data["portfolio"]["symbols"]["AAA"]["volatility_weight"]["max_weight"] = 0.5
+    limits = data["strategies"]["regime_rebalance"]["target_weight_policy"]["symbols"][
+        "AAA"
+    ]
+    limits.update(bounds)
+    with pytest.raises(ValueError, match="do not overlap volatility bounds"):
+        Config(**data)
+
+    limits["clamp_to_volatility_bounds"] = False
+    config = Config(**data)
+    symbol_policy = config.strategies.regime_rebalance.target_weight_policy.symbols[
+        "AAA"
+    ]
+    for name, expected in bounds.items():
+        assert getattr(symbol_policy, name) == expected
 
 
 def test_target_weight_policy_rejects_unknown_provider() -> None:

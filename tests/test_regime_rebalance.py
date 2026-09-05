@@ -511,6 +511,8 @@ def _target_weight_policy(
     symbols: tuple[str, ...] = ("AAA",),
     min_multiplier: float = 0.8,
     max_multiplier: float = 1.1,
+    min_target_weight: float | None = None,
+    max_target_weight: float | None = None,
     clamp_to_volatility_bounds: bool = False,
     market_symbols: dict[str, SimpleNamespace] | None = None,
 ) -> SimpleNamespace:
@@ -529,6 +531,8 @@ def _target_weight_policy(
             symbol: SimpleNamespace(
                 min_multiplier=min_multiplier,
                 max_multiplier=max_multiplier,
+                min_target_weight=min_target_weight,
+                max_target_weight=max_target_weight,
                 clamp_to_volatility_bounds=clamp_to_volatility_bounds,
             )
             for symbol in symbols
@@ -1038,6 +1042,68 @@ async def test_external_target_weight_policy_can_target_all_cash(
     )
 
     assert orders == [("AAA", "NYSE", -2), ("BBB", "NYSE", -2)]
+
+
+@pytest.mark.asyncio
+async def test_model_target_bounds_preserve_smoothing_capital_base_and_trend(
+    portfolio_manager_with_db: Any, mocker: Any
+) -> None:
+    manager = portfolio_manager_with_db
+    manager.config.runtime.account.margin_usage = 1.25
+    regime = manager.config.strategies.regime_rebalance
+    regime.weight_base = RegimeRebalanceBaseEnum.net_liq_ex_options
+    regime.target_weight_policy = _target_weight_policy(
+        min_multiplier=0.5,
+        max_multiplier=1.2,
+        min_target_weight=0.20,
+        max_target_weight=0.55,
+        clamp_to_volatility_bounds=False,
+    )
+    symbol_config = manager.config.portfolio.symbols["AAA"]
+    symbol_config.volatility_weight = _volatility_weight(
+        target_vol=0.01, min_weight=0.25, max_weight=0.5, smoothing_factor=0.5
+    )
+    symbol_config.absolute_trend = _absolute_trend(
+        lookback_days=3, risk_off_multiplier=0.25
+    )
+    provider = _FixedTargetWeightProvider(0.5)
+    manager.external_decisions.replace("fixture", provider)
+    _mock_regime_tickers(manager, mocker)
+    _mock_regime_histories(
+        manager,
+        mocker,
+        {"AAA": [100.0, 100.0, 100.0, 90.0], "BBB": [100.0] * 4},
+    )
+    manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    positions = _regime_stock_positions(aaa=2, bbb=2)
+    positions["AAA"].append(_option_position("AAA", 1, market_value=200.0))
+
+    await manager.regime_engine.check_regime_rebalance_positions(
+        _regime_account_summary("2000"), positions
+    )
+
+    request = provider.requests[0].input
+    assert request["account"]["rebalance_base_value"] == pytest.approx(2250.0)
+    assert request["adjustment_constraints"]["AAA"] == {
+        "min_multiplier": 0.5,
+        "max_multiplier": 1.2,
+        "min_target_weight": 0.20,
+        "max_target_weight": 0.55,
+        "clamp_to_volatility_bounds": False,
+    }
+    # Volatility still smooths 50% toward its 25% floor, producing 37.5%.
+    volatility = manager.data_store.get_last_event_payload("volatility_weight_state")
+    assert volatility["symbols"]["AAA"]["effective_weight"] == pytest.approx(0.375)
+    assert volatility["symbols"]["AAA"]["smoothing_factor"] == 0.5
+    assert request["symbols"]["AAA"]["post_volatility_weight"] == pytest.approx(0.375)
+    policy = manager.data_store.get_last_event_payload(TARGET_WEIGHT_POLICY_STATE_EVENT)
+    assert policy["symbols"]["AAA"]["raw_weight"] == pytest.approx(0.1875)
+    assert policy["symbols"]["AAA"]["effective_weight"] == pytest.approx(0.20)
+    trend = manager.data_store.get_last_event_payload("absolute_trend_state")
+    assert trend["symbols"]["AAA"]["pre_trend_target"] == pytest.approx(0.20)
+    assert trend["symbols"]["AAA"]["final_target"] == pytest.approx(0.05)
+    assert symbol_config.volatility_weight.min_weight == 0.25
+    assert symbol_config.volatility_weight.smoothing_factor == 0.5
 
 
 @pytest.mark.asyncio

@@ -107,6 +107,8 @@
       "TQQQ": {
         "min_multiplier": 0.8,
         "max_multiplier": 1.1,
+        "min_target_weight": null,
+        "max_target_weight": null,
         "clamp_to_volatility_bounds": true
       }
     },

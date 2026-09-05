@@ -116,6 +116,18 @@ class TargetWeightPortfolioInput(DecisionInput):
 class MultiplierConstraints(DecisionInput):
     min_multiplier: float
     max_multiplier: float
+    min_target_weight: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Optional floor as a fraction of the regime capital base, before absolute trend.",
+    )
+    max_target_weight: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Optional ceiling as a fraction of the regime capital base, before absolute trend.",
+    )
     clamp_to_volatility_bounds: bool
 
 
@@ -234,10 +246,25 @@ def apply_target_weight_adjustments(
             raise ExternalDecisionError(
                 f"target weight policy produced an invalid weight for {symbol}"
             )
-        effective_weight = raw_weight
-        if policy.symbols[symbol].clamp_to_volatility_bounds:
-            minimum, maximum = volatility_bounds[symbol]
-            effective_weight = max(minimum, min(effective_weight, maximum))
+        limits = policy.symbols[symbol]
+        minimum = (
+            limits.min_target_weight if limits.min_target_weight is not None else 0.0
+        )
+        maximum = (
+            limits.max_target_weight
+            if limits.max_target_weight is not None
+            else math.inf
+        )
+        if limits.clamp_to_volatility_bounds:
+            volatility_minimum, volatility_maximum = volatility_bounds[symbol]
+            minimum = max(minimum, volatility_minimum)
+            maximum = min(maximum, volatility_maximum)
+        if minimum > maximum:
+            raise ExternalDecisionError(
+                f"target weight policy for {symbol} has target bounds that "
+                "do not overlap volatility bounds"
+            )
+        effective_weight = max(minimum, min(raw_weight, maximum))
         if effective_weight > 1:
             raise ExternalDecisionError(
                 f"target weight policy produced an invalid weight for {symbol}"

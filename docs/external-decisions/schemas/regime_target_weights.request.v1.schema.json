@@ -171,9 +171,39 @@
           "title": "Max Multiplier",
           "type": "number"
         },
+        "max_target_weight": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional ceiling as a fraction of the regime capital base, before absolute trend.",
+          "title": "Max Target Weight"
+        },
         "min_multiplier": {
           "title": "Min Multiplier",
           "type": "number"
+        },
+        "min_target_weight": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional floor as a fraction of the regime capital base, before absolute trend.",
+          "title": "Min Target Weight"
         }
       },
       "required": [

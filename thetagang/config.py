@@ -585,13 +585,24 @@ class Config(BaseModel, DisplayMixin):
             )
         for symbol, symbol_policy in policy.symbols.items():
             symbol_config = self.portfolio.symbols[symbol]
-            if symbol_policy.clamp_to_volatility_bounds and (
-                symbol_config.volatility_weight is None
-                or not symbol_config.volatility_weight.enabled
-            ):
+            if not symbol_policy.clamp_to_volatility_bounds:
+                continue
+            volatility = symbol_config.volatility_weight
+            if volatility is None or not volatility.enabled:
                 raise ValueError(
                     f"target weight policy for {symbol} requires enabled "
                     "volatility_weight when clamp_to_volatility_bounds=true"
+                )
+            if (
+                symbol_policy.min_target_weight is not None
+                and symbol_policy.min_target_weight > volatility.max_weight
+            ) or (
+                symbol_policy.max_target_weight is not None
+                and symbol_policy.max_target_weight < volatility.min_weight
+            ):
+                raise ValueError(
+                    f"target weight policy for {symbol} has target bounds that "
+                    "do not overlap volatility bounds"
                 )
         return self
 

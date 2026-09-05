@@ -861,13 +861,23 @@ class TargetWeightPolicySymbolConfig(BaseModel):
 
     min_multiplier: float = Field(default=0.0, ge=0.0)
     max_multiplier: float = Field(default=1.0, ge=0.0)
+    min_target_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_target_weight: float | None = Field(default=None, ge=0.0, le=1.0)
     clamp_to_volatility_bounds: bool = True
 
     @model_validator(mode="after")
-    def validate_multiplier_bounds(self) -> Self:
+    def validate_bounds(self) -> Self:
         if self.max_multiplier < self.min_multiplier:
             raise ValueError(
                 "target weight policy max_multiplier must be >= min_multiplier"
+            )
+        if (
+            self.min_target_weight is not None
+            and self.max_target_weight is not None
+            and self.max_target_weight < self.min_target_weight
+        ):
+            raise ValueError(
+                "target weight policy max_target_weight must be >= min_target_weight"
             )
         return self
 

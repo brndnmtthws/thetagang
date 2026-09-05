@@ -59,7 +59,8 @@ The `input` for `regime_target_weights` contains:
   symbol, along with shares, prices, values, the volatility configuration and
   calculation, the configured absolute-trend rule, and effective trading and
   minimum-order constraints.
-- The host-enforced multiplier constraints for adjustable symbols.
+- The host-enforced multiplier constraints and optional target-weight bounds for
+  adjustable symbols.
 - Aligned completed-session daily close history for the configured feature
   universe. All close arrays correspond exactly to the supplied `sessions`
   array. Data is fetched from IBKR as regular-trading-hours `TRADES` bars.
@@ -106,8 +107,25 @@ or otherwise malformed decisions. It then calculates the target itself:
 
 ```text
 raw target = post-volatility target * multiplier
-effective target = raw target clamped to configured volatility bounds
+effective target = raw target clamped to the enabled target and volatility bounds
+final target = effective target * absolute-trend multiplier
 ```
+
+Each symbol may set `min_target_weight` and/or `max_target_weight`, independently
+of its multiplier limits and volatility configuration. These are absolute
+fractions of the strategy's configured capital base (`weight_base` with its
+resolved `margin_usage`), applied after multiplication and before absolute trend.
+Each omitted bound imposes no additional limit. Bounds must be finite values in
+`[0, 1]`, and the minimum cannot exceed the maximum. The original volatility
+calculation, bounds, and smoothing state remain unchanged.
+
+`clamp_to_volatility_bounds = true` retains the original volatility clamp as
+well: the effective interval is the intersection of the two sets of bounds.
+Conflicting intervals are rejected. Set it to `false` to let the external policy
+use a wider target interval. For example, with IBIT target bounds `[0.10, 0.36]`,
+`0.1875 * 0.50` is floored from `0.09375` to `0.10`. Absolute trend can subsequently
+reduce the target below this floor. These bounds apply to accepted external
+adjustments; `on_error = "baseline"` still uses the post-volatility baseline.
 
 By default an external decision may fill unused allocation up to 100%, but it
 cannot increase total exposure beyond the larger of 100% or the pre-decision
@@ -192,9 +210,18 @@ max_signal_age_sessions = 0
 # max_total_weight = 1.10
 
 [strategies.regime_rebalance.target_weight_policy.symbols.TQQQ]
-min_multiplier = 0.80
-max_multiplier = 1.10
-clamp_to_volatility_bounds = true
+min_multiplier = 0.50
+max_multiplier = 1.20
+min_target_weight = 0.15
+max_target_weight = 0.55
+clamp_to_volatility_bounds = false
+
+[strategies.regime_rebalance.target_weight_policy.symbols.IBIT]
+min_multiplier = 0.50
+max_multiplier = 1.20
+min_target_weight = 0.10
+max_target_weight = 0.36
+clamp_to_volatility_bounds = false
 
 [strategies.regime_rebalance.target_weight_policy.market_data]
 lookback_days = 252
@@ -283,8 +310,9 @@ time and prints the time it used. Use `--at` to reproduce validation at a later
 instant, including expiry during inference. Historical replay does not establish
 that a signal is fresh today. `--max-signal-age-sessions` defaults to `0` and
 `--weight-epsilon` to `1e-8`; set these to the deployment's policy age limit and
-regime `eps` when they differ. Multiplier limits and volatility bounds come from
-the saved request.
+regime `eps` when they differ. Multiplier limits, optional target bounds, and
+volatility bounds come from the saved request. The checker applies the same
+clamps and aggregate exposure ceiling as live planning.
 
 A successful check prints JSON and exits `0`. Invalid requests, failed commands,
 and rejected responses exit nonzero; the checker does not hide errors behind the
