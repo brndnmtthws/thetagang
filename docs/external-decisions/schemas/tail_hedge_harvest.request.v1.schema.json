@@ -7,6 +7,7 @@
         "closes": {
           "additionalProperties": {
             "items": {
+              "exclusiveMinimum": 0,
               "type": "number"
             },
             "type": "array"
@@ -29,6 +30,7 @@
           "type": "boolean"
         },
         "sessions": {
+          "description": "Unique sessions ordered oldest to newest.",
           "items": {
             "format": "date",
             "type": "string"
@@ -941,12 +943,12 @@
     },
     "schema_version": {
       "const": 1,
-      "default": 1,
       "title": "Schema Version",
       "type": "integer"
     }
   },
   "required": [
+    "schema_version",
     "request_id",
     "decision_type",
     "generated_at",

@@ -7,7 +7,7 @@ import signal
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -30,9 +30,16 @@ class ExternalDecisionEnvelope(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = EXTERNAL_DECISION_SCHEMA_VERSION
+    schema_version: Literal[1]
     request_id: str = Field(..., min_length=1)
     decision_type: str = Field(..., min_length=1)
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def require_integer_schema_version(cls, value: Any) -> int:
+        if type(value) is not int:
+            raise ValueError("schema_version must be an integer")
+        return value
 
 
 class ExternalDecisionRequestEnvelope(ExternalDecisionEnvelope):
@@ -64,12 +71,20 @@ class ExternalDecisionMarketData(DecisionInput):
     timeframe: str
     what_to_show: str = "TRADES"
     regular_trading_hours_only: bool = True
-    sessions: list[date] = Field(..., min_length=1)
-    closes: dict[str, list[float]] = Field(..., min_length=1)
+    sessions: list[date] = Field(
+        ..., min_length=1, description="Unique sessions ordered oldest to newest."
+    )
+    closes: dict[str, list[Annotated[float, Field(gt=0, strict=True)]]] = Field(
+        ..., min_length=1
+    )
     primary_exchanges: dict[str, str] = Field(..., min_length=1)
 
     @model_validator(mode="after")
     def validate_alignment(self) -> ExternalDecisionMarketData:
+        if any(
+            earlier >= later for earlier, later in zip(self.sessions, self.sessions[1:])
+        ):
+            raise ValueError("market data sessions must be strictly increasing")
         symbols = set(self.closes)
         if symbols != set(self.primary_exchanges):
             raise ValueError("market data symbols and exchanges must match")
@@ -115,6 +130,7 @@ def build_external_decision_request(
     input_data: dict[str, Any],
 ) -> ExternalDecisionRequest:
     return ExternalDecisionRequest(
+        schema_version=EXTERNAL_DECISION_SCHEMA_VERSION,
         request_id=str(uuid4()),
         decision_type=decision_type,
         generated_at=generated_at,

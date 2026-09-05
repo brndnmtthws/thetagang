@@ -105,12 +105,12 @@
     },
     "schema_version": {
       "const": 1,
-      "default": 1,
       "title": "Schema Version",
       "type": "integer"
     }
   },
   "required": [
+    "schema_version",
     "request_id",
     "decision_type",
     "as_of_session",

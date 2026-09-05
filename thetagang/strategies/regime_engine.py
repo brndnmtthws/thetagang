@@ -2350,6 +2350,11 @@ class RegimeRebalanceEngine:
         policy: TargetWeightPolicyConfig,
         error: str,
     ) -> tuple[dict[str, float], dict[str, dict[str, Any]]]:
+        # A failed application invalidates the signal for the rest of this run,
+        # just like a failed response. Replanning must not revive rejected risk.
+        self._target_weight_policy_outcome = _TargetWeightPolicyOutcome(
+            adjustments=None, response=None, error=error
+        )
         if policy.on_error == "abort":
             raise RuntimeError(
                 f"External target weight policy failed: {error}"

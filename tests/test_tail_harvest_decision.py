@@ -20,6 +20,7 @@ def _response(
     as_of_session: date | None = date(2026, 9, 2),
 ) -> ExternalDecisionResponse:
     return ExternalDecisionResponse(
+        schema_version=1,
         request_id="request-1",
         decision_type="tail_hedge_harvest",
         as_of_session=as_of_session,

@@ -45,6 +45,20 @@ def test_response_contract_rejects_coerced_decisions(
         CONTRACT_MODELS[f"{decision}.response"].model_validate(response)
 
 
+@pytest.mark.parametrize("name", CONTRACT_MODELS)
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 2])
+def test_contract_requires_explicit_integer_schema_version(
+    name: str, version: object
+) -> None:
+    payload = json.loads((EXAMPLES / f"{name}.json").read_text())
+    if version is None:
+        del payload["schema_version"]
+    else:
+        payload["schema_version"] = version
+    with pytest.raises(ValueError, match="schema_version"):
+        CONTRACT_MODELS[name].model_validate(payload)
+
+
 @pytest.mark.parametrize("decision", DECISIONS)
 def test_reference_provider_runs_with_only_standard_library(decision: str) -> None:
     result = CliRunner().invoke(
@@ -197,6 +211,24 @@ def test_invalid_request_is_rejected_before_provider_execution(
     assert result.exit_code == 1
     assert "align with sessions" in result.output
     assert "could not be started" not in result.output
+
+
+@pytest.mark.parametrize("decision", DECISIONS)
+@pytest.mark.parametrize("failure", ["duplicate", "unsorted", "zero", "negative"])
+def test_replay_rejects_invalid_market_history(
+    tmp_path: Path, decision: str, failure: str
+) -> None:
+    request = json.loads((EXAMPLES / f"{decision}.request.json").read_text())
+    history = request["input"]["market_data"]
+    if failure == "duplicate":
+        history["sessions"][-1] = history["sessions"][-2]
+    elif failure == "unsorted":
+        history["sessions"].reverse()
+    else:
+        history["closes"]["TQQQ"][-1] = 0.0 if failure == "zero" else -1.0
+    result = replay(tmp_path, decision=decision, request=request)
+    assert result.exit_code == 1
+    assert "strictly increasing" in result.output or "greater than 0" in result.output
 
 
 def test_contract_rejects_missing_nested_context(tmp_path: Path) -> None:

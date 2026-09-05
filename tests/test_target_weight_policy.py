@@ -31,6 +31,7 @@ def _response(
     symbol: str = "TQQQ",
 ) -> ExternalDecisionResponse:
     return ExternalDecisionResponse(
+        schema_version=1,
         request_id="request-1",
         decision_type="regime_target_weights",
         as_of_session=as_of_session,

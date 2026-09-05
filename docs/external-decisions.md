@@ -46,7 +46,8 @@ Every request uses a generic versioned envelope:
 ```
 
 All envelope datetimes must include a UTC offset. ThetaGang emits
-`generated_at` in UTC.
+`generated_at` in UTC. Both requests and responses must explicitly include
+`schema_version` as the integer `1`; omitted or coerced versions are rejected.
 
 The `input` for `regime_target_weights` contains:
 
@@ -121,6 +122,9 @@ run. This prevents a tail-harvest replan from receiving a different model signal
 mid-execution.
 Its expiry is checked again before reuse; an expired decision follows the
 configured failure policy without invoking the provider again.
+Any response or target-application failure keeps the hook in its configured
+failure behavior for the rest of that run, even if later baseline weights would
+make a rejected adjustment fit within the exposure ceiling.
 
 ## Tail-harvest decision
 
@@ -304,7 +308,7 @@ fields (`expires_at` and `reason`) may be omitted or null.
 | Stock values, capital bases, costs, proceeds and P&L | Monetary amounts in the host/broker accounting units. Account metrics retain broker units; `Cushion` is a fraction. The decision adapter performs no currency conversion. |
 | Option `limit_price`, `quoted_limit_price`, `entry_limit_price` | Quote price before the contract multiplier. Per-contract proceeds/cost fields already include it. Multiply by contract quantity for totals. |
 | `current_shares`, broker `shares`, option `quantity` | Stock share counts and option contract counts respectively. `state_owned_quantity` may be less than the full broker position. |
-| `sessions` and `closes` | Strictly aligned completed-session history, ordered oldest to newest. A history lookback of N returns normally supplies N+1 closes. No intraday bars are included. |
+| `sessions` and `closes` | Strictly aligned completed-session history with unique sessions ordered oldest to newest and finite positive numeric closes. A history lookback of N returns normally supplies N+1 closes. No intraday bars are included. |
 | Lookbacks, cooldowns and signal age | Trading-session counts. DTE settings use calendar days. Option `expiration` is an IBKR `YYYYMMDD` string. |
 | Volatility settings/calculations | Annualized fractional volatility, using 252 trading days. Smoothing factors and efficiency values are dimensionless fractions; choppiness and ratio drift statistics are dimensionless. |
 | Datetimes and snapshot context | Offset-aware instants; requests emit `generated_at` in UTC. It is the assembly time, not a guarantee that every broker observation arrived simultaneously. |

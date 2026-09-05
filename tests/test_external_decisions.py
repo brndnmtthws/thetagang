@@ -16,6 +16,7 @@ from thetagang.external_decisions import (
 
 def _request() -> ExternalDecisionRequest:
     return ExternalDecisionRequest(
+        schema_version=1,
         request_id="request-1",
         decision_type="test_decision",
         generated_at=datetime(2026, 9, 3, tzinfo=UTC),
@@ -27,6 +28,7 @@ def _request() -> ExternalDecisionRequest:
 def test_external_request_requires_timezone() -> None:
     with pytest.raises(ValueError, match="generated_at must include a timezone"):
         ExternalDecisionRequest(
+            schema_version=1,
             request_id="request-1",
             decision_type="test_decision",
             generated_at=datetime(2026, 9, 3),  # noqa: DTZ001
@@ -177,7 +179,7 @@ async def main():
         command=[sys.executable, '-c', scripts[failure]],
         max_response_bytes=1024, timeout_seconds=0.3 if failure != 'stdout' else 1,
     ))
-    request = ExternalDecisionRequest(request_id='test', decision_type='test',
+    request = ExternalDecisionRequest(schema_version=1, request_id='test', decision_type='test',
         generated_at=datetime.now(UTC), dry_run=True, input={})
     start = time.monotonic()
     task = asyncio.create_task(provider.decide(request))

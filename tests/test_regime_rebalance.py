@@ -75,6 +75,7 @@ class _FixedTargetWeightProvider:
         self.requests.append(request)
         sessions = request.input["market_data"]["sessions"]
         return ExternalDecisionResponse(
+            schema_version=1,
             request_id=request.request_id,
             decision_type=request.decision_type,
             as_of_session=sessions[-1],
@@ -104,6 +105,7 @@ class _FixedTailHarvestProvider:
         self.requests.append(request)
         sessions = request.input["market_data"]["sessions"]
         return ExternalDecisionResponse(
+            schema_version=1,
             request_id=request.request_id,
             decision_type=request.decision_type,
             as_of_session=sessions[-1],
@@ -1114,6 +1116,56 @@ def test_external_target_weight_policy_converts_naive_local_time_to_utc(
     assert portfolio_manager.regime_engine._as_utc(local_time) == (
         local_time.astimezone(UTC)
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("on_error", ["baseline", "abort"])
+@pytest.mark.parametrize("initially_accepted", [False, True])
+async def test_rejected_target_weights_stay_rejected_until_next_run(
+    portfolio_manager: Any,
+    mocker: Any,
+    on_error: str,
+    initially_accepted: bool,
+) -> None:
+    engine = portfolio_manager.regime_engine
+    policy = _target_weight_policy()
+    policy.on_error = on_error
+    portfolio_manager.config.strategies.regime_rebalance.target_weight_policy = policy
+    provider = _FixedTargetWeightProvider(1.1)
+    portfolio_manager.external_decisions.replace("fixture", provider)
+    engine._get_regime_aligned_closes = mocker.AsyncMock(
+        return_value=(
+            _required_regime_history_dates(4),
+            {"AAA": [100.0] * 4, "BBB": [100.0] * 4},
+        )
+    )
+    context = _target_weight_policy_context(portfolio_manager)
+    baseline = {"AAA": 0.4, "BBB": 0.5}
+    if initially_accepted:
+        weights, _ = await engine._apply_target_weight_policy(baseline, **context)
+        assert weights["AAA"] == pytest.approx(0.44)
+
+    # Reject the cached multiplier when its targets exceed the exposure ceiling.
+    # A later post-fill replan must retain that failure even if the new baseline
+    # would make the same multiplier affordable again.
+    for current_baseline in ({"AAA": 0.5, "BBB": 0.5}, baseline):
+        if on_error == "abort":
+            with pytest.raises(RuntimeError, match="permitted total weight"):
+                await engine._apply_target_weight_policy(current_baseline, **context)
+        else:
+            weights, details = await engine._apply_target_weight_policy(
+                current_baseline, **context
+            )
+            assert weights == current_baseline
+            assert details["AAA"]["status"] == "baseline"
+            assert details["AAA"]["risk_ready"] is False
+    assert len(provider.requests) == 1
+
+    engine.begin_run()
+    weights, details = await engine._apply_target_weight_policy(baseline, **context)
+    assert weights["AAA"] == pytest.approx(0.44)
+    assert details["AAA"]["risk_ready"] is True
+    assert len(provider.requests) == 2
 
 
 @pytest.mark.asyncio
