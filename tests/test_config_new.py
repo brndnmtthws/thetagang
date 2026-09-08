@@ -603,7 +603,7 @@ def test_symbol_absolute_trend_defaults_disabled() -> None:
     assert absolute_trend.enabled is False
     assert absolute_trend.lookback_days == 168
     assert absolute_trend.risk_off_multiplier == pytest.approx(0.15)
-    assert absolute_trend.risk_off_ramp_width == pytest.approx(0.10)
+    assert absolute_trend.risk_off_ramp_width == pytest.approx(0.0)
 
 
 @pytest.mark.parametrize("width", [-0.1, 1.1, float("nan"), float("inf")])

@@ -565,7 +565,7 @@ daily_stddev_window = "30 D"
   # lookback_days = 168
   # risk_off_multiplier = 0.25
   # Ramp from 1.0 at the lower of the moving average and lookback reference
-  # to the floor 10% below it. Set width to 0 for the original step reduction.
+  # to the floor 10% below it. Width defaults to 0 (original step reduction).
   # risk_off_ramp_width = 0.10
   # The target DTE may also be specified per-symbol, and takes precedence over
   # `target.dte`

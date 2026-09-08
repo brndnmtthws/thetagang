@@ -14,6 +14,13 @@
         "risk_off_multiplier": {
           "title": "Risk Off Multiplier",
           "type": "number"
+        },
+        "risk_off_ramp_width": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Risk Off Ramp Width",
+          "type": "number"
         }
       },
       "required": [

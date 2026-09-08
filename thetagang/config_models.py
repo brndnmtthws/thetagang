@@ -758,7 +758,7 @@ class SymbolConfig(BaseModel):
         enabled: bool = Field(default=False)
         lookback_days: int = Field(default=168, ge=2)
         risk_off_multiplier: float = Field(default=0.15, ge=0.0, le=1.0)
-        risk_off_ramp_width: float = Field(default=0.10, ge=0.0, le=1.0)
+        risk_off_ramp_width: float = Field(default=0.0, ge=0.0, le=1.0)
 
     weight: float = Field(..., ge=0, le=1)
     primary_exchange: str = Field(default="", min_length=1)

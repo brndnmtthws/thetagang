@@ -1085,6 +1085,9 @@ async def test_model_target_bounds_preserve_smoothing_capital_base_and_trend(
     )
 
     request = provider.requests[0].input
+    assert request["symbols"]["AAA"]["absolute_trend"][
+        "risk_off_ramp_width"
+    ] == pytest.approx(0.10)
     assert request["account"]["rebalance_base_value"] == pytest.approx(2250.0)
     assert request["adjustment_constraints"]["AAA"] == {
         "min_multiplier": 0.5,

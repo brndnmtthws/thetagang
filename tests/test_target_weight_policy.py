@@ -8,10 +8,18 @@ from thetagang.external_decisions import (
     ExternalDecisionResponse,
 )
 from thetagang.target_weight_policy import (
+    AbsoluteTrendInput,
     TargetWeightMultiplier,
     apply_target_weight_adjustments,
     validate_target_weight_response,
 )
+
+
+def test_absolute_trend_request_defaults_to_cliff() -> None:
+    trend = AbsoluteTrendInput.model_validate(
+        {"enabled": True, "lookback_days": 250, "risk_off_multiplier": 0.25}
+    )
+    assert trend.risk_off_ramp_width == 0.0
 
 
 def _policy() -> TargetWeightPolicyConfig:
