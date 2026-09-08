@@ -68,6 +68,11 @@ The `input` for `regime_target_weights` contains:
 Explicit primary-exchange overrides use separate persistent history entries,
 so missing API bars cannot be filled with another listing's cached prices.
 
+The absolute-trend configuration includes `risk_off_ramp_width` (default `0.0`
+for the original step reduction). Providers can require an explicit host ramp,
+such as `0.10`, when validating their strategy configuration. ThetaGang applies
+the ramp after the provider multiplier; providers must not apply it themselves.
+
 The listed TQQQ sizing features—returns, moving-average distance, trend,
 realized volatility, volatility acceleration, drawdown, close-based choppiness,
 efficiency, relative trends, correlations, and PCA concentration—can all be

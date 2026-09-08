@@ -50,6 +50,7 @@ class AbsoluteTrendInput(DecisionInput):
     enabled: bool
     lookback_days: int
     risk_off_multiplier: float
+    risk_off_ramp_width: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ExecutionConstraints(DecisionInput):

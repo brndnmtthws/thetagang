@@ -285,10 +285,19 @@ class _AbsoluteTrendSignal:
         *,
         pre_trend_target: float,
         risk_off_multiplier: float,
+        risk_off_ramp_width: float,
         history_source: str,
         history_failure: str | None = None,
     ) -> dict[str, Any]:
         applied_multiplier = risk_off_multiplier if self.risk_off else 1.0
+        if self.risk_off and risk_off_ramp_width > 0:
+            # Both trend conditions must weaken before reaching the floor.
+            threshold = min(self.moving_average, self.momentum_reference_close)
+            depth = (threshold - self.latest_close) / threshold
+            progress = min(depth / risk_off_ramp_width, 1.0)
+            applied_multiplier = max(
+                risk_off_multiplier, 1.0 - (1.0 - risk_off_multiplier) * progress
+            )
         details: dict[str, Any] = {
             "lookback_days": self.lookback_days,
             "latest_session": self.latest_session,
@@ -2573,6 +2582,7 @@ class RegimeRebalanceEngine:
             details = signal.target_details(
                 pre_trend_target=adjusted_weights[symbol],
                 risk_off_multiplier=float(trend_configs[symbol].risk_off_multiplier),
+                risk_off_ramp_width=float(trend_configs[symbol].risk_off_ramp_width),
                 history_source=history_source,
                 history_failure=history_failure,
             )

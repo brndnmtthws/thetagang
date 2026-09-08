@@ -564,12 +564,14 @@ def _absolute_trend(
     *,
     lookback_days: int = 168,
     risk_off_multiplier: float = 0.15,
+    risk_off_ramp_width: float = 0.10,
     enabled: bool = True,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         enabled=enabled,
         lookback_days=lookback_days,
         risk_off_multiplier=risk_off_multiplier,
+        risk_off_ramp_width=risk_off_ramp_width,
     )
 
 
@@ -1072,7 +1074,7 @@ async def test_model_target_bounds_preserve_smoothing_capital_base_and_trend(
     _mock_regime_histories(
         manager,
         mocker,
-        {"AAA": [100.0, 100.0, 100.0, 90.0], "BBB": [100.0] * 4},
+        {"AAA": [100.0, 100.0, 100.0, 95.0], "BBB": [100.0] * 4},
     )
     manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
     positions = _regime_stock_positions(aaa=2, bbb=2)
@@ -1083,6 +1085,9 @@ async def test_model_target_bounds_preserve_smoothing_capital_base_and_trend(
     )
 
     request = provider.requests[0].input
+    assert request["symbols"]["AAA"]["absolute_trend"][
+        "risk_off_ramp_width"
+    ] == pytest.approx(0.10)
     assert request["account"]["rebalance_base_value"] == pytest.approx(2250.0)
     assert request["adjustment_constraints"]["AAA"] == {
         "min_multiplier": 0.5,
@@ -1101,7 +1106,7 @@ async def test_model_target_bounds_preserve_smoothing_capital_base_and_trend(
     assert policy["symbols"]["AAA"]["effective_weight"] == pytest.approx(0.20)
     trend = manager.data_store.get_last_event_payload("absolute_trend_state")
     assert trend["symbols"]["AAA"]["pre_trend_target"] == pytest.approx(0.20)
-    assert trend["symbols"]["AAA"]["final_target"] == pytest.approx(0.05)
+    assert trend["symbols"]["AAA"]["final_target"] == pytest.approx(0.125)
     assert symbol_config.volatility_weight.min_weight == 0.25
     assert symbol_config.volatility_weight.smoothing_factor == 0.5
 
@@ -2142,10 +2147,48 @@ async def test_absolute_trend_risk_boundaries(
         history_cache,
     )
 
-    expected_multiplier = 0.15 if expected_risk_off else 1.0
+    expected_multiplier = 0.915 if expected_risk_off else 1.0
     assert details["AAA"]["risk_off"] is expected_risk_off
     assert details["AAA"]["applied_multiplier"] == pytest.approx(expected_multiplier)
     assert weights["AAA"] == pytest.approx(0.4 * expected_multiplier)
+
+
+@pytest.mark.parametrize(
+    "closes, width, floor, expected",
+    [
+        ([100.0, 100.0, 100.0, 105.0], 0.10, 0.25, 1.0),
+        ([100.0, 100.0, 100.0, 100.0], 0.10, 0.25, 1.0),
+        ([100.0, 100.0, 100.0, 99.0], 0.10, 0.25, 0.925),
+        ([100.0, 100.0, 100.0, 95.0], 0.10, 0.25, 0.625),
+        ([110.0, 95.0, 95.0, 95.0], 0.10, 0.25, 0.625),
+        ([100.0, 115.0, 115.0, 95.0], 0.10, 0.25, 0.625),
+        ([100.0, 100.0, 100.0, 90.0], 0.10, 0.25, 0.25),
+        ([100.0, 100.0, 100.0, 80.0], 0.10, 0.25, 0.25),
+        ([100.0, 100.0, 100.0, 99.0], 0.0, 0.25, 0.25),
+        ([100.0, 100.0, 100.0, 95.0], 0.10, 0.0, 0.5),
+        ([100.0, 100.0, 100.0, 90.0], 0.10, 0.0, 0.0),
+        ([100.0, 100.0, 100.0, 95.0], 0.10, 1.0, 1.0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_absolute_trend_ramp(
+    portfolio_manager: Any,
+    mocker: Any,
+    closes: list[float],
+    width: float,
+    floor: float,
+    expected: float,
+) -> None:
+    portfolio_manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3, risk_off_multiplier=floor, risk_off_ramp_width=width
+    )
+    weights, details = await portfolio_manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4, "BBB": 0.5},
+        portfolio_manager.config.portfolio.symbols,
+        _absolute_trend_history_cache(mocker, closes, lookback_days=3),
+    )
+    assert details["AAA"]["applied_multiplier"] == pytest.approx(expected)
+    assert weights == pytest.approx({"AAA": 0.4 * expected, "BBB": 0.5})
 
 
 @pytest.mark.parametrize(
@@ -2257,13 +2300,14 @@ async def test_regime_history_cache_keys_primary_exchange_overrides(mocker):
     )
 
 
+@pytest.mark.parametrize("width, expected_target", [(0.10, 0.06), (0.20, 0.23)])
 @pytest.mark.asyncio
 async def test_absolute_trend_reuses_persisted_state_when_history_fails(
-    portfolio_manager_with_db, mocker
+    portfolio_manager_with_db, mocker, width: float, expected_target: float
 ):
     portfolio_manager_with_db.config.portfolio.symbols[
         "AAA"
-    ].absolute_trend = _absolute_trend()
+    ].absolute_trend = _absolute_trend(risk_off_ramp_width=width)
     portfolio_manager_with_db.data_store.record_event(
         "absolute_trend_state",
         {"symbols": {"AAA": _absolute_trend_signal_payload()}},
@@ -2281,7 +2325,7 @@ async def test_absolute_trend_reuses_persisted_state_when_history_fails(
         history_cache,
     )
 
-    assert weights["AAA"] == pytest.approx(0.06)
+    assert weights["AAA"] == pytest.approx(expected_target)
     assert details["AAA"]["risk_off"] is True
     assert details["AAA"]["history_source"] == "persisted"
 

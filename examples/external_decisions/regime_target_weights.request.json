@@ -70,7 +70,8 @@
         "absolute_trend": {
           "enabled": true,
           "lookback_days": 168,
-          "risk_off_multiplier": 0.15
+          "risk_off_multiplier": 0.15,
+          "risk_off_ramp_width": 0.0
         },
         "execution_constraints": {
           "trading_allowed": true,
