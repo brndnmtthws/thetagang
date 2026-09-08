@@ -579,6 +579,7 @@ def test_symbol_accepts_absolute_trend_config() -> None:
         "enabled": True,
         "lookback_days": 168,
         "risk_off_multiplier": 0.15,
+        "risk_off_ramp_width": 0.20,
     }
 
     config = Config(**data)
@@ -588,6 +589,7 @@ def test_symbol_accepts_absolute_trend_config() -> None:
     assert absolute_trend.enabled is True
     assert absolute_trend.lookback_days == 168
     assert absolute_trend.risk_off_multiplier == pytest.approx(0.15)
+    assert absolute_trend.risk_off_ramp_width == pytest.approx(0.20)
 
 
 def test_symbol_absolute_trend_defaults_disabled() -> None:
@@ -601,12 +603,24 @@ def test_symbol_absolute_trend_defaults_disabled() -> None:
     assert absolute_trend.enabled is False
     assert absolute_trend.lookback_days == 168
     assert absolute_trend.risk_off_multiplier == pytest.approx(0.15)
+    assert absolute_trend.risk_off_ramp_width == pytest.approx(0.10)
+
+
+@pytest.mark.parametrize("width", [-0.1, 1.1, float("nan"), float("inf")])
+def test_symbol_absolute_trend_rejects_invalid_ramp_width(width: float) -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["absolute_trend"] = {
+        "risk_off_ramp_width": width,
+    }
+    with pytest.raises(ValueError, match="risk_off_ramp_width"):
+        Config(**data)
 
 
 def test_symbol_absolute_trend_allows_zero_risk_off_multiplier() -> None:
     data = _base_config({"strategies": ["wheel"]})
     data["portfolio"]["symbols"]["AAA"]["absolute_trend"] = {
         "risk_off_multiplier": 0.0,
+        "risk_off_ramp_width": 0.0,
     }
 
     config = Config(**data)
@@ -614,6 +628,7 @@ def test_symbol_absolute_trend_allows_zero_risk_off_multiplier() -> None:
     absolute_trend = config.portfolio.symbols["AAA"].absolute_trend
     assert absolute_trend is not None
     assert absolute_trend.risk_off_multiplier == pytest.approx(0.0)
+    assert absolute_trend.risk_off_ramp_width == pytest.approx(0.0)
 
 
 def _enable_target_weight_policy(data: dict[str, Any]) -> None:
