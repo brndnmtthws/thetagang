@@ -1361,7 +1361,8 @@ async def test_exchange_override_history_does_not_mix_persisted_listings(
     assert prices == {"AAA": [200.0] * 4}
 
     manager.ibkr.ib.reqHistoricalDataAsync.return_value = []
-    # Exercise the persistent fallback, bypassing the per-plan memory cache.
+    # Exercise persistent recovery in a new run for both listings.
+    manager.regime_engine.begin_run()
     _, default_prices = await manager.regime_engine._get_regime_aligned_closes(
         ["AAA"],
         3,
@@ -6441,3 +6442,86 @@ async def test_volatility_sizing_failure_blocks_harvest_but_not_regime_order(
     assert orders == [("AAA", "NYSE", -1), ("BBB", "NYSE", 2)]
     assert portfolio_manager.orders.records() == []
     portfolio_manager.ibkr.get_ticker_for_contract.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_history_fetches_maximum_window_and_serves_overlaps(
+    portfolio_manager, mocker
+):
+    engine = portfolio_manager.regime_engine
+    config = portfolio_manager.config
+    config.portfolio.symbols["AAA"].volatility_weight = _volatility_weight(
+        lookback_days=4
+    )
+    config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(lookback_days=6)
+    policy = _target_weight_policy()
+    policy.market_data.lookback_days = 8
+    config.strategies.regime_rebalance.target_weight_policy = policy
+    dates = [date(2026, 8, 3) + timedelta(days=i) for i in range(9)]
+    mocker.patch.object(
+        engine, "_get_required_history_dates", side_effect=lambda n: dates[-n:]
+    )
+    mocker.patch.object(engine, "_now", return_value=datetime(2026, 8, 12, tzinfo=UTC))
+    bars = [SimpleNamespace(date=d, close=100.0 + i) for i, d in enumerate(dates)]
+    bars.append(SimpleNamespace(date=date(2026, 8, 12), close=999.0))
+    portfolio_manager.ibkr.request_historical_data = mocker.AsyncMock(return_value=bars)
+
+    await engine._get_regime_aligned_closes(["AAA"], 4, 0)
+    market = await engine._load_external_market_data(
+        market_data_config=policy.market_data,
+        strategy_symbols=["AAA", "BBB"],
+        symbol_configs=config.portfolio.symbols,
+        decision_name="test",
+    )
+    assert market.sessions == dates
+    assert market.closes == {
+        "AAA": [100.0 + i for i in range(9)],
+        "BBB": [100.0 + i for i in range(9)],
+    }
+    assert await engine._get_regime_aligned_closes(["BBB", "AAA"], 6, 0) == (
+        dates[-7:],
+        {"BBB": [102.0 + i for i in range(7)], "AAA": [102.0 + i for i in range(7)]},
+    )
+    await engine._get_regime_aligned_closes(["AAA", "BBB"], 3, 2)
+    assert portfolio_manager.ibkr.request_historical_data.await_count == 2
+    assert {
+        call.args[1]
+        for call in portfolio_manager.ibkr.request_historical_data.await_args_list
+    } == {"10 D"}
+    await engine._get_regime_aligned_closes(
+        ["AAA"], 3, 0, primary_exchanges={"AAA": "NYSE"}
+    )
+    assert portfolio_manager.ibkr.request_historical_data.await_count == 2
+    engine.begin_run()
+    await engine._get_regime_aligned_closes(["AAA"], 4, 0)
+    assert portfolio_manager.ibkr.request_historical_data.await_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("complete", [True, False])
+async def test_run_history_reuses_sqlite_recovery_and_rejects_gaps(
+    portfolio_manager_with_db, mocker, complete
+):
+    manager = portfolio_manager_with_db
+    engine = manager.regime_engine
+    dates = [bar.date.date() for bar in _regime_bars([100.0] * 4)]
+    mocker.patch.object(
+        engine, "_get_required_history_dates", side_effect=lambda n: dates[-n:]
+    )
+    _seed_regime_history_cache(manager, [100.0] * (4 if complete else 3))
+    manager.ibkr.request_historical_data = mocker.AsyncMock(
+        return_value=_regime_bars([100.0])
+    )
+    if not complete:
+        for _ in range(2):
+            with pytest.raises(ValueError, match="fresh historical data"):
+                await engine._get_regime_aligned_closes(["AAA"], 3, 0)
+    else:
+        await engine._get_regime_aligned_closes(["AAA"], 3, 0)
+        read = mocker.spy(manager.data_store, "get_historical_bars")
+        assert await engine._get_regime_aligned_closes(["AAA"], 2, 0) == (
+            dates[-3:],
+            {"AAA": [100.0] * 3},
+        )
+        read.assert_not_called()
+    assert manager.ibkr.request_historical_data.await_count == 1

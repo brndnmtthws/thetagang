@@ -406,6 +406,9 @@ class RegimeRebalanceEngine:
         self.data_store = data_store
         self.external_decisions = external_decisions or ExternalDecisionProviders()
         self.dry_run = dry_run
+        self._history_closes: dict[
+            tuple[str, str], tuple[date, date, dict[date, float]]
+        ] = {}
         self._target_weight_policy_outcome: _TargetWeightPolicyOutcome | None = None
         self._get_primary_exchange = get_primary_exchange
         self._now = now_provider
@@ -424,9 +427,10 @@ class RegimeRebalanceEngine:
         self.regime_rebalance_order_ref_prefix = "tg:regime-rebalance"
 
     def begin_run(self) -> None:
-        """Clear decisions that may only be reused within one manager run."""
+        """Clear decisions and history that may only be reused within one run."""
 
         self._target_weight_policy_outcome = None
+        self._history_closes.clear()
 
     def _reserve_cash_for_post_management(self, amount: float) -> None:
         if self._set_reserved_cash_for_post_management is None:
@@ -1742,7 +1746,7 @@ class RegimeRebalanceEngine:
             aligned: list[float] = []
             for date_point in sorted_dates:
                 close = closes_by_symbol[symbol].get(date_point)
-                if close is None or math.isnan(close) or math.isclose(close, 0):
+                if close is None or not math.isfinite(close) or close <= 0:
                     log.error(
                         f"Invalid close for {symbol} on {date_point} (close={close})."
                     )
@@ -1981,25 +1985,6 @@ class RegimeRebalanceEngine:
         )
         return symbol, []
 
-    async def _fetch_regime_history_closes(
-        self,
-        symbols: list[str],
-        duration: str,
-        primary_exchanges: dict[str, str] | None = None,
-    ) -> ClosesBySymbol:
-        tasks: list[Coroutine[Any, Any, tuple[str, list[Any]]]] = [
-            self._fetch_regime_history_bars(
-                symbol,
-                duration,
-                (primary_exchanges or {}).get(symbol),
-            )
-            for symbol in symbols
-        ]
-        histories = await log.track_async(
-            tasks, description="Fetching regime rebalancing history..."
-        )
-        return {symbol: self._bars_to_closes(bars) for symbol, bars in histories}
-
     @staticmethod
     def _history_cache_symbol(symbol: str, primary_exchange: str | None) -> str:
         # The legacy cache is keyed by ticker alone. Explicit listing overrides
@@ -2046,6 +2031,14 @@ class RegimeRebalanceEngine:
             merged = dict(cached_closes)
             merged.update(api_closes_by_symbol[symbol])
             merged_closes_by_symbol[symbol] = merged
+            key = (
+                symbol,
+                (primary_exchanges or {}).get(symbol)
+                or self.get_primary_exchange(symbol),
+            )
+            if key in self._history_closes:
+                first, last, closes = self._history_closes[key]
+                self._history_closes[key] = (first, last, {**closes, **merged})
         return merged_closes_by_symbol
 
     def _recover_regime_history_from_cache(
@@ -2076,6 +2069,43 @@ class RegimeRebalanceEngine:
         )
         return (dates, aligned_closes)
 
+    def _required_symbol_lookback(self, symbol: str, exchange: str) -> int:
+        regime = self.config.strategies.regime_rebalance
+        lookback = 0
+        if symbol in regime.symbols and exchange == self.get_primary_exchange(symbol):
+            lookback = regime.lookback_days
+            symbol_config = resolve_symbol_configs(
+                self.config, context="regime history"
+            )[symbol]
+            for modifier in (
+                getattr(symbol_config, "volatility_weight", None),
+                getattr(symbol_config, "absolute_trend", None),
+            ):
+                if modifier is not None and modifier.enabled:
+                    lookback = max(lookback, modifier.lookback_days)
+        tail = self.config.strategies.tail_hedge
+        for policy, strategy_symbols in (
+            (getattr(regime, "target_weight_policy", None), regime.symbols),
+            (
+                getattr(tail, "harvest_decision", None),
+                [target.symbol for target in tail.targets],
+            ),
+        ):
+            if policy is None or not policy.enabled:
+                continue
+            market = policy.market_data
+            configured = market.symbols.get(symbol)
+            if configured is None and not (
+                market.include_strategy_symbols and symbol in strategy_symbols
+            ):
+                continue
+            policy_exchange = (
+                configured.primary_exchange.strip() if configured else ""
+            ) or self.get_primary_exchange(symbol)
+            if exchange == policy_exchange:
+                lookback = max(lookback, market.lookback_days)
+        return lookback
+
     async def _get_regime_aligned_closes(
         self,
         symbols: list[str],
@@ -2100,11 +2130,46 @@ class RegimeRebalanceEngine:
                 "Regime-aware rebalancing requires a valid history request window.",
                 cache_recoverable=False,
             )
-        duration = f"{calendar_days} D"
-        api_closes_by_symbol = await self._fetch_regime_history_closes(
-            symbols,
-            duration,
-            primary_exchanges,
+
+        async def load_symbol(symbol: str) -> tuple[str, dict[date, float]]:
+            exchange = (primary_exchanges or {}).get(
+                symbol
+            ) or self.get_primary_exchange(symbol)
+            key = (symbol, exchange)
+            lookback = max(
+                lookback_days, self._required_symbol_lookback(symbol, exchange)
+            )
+            fetch_dates = (
+                required_dates
+                if lookback == lookback_days
+                else self._get_required_history_dates(lookback + 1)
+            )
+            if not fetch_dates:
+                raise RegimeHistoryValidationError(
+                    "Regime-aware rebalancing requires completed session dates.",
+                    cache_recoverable=False,
+                )
+            cached = self._history_closes.get(key)
+            if (
+                cached is None
+                or cached[0] > fetch_dates[0]
+                or cached[1] != fetch_dates[-1]
+            ):
+                days = (self._now().date() - fetch_dates[0]).days + 1
+                _, bars = await self._fetch_regime_history_bars(
+                    symbol, f"{days} D", (primary_exchanges or {}).get(symbol)
+                )
+                closes = self._bars_to_closes(bars)
+                self._history_closes[key] = (fetch_dates[0], fetch_dates[-1], closes)
+            else:
+                closes = cached[2]
+            return symbol, closes
+
+        api_closes_by_symbol = dict(
+            await log.track_async(
+                [load_symbol(symbol) for symbol in dict.fromkeys(symbols)],
+                description="Fetching regime rebalancing history...",
+            )
         )
 
         try:

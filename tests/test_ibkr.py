@@ -608,3 +608,21 @@ async def test_cancel_order_is_blocked_in_dry_run(mock_ib):
     ibkr.cancel_order(order)
 
     mock_ib.cancelOrder.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("duration", "expected"),
+    [
+        ("364 D", "364 D"),
+        ("365 D", "365 D"),
+        ("366 D", "2 Y"),
+        ("730 D", "2 Y"),
+        ("731 D", "3 Y"),
+        ("2 Y", "2 Y"),
+    ],
+)
+async def test_historical_duration_boundaries(ibkr, mock_ib, duration, expected):
+    mock_ib.reqHistoricalDataAsync = AsyncMock(return_value=[])
+    await ibkr.request_historical_data(Stock("AAA", "SMART", "USD"), duration)
+    assert mock_ib.reqHistoricalDataAsync.await_args is not None
+    assert mock_ib.reqHistoricalDataAsync.await_args.args[2] == expected

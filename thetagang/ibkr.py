@@ -107,6 +107,9 @@ class IBKR:
         *,
         cache_symbol: str | None = None,
     ) -> BarDataList:
+        amount, unit = duration.split()
+        if unit == "D" and int(amount) > 365:
+            duration = f"{(int(amount) + 364) // 365} Y"
         bars = await self.ib.reqHistoricalDataAsync(
             contract,
             "",
