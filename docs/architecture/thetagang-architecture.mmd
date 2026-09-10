@@ -1,0 +1,55 @@
+flowchart TB
+    CLI["命令行入口<br/>entry.py → main.py"]
+    CFG["TOML 配置<br/>config_migration：版本迁移<br/>config / config_models：校验与解析"]
+    subgraph APP["ThetaGang · Python 进程"]
+        START["启动与生命周期<br/>thetagang.py<br/>本机账户锁 · 单轮执行 · 断线退出"]
+        RECOVER["启动对账<br/>挂单 / 完成订单 / 成交<br/>未解决结果阻断新提交"]
+        PM["PortfolioManager<br/>实际持仓 + 工作挂单 + 本轮意图<br/>按顺序调度策略阶段"]
+        subgraph STRATEGIES["策略层 · strategies/"]
+            OPT["OptionsStrategyEngine<br/>卖出 Put / Call · 展期 · 平仓"]
+            EQ["EquityRebalanceEngine<br/>股票买入 / 卖出再平衡"]
+            REG["RegimeRebalanceEngine<br/>市场状态门控 · 动态权重<br/>冷却期 · 现金预留"]
+            POST["PostStrategyEngine<br/>VIX 对冲 · 现金管理"]
+            EQ -->|委托决策| REG
+        end
+        SCAN["OptionChainScanner<br/>按到期日、Delta、价格筛选合约"]
+        QUEUE["OrderOperations → Orders<br/>构造限价单 · 记录订单意图<br/>暂存待提交订单"]
+        RISK["BatchRisk<br/>重复/反向订单 · 持仓与 Call 覆盖<br/>合计支出 · 实盘保证金预估<br/>未成交收入不补充可用资金"]
+        PREVIEW["模拟运行<br/>输出订单摘要"]
+        EXEC["实际提交与跟踪<br/>Trades.submit_order<br/>PortfolioManager.adjust_prices"]
+        BROKER["IBKR 适配层 · ibkr.py<br/>账户 / 持仓 · 行情 / 日线 · 期权链<br/>合约验证 · 下单 / 撤单 · 状态回调<br/>dry-run 阻断交易写操作"]
+        START --> RECOVER --> PM
+        RECOVER <--> BROKER
+        PM -->|阶段执行器| OPT
+        PM -->|阶段执行器| EQ
+        PM -->|阶段执行器| POST
+        OPT --> SCAN
+        POST --> SCAN
+        OPT --> QUEUE
+        EQ --> QUEUE
+        POST --> QUEUE
+        QUEUE --> RISK
+        RISK -->|dry-run：仅本地校验| PREVIEW
+        RISK -->|实盘通过全部检查| EXEC
+        EXEC -.->|调价重新校验| RISK
+        RISK <-->|账户刷新 / what-if| BROKER
+        PM -.->|统一提交与调价控制| EXEC
+        PM <-->|账户与持仓| BROKER
+        STRATEGIES -.->|查询市场数据| BROKER
+        SCAN --> BROKER
+        EXEC -->|提交 / 修改订单| BROKER
+    end
+    GW["TWS / IB Gateway"]
+    IB["Interactive Brokers<br/>账户 · 市场数据 · 交易执行"]
+    DB[("可选持久化 · DataStore<br/>SQLite + SQLAlchemy + Alembic<br/>运行记录 · 快照 · 订单与成交 · 历史行情")]
+    JOURNAL[("执行恢复日志 · ExecutionJournal<br/>独立 JSON 原子写入<br/>不依赖可选数据库")]
+    CLI --> START
+    CFG --> START
+    CFG -.->|阶段顺序与策略参数| PM
+    START -.->|IBC / Watchdog 启停与监护| GW
+    BROKER <-->|ib_async| GW
+    GW <--> IB
+    APP -.->|记录运行与交易数据| DB
+    REG <-.->|历史缓存与跨次运行状态| DB
+    EXEC -->|提交前先落盘| JOURNAL
+    JOURNAL --> RECOVER

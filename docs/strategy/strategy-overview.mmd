@@ -1,0 +1,106 @@
+flowchart TD
+    START([一次运行开始]) --> SNAP[读取账户快照<br/>持仓 · 工作挂单 · 本轮订单意图]
+    CFG[(TOML 配置<br/>权重 · 阈值 · DTE · Delta · 门控)] --> PLAN
+    SNAP --> PLAN[PortfolioManager<br/>按阶段顺序规划订单]
+
+    subgraph ORDER[固定阶段顺序]
+        direction LR
+        P[1 卖 Put]
+        C[2 卖 Call]
+        R[3 Regime 再平衡]
+        B[4 Buy-only 补仓]
+        S[5 Sell-only 减仓]
+        RO[6 展期]
+        CL[7 平仓]
+        V[8 VIX 对冲]
+        CA[9 现金管理]
+        P --> C --> R --> B --> S --> RO --> CL --> V --> CA
+    end
+
+    PLAN --> ORDER
+    CA --> PREF[整批风险检查<br/>重复/反向 · 覆盖 · 支出 · 保证金]
+    PREF -->|dry-run| PREVIEW[只输出订单摘要]
+    PREF -->|实盘通过| SUBMIT[先记录恢复日志<br/>再提交与连续调价]
+    SUBMIT --> BROKER[(IBKR / TWS / Gateway)]
+    BROKER --> NEXT([记录结果并结束本轮])
+
+    subgraph WHEEL[Wheel：期权收益与仓位转换]
+        direction TB
+        WT[目标金额 = 权重 × 购买力<br/>目标股数 = floor(目标金额 / 价格)]
+        WG{交易允许？<br/>方向门控？<br/>当日变动达阈值？}
+        WS[期权扫描器<br/>DTE · max DTE · Delta · 价格<br/>行权价 · 未平仓量]
+        WP[卖出 Put<br/>需要股数 - 100×净空头 Put]
+        WCQ[目标空头 Call<br/>cap_factor · target_floor · excess_only]
+        WCG{股票数、成本线、方向门控<br/>及阈值通过？}
+        WC[卖出 Covered Call]
+        WM[管理空头期权]
+        WMG{ITM / 超额 / DTE / P&L<br/>roll_when 与 close_at_pnl}
+        WR[组合展期<br/>BUY 旧合约 + SELL 新合约]
+        WX[平仓<br/>BUY 平空 / SELL 平多]
+        WT --> WG --> WS --> WP
+        WT --> WCQ --> WCG --> WS --> WC
+        WP --> WM
+        WC --> WM
+        WM --> WMG
+        WMG -->|展期| WR
+        WMG -->|止盈/关闭| WX
+    end
+    P -.-> WP
+    C -.-> WC
+    RO -.-> WR
+    CL -.-> WX
+
+    subgraph REGIME[Regime-aware：状态门控的股票再平衡]
+        direction TB
+        RB[资金基准<br/>net_liq / managed_stocks / net_liq_ex_options]
+        RW[有效权重<br/>可按波动率调整并归一化]
+        RD[相对漂移<br/>abs(当前权重/目标权重 - 1)]
+        RG{软带 / 硬带？<br/>冷却期？Choppiness？Efficiency？Ratio gate？}
+        RM{模式}
+        RH[硬再平衡<br/>可只回归 fraction]
+        RS[软再平衡<br/>仅状态和冷却通过]
+        RF[Flow<br/>超额现金 + 方向一致性]
+        DF[Deficit rail<br/>先卖超配，必要时跌破目标补缺口]
+        RR[股票订单 + 预留后置现金]
+        RB --> RW --> RD --> RG --> RM
+        RM --> RH --> RR
+        RM --> RS --> RR
+        RM --> RF --> RR
+        RM --> DF --> RR
+    end
+    R -.-> RB
+
+    subgraph POST[后置策略]
+        direction TB
+        VX{已有净多 VIX Call？<br/>VIX 是否超过平仓线？}
+        VXC[卖出 VIX Call]
+        VM[VIXMO 区间 allocation<br/>预算 = NLV × weight]
+        VXB[目标 Delta / DTE 扫描<br/>买入 VIX Call]
+        VX -->|是且过线| VXC
+        VX -->|否| VM --> VXB
+        CB[有效现金<br/>TotalCash + 待发生现金变动 - Regime 预留]
+        CG{超过目标+买入阈值？<br/>低于目标-卖出阈值？}
+        CF[买入/卖出现金基金]
+        CB --> CG --> CF
+    end
+    V -.-> VX
+    CA -.-> CB
+
+    subgraph EXCLUSIONS[互斥与例外]
+        E1[wheel 与 regime_rebalance 互斥]
+        E2[shares_only：跳过期权写入和展期]
+        E3[options_write_calls 依赖 options_write_puts]
+        E4[多头期权不由 Wheel 自动管理]
+    end
+    CFG -.-> EXCLUSIONS
+
+    classDef core fill:#eaf3f8,stroke:#527d95,color:#173044
+    classDef wheel fill:#fff3df,stroke:#c58a2b,color:#5b3b08
+    classDef regime fill:#f1ecfa,stroke:#8467a6,color:#35234e
+    classDef post fill:#e8f6ee,stroke:#4e9870,color:#173b26
+    classDef risk fill:#f8ecec,stroke:#ae6262,color:#4f2222
+    class START,SNAP,PLAN,ORDER,P,C,R,B,S,RO,CL,V,CA,NEXT,CFG core
+    class WT,WG,WS,WP,WCQ,WCG,WC,WM,WMG,WR,WX wheel
+    class RB,RW,RD,RG,RM,RH,RS,RF,DF,RR regime
+    class VX,VXC,VM,VXB,CB,CG,CF post
+    class PREF,PREVIEW,SUBMIT,BROKER risk

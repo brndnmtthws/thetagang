@@ -1,0 +1,390 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.12, pytest-9.0.2, pluggy-1.6.0
+rootdir: /Users/kinko/AI/projects/thetagang
+configfile: pyproject.toml
+plugins: cov-7.1.0, mock-3.15.1, asyncio-1.3.0, Faker-40.1.2
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 374 items
+
+tests/test_batch_risk.py ............................                    [  7%]
+tests/test_buy_only_relative_threshold.py .....                          [  8%]
+tests/test_config_migration.py ............................              [ 16%]
+tests/test_config_new.py ..........................                      [ 23%]
+tests/test_db.py .........                                               [ 25%]
+tests/test_exchange_hours.py ...........                                 [ 28%]
+tests/test_execution_results.py .................                        [ 33%]
+tests/test_execution_state.py ......................                     [ 39%]
+tests/test_ibkr.py .........................                             [ 45%]
+tests/test_legacy_config.py ......                                       [ 47%]
+tests/test_main_cli.py ....                                              [ 48%]
+tests/test_order_execution_safety.py ............................        [ 55%]
+tests/test_patch_ibc_java_logging.py ....                                [ 56%]
+tests/test_portfolio_manager.py ........F..................              [ 64%]
+tests/test_post_strategy_engine.py .........                             [ 66%]
+tests/test_regime_rebalance.py ......................................... [ 77%]
+.............................                                            [ 85%]
+tests/test_runtime_services.py ...                                       [ 86%]
+tests/test_sell_only_rebalancing.py .......                              [ 87%]
+tests/test_strategy_stage_runners.py ........                            [ 90%]
+tests/test_symbol_config_resolution_integration.py ...                   [ 90%]
+tests/test_thetagang_startup.py ....                                     [ 91%]
+tests/test_thetagang_watchdog.py .......                                 [ 93%]
+tests/test_trades.py ....                                                [ 94%]
+tests/test_trading_operations.py ..                                      [ 95%]
+tests/test_util.py .....                                                 [ 96%]
+tests/test_write_calls_threshold.py ........                             [ 98%]
+thetagang/test_buy_only_percent.py ....                                  [100%]
+
+=================================== FAILURES ===================================
+_ TestPortfolioManager.test_manage_continues_if_order_submission_wait_times_out _
+
+self = <tests.test_portfolio_manager.TestPortfolioManager object at 0x10c0ba650>
+mock_ib = <Mock spec='IB' id='4504939760'>, mock_config = <Mock id='4506024800'>
+mocker = <pytest_mock.plugin.MockerFixture object at 0x10c8e7380>
+
+    @pytest.mark.asyncio
+    async def test_manage_continues_if_order_submission_wait_times_out(
+        self, mock_ib, mock_config, mocker
+    ):
+        completion_future = mocker.Mock()
+        pm = PortfolioManager(
+            mock_config,
+            mock_ib,
+            completion_future,
+            dry_run=False,
+            run_stage_order=["equity_buy_rebalance"],
+        )
+
+        pm.initialize_account = mocker.Mock()
+        pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
+        pm.get_portfolio_positions = mocker.AsyncMock(return_value={})
+        pm.orders.print_summary = mocker.Mock()
+        pm.submit_orders = mocker.Mock()
+        pm.adjust_prices = mocker.AsyncMock()
+        pm.trades = mocker.Mock()
+        trade = mocker.Mock()
+        trade.orderStatus.status = "Submitted"
+        pm.trades.records = mocker.Mock(return_value=[trade])
+
+        mocker.patch(
+            "thetagang.portfolio_manager.run_equity_rebalance_stages",
+            new=mocker.AsyncMock(),
+        )
+        pm.ibkr.wait_for_submitting_orders = mocker.AsyncMock(
+            side_effect=RuntimeError("timed out")
+        )
+
+>       await pm.manage()
+
+tests/test_portfolio_manager.py:266:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+thetagang/portfolio_manager.py:863: in manage
+    self.execution_result = execution_result(self.trades.records())
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+trades = [<Mock id='4506021776'>]
+
+    def execution_result(trades: Sequence[Trade]) -> ExecutionResult:
+        filled = working = failed = unknown = partially_filled = 0
+        for trade in trades:
+            status = trade.orderStatus.status
+>           if status != "Filled" and trade.orderStatus.filled > 0:
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           TypeError: '>' not supported between instances of 'Mock' and 'int'
+
+thetagang/execution.py:38: TypeError
+----------------------------- Captured stdout call -----------------------------
+Order submission wait timed out: timed out
+Post-adjust order submission wait timed out: timed out
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ /Users/kinko/AI/projects/thetagang/thetagang/portfolio_manager.py:863 in     │
+│ manage                                                                       │
+│                                                                              │
+│    860 │   │   │   │   │   await self.ibkr.wait_for_submitting_orders(self.t │
+│    861 │   │   │   │   except RuntimeError as exc:                           │
+│    862 │   │   │   │   │   log.warning(f"Post-adjust order submission wait t │
+│ ❱  863 │   │   │   │   self.execution_result = execution_result(self.trades. │
+│    864 │   │   │   │   if not self.execution_result.successful:              │
+│    865 │   │   │   │   │   raise ExecutionError(                             │
+│    866 │   │   │   │   │   │   f"Batch execution outcome: {self.execution_re │
+│                                                                              │
+│ /Users/kinko/AI/projects/thetagang/thetagang/execution.py:38 in              │
+│ execution_result                                                             │
+│                                                                              │
+│   35 │   filled = working = failed = unknown = partially_filled = 0          │
+│   36 │   for trade in trades:                                                │
+│   37 │   │   status = trade.orderStatus.status                               │
+│ ❱ 38 │   │   if status != "Filled" and trade.orderStatus.filled > 0:         │
+│   39 │   │   │   partially_filled += 1                                       │
+│   40 │   │   if status == "Filled":                                          │
+│   41 │   │   │   filled += 1                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+TypeError: '>' not supported between instances of 'Mock' and 'int'
+ThetaGang terminated with error...
+=============================== warnings summary ===============================
+tests/test_db.py::test_record_historical_bars_upserts_and_parses_dates
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/sql/base.py:1556: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c307d30>
+    object.__setattr__(self, "_colset", set())
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_db.py::test_record_order_intent_links_orders
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/engine/reflection.py:94: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c3ad6c0>
+    (str(a), a.quote) if isinstance(a, quoted_name) else a
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_db.py::test_record_order_intent_links_orders
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/engine/reflection.py:94: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c4a7970>
+    (str(a), a.quote) if isinstance(a, quoted_name) else a
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_db.py::test_record_order_intent_links_orders
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/engine/reflection.py:94: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c528b80>
+    (str(a), a.quote) if isinstance(a, quoted_name) else a
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_db.py::test_record_order_intent_links_orders
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/engine/reflection.py:94: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c52b5b0>
+    (str(a), a.quote) if isinstance(a, quoted_name) else a
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_db.py::test_record_order_intent_links_orders
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/engine/reflection.py:94: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c5c0c70>
+    (str(a), a.quote) if isinstance(a, quoted_name) else a
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_db.py::test_record_order_intent_links_orders
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/engine/reflection.py:94: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c5c3790>
+    (str(a), a.quote) if isinstance(a, quoted_name) else a
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_db.py::test_record_order_intent_links_orders
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/engine/reflection.py:94: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c6344f0>
+    (str(a), a.quote) if isinstance(a, quoted_name) else a
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_db.py::test_record_order_intent_links_orders
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/engine/reflection.py:94: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c637100>
+    (str(a), a.quote) if isinstance(a, quoted_name) else a
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_db.py::test_get_last_event_payload_ignores_dry_run
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/sql/schema.py:5068: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c5c2a70>
+    @util.ro_memoized_property
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_execution_results.py::test_failure_reaches_completion_future[False]
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/control.py:181: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c636890>
+    def strip_control_codes(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_execution_results.py::test_failure_reaches_completion_future[False]
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/control.py:181: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c5c1210>
+    def strip_control_codes(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_execution_results.py::test_failure_reaches_completion_future[False]
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/control.py:181: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c529120>
+    def strip_control_codes(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_execution_results.py::test_finalization_failure_does_not_hide_original_error
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/control.py:181: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c637b50>
+    def strip_control_codes(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_execution_results.py::test_finalization_failure_does_not_hide_original_error
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/control.py:181: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c635210>
+    def strip_control_codes(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_uses_fresh_cached_history_when_api_empty
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/dialects/sqlite/base.py:2231: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c634f40>
+    cursor.execute("PRAGMA read_uncommitted")
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_rejects_unreadable_cached_history
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/control.py:192: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c637970>
+    return text.translate(_translate_table)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_rejects_unreadable_cached_history
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/control.py:192: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c5288b0>
+    return text.translate(_translate_table)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_rejects_unreadable_cached_history
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/control.py:192: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c529030>
+    return text.translate(_translate_table)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_rejects_unreadable_cached_history
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/control.py:192: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c4426b0>
+    return text.translate(_translate_table)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_rejects_unreadable_cached_history
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/control.py:192: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c4a66b0>
+    return text.translate(_translate_table)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_rejects_unreadable_cached_history
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/control.py:192: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c5c2b60>
+    return text.translate(_translate_table)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_volatility_weight_smooths_from_previous_state
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/text.py:761: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c4a73d0>
+    styles = tuple(style_map[_style_id] for _style_id in sorted(stack))
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_volatility_weight_smooths_from_previous_state
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/text.py:761: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c6376a0>
+    styles = tuple(style_map[_style_id] for _style_id in sorted(stack))
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_volatility_weight_smooths_from_previous_state
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/rich/text.py:761: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c636980>
+    styles = tuple(style_map[_style_id] for _style_id in sorted(stack))
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_uses_db_for_cooldown
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/sql/type_api.py:2357: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c5c3e20>
+    pass
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_uses_db_for_cooldown
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/sql/type_api.py:2357: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c52bc40>
+    pass
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_uses_db_for_cooldown
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/sql/type_api.py:2357: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c52af20>
+    pass
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_uses_db_for_cooldown
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/sql/type_api.py:2357: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c4a74c0>
+    pass
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_flow_hysteresis_uses_db_state
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/sql/visitors.py:134: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c4a67a0>
+    meth = getter(visitor)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_flow_hysteresis_uses_db_state
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/sql/visitors.py:134: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c529e40>
+    meth = getter(visitor)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_regime_rebalance.py::test_regime_rebalance_flow_hysteresis_uses_db_state
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/sqlalchemy/sql/visitors.py:134: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c52b010>
+    meth = getter(visitor)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_thetagang_watchdog.py::test_watchdog_runs_inside_task
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/tomlkit/toml_char.py:6: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10cb367a0>
+    super().__init__()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_thetagang_watchdog.py::test_watchdog_runs_inside_task
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/tomlkit/toml_char.py:6: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c5c32e0>
+    super().__init__()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_thetagang_watchdog.py::test_watchdog_runs_inside_task
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/tomlkit/toml_char.py:6: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c6373d0>
+    super().__init__()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_thetagang_watchdog.py::test_watchdog_runs_inside_task
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/tomlkit/toml_char.py:6: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10c3065c0>
+    super().__init__()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_thetagang_watchdog.py::test_watchdog_runs_inside_task
+  /Users/kinko/AI/projects/thetagang/.venv/lib/python3.13/site-packages/tomlkit/toml_char.py:6: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10cb363e0>
+    super().__init__()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+______________ coverage: platform darwin, python 3.13.12-final-0 _______________
+
+Name                                              Stmts   Miss  Cover   Missing
+-------------------------------------------------------------------------------
+thetagang/batch_risk.py                             185     14    92%   23, 47, 60, 63, 71, 83, 86, 157, 194-198, 228, 235, 252
+thetagang/config.py                                 462     80    83%   106, 159, 165, 169, 190, 217, 268, 276, 430, 450, 465, 481, 485, 489, 546-547, 550-551, 554-555, 558, 561, 598, 603, 605, 609, 611, 624, 628, 630, 688-727, 755, 765-766, 773-780, 783-790, 793-796, 799-806, 809-814, 817-837, 840-841
+thetagang/config_migration/io_safe.py                51      2    96%   58-59
+thetagang/config_migration/migrate_v1_to_v2.py      218     20    91%   113, 118, 122, 129, 132-139, 206, 226, 245, 251, 277, 300, 307, 310, 312, 321, 324
+thetagang/config_migration/migration_report.py       23      3    87%   16, 27-28
+thetagang/config_migration/schema_detect.py          25      1    96%   29
+thetagang/config_migration/startup_migration.py      94      1    99%   128
+thetagang/config_models.py                          419     20    95%   17, 129, 132-138, 341, 348, 399, 471, 473, 524, 587-590, 678
+thetagang/db.py                                     380     75    80%   242, 248, 264, 282-284, 296-297, 329-330, 348-350, 353-368, 371-404, 412-413, 439-441, 465-466, 469-486, 517-518, 529, 560-561, 624, 627, 630, 632-635, 641-645, 657, 659-668
+thetagang/entry.py                                    1      1     0%   2
+thetagang/exchange_hours.py                          85     16    81%   34-38, 55-56, 71, 79, 113-121
+thetagang/execution_state.py                        130      9    93%   35-40, 45-46, 135, 163
+thetagang/fmt.py                                     32      4    88%   31, 39, 43-46
+thetagang/ibkr.py                                   252     71    72%   91-101, 109, 196, 199, 204-216, 256-268, 327, 332, 339, 350-358, 365-378, 445, 457-470, 538-554, 563-566
+thetagang/legacy_config.py                          236    159    33%   93-94, 97, 100, 105, 117-131, 134-141, 148-170, 177-193, 196-238, 241-288, 291-325, 328-329, 336-343, 346-353, 356-359, 362-369, 372-377, 380-400, 403-404, 416, 421-428, 432-437, 440-444, 450, 467
+thetagang/log.py                                     41      6    85%   73-84
+thetagang/options.py                                  8      1    88%   8
+thetagang/orders.py                                  29      1    97%   29
+thetagang/portfolio_manager.py                      614    211    66%   284, 289, 292-295, 304-307, 310, 313, 316, 319, 322, 325, 328, 336-337, 347, 356, 397-404, 427-438, 442-449, 515-695, 722-723, 762-767, 791-806, 813-815, 897, 909-910, 917, 924, 929, 937-947, 960-961, 966-967, 975, 978-994, 997-998, 1001-1002, 1005, 1016-1019, 1040, 1050, 1060, 1074, 1100, 1103, 1110, 1113, 1121, 1126, 1135, 1144, 1154, 1200-1208, 1255, 1273-1274, 1326, 1357, 1362, 1380, 1402-1409
+thetagang/strategies/equity.py                       32      1    97%   57
+thetagang/strategies/equity_engine.py               220     61    72%   51, 69, 77-107, 114, 151, 167-170, 210-217, 222-223, 229-230, 253-278, 292, 339-343, 378, 394-397, 421-423, 437-444, 449-456, 458-465, 495-523
+thetagang/strategies/options.py                      50      2    96%   100, 105
+thetagang/strategies/options_engine.py              499    274    45%   115, 127, 129, 158, 187-190, 198-199, 233, 236, 244-249, 251-256, 263-270, 344, 357-381, 386-410, 428-429, 433-438, 452, 456, 488-491, 498-527, 550-578, 641, 649-654, 656-661, 668-673, 711, 726-727, 745-748, 753, 758, 761-764, 767-774, 777-790, 793, 796, 799-881, 884-958, 963-997, 1002-1038, 1041, 1044, 1051, 1059, 1064-1100, 1109-1282
+thetagang/strategies/post.py                         16      1    94%   34
+thetagang/strategies/post_engine.py                 128     15    88%   102, 122, 135-136, 141-142, 151, 161, 175-176, 225, 230, 239, 250-251
+thetagang/strategies/regime_engine.py               829    115    86%   152, 161, 168, 253-257, 294-295, 302-304, 333, 357, 359, 389-395, 401, 416, 431, 436-438, 452, 460, 467, 473, 478-482, 532, 594-595, 599, 685, 690-693, 697-700, 746, 774-775, 786, 806, 821, 830, 840, 844-849, 871, 875-878, 882-885, 962, 979, 981-982, 993-994, 1037-1038, 1128, 1143, 1155, 1160, 1162, 1171, 1175, 1177, 1184, 1190-1215, 1225, 1248, 1255, 1272, 1278, 1283, 1289, 1337, 1353, 1360, 1386-1387, 1389-1390, 1452-1453, 1471-1472, 1474-1475, 1484-1485
+thetagang/thetagang.py                              125     14    89%   31, 67-75, 102-106, 112, 129, 144-145
+thetagang/trades.py                                  78      5    94%   48, 55, 58, 78-79
+thetagang/trading_operations.py                     152     91    40%   23-24, 79, 83, 92, 138-362
+thetagang/util.py                                    99     17    83%   67, 97, 154-172, 182-184, 189-191, 198-209, 216
+-------------------------------------------------------------------------------
+TOTAL                                              5719   1291    77%
+
+7 files skipped due to complete coverage.
+=========================== short test summary info ============================
+FAILED tests/test_portfolio_manager.py::TestPortfolioManager::test_manage_continues_if_order_submission_wait_times_out
+================== 1 failed, 373 passed, 37 warnings in 7.60s ==================

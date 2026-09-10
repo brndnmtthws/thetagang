@@ -8,6 +8,9 @@ from rich.table import Table
 from thetagang import log
 from thetagang.fmt import dfmt, ifmt
 
+ORDER_REF_PREFIX = "tg:"
+DEFAULT_ORDER_REF = f"{ORDER_REF_PREFIX}order"
+
 
 class Orders:
     def __init__(self) -> None:

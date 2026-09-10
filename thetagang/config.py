@@ -19,6 +19,7 @@ from thetagang.config_models import (
     DatabaseConfig,
     DisplayMixin,
     ExchangeHoursConfig,
+    ExecutionConfig,
     IBAsyncConfig,
     IBCConfig,
     OptionChainsConfig,
@@ -251,6 +252,7 @@ class RuntimeConfig(BaseModel):
     option_chains: OptionChainsConfig
     exchange_hours: ExchangeHoursConfig = Field(default_factory=ExchangeHoursConfig)
     orders: OrdersConfig = Field(default_factory=OrdersConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     ib_async: IBAsyncConfig = Field(default_factory=IBAsyncConfig)
     ibc: IBCConfig = Field(default_factory=IBCConfig)

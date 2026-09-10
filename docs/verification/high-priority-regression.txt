@@ -1,0 +1,17 @@
+Final regression verification — 2026-09-10
+Command: .venv/bin/pytest -q
+Exit code: 0
+Tool output at completion (earlier progress bars omitted):
+
+............................ [ 38%]
+........................................................................ [ 57%]
+........................................................................ [ 77%]
+........................................................................ [ 96%]
+..............                                                           [100%]
+374 passed in 5.14s
+
+Additional checks:
+.venv/bin/ruff check . — All checks passed!
+.venv/bin/ty check — All checks passed!
+ruff format --check (changed Python files) — passed
+git diff --check — passed

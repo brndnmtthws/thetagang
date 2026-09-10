@@ -5,35 +5,35 @@ repos:
       - id: check-yaml
       - id: end-of-file-fixer
       - id: trailing-whitespace
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    # Ruff version.
     rev: v0.14.4
     hooks:
-      # Run the linter.
+      # Run the linter and auto-fix.
       - id: ruff-check
         args: [--fix]
-        # Reorder imports.
+
+      # Reorder imports.
       - id: ruff-check
         args: [--select, I, --fix]
+
       # Run the formatter.
       - id: ruff-format
+
   - repo: https://github.com/astral-sh/uv-pre-commit
-    # uv version.
     rev: 0.9.8
     hooks:
       - id: uv-sync
         args: ["--locked", "--all-packages"]
-  - repo: https://github.com/astral-sh/uv-pre-commit
-    # uv version.
-    rev: 0.9.8
-    hooks:
-      # Update the uv lockfile
+
+      # Update the uv lockfile.
       - id: uv-lock
+
   - repo: local
     hooks:
       - id: ty-check
         name: ty check
-        entry: uvx ty check
+        entry: /Users/kinko/.local/bin/uv run ty check
         language: system
         types: [python]
         pass_filenames: false

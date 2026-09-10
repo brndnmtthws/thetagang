@@ -31,7 +31,7 @@ CONTEXT_SETTINGS = dict(
 @click.option(
     "--dry-run",
     is_flag=True,
-    help="Perform a dry run. This will display the the orders without sending any live trades.",
+    help="Display proposed orders without submitting, modifying or canceling broker orders.",
 )
 @click.option(
     "--migrate-config",
@@ -88,5 +88,6 @@ def cli(
         MigrationPreviewRedactionError,
         MigrationRequiredError,
         UnknownSchemaError,
+        RuntimeError,
     ) as exc:
         raise click.ClickException(str(exc)) from exc

@@ -47,31 +47,13 @@ class PostStrategyEngine:
         return max(0.0, self._get_reserved_cash_for_post_management())
 
     def calc_pending_cash_balance(self) -> float:
-        def get_multiplier(contract: Contract) -> float:
-            if contract.secType == "BAG":
-                return float(
-                    self.qualified_contracts[contract.comboLegs[0].conId].multiplier
-                )
-            if contract.secType == "STK":
-                return 1.0
-            return float(contract.multiplier or 100)
+        from thetagang.batch_risk import pending_debit
 
-        return sum(
-            [
-                float(order.lmtPrice or 0)
-                * order.totalQuantity
-                * get_multiplier(contract)
-                for (contract, order, _intent_id) in self.orders.records()
-                if order.action == "SELL"
-            ]
-        ) - sum(
-            [
-                float(order.lmtPrice or 0)
-                * order.totalQuantity
-                * get_multiplier(contract)
-                for (contract, order, _intent_id) in self.orders.records()
-                if order.action == "BUY"
-            ]
+        # Only filled proceeds can fund a sweep. Pending credits, including
+        # negative-price combo BUYs, do not replenish spendable cash.
+        return -sum(
+            pending_debit(contract, order, self.qualified_contracts)
+            for contract, order, _intent_id in self.orders.records()
         )
 
     async def do_vix_hedging(

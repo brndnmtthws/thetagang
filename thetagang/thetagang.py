@@ -14,6 +14,8 @@ from thetagang.config_migration.startup_migration import (
 )
 from thetagang.db import DataStore, sqlite_db_path
 from thetagang.exchange_hours import need_to_exit
+from thetagang.execution import OrderSubmissionError
+from thetagang.execution_state import ExecutionJournal, account_lock, account_state_path
 from thetagang.portfolio_manager import PortfolioManager
 
 
@@ -74,6 +76,22 @@ def start(
 
     config_doc = tomlkit.parse(raw_config).unwrap()
     config = Config(**config_doc)
+    state_path = account_state_path(
+        config.runtime.execution.state_directory, config.runtime.account.number
+    )
+    with account_lock(state_path):
+        journal = ExecutionJournal(state_path, config.runtime.account.number)
+        _run(config_path, config, raw_config, without_ibc, dry_run, journal)
+
+
+def _run(
+    config_path: str,
+    config: Config,
+    raw_config: str,
+    without_ibc: bool,
+    dry_run: bool,
+    journal: ExecutionJournal,
+) -> None:
     run_stage_flags = stage_enabled_map(config)
     run_stage_order = enabled_stage_ids_from_run(config.run)
 
@@ -93,12 +111,42 @@ def start(
     if need_to_exit(config.runtime.exchange_hours):
         return
 
+    management_task: asyncio.Task[Any] | None = None
+    management_started = False
+
     async def onConnected() -> None:
+        nonlocal management_task, management_started
+        if management_started or completion_future.done():
+            return
+        management_started = True
+        management_task = asyncio.current_task()
         log.info(f"Connected to IB Gateway, serverVersion={ib.client.serverVersion()}")
-        await portfolio_manager.manage()
+        try:
+            await portfolio_manager.manage()
+        except Exception:
+            # manage transfers the exception to completion_future; the runner
+            # observes it and shuts down rather than losing it in an event task.
+            log.error("Portfolio management failed; shutting down the connection.")
+
+    def onDisconnected() -> None:
+        if management_started and not completion_future.done():
+            portfolio_manager.connection_lost = True
+            completion_future.set_exception(
+                OrderSubmissionError(
+                    "Broker disconnected during execution. Restart only after reconciliation."
+                )
+            )
+            if management_task is not None:
+                management_task.cancel()
+
+    async def finish_management() -> None:
+        if management_task is not None and not management_task.done():
+            management_task.cancel()
+            await asyncio.gather(management_task, return_exceptions=True)
 
     ib = IB()
     ib.connectedEvent += onConnected
+    ib.disconnectedEvent += onDisconnected
 
     completion_future: Future[bool] = util.getLoop().create_future()
     portfolio_manager = PortfolioManager(
@@ -109,6 +157,7 @@ def start(
         data_store=data_store,
         run_stage_flags=run_stage_flags,
         run_stage_order=run_stage_order,
+        execution_journal=journal,
     )
 
     probe_contract_config = config.runtime.watchdog.probeContract
@@ -178,16 +227,20 @@ def start(
                 await completion_future
             finally:
                 watchdog.stop()
+                await finish_management()
                 await ibc.terminateAsync()
 
         cast(_IBRunner, ib).run(run_with_watchdog())
     else:
-        ib.connect(
-            watchdog_config.host,
-            watchdog_config.port,
-            clientId=watchdog_config.clientId,
-            timeout=watchdog_config.probeTimeout,
-            account=config.runtime.account.number,
-        )
-        cast(_IBRunner, ib).run(completion_future)
-        ib.disconnect()
+        try:
+            ib.connect(
+                watchdog_config.host,
+                watchdog_config.port,
+                clientId=watchdog_config.clientId,
+                timeout=watchdog_config.probeTimeout,
+                account=config.runtime.account.number,
+            )
+            cast(_IBRunner, ib).run(completion_future)
+        finally:
+            ib.disconnect()
+            cast(_IBRunner, ib).run(finish_management())

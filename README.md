@@ -429,12 +429,86 @@ thetagang -h
 
 Common flags:
 - `--config` path to a toml config (required)
-- `--dry-run` show proposed orders without submitting trades
+- `--dry-run` show proposed orders without submitting, modifying, or canceling broker orders
 - `--without-ibc` connect to a running IB Gateway/TWS you started yourself
 - `-v/--verbosity` increase log verbosity (repeatable)
 
 All CLI options support environment variables with the `THETAGANG_` prefix.
 Example: `THETAGANG_CONFIG=./thetagang.toml`.
+
+Dry runs still connect to IBKR for account and market data and can write local
+logs, order intents, and database snapshots. Broker order mutations are blocked
+by the IBKR adapter as well as skipped by the normal dry-run workflow.
+
+When `runtime.account.cancel_orders` is enabled, startup cancellation applies
+only to unfinished orders in the configured account, for managed symbols, with
+a ThetaGang `orderRef` beginning with `tg:`. New orders use the `tg:order` prefix;
+enqueueing appends a unique submission identifier. Strategy prefixes such as
+`tg:regime-rebalance:SPY` are preserved, as is the complete reference during
+repricing. Manual orders, orders from other accounts,
+and older untagged orders are left untouched. Review older untagged working
+orders before a live run, since they are no longer canceled automatically.
+
+## Execution recovery and batch checks
+
+Every CLI run holds a local account lock. The execution journal is independent
+of the optional SQLite database and is written atomically before each real
+submission or amendment. These optional settings show their defaults:
+
+```toml
+[runtime.execution]
+state_directory = "~/.local/state/thetagang"
+funds_buffer = 100.0
+order_fee_buffer = 5.0
+```
+
+All configurations and clients trading the same account on this machine must
+use the same persistent state directory. Preserve it across container restarts
+and upgrades. The lock does not coordinate separate hosts or manual trading.
+Amounts above are in the account's base currency. The journal stores order
+references, quantities, contract identifiers and broker state, without login
+credentials; its filename hashes the account number.
+
+After connecting, ThetaGang checks open orders, completed orders and executions
+before planning. Startup cancellations must be confirmed. An unresolved prior
+submission, including a working order when cancellation is disabled, stops new
+submissions. A missing history entry is not proof that an order failed. A runtime
+disconnect ends the current run; reconnect events cannot rerun its strategies.
+If recovery is blocked, inspect the reported references in TWS and reconcile
+their final state with the journal. Keep the journal and diagnostic evidence;
+do not delete it merely to make a retry proceed. Orders beyond the broker's
+available history require manual investigation.
+
+Strategy stages share a projected view of actual positions, remaining working
+orders and queued orders. Position management excludes newly planned positions
+from its close/roll candidates. Before the first submission, batch checks reject
+duplicate or opposing instruments, stock overselling, insufficient call cover,
+invalid prices/quantities, mixed currencies and excessive combined pending
+debits. Pending sales and option credits do not fund cash sweeps or other orders.
+
+Live runs also request broker what-if margin estimates for new orders and the
+remaining portions of working orders. Only positive margin/equity costs and
+estimated fees are reserved; another unfilled order's anticipated margin release
+cannot offset them. Repricing repeats the risk checks. Missing data, unsupported
+contracts or an over-budget batch stop execution instead of automatically
+resizing orders. Existing working orders may be counted conservatively again
+even if the broker has already reserved margin for them.
+
+Current local checks support stocks, options with explicit multipliers, and
+qualified same-multiplier combos, all in an explicitly reported account base
+currency. They do not perform FX conversion. Dry runs perform local checks and
+display plans, but never send what-if requests; they therefore do not verify
+broker margin acceptance. Margin estimates and local locks cannot eliminate
+market movement or concurrent changes made outside this process.
+
+Run outcomes distinguish filled, working, partial failure, failure and unknown
+states. Working orders can remain at the broker after a successful submission
+run; rejected or unconfirmed orders no longer report success. Submission errors
+stop the remaining queue and propagate to the CLI.
+
+Changes and offline test evidence are recorded in
+[the revision history](docs/REVISION_HISTORY.md) and
+[the high-priority verification report](docs/verification/OPT-02-05.md).
 
 ## State Database
 

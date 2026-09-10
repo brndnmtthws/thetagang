@@ -3,24 +3,34 @@ import logging
 import math
 import random
 from asyncio import Future
+from copy import copy
 from datetime import date, datetime
 from typing import Any, Coroutine, Dict, List, Optional, Tuple, cast
 
 import numpy as np
 from ib_async import (
     AccountValue,
+    ExecutionFilter,
+    Order,
     PortfolioItem,
     Ticker,
+    Trade,
     util,
 )
 from ib_async.contract import Contract, Option, Stock
 from ib_async.ib import IB
-from ib_async.order import LimitOrder
 from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 
 from thetagang import log
+from thetagang.batch_risk import (
+    BatchRiskError,
+    margin_cost,
+    projected_positions,
+    remaining_orders,
+    validate_batch,
+)
 from thetagang.config import (
     CANONICAL_STAGE_ORDER,
     DEFAULT_RUN_STRATEGIES,
@@ -29,7 +39,15 @@ from thetagang.config import (
     enabled_stage_ids_from_run,
     stage_enabled_map_from_run,
 )
+from thetagang.config_models import ExecutionConfig
 from thetagang.db import DataStore
+from thetagang.execution import (
+    ExecutionError,
+    ExecutionResult,
+    OrderSubmissionError,
+    execution_result,
+)
+from thetagang.execution_state import ExecutionJournal
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import (
     IBKR,
@@ -37,7 +55,7 @@ from thetagang.ibkr import (
     RequiredFieldValidationError,
     TickerField,
 )
-from thetagang.orders import Orders
+from thetagang.orders import ORDER_REF_PREFIX, Orders
 from thetagang.strategies import (
     EquityStrategyDeps,
     OptionsStrategyDeps,
@@ -97,6 +115,7 @@ class PortfolioManager:
         data_store: Optional[DataStore] = None,
         run_stage_flags: Optional[Dict[str, bool]] = None,
         run_stage_order: Optional[List[str]] = None,
+        execution_journal: ExecutionJournal | None = None,
     ) -> None:
         self.account_number = config.runtime.account.number
         self.config = config
@@ -106,12 +125,21 @@ class PortfolioManager:
             config.runtime.ib_async.api_response_wait_time,
             config.runtime.orders.exchange,
             data_store=data_store,
+            dry_run=dry_run,
         )
         self.completion_future = completion_future
+        self.execution_result = ExecutionResult("success")
+        self.execution_journal = execution_journal
+        self._manage_started = False
+        self.connection_lost = False
+        self._batch_approved = False
+        self._working_orders: list[tuple[Contract, Order]] = []
         self.has_excess_calls: set[str] = set()
         self.has_excess_puts: set[str] = set()
         self.orders: Orders = Orders()
-        self.trades: Trades = Trades(self.ibkr, data_store=data_store)
+        self.trades: Trades = Trades(
+            self.ibkr, data_store=data_store, journal=execution_journal
+        )
         self.target_quantities: Dict[str, int] = {}
         self.qualified_contracts: Dict[int, Contract] = {}
         self.dry_run = dry_run
@@ -450,29 +478,33 @@ class PortfolioManager:
             "Aborting run to avoid trading on incomplete data."
         )
 
-    def initialize_account(self) -> None:
+    def initialize_account(self, opened: list[Trade] | None = None) -> list[Trade]:
         self.ibkr.set_market_data_type(self.config.runtime.account.market_data_type)
 
-        if self.config.runtime.account.cancel_orders:
-            # Cancel any existing orders
-            open_trades = self.ibkr.open_trades()
-            for trade in open_trades:
-                if not trade.isDone() and (
-                    trade.contract.symbol in self.get_symbols()
-                    or (
-                        self.config.strategies.vix_call_hedge.enabled
-                        and trade.contract.symbol == "VIX"
-                    )
-                    or (
-                        self.config.strategies.cash_management.enabled
-                        and trade.contract.symbol
-                        == self.config.strategies.cash_management.cash_fund
-                    )
-                ):
-                    log.warning(
-                        f"{trade.contract.symbol}: Canceling order {trade.order}"
-                    )
-                    self.ibkr.cancel_order(trade.order)
+        if not self.config.runtime.account.cancel_orders:
+            return []
+        if self.dry_run:
+            log.notice("Dry run enabled; skipping cancellation of existing orders.")
+            return []
+
+        managed_symbols = set(self.get_symbols())
+        if self.config.strategies.vix_call_hedge.enabled:
+            managed_symbols.add("VIX")
+        if self.config.strategies.cash_management.enabled:
+            managed_symbols.add(self.config.strategies.cash_management.cash_fund)
+
+        cancelling = []
+        for trade in self.ibkr.open_trades() if opened is None else opened:
+            if (
+                not trade.isDone()
+                and trade.order.account == self.account_number
+                and trade.order.orderRef.startswith(ORDER_REF_PREFIX)
+                and trade.contract.symbol in managed_symbols
+            ):
+                log.warning(f"{trade.contract.symbol}: Canceling order {trade.order}")
+                self.ibkr.cancel_order(trade.order)
+                cancelling.append(trade)
+        return cancelling
 
     async def summarize_account(
         self,
@@ -662,13 +694,45 @@ class PortfolioManager:
 
         return (account_summary, portfolio_positions)
 
+    async def reconcile_before_run(self) -> None:
+        journal = self.execution_journal
+        if journal is None:
+            self.initialize_account()
+            return
+        opened = await self.ibkr.request_open_orders()
+        cancelling = self.initialize_account(opened)
+        if cancelling:
+            await self.ibkr.wait_for_orders_complete(
+                cancelling, self.config.runtime.ib_async.api_response_wait_time
+            )
+            if any(not trade.isDone() for trade in cancelling):
+                raise ExecutionError(
+                    "Startup cancellation was not confirmed; refusing to replan"
+                )
+        if not self.dry_run:
+            completed = await self.ibkr.request_completed_orders()
+            fills = await asyncio.wait_for(
+                self.ibkr.request_executions(
+                    ExecutionFilter(acctCode=self.account_number)
+                ),
+                timeout=self.config.runtime.ib_async.api_response_wait_time,
+            )
+            # Prefer current open orders over historical completed entries.
+            journal.reconcile([*completed, *opened], fills)
+        self._working_orders = remaining_orders(opened, self.account_number)
+        await self.ibkr.refresh_positions()
+
     async def manage(self) -> None:
-        had_error = False
+        if self._manage_started:
+            log.warning("Ignoring repeated connected event; run already started.")
+            return
+        self._manage_started = True
+        error: BaseException | None = None
         try:
             self.set_reserved_cash_for_post_management(0.0)
             if self.data_store:
                 self.data_store.record_event("run_start", {"dry_run": self.dry_run})
-            self.initialize_account()
+            await self.reconcile_before_run()
             (account_summary, portfolio_positions) = await self.summarize_account()
 
             options_enabled = self.options_trading_enabled()
@@ -706,11 +770,21 @@ class PortfolioManager:
                     portfolio_positions = await self.get_portfolio_positions()
                     positions_might_be_stale = False
 
+                planning_positions = projected_positions(
+                    portfolio_positions,
+                    [
+                        *self._working_orders,
+                        *((c, o) for c, o, _ in self.orders.records()),
+                    ],
+                    self.qualified_contracts,
+                    include_new=stage_id not in management_stage_ids,
+                )
+
                 if stage_id in write_stage_ids:
                     await run_option_write_stages(
                         self._options_strategy_deps({stage_id}),
                         account_summary,
-                        portfolio_positions,
+                        planning_positions,
                         options_enabled,
                     )
                 elif stage_id == "options_roll_positions":
@@ -724,7 +798,7 @@ class PortfolioManager:
                                 {"options_roll_positions", "options_close_positions"}
                             ),
                             account_summary,
-                            portfolio_positions,
+                            planning_positions,
                             options_enabled,
                         )
                         close_stage_handled = True
@@ -732,7 +806,7 @@ class PortfolioManager:
                         await run_option_management_stages(
                             self._options_strategy_deps({"options_roll_positions"}),
                             account_summary,
-                            portfolio_positions,
+                            planning_positions,
                             options_enabled,
                         )
                 elif stage_id == "options_close_positions":
@@ -741,7 +815,7 @@ class PortfolioManager:
                     await run_option_management_stages(
                         self._options_strategy_deps({"options_close_positions"}),
                         account_summary,
-                        portfolio_positions,
+                        planning_positions,
                         options_enabled,
                     )
                 elif stage_id in {
@@ -752,18 +826,20 @@ class PortfolioManager:
                     await run_equity_rebalance_stages(
                         self._equity_strategy_deps({stage_id}),
                         account_summary,
-                        portfolio_positions,
+                        planning_positions,
                     )
                 elif stage_id in post_stage_ids:
                     await run_post_stages(
                         self._post_strategy_deps({stage_id}),
                         account_summary,
-                        portfolio_positions,
+                        planning_positions,
                     )
 
                 if stage_id in pre_management_trade_stage_ids:
                     positions_might_be_stale = True
 
+            await self.preflight_orders()
+            self._batch_approved = True
             if self.dry_run:
                 log.warning("Dry run enabled, no trades will be executed.")
 
@@ -784,50 +860,63 @@ class PortfolioManager:
                     await self.ibkr.wait_for_submitting_orders(self.trades.records())
                 except RuntimeError as exc:
                     log.warning(f"Post-adjust order submission wait timed out: {exc}")
-                working_statuses = {"PendingSubmit", "PreSubmitted", "Submitted"}
-                incomplete_trades = [
-                    trade
-                    for trade in self.trades.records()
-                    if trade and not trade.isDone()
-                ]
-                still_working = [
-                    trade
-                    for trade in incomplete_trades
-                    if getattr(trade.orderStatus, "status", "") in working_statuses
-                ]
-                unexpected_state = [
-                    trade for trade in incomplete_trades if trade not in still_working
-                ]
-                open_orders = ", ".join(
-                    f"{trade.contract.symbol} (OrderId: {trade.order.orderId}, status={getattr(trade.orderStatus, 'status', 'UNKNOWN')})"
-                    for trade in still_working
-                )
-                if open_orders:
-                    log.info(
-                        "Run completed with working submitted orders still open at broker: "
-                        f"{open_orders}"
+                self.execution_result = execution_result(self.trades.records())
+                if not self.execution_result.successful:
+                    raise ExecutionError(
+                        f"Batch execution outcome: {self.execution_result.status}. "
+                        "Reconcile broker orders before retrying."
                     )
-                if unexpected_state:
-                    unexpected_orders = ", ".join(
-                        f"{trade.contract.symbol} (OrderId: {trade.order.orderId}, status={getattr(trade.orderStatus, 'status', 'UNKNOWN')})"
-                        for trade in unexpected_state
-                    )
-                    log.warning(
-                        "Run completed with non-working incomplete orders at broker: "
-                        f"{unexpected_orders}"
-                    )
+                if self.execution_result.working:
+                    log.info("Run completed with working orders still open at broker.")
 
             log.info("ThetaGang is done, shutting down! Cya next time. :sparkles:")
-        except:
-            had_error = True
+        except BaseException as exc:
+            error = exc
+            if isinstance(exc, OrderSubmissionError) or self.connection_lost:
+                observed = execution_result(self.trades.records())
+                self.execution_result = ExecutionResult(
+                    "unknown",
+                    filled=observed.filled,
+                    working=observed.working,
+                    failed=observed.failed,
+                    unknown=max(1, observed.unknown),
+                    partially_filled=observed.partially_filled,
+                )
+            elif self.execution_result.successful:
+                self.execution_result = ExecutionResult(
+                    "partial_failure" if self.trades.records() else "failed"
+                )
             log.error("ThetaGang terminated with error...")
             raise
 
         finally:
             # Shut it down
-            if self.data_store:
-                self.data_store.record_event("run_end", {"success": not had_error})
-            self.completion_future.set_result(True)
+            try:
+                if self.execution_journal and not self.dry_run:
+                    for trade in self.trades.records():
+                        self.execution_journal.observe(trade)
+                if self.data_store:
+                    self.data_store.record_event(
+                        "run_end",
+                        {
+                            "success": error is None
+                            and self.execution_result.successful,
+                            **self.execution_result.to_dict(),
+                        },
+                    )
+            except Exception as finalization_error:
+                if error is None:
+                    error = finalization_error
+                    raise
+                log.error(f"Run finalization also failed: {finalization_error}")
+            finally:
+                if not self.completion_future.done():
+                    if error is None:
+                        self.completion_future.set_result(True)
+                    elif isinstance(error, asyncio.CancelledError):
+                        self.completion_future.cancel()
+                    else:
+                        self.completion_future.set_exception(error)
 
     async def check_puts(
         self, portfolio_positions: Dict[str, List[PortfolioItem]]
@@ -1064,12 +1153,114 @@ class PortfolioManager:
     ) -> None:
         await self.post_engine.do_cashman(account_summary, portfolio_positions)
 
+    async def preflight_orders(
+        self,
+        replacement: tuple[Contract, Order] | None = None,
+    ) -> None:
+        try:
+            await self._preflight_orders(replacement)
+        except ExecutionError:
+            raise
+        except RuntimeError as exc:
+            raise BatchRiskError(
+                f"Unable to complete order risk checks: {exc}"
+            ) from exc
+
+    async def _preflight_orders(
+        self,
+        replacement: tuple[Contract, Order] | None = None,
+    ) -> None:
+        proposed = (
+            [replacement]
+            if replacement is not None
+            else [(c, o) for c, o, _ in self.orders.records()]
+        )
+        if not proposed:
+            return
+        settings = getattr(self.config.runtime, "execution", ExecutionConfig())
+        opened = await self.ibkr.request_open_orders()
+        if replacement is not None:
+            replacing = replacement[1]
+            opened = [
+                trade
+                for trade in opened
+                if not (
+                    trade.order.account == replacing.account
+                    and trade.order.clientId == replacing.clientId
+                    and trade.order.orderId == replacing.orderId
+                )
+            ]
+        summary = account_summary_to_dict(
+            await self.ibkr.fresh_account_summary(self.account_number)
+        )
+        await self.ibkr.refresh_positions()
+        positions = self.ibkr.portfolio(self.account_number)
+        for contract, _ in [*proposed, *((t.contract, t.order) for t in opened)]:
+            for leg in contract.comboLegs:
+                if leg.conId not in self.qualified_contracts:
+                    qualified = await self.ibkr.qualify_contracts(
+                        Contract(conId=leg.conId)
+                    )
+                    if len(qualified) != 1 or qualified[0].conId != leg.conId:
+                        raise BatchRiskError(
+                            "Cannot qualify existing combo for risk checks"
+                        )
+                    self.qualified_contracts[leg.conId] = qualified[0]
+        reservation = validate_batch(
+            account=self.account_number,
+            summary=summary,
+            positions=positions,
+            proposed=proposed,
+            working=opened,
+            qualified=self.qualified_contracts,
+            funds_buffer=settings.funds_buffer,
+        )
+        initial = maintenance = 0.0
+        if not self.dry_run:
+            for contract, order in [
+                *remaining_orders(opened, self.account_number),
+                *proposed,
+            ]:
+                preview = await self.ibkr.preview_order(contract, order)
+                init_cost, maint_cost = margin_cost(
+                    preview, reservation.currency, settings.order_fee_buffer
+                )
+                initial += init_cost
+                maintenance += maint_cost
+            if (
+                initial > max(0.0, reservation.available_funds) + 1e-8
+                or maintenance > max(0.0, reservation.excess_liquidity) + 1e-8
+            ):
+                raise BatchRiskError(
+                    "Combined order margin reservations exceed free funds"
+                )
+        else:
+            log.notice(
+                "Local batch checks passed; broker margin preview is unavailable in dry-run."
+            )
+        if self.data_store:
+            self.data_store.record_event(
+                "batch_risk_checked",
+                {
+                    "orders": len(proposed),
+                    "pending_debit": reservation.debit,
+                    "initial_margin_reserved": initial,
+                    "maintenance_margin_reserved": maintenance,
+                    "broker_preview": not self.dry_run,
+                },
+            )
+
     def submit_orders(self) -> None:
+        if self.orders.records() and not self._batch_approved and not self.dry_run:
+            raise BatchRiskError("Batch has not passed pre-submission risk checks")
+        self._batch_approved = False
         for contract, order, intent_id in self.orders.records():
             self.trades.submit_order(contract, order, intent_id=intent_id)
         self.trades.print_summary()
 
     async def adjust_prices(self) -> None:
+        if self.dry_run:
+            return
         if (
             all(
                 [
@@ -1142,7 +1333,7 @@ class PortfolioManager:
                         f"Skipping order for {contract.symbol}"
                         f" with old lmtPrice={dfmt(float(order.lmtPrice or 0))} updated lmtPrice={dfmt(updated_price)}, because updated price would increase spread"
                     )
-                    return
+                    continue
 
                 # Check if the updated price is actually any different
                 # before proceeding, and make sure the signs match so we
@@ -1154,23 +1345,29 @@ class PortfolioManager:
                         f"{contract.symbol}: Resubmitting {order.action} {contract.secType} order with old lmtPrice={dfmt(float(order.lmtPrice or 0))} updated lmtPrice={dfmt(updated_price)}"
                     )
 
-                    # For some reason, we need to create a new order object
-                    # and populate the fields rather than modifying the
-                    # existing order in-place (janky).
-                    order = LimitOrder(
-                        order.action,
-                        order.totalQuantity,
-                        float(updated_price),
-                        orderId=order.orderId,
-                        algoStrategy=order.algoStrategy,
-                        algoParams=order.algoParams,
+                    # Preserve ownership, routing and timing fields while keeping
+                    # the original Trade's order unchanged until resubmission.
+                    order = copy(order)
+                    order.lmtPrice = float(updated_price)
+
+                    remaining = float(order.totalQuantity) - float(
+                        trade.orderStatus.filled
                     )
+                    if trade.isDone() or remaining <= 0:
+                        continue
+                    risk_order = copy(order)
+                    risk_order.totalQuantity = remaining
+                    await self.preflight_orders((contract, risk_order))
+                    if trade.isDone():
+                        continue
 
                     # resubmit the order and it will be placed back to the
                     # original position in the queue
                     self.trades.submit_order(contract, order, idx)
 
                     log.info(f"{contract.symbol}: Order updated, order={order}")
+            except ExecutionError:
+                raise
             except (
                 asyncio.TimeoutError,
                 RuntimeError,

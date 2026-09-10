@@ -26,7 +26,9 @@ class AccountConfig(BaseModel, DisplayMixin):
     def add_to_table(self, table: Table, section: str = "") -> None:
         table.add_row("[spring_green1]Account details")
         table.add_row("", "Account number", "=", self.number)
-        table.add_row("", "Cancel existing orders", "=", f"{self.cancel_orders}")
+        table.add_row(
+            "", "Cancel existing ThetaGang orders", "=", f"{self.cancel_orders}"
+        )
         table.add_row(
             "",
             "Margin usage",
@@ -100,6 +102,12 @@ class OrdersConfig(BaseModel, DisplayMixin):
         table.add_row("", "Params", "=", f"{self.algo.params}")
         table.add_row("", "Price update delay", "=", f"{self.price_update_delay}")
         table.add_row("", "Minimum credit", "=", f"{dfmt(self.minimum_credit)}")
+
+
+class ExecutionConfig(BaseModel):
+    state_directory: str = Field(default="~/.local/state/thetagang", min_length=1)
+    funds_buffer: float = Field(default=100.0, ge=0, allow_inf_nan=False)
+    order_fee_buffer: float = Field(default=5.0, ge=0, allow_inf_nan=False)
 
 
 class IBAsyncConfig(BaseModel):

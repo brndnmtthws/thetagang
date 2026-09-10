@@ -1,0 +1,10 @@
+Validation date: 2026-09-10 (Asia/Shanghai)
+Baseline commit: 970f5acd85a6b262c0ae16846ecaf32118bcb3d0
+Method: actual class methods with mocked broker interfaces; pre-fix observations.
+
+CONFIRMED: dry_run=True + cancel_orders=True still cancels a matching open order.
+CONFIRMED: a broker submission RuntimeError can produce run_end success=True.
+CONFIRMED: manage() re-raises an error but sets completion_future to True in finally.
+CONFIRMED: skipping repricing of the first order prevents examining the second order.
+CONFIRMED: market-data handler completion does not call cancelMktData.
+All broker interfaces were mocked. No broker connection or order was sent.

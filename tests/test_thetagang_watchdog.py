@@ -27,6 +27,9 @@ def _write_config(tmp_path, *, max_startup_retries=None):
     ).unwrap()
     if "meta" in base_config and base_config.get("meta", {}).get("schema_version") == 2:
         base_config["runtime"]["database"]["enabled"] = False
+        base_config["runtime"]["execution"] = {
+            "state_directory": str(tmp_path / "state")
+        }
         base_config["runtime"]["ib_async"]["logfile"] = ""
         stages = base_config.get("run", {}).get("stages", [])
         if isinstance(stages, list):
@@ -115,6 +118,7 @@ def _run_start(monkeypatch, tmp_path, *, max_startup_retries=None, event_script=
     class FakeIB:
         def __init__(self):
             self.connectedEvent = DummyEvent()
+            self.disconnectedEvent = DummyEvent()
             self.RaiseRequestErrors = False
 
         def run(self, awaitable):
@@ -135,6 +139,7 @@ def _run_start(monkeypatch, tmp_path, *, max_startup_retries=None, event_script=
             data_store=None,
             run_stage_flags=None,
             run_stage_order=None,
+            execution_journal=None,
         ):
             # Leave the future pending; the fake watchdog drives completion so
             # tests can exercise the startup-retry handling first.

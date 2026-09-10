@@ -120,7 +120,9 @@ async def test_do_cashman_reserved_regime_cash_suppresses_cash_fund_buy(mocker):
     engine._get_reserved_cash_for_post_management = lambda: 4100.0
     account_summary = {"TotalCashValue": SimpleNamespace(value="8400")}
     stock_contract = Stock("AAA", "SMART", "USD")
-    stock_order = SimpleNamespace(action="BUY", lmtPrice=100.0, totalQuantity=43)
+    stock_order = SimpleNamespace(
+        action="BUY", lmtPrice=100.0, totalQuantity=43, orderType="LMT"
+    )
     engine.orders.records = mocker.Mock(
         return_value=[(stock_contract, stock_order, None)]
     )

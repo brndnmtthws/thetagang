@@ -10,10 +10,11 @@ from ib_async.order import LimitOrder
 from thetagang import log
 from thetagang.config import Config
 from thetagang.db import DataStore
+from thetagang.execution_state import unique_order_ref
 from thetagang.fmt import dfmt
 from thetagang.ibkr import IBKR, TickerField
 from thetagang.options import option_dte
-from thetagang.orders import Orders
+from thetagang.orders import DEFAULT_ORDER_REF, Orders
 from thetagang.util import midpoint_or_market_price
 
 
@@ -72,6 +73,7 @@ class OrderOperations:
             "tif": tif,
             "account": self.account_number,
             "transmit": transmit,
+            "orderRef": order_ref or DEFAULT_ORDER_REF,
         }
         if algo_strategy is not None:
             kwargs["algoStrategy"] = algo_strategy
@@ -81,8 +83,6 @@ class OrderOperations:
             kwargs["algoParams"] = algo_params
         elif use_default_algo:
             kwargs["algoParams"] = self.get_algo_params()
-        if order_ref is not None:
-            kwargs["orderRef"] = order_ref
         if order_id is not None:
             kwargs["orderId"] = order_id
         return LimitOrder(action, quantity, limit_price, **kwargs)
@@ -90,6 +90,7 @@ class OrderOperations:
     def enqueue_order(self, contract: Optional[Contract], order: LimitOrder) -> None:
         if not contract:
             return
+        order.orderRef = unique_order_ref(order.orderRef or DEFAULT_ORDER_REF)
         intent_id = None
         if self.data_store:
             intent_id = self.data_store.record_order_intent(contract, order)

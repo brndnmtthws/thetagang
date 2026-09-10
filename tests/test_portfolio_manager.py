@@ -251,7 +251,10 @@ class TestPortfolioManager:
         pm.submit_orders = mocker.Mock()
         pm.adjust_prices = mocker.AsyncMock()
         pm.trades = mocker.Mock()
-        pm.trades.records = mocker.Mock(return_value=[mocker.Mock()])
+        trade = mocker.Mock()
+        trade.orderStatus.status = "Submitted"
+        trade.orderStatus.filled = 0.0
+        pm.trades.records = mocker.Mock(return_value=[trade])
 
         mocker.patch(
             "thetagang.portfolio_manager.run_equity_rebalance_stages",
@@ -846,11 +849,13 @@ class TestPortfolioManager:
         # Create mock orders
         stock_buy_order = mocker.Mock()
         stock_buy_order.action = "BUY"
+        stock_buy_order.orderType = "LMT"
         stock_buy_order.lmtPrice = 150.0
         stock_buy_order.totalQuantity = 100
 
         option_sell_order = mocker.Mock()
         option_sell_order.action = "SELL"
+        option_sell_order.orderType = "LMT"
         option_sell_order.lmtPrice = 2.50
         option_sell_order.totalQuantity = 5
 
@@ -867,9 +872,8 @@ class TestPortfolioManager:
 
         # Expected:
         # Stock BUY: -150 * 100 * 1 = -15,000
-        # Option SELL: +2.50 * 5 * 100 = +1,250
-        # Total: -13,750
-        assert pending_balance == -13750.0
+        # Pending option SELL proceeds are unavailable until filled.
+        assert pending_balance == -15000.0
 
     @pytest.mark.asyncio
     async def test_buy_only_minimum_shares_threshold(self, portfolio_manager, mocker):

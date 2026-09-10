@@ -3,6 +3,7 @@ from unittest.mock import Mock
 import pytest
 from ib_async import Contract, LimitOrder, Trade
 
+from thetagang.execution import OrderSubmissionError
 from thetagang.ibkr import IBKR
 from thetagang.trades import Trades
 
@@ -66,7 +67,8 @@ def test_submit_order_failure(
     trades: Trades, mock_contract: Mock, mock_order: Mock, mock_ibkr: Mock
 ) -> None:
     mock_ibkr.place_order.side_effect = RuntimeError("Failed to place order")
-    trades.submit_order(mock_contract, mock_order)
+    with pytest.raises(OrderSubmissionError):
+        trades.submit_order(mock_contract, mock_order)
     mock_ibkr.place_order.assert_called_once_with(mock_contract, mock_order)
     assert len(trades.records()) == 0
 
@@ -80,6 +82,7 @@ def test_submit_order_multiple_trades(
 ) -> None:
     mock_ibkr.place_order.return_value = mock_trade
     trades.submit_order(mock_contract, mock_order)
-    trades.submit_order(mock_contract, mock_order)
+    second_order = LimitOrder("BUY", 1, 100, orderRef="tg:second")
+    trades.submit_order(mock_contract, second_order)
     assert mock_ibkr.place_order.call_count == 2
     assert len(trades.records()) == 2

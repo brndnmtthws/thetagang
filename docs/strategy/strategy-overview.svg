@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="1840" viewBox="0 0 3000 1840">
+<title>ThetaGang 交易策略全景图</title>
+<desc>展示 Wheel、Regime-aware 再平衡、VIX Call 对冲、现金管理和统一订单风险边界的实际执行路径。</desc>
+<rect width="3000" height="1840" fill="#f6f8fb"/>
+<defs>
+      <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+        <path d="M0,0 L12,6 L0,12 z" fill="#90a0ae"/>
+      </marker>
+      <marker id="arrow-dark" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+        <path d="M0,0 L12,6 L0,12 z" fill="#526579"/>
+      </marker>
+    </defs>
+<text x="70" y="54" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="40" font-weight="500">ThetaGang 交易策略全景图</text>
+<text x="70" y="102" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="22" font-weight="400">配置驱动 · 一次运行按阶段规划 · 期权、股票、对冲和现金共享账户级风险边界</text>
+<text x="2930" y="54" text-anchor="end" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="18" font-weight="400">代码行为快照 · 2026-09-10</text>
+<rect x="70" y="150" width="2860" height="245" rx="24" fill="#eaf3f8" stroke="#86a9be" stroke-width="3"/>
+<text x="98" y="185" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="29" font-weight="500">一次运行的主路径</text>
+<text x="98" y="225" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">阶段顺序由 CANONICAL_STAGE_ORDER 决定；策略配置只决定哪些阶段启用。</text>
+<rect x="100" y="225" width="365" height="115" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="124" y="257" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">① 快照</text>
+<text x="124" y="297" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">账户 / 持仓 / 工作挂单</text>
+<text x="124" y="326" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">本轮订单意图进入预计组合</text>
+<rect x="510" y="225" width="500" height="115" rx="18" fill="#fff3df" stroke="#cad5de" stroke-width="2"/>
+<text x="534" y="257" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">② 期权写入</text>
+<text x="534" y="297" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">卖 Put → 卖 Call</text>
+<text x="534" y="326" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">目标权重、方向、波动与合约链门控</text>
+<rect x="1055" y="225" width="615" height="115" rx="18" fill="#f1ecfa" stroke="#cad5de" stroke-width="2"/>
+<text x="1079" y="257" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">③ 股票再平衡</text>
+<text x="1079" y="297" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">Regime / Buy-only / Sell-only</text>
+<text x="1079" y="326" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">软硬带、状态过滤、缺口与现金流</text>
+<rect x="1715" y="225" width="500" height="115" rx="18" fill="#fff3df" stroke="#cad5de" stroke-width="2"/>
+<text x="1739" y="257" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">④ 期权管理</text>
+<text x="1739" y="297" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">展期 → 平仓</text>
+<text x="1739" y="326" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">DTE、ITM、P&amp;L、信用与超额仓位</text>
+<rect x="2260" y="225" width="620" height="115" rx="18" fill="#e8f6ee" stroke="#cad5de" stroke-width="2"/>
+<text x="2284" y="257" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">⑤ 后置与提交</text>
+<text x="2284" y="297" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">VIX 对冲 → 现金管理 → 整批风控</text>
+<text x="2284" y="326" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">dry-run 预览或实盘提交 / 调价</text>
+<path d="M465 282 L510 282" fill="none" stroke="#526579" stroke-width="3" marker-end="url(#arrow-dark)"/>
+<path d="M1010 282 L1055 282" fill="none" stroke="#526579" stroke-width="3" marker-end="url(#arrow-dark)"/>
+<path d="M1670 282 L1715 282" fill="none" stroke="#526579" stroke-width="3" marker-end="url(#arrow-dark)"/>
+<path d="M2215 282 L2260 282" fill="none" stroke="#526579" stroke-width="3" marker-end="url(#arrow-dark)"/>
+<rect x="70" y="445" width="1210" height="1035" rx="24" fill="#fff3df" stroke="#d7ae67" stroke-width="3"/>
+<text x="98" y="480" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="29" font-weight="500">Wheel · 期权收益与仓位转换</text>
+<text x="98" y="520" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">卖 Put 获得标的敞口，股票到位后卖 Call；空头合约按规则展期或止盈。</text>
+<rect x="105" y="540" width="500" height="150" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="129" y="572" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">目标仓位</text>
+<text x="129" y="612" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">目标金额 = 权重 × 购买力</text>
+<text x="129" y="641" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">目标股数 = floor(目标金额 / 价格)</text>
+<text x="129" y="670" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">Put 股数还要扣除 100 × 净空头 Put</text>
+<rect x="655" y="540" width="535" height="150" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="679" y="572" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">共同写入门控</text>
+<text x="679" y="612" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">可交易 / 非 buy-only 或 sell-only</text>
+<text x="679" y="641" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">green/red 方向与当日变动阈值</text>
+<text x="679" y="670" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">新增张数受购买力百分比限制</text>
+<path d="M605 615 L655 615" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="105" y="755" width="1120" height="125" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="129" y="787" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">OptionChainScanner</text>
+<text x="129" y="827" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">目标 DTE / 最大 DTE · Delta 上限 · 行权价方向 · 最低价格 · 未平仓量 · 排除旧合约</text>
+<path d="M890 690 L890 755" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="105" y="935" width="500" height="150" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="129" y="967" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">卖 Put</text>
+<text x="129" y="1007" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">按需卖出 Put</text>
+<text x="129" y="1036" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">低于目标时逐步获得持仓</text>
+<text x="129" y="1065" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">买方接 assignment 后转为股票</text>
+<rect x="655" y="935" width="570" height="150" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="679" y="967" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">卖 Covered Call</text>
+<text x="679" y="1007" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">cap_factor / cap_target_floor</text>
+<text x="679" y="1036" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">excess_only 与仓位阈值</text>
+<text x="679" y="1065" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">新行权价不低于成本线与现价</text>
+<path d="M350 880 L350 935" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M900 880 L900 935" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="105" y="1135" width="1120" height="255" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="129" y="1167" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">空头期权管理</text>
+<text x="129" y="1207" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">ITM、超额仓位、DTE、P&amp;L 和 max_dte 决定是否动作</text>
+<text x="129" y="1236" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">展期：BAG 组合单 = BUY 旧合约 + SELL 新合约</text>
+<text x="129" y="1265" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">平仓：空头 BUY 平仓；配置 close_at_pnl 可直接止盈</text>
+<text x="129" y="1294" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">credit_only / 无合约时可按配置关闭或跳过</text>
+<path d="M350 1085 L350 1135" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M940 1085 L940 1135" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="105" y="1445" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">长期特征：卖 Put 承担下跌与 assignment 风险；卖 Call 换取权利金但限制上涨空间。</text>
+<rect x="1320" y="445" width="1010" height="1035" rx="24" fill="#f1ecfa" stroke="#aa91ca" stroke-width="3"/>
+<text x="1348" y="480" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="29" font-weight="500">Regime-aware · 状态门控的股票再平衡</text>
+<text x="1348" y="520" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">Wheel 与 Regime 互斥；Regime 只规划股票订单，并可把 Flow 余量预留给现金管理。</text>
+<rect x="1355" y="540" width="440" height="150" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="1379" y="572" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">资金基准</text>
+<text x="1379" y="612" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">net_liq</text>
+<text x="1379" y="641" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">managed_stocks</text>
+<text x="1379" y="670" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">net_liq_ex_options</text>
+<text x="1379" y="699" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">再乘 regime_margin_usage</text>
+<rect x="1845" y="540" width="450" height="150" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="1869" y="572" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">有效权重</text>
+<text x="1869" y="612" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">可按历史波动率调整</text>
+<text x="1869" y="641" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">归一化后计算目标股数</text>
+<text x="1869" y="670" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">逐标的得到 relative_drift</text>
+<path d="M1795 615 L1845 615" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1355" y="755" width="940" height="155" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="1379" y="787" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">市场状态过滤</text>
+<text x="1379" y="827" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">软带：Choppiness ≥ min 且 Efficiency ≤ max，冷却期结束，Ratio gate 可选</text>
+<text x="1379" y="856" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">硬带：超过 hard_band，越过状态与冷却限制；可只回归 fraction</text>
+<path d="M1815 690 L1815 755" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1355" y="975" width="280" height="175" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="1379" y="1007" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">Soft</text>
+<text x="1379" y="1047" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">偏离 ≥ soft_band</text>
+<text x="1379" y="1076" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">状态和冷却通过</text>
+<text x="1379" y="1105" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">按目标买卖</text>
+<rect x="1685" y="975" width="280" height="175" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="1709" y="1007" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">Hard</text>
+<text x="1709" y="1047" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">偏离 ≥ hard_band</text>
+<text x="1709" y="1076" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">安全护栏</text>
+<text x="1709" y="1105" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">可部分回归</text>
+<rect x="2015" y="975" width="280" height="175" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="2039" y="1007" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">Flow / Deficit</text>
+<text x="2039" y="1047" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">超额现金方向一致</text>
+<text x="2039" y="1076" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">或缺口达到安全轨</text>
+<text x="2039" y="1105" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">必要时跌破目标卖出</text>
+<path d="M1815 910 L1495 975" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M1815 910 L1825 975" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M1815 910 L2155 975" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="1355" y="1210" width="940" height="175" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="1379" y="1242" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">股票订单 + 资金预留</text>
+<text x="1379" y="1282" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">按每标的交易策略过滤买卖方向与最小阈值</text>
+<text x="1379" y="1311" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">Flow 买入后仍需使用的现金由后置现金管理预留</text>
+<text x="1379" y="1340" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">数据不足时该策略本轮停止生成订单</text>
+<path d="M1495 1150 L1495 1210" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M1825 1150 L1825 1210" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<path d="M2155 1150 L2155 1210" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<rect x="2370" y="445" width="560" height="1035" rx="24" fill="#e8f6ee" stroke="#83b999" stroke-width="3"/>
+<text x="2398" y="480" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="29" font-weight="500">后置策略</text>
+<text x="2398" y="520" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">VIX 与现金管理在股票/期权规划后执行。</text>
+<rect x="2405" y="540" width="490" height="250" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="2429" y="572" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">VIX Call 对冲</text>
+<text x="2429" y="612" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">已有净多 Call 且 VIX 过平仓线 → 卖出</text>
+<text x="2429" y="641" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">否则按 VIXMO 区间选择 allocation</text>
+<text x="2429" y="670" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">预算 = NLV × weight</text>
+<text x="2429" y="699" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">按目标 Delta / DTE 扫描并买入</text>
+<rect x="2405" y="850" width="490" height="250" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="2429" y="882" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">Cash management</text>
+<text x="2429" y="922" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">有效现金 = TotalCash + 待发生变动</text>
+<text x="2429" y="951" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">扣除 Regime 预留现金</text>
+<text x="2429" y="980" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">高于目标 + buy_threshold → 买现金基金</text>
+<text x="2429" y="1009" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">低于目标 - sell_threshold → 卖现金基金</text>
+<path d="M2650 790 L2650 850" fill="none" stroke="#90a0ae" stroke-width="3" marker-end="url(#arrow)"/>
+<text x="2405" y="1175" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="18" font-weight="400">VIX Call 是尾部保护层，也会产生时间价值成本。</text>
+<text x="2405" y="1210" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="18" font-weight="400">现金基金是现金调度，不是收益保证。</text>
+<rect x="70" y="1540" width="2860" height="245" rx="24" fill="#f8ecec" stroke="#c68989" stroke-width="3"/>
+<text x="98" y="1575" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="29" font-weight="500">统一风险与互斥边界</text>
+<text x="98" y="1615" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">策略只生成意图；整批风险、执行状态和券商对账决定是否真的提交。</text>
+<rect x="100" y="1615" width="630" height="110" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="124" y="1647" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">整批 BatchRisk</text>
+<text x="124" y="1687" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">重复/反向订单 · 股票超卖 · Call 覆盖</text>
+<text x="124" y="1716" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">合计支出 · 币种/乘数 · 实盘保证金预估</text>
+<rect x="770" y="1615" width="630" height="110" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="794" y="1647" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">执行与恢复</text>
+<text x="794" y="1687" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">先写 ExecutionJournal，再提交</text>
+<text x="794" y="1716" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">未知结果、未解决工作单先阻断下一批</text>
+<rect x="1440" y="1615" width="630" height="110" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="1464" y="1647" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">配置互斥</text>
+<text x="1464" y="1687" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">wheel ↔ regime_rebalance</text>
+<text x="1464" y="1716" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">calls 写入依赖 puts 写入</text>
+<text x="1464" y="1745" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">shares_only 跳过期权写入和展期</text>
+<rect x="2110" y="1615" width="790" height="110" rx="18" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
+<text x="2134" y="1647" text-anchor="start" dominant-baseline="middle" fill="#173044" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="24" font-weight="500">共享账户视角</text>
+<text x="2134" y="1687" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">购买力、NLV、持仓、挂单和本轮意图共同影响后续阶段</text>
+<text x="2134" y="1716" text-anchor="start" dominant-baseline="middle" fill="#526579" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="19" font-weight="400">未成交卖出收入与期权贷记不会提前变成可用资金</text>
+</svg>

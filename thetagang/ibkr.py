@@ -1,4 +1,5 @@
 import asyncio
+from copy import copy
 from enum import Enum
 from typing import Any, Awaitable, Callable, Coroutine, List, Optional, TypeVar, cast
 
@@ -12,6 +13,7 @@ from ib_async import (
     Index,
     OptionChain,
     Order,
+    OrderState,
     PortfolioItem,
     Position,
     Stock,
@@ -49,6 +51,10 @@ class IBKRRequestTimeout(RuntimeError):
         )
 
 
+class DryRunOrderError(RuntimeError):
+    """An order mutation was attempted through a dry-run broker adapter."""
+
+
 T = TypeVar("T")
 
 
@@ -61,12 +67,15 @@ class IBKR:
         api_response_wait_time: int,
         default_order_exchange: str,
         data_store: Optional[DataStore] = None,
+        *,
+        dry_run: bool = False,
     ) -> None:
         self.ib = ib
         self.ib.orderStatusEvent += self.orderStatusEvent
         self.api_response_wait_time = api_response_wait_time
         self.default_order_exchange = default_order_exchange
         self.data_store = data_store
+        self._dry_run = dry_run
 
     def portfolio(self, account: str) -> List[PortfolioItem]:
         return self.ib.portfolio(account)
@@ -109,11 +118,49 @@ class IBKR:
     def open_trades(self) -> List[Trade]:
         return self.ib.openTrades()
 
+    async def request_open_orders(self) -> List[Trade]:
+        return await self._await_with_timeout(
+            self.ib.reqAllOpenOrdersAsync(), "all open orders"
+        )
+
+    async def request_completed_orders(self) -> List[Trade]:
+        return await self._await_with_timeout(
+            self.ib.reqCompletedOrdersAsync(False), "completed orders"
+        )
+
+    async def fresh_account_summary(self, account: str) -> List[AccountValue]:
+        # Restart the subscription so accountDownloadEnd marks a fresh snapshot,
+        # rather than relying on values cached earlier during strategy planning.
+        self.ib.client.reqAccountUpdates(False, account)
+        await self._await_with_timeout(
+            self.ib.reqAccountUpdatesAsync(account), "fresh account updates"
+        )
+        return self.ib.accountValues(account)
+
+    async def preview_order(self, contract: Contract, order: Order) -> OrderState:
+        # IB what-if uses placeOrder internally; dry-run must never send it.
+        self.ensure_order_execution_allowed()
+        preview_order = copy(order)
+        preview_order.orderId = 0
+        preview_order.clientId = 0
+        preview_order.permId = 0
+        return await self._await_with_timeout(
+            self.ib.whatIfOrderAsync(contract, preview_order), "order margin preview"
+        )
+
     def place_order(self, contract: Contract, order: Order) -> Trade:
+        self.ensure_order_execution_allowed()
         return self.ib.placeOrder(contract, order)
 
     def cancel_order(self, order: Order) -> None:
+        self.ensure_order_execution_allowed()
         self.ib.cancelOrder(order)
+
+    def ensure_order_execution_allowed(self) -> None:
+        if self._dry_run:
+            raise DryRunOrderError(
+                "Order submission, modification and cancellation are disabled in dry-run mode."
+            )
 
     async def refresh_account_updates(self, account: str) -> None:
         if self._account_snapshot_ready(account):
