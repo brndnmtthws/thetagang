@@ -5,6 +5,7 @@ import pytest
 from thetagang.config_models import TargetWeightPolicyConfig
 from thetagang.external_decisions import (
     ExternalDecisionError,
+    ExternalDecisionRejection,
     ExternalDecisionResponse,
 )
 from thetagang.target_weight_policy import (
@@ -15,11 +16,11 @@ from thetagang.target_weight_policy import (
 )
 
 
-def test_absolute_trend_request_defaults_to_cliff() -> None:
-    trend = AbsoluteTrendInput.model_validate(
-        {"enabled": True, "lookback_days": 250, "risk_off_multiplier": 0.25}
-    )
-    assert trend.risk_off_ramp_width == 0.0
+def test_absolute_trend_request_requires_resolved_policy() -> None:
+    with pytest.raises(ValueError, match="policy"):
+        AbsoluteTrendInput.model_validate(
+            {"enabled": True, "lookback_days": 250, "risk_off_multiplier": 0.25}
+        )
 
 
 def _policy() -> TargetWeightPolicyConfig:
@@ -70,7 +71,7 @@ def test_target_weight_response_accepts_current_bounded_signal(
 def test_target_weight_response_rejects_invalid_multiplier(
     multiplier: object,
 ) -> None:
-    with pytest.raises(ExternalDecisionError, match="invalid|bounds"):
+    with pytest.raises(ExternalDecisionRejection, match="invalid|bounds"):
         validate_target_weight_response(
             _response(multiplier=multiplier),
             policy=_policy(),
@@ -92,7 +93,7 @@ def test_target_weight_response_rejects_stale_session() -> None:
 def test_target_weight_response_requires_market_session() -> None:
     response = _response().model_copy(update={"as_of_session": None})
 
-    with pytest.raises(ExternalDecisionError, match="requires as_of_session"):
+    with pytest.raises(ExternalDecisionRejection, match="requires as_of_session"):
         validate_target_weight_response(
             response,
             policy=_policy(),
@@ -115,7 +116,7 @@ def test_target_weight_response_rejects_expired_signal() -> None:
 
 
 def test_target_weight_response_requires_configured_symbol_set() -> None:
-    with pytest.raises(ExternalDecisionError, match="symbols do not match"):
+    with pytest.raises(ExternalDecisionRejection, match="symbols do not match"):
         validate_target_weight_response(
             _response(symbol="QQQ"),
             policy=_policy(),
@@ -181,7 +182,9 @@ def test_target_bounds_apply_after_multiplication(
 )
 def test_target_application_rejects_disjoint_clamps(bounds: dict[str, float]) -> None:
     policy = TargetWeightPolicyConfig(symbols={"IBIT": bounds})
-    with pytest.raises(ExternalDecisionError, match="do not overlap volatility bounds"):
+    with pytest.raises(
+        ExternalDecisionRejection, match="do not overlap volatility bounds"
+    ):
         apply_target_weight_adjustments(
             {"IBIT": 0.25},
             {"IBIT": TargetWeightMultiplier(multiplier=1.0)},
@@ -198,7 +201,7 @@ def test_target_floors_cannot_bypass_total_exposure_limit() -> None:
             for symbol in ("TQQQ", "IBIT")
         }
     )
-    with pytest.raises(ExternalDecisionError, match="permitted total weight"):
+    with pytest.raises(ExternalDecisionRejection, match="permitted total weight"):
         apply_target_weight_adjustments(
             {"TQQQ": 0.4, "IBIT": 0.4},
             {

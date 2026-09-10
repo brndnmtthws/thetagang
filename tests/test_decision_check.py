@@ -84,6 +84,112 @@ def test_reference_provider_runs_with_only_standard_library(decision: str) -> No
         assert report["post_policy_weights"] == {"TQQQ": 0.4, "QQQ": 0.5}
 
 
+@pytest.mark.parametrize(
+    ("policy", "expected_exit"),
+    [
+        ('{"mode": "deadband", "exit_depth": 0.02, "min_dwell_sessions": 3}', 0),
+        ('{"mode": "cliff", "exit_depth": 0.0, "min_dwell_sessions": 0}', 1),
+    ],
+)
+def test_reference_provider_validates_published_policy(
+    policy: str, expected_exit: int
+) -> None:
+    result = CliRunner().invoke(
+        cli,
+        [
+            "check",
+            "--request",
+            str(EXAMPLES / "regime_target_weights.request.json"),
+            "--",
+            sys.executable,
+            "-I",
+            "-S",
+            str(EXAMPLES / "provider.py"),
+            policy,
+        ],
+    )
+
+    assert result.exit_code == expected_exit, result.output
+    if expected_exit != 0:
+        assert "does not match the provider's expected policy" in result.output
+
+
+def _flat_absolute_trend_diagnostics() -> dict[str, Any]:
+    """The exact flat shape the host publishes in harvest modifier diagnostics."""
+
+    from thetagang.strategies.regime_engine import (
+        _AbsoluteTrendPolicy,
+        _AbsoluteTrendSignal,
+        _AbsoluteTrendState,
+    )
+
+    signal = _AbsoluteTrendSignal(
+        lookback_days=3,
+        latest_session="2026-09-02",
+        latest_close=99.0,
+        moving_average=100.0,
+        momentum_reference_close=101.0,
+        lookback_return=99.0 / 101.0 - 1.0,
+    )
+    return signal.target_details(
+        state=_AbsoluteTrendState(
+            latest_session="2026-09-02",
+            state="risk_off",
+            previous_state="risk_on",
+            sessions_in_state=1,
+            state_transition=True,
+            within_band_drift=False,
+        ),
+        policy=_AbsoluteTrendPolicy("cliff", 0.0, 0),
+        pre_trend_target=0.4,
+        risk_off_multiplier=0.15,
+        history_source="fresh",
+    )
+
+
+@pytest.mark.parametrize(
+    ("expected_policy", "expected_exit"),
+    [
+        (None, 0),
+        ('{"mode": "cliff", "exit_depth": 0.0, "min_dwell_sessions": 0}', 0),
+        ('{"mode": "deadband", "exit_depth": 0.02, "min_dwell_sessions": 3}', 1),
+    ],
+)
+def test_reference_provider_reads_flat_harvest_policy(
+    tmp_path: Path, expected_policy: str | None, expected_exit: int
+) -> None:
+    request = json.loads((EXAMPLES / "tail_hedge_harvest.request.json").read_text())
+    symbol = next(iter(request["input"]["underlyings"]))
+    diagnostics = _flat_absolute_trend_diagnostics()
+    request["input"]["underlyings"][symbol]["target_modifiers"]["absolute_trend"] = (
+        diagnostics
+    )
+    request_path = tmp_path / "tail_hedge_harvest.request.json"
+    request_path.write_text(json.dumps(request))
+    # Harvest diagnostics carry the resolved rule flat, unlike the nested
+    # `policy` object published for target-weight symbols.
+    assert "policy" not in diagnostics
+    assert diagnostics["mode"] == "cliff"
+
+    command = [
+        "check",
+        "--request",
+        str(request_path),
+        "--",
+        sys.executable,
+        "-I",
+        "-S",
+        str(EXAMPLES / "provider.py"),
+    ]
+    if expected_policy is not None:
+        command.append(expected_policy)
+    result = CliRunner().invoke(cli, command)
+
+    assert result.exit_code == expected_exit, result.output
+    if expected_exit != 0:
+        assert "does not match the provider's expected policy" in result.output
+
+
 def replay(
     tmp_path: Path,
     *,

@@ -560,13 +560,25 @@ daily_stddev_window = "30 D"
   weight = 0.3
   # Optional post-volatility absolute-trend target modifier. It uses only
   # completed sessions and defaults to disabled when absent or enabled=false.
+  # Risk-off is entered when the latest close is below the lower of the moving
+  # average and the lookback reference close, and the target is reduced by
+  # `risk_off_multiplier` for as long as that state holds.
+  #
+  # `absolute_trend.policy` is the explicit exit rule. A "cliff" (the default)
+  # exits as soon as the entry rule stops holding. A "deadband" holds risk-off
+  # until the close is at least `exit_depth` above the entry threshold and the
+  # state has lasted at least `min_dwell_sessions` sessions; it must set
+  # `exit_depth > 0` or `min_dwell_sessions >= 2`. Cliff mode requires both
+  # hysteresis parameters to stay at zero. The resolved policy is published to
+  # external decision providers, which validate it by exact match.
   # [portfolio.symbols.QQQ.absolute_trend]
   # enabled = false
   # lookback_days = 168
   # risk_off_multiplier = 0.25
-  # Ramp from 1.0 at the lower of the moving average and lookback reference
-  # to the floor 10% below it. Width defaults to 0 (original step reduction).
-  # risk_off_ramp_width = 0.10
+  # [portfolio.symbols.QQQ.absolute_trend.policy]
+  # mode = "deadband" # cliff | deadband
+  # exit_depth = 0.02
+  # min_dwell_sessions = 3
   # The target DTE may also be specified per-symbol, and takes precedence over
   # `target.dte`
   dte = 60

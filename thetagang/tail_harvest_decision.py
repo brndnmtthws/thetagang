@@ -8,8 +8,8 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from thetagang.config_models import TailHarvestDecisionConfig, TailHedgeConfig
 from thetagang.external_decisions import (
     DecisionInput,
-    ExternalDecisionError,
     ExternalDecisionMarketData,
+    ExternalDecisionRejection,
     ExternalDecisionRequest,
     ExternalDecisionRequestEnvelope,
     ExternalDecisionResponse,
@@ -243,6 +243,6 @@ def validate_tail_harvest_response(
     try:
         return TailHarvestDecisionOutput.model_validate(response.output)
     except ValueError as exc:
-        raise ExternalDecisionError(
+        raise ExternalDecisionRejection(
             "tail harvest decision returned an invalid output"
         ) from exc

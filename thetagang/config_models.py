@@ -754,11 +754,42 @@ class SymbolConfig(BaseModel):
                 raise ValueError("volatility_weight.max_weight must be >= min_weight")
             return self
 
+    class AbsoluteTrendPolicy(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        mode: Literal["cliff", "deadband"] = Field(default="cliff")
+        exit_depth: float = Field(default=0.0, ge=0.0, le=1.0)
+        min_dwell_sessions: int = Field(default=0, ge=0)
+
+        @model_validator(mode="after")
+        def validate_mode_hysteresis(self) -> Self:
+            # A cliff exits as soon as the entry rule stops holding, so
+            # hysteresis parameters would be silently ignored.
+            if self.mode == "cliff":
+                if self.exit_depth > 0.0 or self.min_dwell_sessions > 0:
+                    raise ValueError(
+                        "absolute_trend.policy.exit_depth and "
+                        "min_dwell_sessions require mode='deadband'"
+                    )
+                return self
+            # Dwell of one session is already true when a risk-off state is
+            # entered, which would make 'deadband' indistinguishable from a cliff.
+            if self.exit_depth == 0.0 and self.min_dwell_sessions < 2:
+                raise ValueError(
+                    "absolute_trend.policy mode='deadband' requires exit_depth > 0 "
+                    "or min_dwell_sessions >= 2"
+                )
+            return self
+
     class AbsoluteTrend(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
         enabled: bool = Field(default=False)
         lookback_days: int = Field(default=168, ge=2)
         risk_off_multiplier: float = Field(default=0.15, ge=0.0, le=1.0)
-        risk_off_ramp_width: float = Field(default=0.0, ge=0.0, le=1.0)
+        policy: "SymbolConfig.AbsoluteTrendPolicy" = Field(
+            default_factory=lambda: SymbolConfig.AbsoluteTrendPolicy()
+        )
 
     weight: float = Field(..., ge=0, le=1)
     primary_exchange: str = Field(default="", min_length=1)

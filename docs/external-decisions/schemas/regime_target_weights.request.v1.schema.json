@@ -11,24 +11,52 @@
           "title": "Lookback Days",
           "type": "integer"
         },
+        "policy": {
+          "$ref": "#/$defs/AbsoluteTrendPolicyInput"
+        },
         "risk_off_multiplier": {
           "title": "Risk Off Multiplier",
-          "type": "number"
-        },
-        "risk_off_ramp_width": {
-          "default": 0.0,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Risk Off Ramp Width",
           "type": "number"
         }
       },
       "required": [
         "enabled",
         "lookback_days",
-        "risk_off_multiplier"
+        "risk_off_multiplier",
+        "policy"
       ],
       "title": "AbsoluteTrendInput",
+      "type": "object"
+    },
+    "AbsoluteTrendPolicyInput": {
+      "additionalProperties": false,
+      "properties": {
+        "exit_depth": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Exit Depth",
+          "type": "number"
+        },
+        "min_dwell_sessions": {
+          "minimum": 0,
+          "title": "Min Dwell Sessions",
+          "type": "integer"
+        },
+        "mode": {
+          "enum": [
+            "cliff",
+            "deadband"
+          ],
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "exit_depth",
+        "min_dwell_sessions"
+      ],
+      "title": "AbsoluteTrendPolicyInput",
       "type": "object"
     },
     "ExecutionConstraints": {

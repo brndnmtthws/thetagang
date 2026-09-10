@@ -68,10 +68,54 @@ The `input` for `regime_target_weights` contains:
 Explicit primary-exchange overrides use separate persistent history entries,
 so missing API bars cannot be filled with another listing's cached prices.
 
-The absolute-trend configuration includes `risk_off_ramp_width` (default `0.0`
-for the original step reduction). Providers can require an explicit host ramp,
-such as `0.10`, when validating their strategy configuration. ThetaGang applies
-the ramp after the provider multiplier; providers must not apply it themselves.
+The absolute-trend configuration publishes the host's resolved entry and exit
+rule as `absolute_trend.policy`: `mode` (`cliff` or `deadband`), `exit_depth`,
+and `min_dwell_sessions`. Risk-off is entered when the latest completed close is
+below the lower of the moving average and the momentum reference close. A
+`cliff` exits as soon as that rule stops holding. A `deadband` holds risk-off
+until the close is at least `exit_depth` above the entry threshold and the state
+has lasted at least `min_dwell_sessions` sessions; a `deadband` must set
+`exit_depth > 0` or `min_dwell_sessions >= 2`, because a one-session dwell is
+already true when risk-off is entered. ThetaGang
+resolves and applies the whole rule after the provider multiplier; providers must
+not re-derive it.
+
+Providers validate the published policy by exact match. Pass the policy the model
+was built for as the provider command's only argument, for example
+`command = ["/opt/tqqq-policy/.venv/bin/python", "-m", "tqqq_policy", "{\"mode\": \"deadband\", \"exit_depth\": 0.02, \"min_dwell_sessions\": 3}"]`.
+The [reference provider](../examples/external_decisions/provider.py) performs
+that comparison and rejects a mismatch with a nonzero exit. Target-weight
+requests carry the resolved policy as a nested `absolute_trend.policy` object;
+`tail_hedge_harvest` publishes the same `mode`, `exit_depth`, and
+`min_dwell_sessions` flat inside each `target_modifiers.absolute_trend`
+diagnostic. A host deployment
+whose resolved policy differs from the provider's assumption therefore fails
+loudly instead of silently sizing on a rule the model never saw.
+
+`deadband` is opt-in and has to earn its place. A change that claims a deadband
+helps must first beat the same `cliff` configuration on a matched A/B — identical
+symbols, sessions, sizing, and market history — including forced slow-grind
+episodes where the close oscillates around the entry threshold. The
+`absolute_trend_state` event exists to make that comparison measurable: every
+session records the raw `shortfall` below the entry threshold, whether the
+session was a `state_transition` or `within_band_drift` (risk-off retained while
+the entry rule no longer held), `sessions_in_state`, `previous_state`, and the
+active `mode`, `exit_depth`, and `min_dwell_sessions`. Boundary chatter and rule
+differences are read from those events, not inferred from trade counts.
+
+Each `absolute_trend_state` event carries the payload `state_version` that wrote
+it, and every symbol records `state_reset_reason`: null when the previous record
+was applied as-is or when no record existed (a cold start), and otherwise why it
+could not be. A record written by an older `state_version` is salvaged by its
+recorded risk state and reported as `legacy_payload`, so an upgrade keeps any
+hysteresis-held risk-off and only restarts the dwell counter. A record that
+claims the current version and is still unreadable is `invalid_persisted_state`
+(or `unsupported_state_version` when only the version is wrong). Deadband mode
+aborts regime-rebalance planning in that case, because a reset there can release
+exposure the deadband was holding; cliff mode re-resolves from the entry rule,
+which cannot change exposure, and says so in the event. An A/B that counts drift
+sessions must therefore filter on `state_reset_reason` rather than assume every
+reset shows up as drift.
 
 The listed TQQQ sizing features—returns, moving-average distance, trend,
 realized volatility, volatility acceleration, drawdown, close-based choppiness,
@@ -145,9 +189,20 @@ run. This prevents a tail-harvest replan from receiving a different model signal
 mid-execution.
 Its expiry is checked again before reuse; an expired decision follows the
 configured failure policy without invoking the provider again.
-Any response or target-application failure keeps the hook in its configured
-failure behavior for the rest of that run, even if later baseline weights would
-make a rejected adjustment fit within the exposure ceiling.
+
+`on_error` covers unavailability rather than refused decisions: a provider that
+cannot be started, times out or exceeds `max_response_bytes`, a signal outside the
+configured freshness limits (`max_signal_age_sessions` or `expires_at`), host-side
+market-history collection failures, and expired cached decisions. A provider
+**rejection** is a different, alerted, hard-failure path: a nonzero provider
+exit, an unparsable or malformed response, a signal the host refuses (wrong
+request identity, wrong symbol set, out-of-bounds multiplier, invalid or
+conflicting target bounds, target weights that break the exposure ceiling), or an
+unconfigured provider name. A rejection aborts planning regardless of `on_error`
+and is never collapsed into `on_error = "baseline"`, because baseline sizing would
+trade on a decision the host has already refused. A failed decision also stays
+failed for the rest of the run, even if later baseline weights would make a
+rejected adjustment fit within the exposure ceiling.
 
 ## Tail-harvest decision
 
@@ -259,11 +314,12 @@ primary_exchange = "ARCA"
 ```
 
 `on_error = "baseline"` retains the unmodified post-volatility target when
-history collection, process execution, or response validation fails. The
-failure is visible in logs and persisted decision telemetry. When that target
-policy controls a tail-hedge underlying, harvesting is not allowed to fund the
-symbol unless the sizing signal was fresh and valid. `on_error = "abort"`
-aborts regime-rebalance planning instead.
+history collection, process execution, or transport unavailability prevents a
+decision. The failure is visible in logs and persisted decision telemetry. When
+that target policy controls a tail-hedge underlying, harvesting is not allowed to
+fund the symbol unless the sizing signal was fresh and valid. `on_error = "abort"`
+aborts regime-rebalance planning instead. Neither setting applies to a provider
+rejection, which always aborts (see above).
 
 For `tail_hedge_harvest`, `baseline` preserves the existing eligible harvest,
 `skip` declines it, and `abort` stops planning. A valid provider veto is not an

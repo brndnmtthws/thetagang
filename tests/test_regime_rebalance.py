@@ -13,6 +13,8 @@ from thetagang.accounting import BrokerAccountSnapshot
 from thetagang.config import Config
 from thetagang.db import DataStore, ExecutionRecord
 from thetagang.external_decisions import (
+    ExternalDecisionError,
+    ExternalDecisionRejection,
     ExternalDecisionRequest,
     ExternalDecisionResponse,
 )
@@ -91,6 +93,13 @@ class _FixedTargetWeightProvider:
                 }
             },
         )
+
+
+class _UnavailableProvider:
+    async def decide(
+        self, request: ExternalDecisionRequest
+    ) -> ExternalDecisionResponse:
+        raise ExternalDecisionError("external decision provider could not be started")
 
 
 class _FixedTailHarvestProvider:
@@ -564,15 +573,52 @@ def _absolute_trend(
     *,
     lookback_days: int = 168,
     risk_off_multiplier: float = 0.15,
-    risk_off_ramp_width: float = 0.10,
+    mode: str = "cliff",
+    exit_depth: float = 0.0,
+    min_dwell_sessions: int = 0,
     enabled: bool = True,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         enabled=enabled,
         lookback_days=lookback_days,
         risk_off_multiplier=risk_off_multiplier,
-        risk_off_ramp_width=risk_off_ramp_width,
+        policy=SimpleNamespace(
+            mode=mode,
+            exit_depth=exit_depth,
+            min_dwell_sessions=min_dwell_sessions,
+        ),
     )
+
+
+def _record_absolute_trend_state(
+    manager: Any,
+    symbols: dict[str, object],
+    *,
+    state_version: int | None = 1,
+) -> None:
+    payload: dict[str, object] = {"symbols": symbols}
+    if state_version is not None:
+        payload["state_version"] = state_version
+    manager.data_store.record_event("absolute_trend_state", payload)
+
+
+def _legacy_absolute_trend_payload(
+    *,
+    lookback_days: int = 3,
+    risk_off: bool = True,
+    latest_session: str = "2026-08-21",
+) -> dict[str, object]:
+    """The pre-version record shape: signal fields plus a risk state."""
+
+    return {
+        "lookback_days": lookback_days,
+        "latest_session": latest_session,
+        "latest_close": 90.0,
+        "moving_average": 100.0,
+        "momentum_reference_close": 105.0,
+        "lookback_return": 90.0 / 105.0 - 1.0,
+        "risk_off": risk_off,
+    }
 
 
 def _absolute_trend_history_cache(
@@ -591,15 +637,27 @@ def _absolute_trend_history_cache(
     )
 
 
-def _absolute_trend_signal_payload(*, risk_off: bool = True) -> dict[str, object]:
+def _absolute_trend_signal_payload(
+    *,
+    lookback_days: int = 168,
+    risk_off: bool = True,
+    sessions_in_state: int = 1,
+    state_transition: bool = False,
+    within_band_drift: bool = False,
+) -> dict[str, object]:
     return {
-        "lookback_days": 168,
+        "lookback_days": lookback_days,
         "latest_session": "2026-08-21",
         "latest_close": 90.0,
         "moving_average": 100.0,
         "momentum_reference_close": 105.0,
         "lookback_return": 90.0 / 105.0 - 1.0,
         "risk_off": risk_off,
+        "state": "risk_off" if risk_off else "risk_on",
+        "previous_state": None,
+        "sessions_in_state": sessions_in_state,
+        "state_transition": state_transition,
+        "within_band_drift": within_band_drift,
     }
 
 
@@ -1085,9 +1143,16 @@ async def test_model_target_bounds_preserve_smoothing_capital_base_and_trend(
     )
 
     request = provider.requests[0].input
-    assert request["symbols"]["AAA"]["absolute_trend"][
-        "risk_off_ramp_width"
-    ] == pytest.approx(0.10)
+    assert request["symbols"]["AAA"]["absolute_trend"] == {
+        "enabled": True,
+        "lookback_days": 3,
+        "risk_off_multiplier": 0.25,
+        "policy": {
+            "mode": "cliff",
+            "exit_depth": 0.0,
+            "min_dwell_sessions": 0,
+        },
+    }
     assert request["account"]["rebalance_base_value"] == pytest.approx(2250.0)
     assert request["adjustment_constraints"]["AAA"] == {
         "min_multiplier": 0.5,
@@ -1106,7 +1171,7 @@ async def test_model_target_bounds_preserve_smoothing_capital_base_and_trend(
     assert policy["symbols"]["AAA"]["effective_weight"] == pytest.approx(0.20)
     trend = manager.data_store.get_last_event_payload("absolute_trend_state")
     assert trend["symbols"]["AAA"]["pre_trend_target"] == pytest.approx(0.20)
-    assert trend["symbols"]["AAA"]["final_target"] == pytest.approx(0.125)
+    assert trend["symbols"]["AAA"]["final_target"] == pytest.approx(0.05)
     assert symbol_config.volatility_weight.min_weight == 0.25
     assert symbol_config.volatility_weight.smoothing_factor == 0.5
 
@@ -1191,12 +1256,10 @@ def test_external_target_weight_policy_converts_naive_local_time_to_utc(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("on_error", ["baseline", "abort"])
-@pytest.mark.parametrize("initially_accepted", [False, True])
-async def test_rejected_target_weights_stay_rejected_until_next_run(
+async def test_rejected_target_weight_decision_aborts_even_on_baseline(
     portfolio_manager: Any,
     mocker: Any,
     on_error: str,
-    initially_accepted: bool,
 ) -> None:
     engine = portfolio_manager.regime_engine
     policy = _target_weight_policy()
@@ -1211,32 +1274,71 @@ async def test_rejected_target_weights_stay_rejected_until_next_run(
         )
     )
     context = _target_weight_policy_context(portfolio_manager)
-    baseline = {"AAA": 0.4, "BBB": 0.5}
-    if initially_accepted:
-        weights, _ = await engine._apply_target_weight_policy(baseline, **context)
-        assert weights["AAA"] == pytest.approx(0.44)
 
-    # Reject the cached multiplier when its targets exceed the exposure ceiling.
-    # A later post-fill replan must retain that failure even if the new baseline
-    # would make the same multiplier affordable again.
-    for current_baseline in ({"AAA": 0.5, "BBB": 0.5}, baseline):
-        if on_error == "abort":
-            with pytest.raises(RuntimeError, match="permitted total weight"):
-                await engine._apply_target_weight_policy(current_baseline, **context)
-        else:
-            weights, details = await engine._apply_target_weight_policy(
-                current_baseline, **context
-            )
-            assert weights == current_baseline
-            assert details["AAA"]["status"] == "baseline"
-            assert details["AAA"]["risk_ready"] is False
-    assert len(provider.requests) == 1
-
-    engine.begin_run()
-    weights, details = await engine._apply_target_weight_policy(baseline, **context)
+    weights, details = await engine._apply_target_weight_policy(
+        {"AAA": 0.4, "BBB": 0.5}, **context
+    )
     assert weights["AAA"] == pytest.approx(0.44)
-    assert details["AAA"]["risk_ready"] is True
+    assert details["AAA"]["status"] == "applied"
+
+    # The cached decision is refused once its targets break the exposure
+    # ceiling. Baseline sizing would trade on a decision the host rejected, so
+    # the run aborts whatever `on_error` says.
+    with pytest.raises(ExternalDecisionRejection, match="permitted total weight"):
+        await engine._apply_target_weight_policy({"AAA": 0.5, "BBB": 0.5}, **context)
+    assert len(provider.requests) == 1
+    outcome = engine._target_weight_policy_outcome
+    assert outcome is not None and outcome.rejected is True
+
+    # The rejection must not stick across runs: the next run asks the provider
+    # again instead of permanently sizing on baseline targets.
+    engine.begin_run()
+    weights, details = await engine._apply_target_weight_policy(
+        {"AAA": 0.4, "BBB": 0.5}, **context
+    )
+    assert weights["AAA"] == pytest.approx(0.44)
+    assert details["AAA"]["status"] == "applied"
     assert len(provider.requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("on_error", "expected"),
+    [("baseline", "baseline"), ("abort", "abort")],
+)
+async def test_unavailable_target_weight_provider_degrades_per_on_error(
+    portfolio_manager: Any,
+    mocker: Any,
+    on_error: str,
+    expected: str,
+) -> None:
+    engine = portfolio_manager.regime_engine
+    policy = _target_weight_policy()
+    policy.on_error = on_error
+    portfolio_manager.config.strategies.regime_rebalance.target_weight_policy = policy
+    portfolio_manager.external_decisions.replace("fixture", _UnavailableProvider())
+    engine._get_regime_aligned_closes = mocker.AsyncMock(
+        return_value=(
+            _required_regime_history_dates(4),
+            {"AAA": [100.0] * 4, "BBB": [100.0] * 4},
+        )
+    )
+    baseline = {"AAA": 0.4, "BBB": 0.5}
+
+    if expected == "abort":
+        with pytest.raises(RuntimeError, match="External target weight policy failed"):
+            await engine._apply_target_weight_policy(
+                baseline, **_target_weight_policy_context(portfolio_manager)
+            )
+        return
+
+    weights, details = await engine._apply_target_weight_policy(
+        baseline, **_target_weight_policy_context(portfolio_manager)
+    )
+    assert weights == baseline
+    assert details["AAA"]["status"] == "baseline"
+    assert details["AAA"]["risk_ready"] is False
+    assert "could not be started" in details["AAA"]["error"]
 
 
 @pytest.mark.asyncio
@@ -1425,16 +1527,15 @@ async def test_external_target_weight_policy_clamps_to_volatility_bounds(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("clamp", [True, False])
 async def test_external_target_weight_policy_caps_before_checking_final_weight(
-    portfolio_manager: Any, mocker: Any, clamp: bool
+    portfolio_manager: Any, mocker: Any
 ) -> None:
     manager = portfolio_manager
     manager.config.portfolio.symbols["AAA"].volatility_weight = _volatility_weight(
         max_weight=1.0
     )
     manager.config.strategies.regime_rebalance.target_weight_policy = (
-        _target_weight_policy(clamp_to_volatility_bounds=clamp)
+        _target_weight_policy(clamp_to_volatility_bounds=True)
     )
     manager.external_decisions.replace("fixture", _FixedTargetWeightProvider(1.1))
     manager.regime_engine._get_regime_aligned_closes = mocker.AsyncMock(
@@ -1450,18 +1551,39 @@ async def test_external_target_weight_policy_caps_before_checking_final_weight(
         **_target_weight_policy_context(manager),
     )
 
-    if clamp:
-        assert weights == {"AAA": 1.0, "BBB": 0.0}
-        assert details["AAA"]["raw_weight"] == pytest.approx(1.045)
-        assert details["AAA"]["status"] == "applied"
-    else:
-        assert weights == baseline
-        assert details["AAA"]["status"] == "baseline"
-        assert "invalid weight" in details["AAA"]["error"]
+    assert weights == {"AAA": 1.0, "BBB": 0.0}
+    assert details["AAA"]["raw_weight"] == pytest.approx(1.045)
+    assert details["AAA"]["status"] == "applied"
 
 
 @pytest.mark.asyncio
-async def test_external_target_weight_policy_falls_back_on_invalid_signal(
+async def test_external_target_weight_policy_rejects_uncapped_overweight(
+    portfolio_manager: Any, mocker: Any
+) -> None:
+    manager = portfolio_manager
+    manager.config.portfolio.symbols["AAA"].volatility_weight = _volatility_weight(
+        max_weight=1.0
+    )
+    manager.config.strategies.regime_rebalance.target_weight_policy = (
+        _target_weight_policy(clamp_to_volatility_bounds=False)
+    )
+    manager.external_decisions.replace("fixture", _FixedTargetWeightProvider(1.1))
+    manager.regime_engine._get_regime_aligned_closes = mocker.AsyncMock(
+        return_value=(
+            _required_regime_history_dates(4),
+            {"AAA": [100.0] * 4, "BBB": [100.0] * 4},
+        )
+    )
+
+    with pytest.raises(ExternalDecisionRejection, match="invalid weight"):
+        await manager.regime_engine._apply_target_weight_policy(
+            {"AAA": 0.95, "BBB": 0.0},
+            **_target_weight_policy_context(manager),
+        )
+
+
+@pytest.mark.asyncio
+async def test_external_target_weight_policy_rejects_out_of_bounds_signal(
     portfolio_manager, mocker
 ):
     regime_rebalance = portfolio_manager.config.strategies.regime_rebalance
@@ -1480,19 +1602,13 @@ async def test_external_target_weight_policy_falls_back_on_invalid_signal(
     )
     baseline = {"AAA": 0.36, "BBB": 0.45}
 
-    (
-        adjusted,
-        details,
-    ) = await portfolio_manager.regime_engine._apply_target_weight_policy(
-        baseline,
-        **_target_weight_policy_context(portfolio_manager),
-    )
-
-    assert adjusted == baseline
-    assert details["AAA"]["status"] == "baseline"
-    assert details["AAA"]["multiplier"] == 1.0
-    assert details["AAA"]["risk_ready"] is False
-    assert "outside configured bounds" in details["AAA"]["error"]
+    # A malformed sizing signal is a provider rejection, not an outage: the
+    # hook must not quietly fall back to baseline targets.
+    with pytest.raises(ExternalDecisionRejection, match="outside configured bounds"):
+        await portfolio_manager.regime_engine._apply_target_weight_policy(
+            baseline,
+            **_target_weight_policy_context(portfolio_manager),
+        )
 
 
 @pytest.mark.asyncio
@@ -2148,48 +2264,434 @@ async def test_absolute_trend_risk_boundaries(
         history_cache,
     )
 
-    expected_multiplier = 0.915 if expected_risk_off else 1.0
+    expected_multiplier = 0.15 if expected_risk_off else 1.0
     assert details["AAA"]["risk_off"] is expected_risk_off
     assert details["AAA"]["applied_multiplier"] == pytest.approx(expected_multiplier)
     assert weights["AAA"] == pytest.approx(0.4 * expected_multiplier)
 
 
 @pytest.mark.parametrize(
-    "closes, width, floor, expected",
+    (
+        "closes",
+        "policy",
+        "previous_risk_off",
+        "previous_sessions",
+        "expected_state",
+        "expected_previous_state",
+        "expected_transition",
+        "expected_drift",
+        "expected_sessions",
+        "expected_multiplier",
+        "expected_shortfall",
+    ),
     [
-        ([100.0, 100.0, 100.0, 105.0], 0.10, 0.25, 1.0),
-        ([100.0, 100.0, 100.0, 100.0], 0.10, 0.25, 1.0),
-        ([100.0, 100.0, 100.0, 99.0], 0.10, 0.25, 0.925),
-        ([100.0, 100.0, 100.0, 95.0], 0.10, 0.25, 0.625),
-        ([110.0, 95.0, 95.0, 95.0], 0.10, 0.25, 0.625),
-        ([100.0, 115.0, 115.0, 95.0], 0.10, 0.25, 0.625),
-        ([100.0, 100.0, 100.0, 90.0], 0.10, 0.25, 0.25),
-        ([100.0, 100.0, 100.0, 80.0], 0.10, 0.25, 0.25),
-        ([100.0, 100.0, 100.0, 99.0], 0.0, 0.25, 0.25),
-        ([100.0, 100.0, 100.0, 95.0], 0.10, 0.0, 0.5),
-        ([100.0, 100.0, 100.0, 90.0], 0.10, 0.0, 0.0),
-        ([100.0, 100.0, 100.0, 95.0], 0.10, 1.0, 1.0),
+        pytest.param(
+            [100.0, 100.0, 100.0, 102.0],
+            {"mode": "deadband", "exit_depth": 0.05},
+            True,
+            2,
+            "risk_off",
+            "risk_off",
+            False,
+            True,
+            3,
+            0.25,
+            0.0,
+            id="holds-inside-exit-depth",
+        ),
+        pytest.param(
+            [100.0, 100.0, 100.0, 105.0],
+            {"mode": "deadband", "exit_depth": 0.05},
+            True,
+            2,
+            "risk_on",
+            "risk_off",
+            True,
+            False,
+            1,
+            1.0,
+            0.0,
+            id="exits-at-exit-depth",
+        ),
+        pytest.param(
+            [100.0, 100.0, 100.0, 99.0],
+            {"mode": "deadband", "exit_depth": 0.05},
+            True,
+            2,
+            "risk_off",
+            "risk_off",
+            False,
+            False,
+            3,
+            0.25,
+            0.01,
+            id="continues-below-entry-threshold",
+        ),
+        pytest.param(
+            [100.0, 100.0, 100.0, 110.0],
+            {"mode": "deadband", "exit_depth": 0.02, "min_dwell_sessions": 3},
+            True,
+            2,
+            "risk_off",
+            "risk_off",
+            False,
+            True,
+            3,
+            0.25,
+            0.0,
+            id="minimum-dwell-blocks-exit",
+        ),
+        pytest.param(
+            [100.0, 100.0, 100.0, 110.0],
+            {"mode": "deadband", "exit_depth": 0.02, "min_dwell_sessions": 3},
+            True,
+            3,
+            "risk_on",
+            "risk_off",
+            True,
+            False,
+            1,
+            1.0,
+            0.0,
+            id="minimum-dwell-satisfied",
+        ),
+        pytest.param(
+            [100.0, 100.0, 100.0, 110.0],
+            {"mode": "deadband", "min_dwell_sessions": 2},
+            True,
+            1,
+            "risk_off",
+            "risk_off",
+            False,
+            True,
+            2,
+            0.25,
+            0.0,
+            id="minimum-dwell-two-is-live",
+        ),
+        pytest.param(
+            [100.0, 100.0, 100.0, 110.0],
+            {"mode": "cliff"},
+            True,
+            2,
+            "risk_on",
+            "risk_off",
+            True,
+            False,
+            1,
+            1.0,
+            0.0,
+            id="cliff-ignores-exit-hysteresis",
+        ),
+        pytest.param(
+            [100.0, 100.0, 100.0, 90.0],
+            {"mode": "cliff"},
+            False,
+            4,
+            "risk_off",
+            "risk_on",
+            True,
+            False,
+            1,
+            0.25,
+            0.10,
+            id="enters-risk-off-from-risk-on",
+        ),
+        pytest.param(
+            [100.0, 100.0, 100.0, 110.0],
+            {"mode": "cliff"},
+            False,
+            4,
+            "risk_on",
+            "risk_on",
+            False,
+            False,
+            5,
+            1.0,
+            0.0,
+            id="holds-risk-on",
+        ),
     ],
 )
 @pytest.mark.asyncio
-async def test_absolute_trend_ramp(
-    portfolio_manager: Any,
+async def test_absolute_trend_policy_exit_hysteresis(
+    portfolio_manager_with_db: Any,
     mocker: Any,
     closes: list[float],
-    width: float,
-    floor: float,
-    expected: float,
+    policy: dict[str, Any],
+    previous_risk_off: bool,
+    previous_sessions: int,
+    expected_state: str,
+    expected_previous_state: str,
+    expected_transition: bool,
+    expected_drift: bool,
+    expected_sessions: int,
+    expected_multiplier: float,
+    expected_shortfall: float,
 ) -> None:
-    portfolio_manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
-        lookback_days=3, risk_off_multiplier=floor, risk_off_ramp_width=width
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3, risk_off_multiplier=0.25, **policy
     )
-    weights, details = await portfolio_manager.regime_engine._apply_absolute_trend(
-        {"AAA": 0.4, "BBB": 0.5},
-        portfolio_manager.config.portfolio.symbols,
+    _record_absolute_trend_state(
+        manager,
+        {
+            "AAA": _absolute_trend_signal_payload(
+                lookback_days=3,
+                risk_off=previous_risk_off,
+                sessions_in_state=previous_sessions,
+            )
+        },
+    )
+
+    weights, details = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
         _absolute_trend_history_cache(mocker, closes, lookback_days=3),
     )
-    assert details["AAA"]["applied_multiplier"] == pytest.approx(expected)
-    assert weights == pytest.approx({"AAA": 0.4 * expected, "BBB": 0.5})
+
+    trend = details["AAA"]
+    assert trend["state_reset_reason"] is None
+    assert trend["state"] == expected_state
+    assert trend["previous_state"] == expected_previous_state
+    assert trend["state_transition"] is expected_transition
+    assert trend["within_band_drift"] is expected_drift
+    assert trend["sessions_in_state"] == expected_sessions
+    assert trend["shortfall"] == pytest.approx(expected_shortfall)
+    assert trend["applied_multiplier"] == pytest.approx(expected_multiplier)
+    assert weights["AAA"] == pytest.approx(0.4 * expected_multiplier)
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_legacy_state_keeps_hysteresis_held_risk_off(
+    portfolio_manager_with_db: Any, mocker: Any
+) -> None:
+    """A record from an older payload version must not release held risk-off.
+
+    The close sits above the entry threshold but inside the exit band, so only
+    the persisted state can keep the symbol risk-off. Re-deriving from the
+    entry rule here would re-risk the symbol, which is exactly what the
+    deadband exists to prevent.
+    """
+
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3, risk_off_multiplier=0.25, mode="deadband", exit_depth=0.05
+    )
+    _record_absolute_trend_state(
+        manager,
+        {"AAA": _legacy_absolute_trend_payload(lookback_days=3, risk_off=True)},
+        state_version=None,
+    )
+    history_cache = _absolute_trend_history_cache(
+        mocker, [100.0, 100.0, 100.0, 102.0], lookback_days=3
+    )
+
+    weights, details = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
+        history_cache,
+    )
+
+    trend = details["AAA"]
+    assert trend["state"] == "risk_off"
+    assert trend["state_reset_reason"] == "legacy_payload"
+    assert trend["sessions_in_state"] == 2
+    assert trend["within_band_drift"] is True
+    assert trend["applied_multiplier"] == pytest.approx(0.25)
+    assert weights["AAA"] == pytest.approx(0.1)
+
+    # Replanning the same session republishes the record, so the reset reason
+    # stays visible to an A/B that counts drift sessions.
+    _weights, replan = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
+        _absolute_trend_history_cache(
+            mocker, [100.0, 100.0, 100.0, 102.0], lookback_days=3
+        ),
+    )
+    assert replan["AAA"]["state_reset_reason"] == "legacy_payload"
+    assert replan["AAA"]["state"] == "risk_off"
+    assert replan["AAA"]["sessions_in_state"] == 2
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_legacy_state_still_enters_risk_off(
+    portfolio_manager_with_db: Any, mocker: Any
+) -> None:
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3, risk_off_multiplier=0.25
+    )
+    _record_absolute_trend_state(
+        manager,
+        {"AAA": _legacy_absolute_trend_payload(lookback_days=3, risk_off=False)},
+        state_version=None,
+    )
+
+    _, details = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
+        _absolute_trend_history_cache(
+            mocker, [100.0, 100.0, 100.0, 90.0], lookback_days=3
+        ),
+    )
+
+    trend = details["AAA"]
+    assert trend["state"] == "risk_off"
+    assert trend["previous_state"] == "risk_on"
+    assert trend["state_transition"] is True
+    assert trend["state_reset_reason"] == "legacy_payload"
+    assert trend["applied_multiplier"] == pytest.approx(0.25)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            {**_absolute_trend_signal_payload(lookback_days=3), "state": "sideways"},
+            id="corrupt-versioned-state",
+        ),
+        pytest.param(
+            {
+                key: value
+                for key, value in _legacy_absolute_trend_payload(
+                    lookback_days=3
+                ).items()
+                if key != "risk_off"
+            },
+            id="legacy-without-risk-state",
+        ),
+    ],
+)
+async def test_absolute_trend_unusable_state_fails_closed_in_deadband(
+    portfolio_manager_with_db: Any, mocker: Any, payload: dict[str, object]
+) -> None:
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3, mode="deadband", exit_depth=0.05
+    )
+    _record_absolute_trend_state(
+        manager,
+        {"AAA": payload},
+        state_version=None if "state" not in payload else 1,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot resolve a deadband state"):
+        await manager.regime_engine._apply_absolute_trend(
+            {"AAA": 0.4},
+            manager.config.portfolio.symbols,
+            _absolute_trend_history_cache(
+                mocker, [100.0, 100.0, 100.0, 102.0], lookback_days=3
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_unusable_state_resets_cliff_with_reason(
+    portfolio_manager_with_db: Any, mocker: Any
+) -> None:
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3, risk_off_multiplier=0.25
+    )
+    _record_absolute_trend_state(
+        manager,
+        {
+            "AAA": {
+                **_absolute_trend_signal_payload(lookback_days=3),
+                "state": "sideways",
+            }
+        },
+    )
+
+    _, details = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
+        _absolute_trend_history_cache(
+            mocker, [100.0, 100.0, 100.0, 90.0], lookback_days=3
+        ),
+    )
+
+    # A cliff derives its state from the entry rule alone, so the reset loses
+    # bookkeeping only, and the reason keeps it visible.
+    trend = details["AAA"]
+    assert trend["state"] == "risk_off"
+    assert trend["previous_state"] is None
+    assert trend["state_reset_reason"] == "invalid_persisted_state"
+    assert trend["applied_multiplier"] == pytest.approx(0.25)
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_legacy_state_serves_unavailable_history(
+    portfolio_manager_with_db: Any, mocker: Any
+) -> None:
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend()
+    _record_absolute_trend_state(
+        manager,
+        {"AAA": _legacy_absolute_trend_payload(lookback_days=168, risk_off=True)},
+        state_version=None,
+    )
+    history_cache = SimpleNamespace(
+        get=mocker.AsyncMock(side_effect=TimeoutError("history unavailable"))
+    )
+
+    weights, details = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
+        history_cache,
+    )
+
+    trend = details["AAA"]
+    assert weights["AAA"] == pytest.approx(0.06)
+    assert trend["history_source"] == "persisted"
+    assert trend["state"] == "risk_off"
+    assert trend["state_reset_reason"] == "legacy_payload"
+    assert trend["sessions_in_state"] == 1
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_same_session_replan_keeps_transition(
+    portfolio_manager_with_db: Any, mocker: Any
+) -> None:
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3, mode="deadband", exit_depth=0.05
+    )
+    dates = _required_regime_history_dates(4)
+    _record_absolute_trend_state(
+        manager,
+        {
+            "AAA": _absolute_trend_signal_payload(
+                lookback_days=3,
+                sessions_in_state=4,
+                state_transition=True,
+                within_band_drift=True,
+            )
+            | {"latest_session": str(dates[-1])}
+        },
+    )
+    history_cache = SimpleNamespace(
+        get=mocker.AsyncMock(
+            return_value=(dates, {"AAA": [100.0, 100.0, 100.0, 102.0]})
+        )
+    )
+
+    _, details = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
+        history_cache,
+    )
+
+    # The same completed session must not advance its dwell counter or
+    # relabel its transition.
+    assert details["AAA"]["sessions_in_state"] == 4
+    assert details["AAA"]["state_transition"] is True
+    assert details["AAA"]["within_band_drift"] is True
+    assert details["AAA"]["state"] == "risk_off"
+    assert details["AAA"]["applied_multiplier"] == pytest.approx(0.15)
 
 
 @pytest.mark.parametrize(
@@ -2301,17 +2803,22 @@ async def test_regime_history_cache_keys_primary_exchange_overrides(mocker):
     )
 
 
-@pytest.mark.parametrize("width, expected_target", [(0.10, 0.06), (0.20, 0.23)])
 @pytest.mark.asyncio
 async def test_absolute_trend_reuses_persisted_state_when_history_fails(
-    portfolio_manager_with_db, mocker, width: float, expected_target: float
+    portfolio_manager_with_db, mocker
 ):
     portfolio_manager_with_db.config.portfolio.symbols[
         "AAA"
-    ].absolute_trend = _absolute_trend(risk_off_ramp_width=width)
-    portfolio_manager_with_db.data_store.record_event(
-        "absolute_trend_state",
-        {"symbols": {"AAA": _absolute_trend_signal_payload()}},
+    ].absolute_trend = _absolute_trend()
+    _record_absolute_trend_state(
+        portfolio_manager_with_db,
+        {
+            "AAA": _absolute_trend_signal_payload(
+                sessions_in_state=4,
+                state_transition=True,
+                within_band_drift=True,
+            )
+        },
     )
     history_cache = SimpleNamespace(
         get=mocker.AsyncMock(side_effect=TimeoutError("history unavailable"))
@@ -2326,9 +2833,16 @@ async def test_absolute_trend_reuses_persisted_state_when_history_fails(
         history_cache,
     )
 
-    assert weights["AAA"] == pytest.approx(expected_target)
-    assert details["AAA"]["risk_off"] is True
-    assert details["AAA"]["history_source"] == "persisted"
+    # Without fresh history the persisted session is republished verbatim:
+    # neither the dwell counter nor the transition label may advance.
+    assert weights["AAA"] == pytest.approx(0.06)
+    trend = details["AAA"]
+    assert trend["risk_off"] is True
+    assert trend["history_source"] == "persisted"
+    assert trend["sessions_in_state"] == 4
+    assert trend["state_transition"] is True
+    assert trend["within_band_drift"] is True
+    assert trend["history_failure"] == "TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -2367,8 +2881,8 @@ async def test_absolute_trend_excludes_current_run_state_when_requested(
     [
         pytest.param(None, id="missing"),
         pytest.param(
-            _absolute_trend_signal_payload(risk_off=False),
-            id="inconsistent-risk-state",
+            {**_absolute_trend_signal_payload(), "state": "sideways"},
+            id="invalid-state",
         ),
     ],
 )
@@ -2380,9 +2894,9 @@ async def test_absolute_trend_history_failure_without_valid_state_aborts(
         "AAA"
     ].absolute_trend = _absolute_trend()
     if persisted_signal is not None:
-        portfolio_manager_with_db.data_store.record_event(
-            "absolute_trend_state",
-            {"symbols": {"AAA": persisted_signal}},
+        _record_absolute_trend_state(
+            portfolio_manager_with_db,
+            {"AAA": persisted_signal},
         )
     history_cache = SimpleNamespace(
         get=mocker.AsyncMock(side_effect=TimeoutError("history unavailable"))
@@ -2403,9 +2917,11 @@ async def test_absolute_trend_invalid_persisted_symbol_map_aborts_cleanly(
     portfolio_manager_with_db.config.portfolio.symbols[
         "AAA"
     ].absolute_trend = _absolute_trend()
+    # A symbol map that is not a dict is corrupt rather than legacy, so the
+    # record still claims the current version.
     portfolio_manager_with_db.data_store.record_event(
         "absolute_trend_state",
-        {"symbols": []},
+        {"state_version": 1, "symbols": []},
     )
     history_cache = SimpleNamespace(
         get=mocker.AsyncMock(side_effect=TimeoutError("history unavailable"))
@@ -2478,6 +2994,16 @@ async def test_absolute_trend_preserves_volatility_state_and_forces_hard_band_se
     assert trend["moving_average"] == pytest.approx(100.0)
     assert trend["lookback_return"] == pytest.approx(-0.1)
     assert trend["state"] == "risk_off"
+    assert trend["previous_state"] is None
+    assert trend["sessions_in_state"] == 1
+    assert trend["state_transition"] is False
+    assert trend["within_band_drift"] is False
+    # No record existed, so this is a cold start rather than a reset.
+    assert trend["state_reset_reason"] is None
+    assert trend["shortfall"] == pytest.approx(0.10)
+    assert trend["mode"] == "cliff"
+    assert trend["exit_depth"] == pytest.approx(0.0)
+    assert trend["min_dwell_sessions"] == 0
     assert trend["pre_trend_target"] == pytest.approx(0.4)
     assert trend["final_target"] == pytest.approx(0.06)
     assert trend["applied_multiplier"] == pytest.approx(0.15)
@@ -4876,6 +5402,41 @@ def test_external_tail_harvest_abort_failure_policy(portfolio_manager) -> None:
             policy=SimpleNamespace(on_error="abort", provider="tail-fixture"),
             error="provider unavailable",
         )
+
+
+@pytest.mark.parametrize("on_error", ["baseline", "skip", "abort"])
+@pytest.mark.asyncio
+async def test_external_tail_harvest_rejection_is_always_fatal(
+    portfolio_manager_with_db, mocker, on_error: str
+) -> None:
+    # A provider that answered with an unusable decision must abort instead of
+    # preserving (`baseline`) or declining (`skip`) the harvest.
+    portfolio_manager = portfolio_manager_with_db
+    provider = _FixedTailHarvestProvider("not-a-bool")
+    payload, _sessions = _prepare_external_tail_harvest(
+        portfolio_manager,
+        mocker,
+        provider=provider,
+        con_id=799,
+        unrealized_pnl=70.0,
+    )
+    portfolio_manager.config.strategies.tail_hedge.harvest_decision.on_error = on_error
+    _set_tail_quotes(portfolio_manager, mocker, {799: 1.20})
+
+    with pytest.raises(
+        ExternalDecisionRejection, match="rejected the provider decision"
+    ):
+        await portfolio_manager.regime_engine._apply_tail_harvest(
+            orders=[("BBB", "NYSE", 7)],
+            net_liquidation=2_000.0,
+            market_prices={"BBB": 85.0},
+            regime_summary=_tail_harvest_regime_summary(),
+            hard_underweight_symbols={"BBB"},
+            cohorts=payload.open_cohorts,
+        )
+
+    assert portfolio_manager.orders.records() == []
+    assert len(provider.requests) == 1
 
 
 @pytest.mark.asyncio

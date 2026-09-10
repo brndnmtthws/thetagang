@@ -10,8 +10,8 @@ from thetagang.accounting import AccountingError, AccountMetric, BrokerAccountSn
 from thetagang.config_models import TargetWeightPolicyConfig
 from thetagang.external_decisions import (
     DecisionInput,
-    ExternalDecisionError,
     ExternalDecisionMarketData,
+    ExternalDecisionRejection,
     ExternalDecisionRequest,
     ExternalDecisionRequestEnvelope,
     ExternalDecisionResponse,
@@ -46,11 +46,17 @@ class VolatilityContext(DecisionInput):
     )
 
 
+class AbsoluteTrendPolicyInput(DecisionInput):
+    mode: Literal["cliff", "deadband"]
+    exit_depth: float = Field(ge=0.0, le=1.0)
+    min_dwell_sessions: int = Field(ge=0)
+
+
 class AbsoluteTrendInput(DecisionInput):
     enabled: bool
     lookback_days: int
     risk_off_multiplier: float
-    risk_off_ramp_width: float = Field(default=0.0, ge=0.0, le=1.0)
+    policy: AbsoluteTrendPolicyInput
 
 
 class ExecutionConstraints(DecisionInput):
@@ -192,7 +198,7 @@ def validate_target_weight_response(
     try:
         output = TargetWeightDecisionOutput.model_validate(response.output)
     except ValueError as exc:
-        raise ExternalDecisionError(
+        raise ExternalDecisionRejection(
             "target weight policy returned invalid adjustments"
         ) from exc
 
@@ -206,7 +212,7 @@ def validate_target_weight_response(
             differences.append(f"missing={','.join(missing)}")
         if unknown:
             differences.append(f"unknown={','.join(unknown)}")
-        raise ExternalDecisionError(
+        raise ExternalDecisionRejection(
             "target weight policy response symbols do not match configuration"
             + (f" ({'; '.join(differences)})" if differences else "")
         )
@@ -215,7 +221,7 @@ def validate_target_weight_response(
         multiplier = adjustment.multiplier
         limits = policy.symbols[symbol]
         if multiplier < limits.min_multiplier or multiplier > limits.max_multiplier:
-            raise ExternalDecisionError(
+            raise ExternalDecisionRejection(
                 f"target weight policy multiplier for {symbol} is outside "
                 "configured bounds"
             )
@@ -244,7 +250,7 @@ def apply_target_weight_adjustments(
         baseline_weight = effective_weights[symbol]
         raw_weight = baseline_weight * adjustment.multiplier
         if not math.isfinite(raw_weight) or raw_weight < 0:
-            raise ExternalDecisionError(
+            raise ExternalDecisionRejection(
                 f"target weight policy produced an invalid weight for {symbol}"
             )
         limits = policy.symbols[symbol]
@@ -261,13 +267,13 @@ def apply_target_weight_adjustments(
             minimum = max(minimum, volatility_minimum)
             maximum = min(maximum, volatility_maximum)
         if minimum > maximum:
-            raise ExternalDecisionError(
+            raise ExternalDecisionRejection(
                 f"target weight policy for {symbol} has target bounds that "
                 "do not overlap volatility bounds"
             )
         effective_weight = max(minimum, min(raw_weight, maximum))
         if effective_weight > 1:
-            raise ExternalDecisionError(
+            raise ExternalDecisionRejection(
                 f"target weight policy produced an invalid weight for {symbol}"
             )
         adjusted_weights[symbol] = effective_weight
@@ -280,7 +286,7 @@ def apply_target_weight_adjustments(
         sum(adjusted_weights.values())
         > target_weight_policy_total_limit(effective_weights, policy) + eps
     ):
-        raise ExternalDecisionError(
+        raise ExternalDecisionRejection(
             "target weight policy exceeds the permitted total weight"
         )
     return adjusted_weights, details
