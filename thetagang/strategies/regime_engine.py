@@ -36,6 +36,7 @@ from thetagang.external_decisions import (
     ExternalDecisionError,
     ExternalDecisionMarketData,
     ExternalDecisionProviders,
+    ExternalDecisionRejection,
     ExternalDecisionResponse,
     external_decision_response_metadata,
     validate_decision_expiry,
@@ -108,6 +109,7 @@ class _TargetWeightPolicyOutcome:
     adjustments: dict[str, TargetWeightMultiplier] | None
     response: ExternalDecisionResponse | None
     error: str | None
+    rejected: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,6 +170,83 @@ class RatioGateResult:
         )
 
 
+_ABSOLUTE_TREND_STATES = frozenset({"risk_on", "risk_off"})
+
+
+def _payload_session(payload: dict[str, Any]) -> str:
+    latest_session = payload.get("latest_session")
+    if not isinstance(latest_session, str):
+        raise TypeError("invalid_latest_session")
+    if not latest_session:
+        raise ValueError("invalid_latest_session")
+    try:
+        date.fromisoformat(latest_session)
+    except ValueError as exc:
+        raise ValueError("invalid_latest_session") from exc
+    return latest_session
+
+
+@dataclass(frozen=True)
+class _AbsoluteTrendPolicy:
+    """Resolved absolute-trend rule published to external decision providers."""
+
+    mode: str
+    exit_depth: float
+    min_dwell_sessions: int
+
+    @classmethod
+    def from_config(cls, config: Any) -> _AbsoluteTrendPolicy:
+        policy = config.policy
+        return cls(
+            mode=str(policy.mode),
+            exit_depth=float(policy.exit_depth),
+            min_dwell_sessions=int(policy.min_dwell_sessions),
+        )
+
+
+@dataclass(frozen=True)
+class _AbsoluteTrendState:
+    """Resolved risk state, including the hysteresis that produced it."""
+
+    latest_session: str
+    state: str
+    previous_state: str | None
+    sessions_in_state: int
+    state_transition: bool
+    within_band_drift: bool
+
+    @classmethod
+    def from_payload(cls, payload: Any, *, lookback_days: int) -> _AbsoluteTrendState:
+        if not isinstance(payload, dict):
+            raise TypeError("state_not_an_object")
+        if payload.get("lookback_days") != lookback_days:
+            raise ValueError("lookback_mismatch")
+        state = payload.get("state")
+        if state not in _ABSOLUTE_TREND_STATES:
+            raise TypeError("invalid_state")
+        previous_state = payload.get("previous_state")
+        if previous_state is not None and previous_state not in _ABSOLUTE_TREND_STATES:
+            raise TypeError("invalid_previous_state")
+        sessions_in_state = payload.get("sessions_in_state")
+        if (
+            isinstance(sessions_in_state, bool)
+            or not isinstance(sessions_in_state, int)
+            or sessions_in_state < 1
+        ):
+            raise TypeError("invalid_sessions_in_state")
+        for field in ("state_transition", "within_band_drift"):
+            if not isinstance(payload.get(field), bool):
+                raise TypeError(f"invalid_{field}")
+        return cls(
+            latest_session=_payload_session(payload),
+            state=state,
+            previous_state=previous_state,
+            sessions_in_state=sessions_in_state,
+            state_transition=bool(payload["state_transition"]),
+            within_band_drift=bool(payload["within_band_drift"]),
+        )
+
+
 @dataclass(frozen=True)
 class _AbsoluteTrendSignal:
     lookback_days: int
@@ -176,7 +255,6 @@ class _AbsoluteTrendSignal:
     moving_average: float
     momentum_reference_close: float
     lookback_return: float
-    risk_off: bool
 
     @classmethod
     def from_history(
@@ -206,10 +284,6 @@ class _AbsoluteTrendSignal:
             moving_average=moving_average,
             momentum_reference_close=momentum_reference_close,
             lookback_return=latest_close / momentum_reference_close - 1.0,
-            risk_off=(
-                latest_close < moving_average
-                and latest_close < momentum_reference_close
-            ),
         )
 
     @classmethod
@@ -224,18 +298,7 @@ class _AbsoluteTrendSignal:
         if payload.get("lookback_days") != lookback_days:
             raise ValueError("lookback_mismatch")
 
-        latest_session = payload.get("latest_session")
-        risk_off = payload.get("risk_off")
-        if not isinstance(latest_session, str):
-            raise TypeError("invalid_latest_session")
-        if not latest_session:
-            raise ValueError("invalid_latest_session")
-        try:
-            date.fromisoformat(latest_session)
-        except ValueError as exc:
-            raise ValueError("invalid_latest_session") from exc
-        if not isinstance(risk_off, bool):
-            raise TypeError("invalid_risk_state")
+        latest_session = _payload_session(payload)
 
         def finite_number(field: str, *, positive: bool = False) -> float:
             value = payload.get(field)
@@ -261,10 +324,6 @@ class _AbsoluteTrendSignal:
             abs_tol=1e-12,
         ):
             raise ValueError("inconsistent_lookback_return")
-        if risk_off != (
-            latest_close < moving_average and latest_close < momentum_reference_close
-        ):
-            raise ValueError("inconsistent_risk_state")
 
         return cls(
             lookback_days=lookback_days,
@@ -273,31 +332,103 @@ class _AbsoluteTrendSignal:
             moving_average=moving_average,
             momentum_reference_close=momentum_reference_close,
             lookback_return=lookback_return,
-            risk_off=risk_off,
         )
 
     @property
-    def state(self) -> str:
-        return "risk_off" if self.risk_off else "risk_on"
+    def threshold(self) -> float:
+        """The lower of the moving average and the momentum reference close."""
+
+        return min(self.moving_average, self.momentum_reference_close)
+
+    @property
+    def entry_risk_off(self) -> bool:
+        return self.latest_close < self.threshold
+
+    @property
+    def shortfall(self) -> float:
+        """Raw fractional shortfall below the entry threshold; zero when on."""
+
+        return max(0.0, (self.threshold - self.latest_close) / self.threshold)
+
+    def resolve(
+        self,
+        *,
+        previous: _AbsoluteTrendState | None,
+        policy: _AbsoluteTrendPolicy,
+    ) -> _AbsoluteTrendState:
+        """Resolve this session's state, holding risk-off through hysteresis."""
+
+        if previous is not None and previous.latest_session == self.latest_session:
+            # Replanning the same completed session must not advance the dwell
+            # counter or relabel that session's transition.
+            return previous
+
+        entry = self.entry_risk_off
+        if previous is None:
+            state = "risk_off" if entry else "risk_on"
+            return _AbsoluteTrendState(
+                latest_session=self.latest_session,
+                state=state,
+                previous_state=None,
+                sessions_in_state=1,
+                state_transition=False,
+                within_band_drift=False,
+            )
+        if previous.state == "risk_off":
+            exit_level = self.threshold * (1.0 + policy.exit_depth)
+            # `min_dwell_sessions` counts completed sessions in risk-off, so
+            # min_dwell_sessions=2 means the state must last at least two
+            # sessions before an exit can be taken.
+            dwell_satisfied = previous.sessions_in_state >= policy.min_dwell_sessions
+            if not entry and self.latest_close >= exit_level and dwell_satisfied:
+                return _AbsoluteTrendState(
+                    latest_session=self.latest_session,
+                    state="risk_on",
+                    previous_state="risk_off",
+                    sessions_in_state=1,
+                    state_transition=True,
+                    within_band_drift=False,
+                )
+            return _AbsoluteTrendState(
+                latest_session=self.latest_session,
+                state="risk_off",
+                previous_state="risk_off",
+                sessions_in_state=previous.sessions_in_state + 1,
+                state_transition=False,
+                # The entry rule no longer holds, so only hysteresis is
+                # keeping this symbol risk-off.
+                within_band_drift=not entry,
+            )
+        if entry:
+            return _AbsoluteTrendState(
+                latest_session=self.latest_session,
+                state="risk_off",
+                previous_state="risk_on",
+                sessions_in_state=1,
+                state_transition=True,
+                within_band_drift=False,
+            )
+        return _AbsoluteTrendState(
+            latest_session=self.latest_session,
+            state="risk_on",
+            previous_state="risk_on",
+            sessions_in_state=previous.sessions_in_state + 1,
+            state_transition=False,
+            within_band_drift=False,
+        )
 
     def target_details(
         self,
         *,
+        state: _AbsoluteTrendState,
+        policy: _AbsoluteTrendPolicy,
         pre_trend_target: float,
         risk_off_multiplier: float,
-        risk_off_ramp_width: float,
         history_source: str,
         history_failure: str | None = None,
     ) -> dict[str, Any]:
-        applied_multiplier = risk_off_multiplier if self.risk_off else 1.0
-        if self.risk_off and risk_off_ramp_width > 0:
-            # Both trend conditions must weaken before reaching the floor.
-            threshold = min(self.moving_average, self.momentum_reference_close)
-            depth = (threshold - self.latest_close) / threshold
-            progress = min(depth / risk_off_ramp_width, 1.0)
-            applied_multiplier = max(
-                risk_off_multiplier, 1.0 - (1.0 - risk_off_multiplier) * progress
-            )
+        risk_off = state.state == "risk_off"
+        applied_multiplier = risk_off_multiplier if risk_off else 1.0
         details: dict[str, Any] = {
             "lookback_days": self.lookback_days,
             "latest_session": self.latest_session,
@@ -305,8 +436,16 @@ class _AbsoluteTrendSignal:
             "moving_average": self.moving_average,
             "momentum_reference_close": self.momentum_reference_close,
             "lookback_return": self.lookback_return,
-            "risk_off": self.risk_off,
-            "state": self.state,
+            "risk_off": risk_off,
+            "state": state.state,
+            "previous_state": state.previous_state,
+            "state_transition": state.state_transition,
+            "within_band_drift": state.within_band_drift,
+            "sessions_in_state": state.sessions_in_state,
+            "shortfall": self.shortfall,
+            "mode": policy.mode,
+            "exit_depth": policy.exit_depth,
+            "min_dwell_sessions": policy.min_dwell_sessions,
             "pre_trend_target": pre_trend_target,
             "final_target": pre_trend_target * applied_multiplier,
             "applied_multiplier": applied_multiplier,
@@ -1170,7 +1309,20 @@ class RegimeRebalanceEngine:
         *,
         policy: TailHarvestDecisionConfig,
         error: str,
+        rejected: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
+        if rejected:
+            # A provider that answered with an unusable decision is not the
+            # same as an unavailable provider: baseline behavior would harvest
+            # without a valid approval.
+            log.error(
+                f"ALERT: external tail harvest decision provider={policy.provider} "
+                f"rejected the decision; aborting regime rebalancing ({error})."
+            )
+            raise ExternalDecisionRejection(
+                f"External tail harvest decision rejected the provider decision: "
+                f"{error}"
+            )
         if policy.on_error == "abort":
             raise RuntimeError(f"External tail harvest decision failed: {error}")
         harvest = policy.on_error == "baseline"
@@ -1265,6 +1417,12 @@ class RegimeRebalanceEngine:
                     provider=policy.provider,
                 ),
             }
+        except ExternalDecisionRejection as exc:
+            return self._tail_harvest_decision_fallback(
+                policy=policy,
+                error=f"{type(exc).__name__}: {exc}",
+                rejected=True,
+            )
         except Exception as exc:  # noqa: BLE001
             return self._tail_harvest_decision_fallback(
                 policy=policy,
@@ -2423,12 +2581,23 @@ class RegimeRebalanceEngine:
         *,
         policy: TargetWeightPolicyConfig,
         error: str,
+        rejected: bool = False,
     ) -> tuple[dict[str, float], dict[str, dict[str, Any]]]:
         # A failed application invalidates the signal for the rest of this run,
         # just like a failed response. Replanning must not revive rejected risk.
         self._target_weight_policy_outcome = _TargetWeightPolicyOutcome(
-            adjustments=None, response=None, error=error
+            adjustments=None, response=None, error=error, rejected=rejected
         )
+        if rejected:
+            # The provider answered and the answer was refused. Baseline sizing
+            # would silently trade on a decision the host has rejected.
+            log.error(
+                f"ALERT: external target weight policy provider={policy.provider} "
+                f"rejected the decision; aborting regime rebalancing ({error})."
+            )
+            raise ExternalDecisionRejection(
+                f"External target weight policy rejected the provider decision: {error}"
+            )
         if policy.on_error == "abort":
             raise RuntimeError(
                 f"External target weight policy failed: {error}"
@@ -2532,6 +2701,13 @@ class RegimeRebalanceEngine:
                     response=response,
                     error=None,
                 )
+            except ExternalDecisionRejection as exc:
+                self._target_weight_policy_outcome = _TargetWeightPolicyOutcome(
+                    adjustments=None,
+                    response=None,
+                    error=f"{type(exc).__name__}: {exc}",
+                    rejected=True,
+                )
             except Exception as exc:  # noqa: BLE001
                 self._target_weight_policy_outcome = _TargetWeightPolicyOutcome(
                     adjustments=None,
@@ -2549,6 +2725,7 @@ class RegimeRebalanceEngine:
                 effective_weights,
                 policy=policy,
                 error=outcome.error or "provider returned no adjustments",
+                rejected=outcome.rejected,
             )
 
         try:
@@ -2580,6 +2757,13 @@ class RegimeRebalanceEngine:
                 }
                 for symbol, adjustment in outcome.adjustments.items()
             }
+        except ExternalDecisionRejection as exc:
+            return self._target_weight_policy_fallback(
+                effective_weights,
+                policy=policy,
+                error=f"{type(exc).__name__}: {exc}",
+                rejected=True,
+            )
         except (AttributeError, KeyError, TypeError, ExternalDecisionError) as exc:
             return self._target_weight_policy_fallback(
                 effective_weights,
@@ -2608,6 +2792,7 @@ class RegimeRebalanceEngine:
         adjusted_weights = dict(effective_weights)
         trend_details: dict[str, dict[str, Any]] = {}
         trend_configs: dict[str, Any] = {}
+        trend_policies: dict[str, _AbsoluteTrendPolicy] = {}
         trend_symbols_by_lookback: dict[int, list[str]] = {}
 
         for symbol in effective_weights:
@@ -2615,12 +2800,16 @@ class RegimeRebalanceEngine:
             if absolute_trend is None or not getattr(absolute_trend, "enabled", False):
                 continue
             trend_configs[symbol] = absolute_trend
+            trend_policies[symbol] = _AbsoluteTrendPolicy.from_config(absolute_trend)
             lookback_days = int(absolute_trend.lookback_days)
             trend_symbols_by_lookback.setdefault(lookback_days, []).append(symbol)
 
         if not trend_symbols_by_lookback:
             return adjusted_weights, trend_details
 
+        # The persisted state carries the hysteresis that only held risk-off
+        # while the entry rule no longer applied, so it is required even when
+        # this session's history is available.
         previous_state = (
             self.data_store.get_last_event_payload(
                 ABSOLUTE_TREND_STATE_EVENT,
@@ -2637,17 +2826,35 @@ class RegimeRebalanceEngine:
             previous_symbols_raw if isinstance(previous_symbols_raw, dict) else {}
         )
 
+        def resolved_previous_state(
+            symbol: str, lookback_days: int
+        ) -> _AbsoluteTrendState | None:
+            try:
+                return _AbsoluteTrendState.from_payload(
+                    previous_symbols.get(symbol),
+                    lookback_days=lookback_days,
+                )
+            except (TypeError, ValueError) as exc:
+                if symbol in previous_symbols:
+                    log.warning(
+                        f"{symbol}: ignoring persisted absolute trend state "
+                        f"({exc}); resolving this session from the entry rule."
+                    )
+                return None
+
         def apply_signal(
             symbol: str,
             signal: _AbsoluteTrendSignal,
+            state: _AbsoluteTrendState,
             *,
             history_source: str,
             history_failure: str | None = None,
         ) -> dict[str, Any]:
             details = signal.target_details(
+                state=state,
+                policy=trend_policies[symbol],
                 pre_trend_target=adjusted_weights[symbol],
                 risk_off_multiplier=float(trend_configs[symbol].risk_off_multiplier),
-                risk_off_ramp_width=float(trend_configs[symbol].risk_off_ramp_width),
                 history_source=history_source,
                 history_failure=history_failure,
             )
@@ -2660,9 +2867,14 @@ class RegimeRebalanceEngine:
             lookback_days: int,
             failure_reason: str,
         ) -> None:
+            payload = previous_symbols.get(symbol)
             try:
                 signal = _AbsoluteTrendSignal.from_payload(
-                    previous_symbols.get(symbol),
+                    payload,
+                    lookback_days=lookback_days,
+                )
+                state = _AbsoluteTrendState.from_payload(
+                    payload,
                     lookback_days=lookback_days,
                 )
             except (TypeError, ValueError) as exc:
@@ -2678,13 +2890,14 @@ class RegimeRebalanceEngine:
             details = apply_signal(
                 symbol,
                 signal,
+                state,
                 history_source="persisted",
                 history_failure=failure_reason,
             )
             log.warning(
                 f"{symbol}: absolute trend history unavailable "
                 f"({failure_reason}); retaining persisted "
-                f"{signal.state.replace('_', '-')} state with target "
+                f"{state.state.replace('_', '-')} state with target "
                 f"{pfmt(details['pre_trend_target'])}->"
                 f"{pfmt(details['final_target'])}."
             )
@@ -2717,12 +2930,18 @@ class RegimeRebalanceEngine:
                     )
                     continue
 
-                details = apply_signal(symbol, signal, history_source="fresh")
+                state = signal.resolve(
+                    previous=resolved_previous_state(symbol, lookback_days),
+                    policy=trend_policies[symbol],
+                )
+                details = apply_signal(symbol, signal, state, history_source="fresh")
                 log.notice(
                     f"{symbol}: absolute trend latest={signal.latest_close:.4f} "
                     f"average_{lookback_days}d={signal.moving_average:.4f} "
                     f"return_{lookback_days}d={pfmt(signal.lookback_return)} "
-                    f"state={signal.state.replace('_', '-')} "
+                    f"state={state.state.replace('_', '-')} "
+                    f"sessions={state.sessions_in_state} "
+                    f"mode={trend_policies[symbol].mode} "
                     f"multiplier={ffmt(details['applied_multiplier'])} "
                     f"target={pfmt(details['pre_trend_target'])}->"
                     f"{pfmt(details['final_target'])}"

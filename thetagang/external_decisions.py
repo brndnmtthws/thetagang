@@ -21,6 +21,14 @@ class ExternalDecisionError(RuntimeError):
     """Raised when an external provider cannot return a valid decision."""
 
 
+class ExternalDecisionRejection(ExternalDecisionError):
+    """Raised when a provider answered but its decision is unacceptable.
+
+    A rejection is a provider-side fault, so it never degrades to baseline
+    sizing. Only transport unavailability may fall back per ``on_error``.
+    """
+
+
 class _ResponseTooLargeError(RuntimeError):
     pass
 
@@ -303,7 +311,7 @@ class CommandExternalDecisionProvider:
         if process.returncode != 0:
             error_text = stderr.decode("utf-8", errors="replace").strip()
             error_suffix = f": {error_text[:512]}" if error_text else ""
-            raise ExternalDecisionError(
+            raise ExternalDecisionRejection(
                 f"external decision provider exited with status "
                 f"{process.returncode}{error_suffix}"
             )
@@ -317,17 +325,17 @@ def parse_external_decision_response(stdout: bytes) -> ExternalDecisionResponse:
             parse_constant=lambda value: _raise_invalid_constant(value),
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        raise ExternalDecisionError(
+        raise ExternalDecisionRejection(
             "external decision provider returned invalid JSON"
         ) from exc
     if not isinstance(decoded, dict):
-        raise ExternalDecisionError(
+        raise ExternalDecisionRejection(
             "external decision provider response must be a JSON object"
         )
     try:
         return ExternalDecisionResponse.model_validate(decoded)
     except ValueError as exc:
-        raise ExternalDecisionError(
+        raise ExternalDecisionRejection(
             "external decision provider returned an invalid response envelope"
         ) from exc
 
@@ -358,7 +366,7 @@ class ExternalDecisionProviders:
     ) -> ExternalDecisionResponse:
         provider = self._providers.get(provider_name)
         if provider is None:
-            raise ExternalDecisionError(
+            raise ExternalDecisionRejection(
                 f"external decision provider is not configured: {provider_name}"
             )
         response = await provider.decide(request)
@@ -370,9 +378,11 @@ def validate_response_identity(
     response: ExternalDecisionResponseEnvelope, request: ExternalDecisionRequestEnvelope
 ) -> None:
     if response.request_id != request.request_id:
-        raise ExternalDecisionError("external decision response request_id mismatch")
+        raise ExternalDecisionRejection(
+            "external decision response request_id mismatch"
+        )
     if response.decision_type != request.decision_type:
-        raise ExternalDecisionError("external decision response type mismatch")
+        raise ExternalDecisionRejection("external decision response type mismatch")
 
 
 def validate_market_decision_response(
@@ -392,13 +402,15 @@ def validate_market_decision_response(
     latest_session = history_dates[-1]
     signal_session = response.as_of_session
     if signal_session is None:
-        raise ExternalDecisionError(f"{decision_name} response requires as_of_session")
+        raise ExternalDecisionRejection(
+            f"{decision_name} response requires as_of_session"
+        )
     if signal_session > latest_session:
-        raise ExternalDecisionError(f"{decision_name} signal is from the future")
+        raise ExternalDecisionRejection(f"{decision_name} signal is from the future")
     try:
         signal_index = history_dates.index(signal_session)
     except ValueError as exc:
-        raise ExternalDecisionError(
+        raise ExternalDecisionRejection(
             f"{decision_name} signal is not aligned to a supplied session"
         ) from exc
     signal_age_sessions = len(history_dates) - signal_index - 1

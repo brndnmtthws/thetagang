@@ -579,7 +579,11 @@ def test_symbol_accepts_absolute_trend_config() -> None:
         "enabled": True,
         "lookback_days": 168,
         "risk_off_multiplier": 0.15,
-        "risk_off_ramp_width": 0.20,
+        "policy": {
+            "mode": "deadband",
+            "exit_depth": 0.02,
+            "min_dwell_sessions": 3,
+        },
     }
 
     config = Config(**data)
@@ -589,10 +593,12 @@ def test_symbol_accepts_absolute_trend_config() -> None:
     assert absolute_trend.enabled is True
     assert absolute_trend.lookback_days == 168
     assert absolute_trend.risk_off_multiplier == pytest.approx(0.15)
-    assert absolute_trend.risk_off_ramp_width == pytest.approx(0.20)
+    assert absolute_trend.policy.mode == "deadband"
+    assert absolute_trend.policy.exit_depth == pytest.approx(0.02)
+    assert absolute_trend.policy.min_dwell_sessions == 3
 
 
-def test_symbol_absolute_trend_defaults_disabled() -> None:
+def test_symbol_absolute_trend_defaults_to_disabled_cliff() -> None:
     data = _base_config({"strategies": ["wheel"]})
     data["portfolio"]["symbols"]["AAA"]["absolute_trend"] = {}
 
@@ -603,16 +609,76 @@ def test_symbol_absolute_trend_defaults_disabled() -> None:
     assert absolute_trend.enabled is False
     assert absolute_trend.lookback_days == 168
     assert absolute_trend.risk_off_multiplier == pytest.approx(0.15)
-    assert absolute_trend.risk_off_ramp_width == pytest.approx(0.0)
+    assert absolute_trend.policy.mode == "cliff"
+    assert absolute_trend.policy.exit_depth == pytest.approx(0.0)
+    assert absolute_trend.policy.min_dwell_sessions == 0
 
 
 @pytest.mark.parametrize("width", [-0.1, 1.1, float("nan"), float("inf")])
-def test_symbol_absolute_trend_rejects_invalid_ramp_width(width: float) -> None:
+def test_symbol_absolute_trend_rejects_invalid_exit_depth(width: float) -> None:
     data = _base_config({"strategies": ["wheel"]})
     data["portfolio"]["symbols"]["AAA"]["absolute_trend"] = {
-        "risk_off_ramp_width": width,
+        "policy": {"mode": "deadband", "exit_depth": width},
+    }
+    with pytest.raises(ValueError, match="exit_depth"):
+        Config(**data)
+
+
+def test_symbol_absolute_trend_rejects_deleted_ramp_width() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["absolute_trend"] = {
+        "risk_off_ramp_width": 0.10,
     }
     with pytest.raises(ValueError, match="risk_off_ramp_width"):
+        Config(**data)
+
+
+@pytest.mark.parametrize(
+    ("mode", "exit_depth", "min_dwell_sessions"),
+    [
+        ("deadband", 0.05, 0),
+        ("deadband", 0.0, 2),
+        ("deadband", 0.05, 3),
+        ("cliff", 0.0, 0),
+    ],
+)
+def test_symbol_absolute_trend_accepts_hysteresis_arms(
+    mode: str, exit_depth: float, min_dwell_sessions: int
+) -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["absolute_trend"] = {
+        "policy": {
+            "mode": mode,
+            "exit_depth": exit_depth,
+            "min_dwell_sessions": min_dwell_sessions,
+        },
+    }
+
+    config = Config(**data)
+
+    absolute_trend = config.portfolio.symbols["AAA"].absolute_trend
+    assert absolute_trend is not None
+    policy = absolute_trend.policy
+    assert policy.mode == mode
+    assert policy.exit_depth == pytest.approx(exit_depth)
+    assert policy.min_dwell_sessions == min_dwell_sessions
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"mode": "cliff", "exit_depth": 0.02},
+        {"mode": "cliff", "min_dwell_sessions": 3},
+        {"mode": "deadband"},
+        {"mode": "deadband", "min_dwell_sessions": 1},
+    ],
+)
+def test_symbol_absolute_trend_rejects_inactive_hysteresis(
+    policy: dict[str, Any],
+) -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["absolute_trend"] = {"policy": policy}
+    with pytest.raises(ValueError, match="policy"):
         Config(**data)
 
 
@@ -620,7 +686,6 @@ def test_symbol_absolute_trend_allows_zero_risk_off_multiplier() -> None:
     data = _base_config({"strategies": ["wheel"]})
     data["portfolio"]["symbols"]["AAA"]["absolute_trend"] = {
         "risk_off_multiplier": 0.0,
-        "risk_off_ramp_width": 0.0,
     }
 
     config = Config(**data)
@@ -628,7 +693,7 @@ def test_symbol_absolute_trend_allows_zero_risk_off_multiplier() -> None:
     absolute_trend = config.portfolio.symbols["AAA"].absolute_trend
     assert absolute_trend is not None
     assert absolute_trend.risk_off_multiplier == pytest.approx(0.0)
-    assert absolute_trend.risk_off_ramp_width == pytest.approx(0.0)
+    assert absolute_trend.policy.mode == "cliff"
 
 
 def _enable_target_weight_policy(data: dict[str, Any]) -> None:

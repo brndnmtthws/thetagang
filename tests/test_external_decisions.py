@@ -10,6 +10,7 @@ from thetagang.external_decisions import (
     ExternalDecisionError,
     ExternalDecisionMarketData,
     ExternalDecisionProviders,
+    ExternalDecisionRejection,
     ExternalDecisionRequest,
 )
 
@@ -117,8 +118,35 @@ async def test_command_provider_rejects_non_json_output() -> None:
         }
     )
 
-    with pytest.raises(ExternalDecisionError, match="invalid JSON"):
+    # A provider that answered with garbage is a rejection, not an outage.
+    with pytest.raises(ExternalDecisionRejection, match="invalid JSON"):
         await providers.decide("fixture", _request())
+
+
+@pytest.mark.asyncio
+async def test_command_provider_nonzero_exit_is_a_rejection() -> None:
+    providers = ExternalDecisionProviders(
+        {
+            "fixture": ExternalDecisionProviderConfig(
+                command=[
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stderr.write('policy mismatch'); sys.exit(3)",
+                ]
+            )
+        }
+    )
+
+    with pytest.raises(ExternalDecisionRejection, match="status 3: policy mismatch"):
+        await providers.decide("fixture", _request())
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_provider_is_a_rejection() -> None:
+    providers = ExternalDecisionProviders({})
+
+    with pytest.raises(ExternalDecisionRejection, match="not configured"):
+        await providers.decide("missing", _request())
 
 
 @pytest.mark.asyncio
@@ -232,5 +260,5 @@ json.dump({
         }
     )
 
-    with pytest.raises(ExternalDecisionError, match="request_id mismatch"):
+    with pytest.raises(ExternalDecisionRejection, match="request_id mismatch"):
         await providers.decide("fixture", _request())

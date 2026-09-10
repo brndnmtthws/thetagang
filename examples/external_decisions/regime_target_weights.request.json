@@ -71,7 +71,11 @@
           "enabled": true,
           "lookback_days": 168,
           "risk_off_multiplier": 0.15,
-          "risk_off_ramp_width": 0.0
+          "policy": {
+            "mode": "deadband",
+            "exit_depth": 0.02,
+            "min_dwell_sessions": 3
+          }
         },
         "execution_constraints": {
           "trading_allowed": true,
