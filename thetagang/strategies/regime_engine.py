@@ -94,6 +94,13 @@ REGIME_HISTORY_TIMEFRAME = "1 day"
 REGIME_HISTORY_MAX_ATTEMPTS = 3
 REGIME_HISTORY_RETRY_DELAY_SECONDS = 0.25
 ABSOLUTE_TREND_STATE_EVENT = "absolute_trend_state"
+# Version of the persisted absolute-trend record. Records written by an older
+# version are salvaged by their recorded risk state; only records that claim
+# this version and are still unreadable count as corrupt.
+ABSOLUTE_TREND_STATE_VERSION = 1
+_ABSOLUTE_TREND_LEGACY_REASON = "legacy_payload"
+_ABSOLUTE_TREND_INVALID_REASON = "invalid_persisted_state"
+_ABSOLUTE_TREND_VERSION_REASON = "unsupported_state_version"
 TAIL_HEDGE_HARVEST_EVENT = "tail_hedge_harvest"
 TAIL_HEDGE_HARVEST_SCHEMA_VERSION = 2
 
@@ -173,6 +180,10 @@ class RatioGateResult:
 _ABSOLUTE_TREND_STATES = frozenset({"risk_on", "risk_off"})
 
 
+class _UnsupportedAbsoluteTrendStateVersion(ValueError):
+    """Raised when a persisted record predates the current state version."""
+
+
 def _payload_session(payload: dict[str, Any]) -> str:
     latest_session = payload.get("latest_session")
     if not isinstance(latest_session, str):
@@ -214,11 +225,23 @@ class _AbsoluteTrendState:
     sessions_in_state: int
     state_transition: bool
     within_band_drift: bool
+    reset_reason: str | None = None
 
     @classmethod
-    def from_payload(cls, payload: Any, *, lookback_days: int) -> _AbsoluteTrendState:
+    def from_payload(
+        cls,
+        payload: Any,
+        *,
+        lookback_days: int,
+        state_version: int | None,
+    ) -> _AbsoluteTrendState:
         if not isinstance(payload, dict):
             raise TypeError("state_not_an_object")
+        if (
+            type(state_version) is not int
+            or state_version != ABSOLUTE_TREND_STATE_VERSION
+        ):
+            raise _UnsupportedAbsoluteTrendStateVersion(_ABSOLUTE_TREND_VERSION_REASON)
         if payload.get("lookback_days") != lookback_days:
             raise ValueError("lookback_mismatch")
         state = payload.get("state")
@@ -237,6 +260,9 @@ class _AbsoluteTrendState:
         for field in ("state_transition", "within_band_drift"):
             if not isinstance(payload.get(field), bool):
                 raise TypeError(f"invalid_{field}")
+        reset_reason = payload.get("state_reset_reason")
+        if reset_reason is not None and not isinstance(reset_reason, str):
+            raise TypeError("invalid_state_reset_reason")
         return cls(
             latest_session=_payload_session(payload),
             state=state,
@@ -244,7 +270,40 @@ class _AbsoluteTrendState:
             sessions_in_state=sessions_in_state,
             state_transition=bool(payload["state_transition"]),
             within_band_drift=bool(payload["within_band_drift"]),
+            reset_reason=reset_reason,
         )
+
+
+def _salvage_legacy_state(
+    payload: Any, *, lookback_days: int
+) -> _AbsoluteTrendState | None:
+    """Read the risk state from a record written by an older payload version.
+
+    The recorded state is authoritative because only it can tell whether a
+    symbol is risk-off held by hysteresis: re-deriving from the entry rule
+    would release that exposure early, which is the one direction a reset must
+    never take. The dwell counter and transition labels are unrecoverable, so
+    they restart, and the event carries the reset reason.
+    """
+
+    if not isinstance(payload, dict) or payload.get("lookback_days") != lookback_days:
+        return None
+    risk_off = payload.get("risk_off")
+    if not isinstance(risk_off, bool):
+        return None
+    try:
+        latest_session = _payload_session(payload)
+    except (TypeError, ValueError):
+        return None
+    return _AbsoluteTrendState(
+        latest_session=latest_session,
+        state="risk_off" if risk_off else "risk_on",
+        previous_state=None,
+        sessions_in_state=1,
+        state_transition=False,
+        within_band_drift=False,
+        reset_reason=_ABSOLUTE_TREND_LEGACY_REASON,
+    )
 
 
 @dataclass(frozen=True)
@@ -355,8 +414,14 @@ class _AbsoluteTrendSignal:
         *,
         previous: _AbsoluteTrendState | None,
         policy: _AbsoluteTrendPolicy,
+        reset_reason: str | None = None,
     ) -> _AbsoluteTrendState:
-        """Resolve this session's state, holding risk-off through hysteresis."""
+        """Resolve this session's state, holding risk-off through hysteresis.
+
+        `reset_reason` travels into the emitted record whenever the previous
+        record could not be applied as-is, so an A/B that counts drift sessions
+        cannot silently miss a reset.
+        """
 
         if previous is not None and previous.latest_session == self.latest_session:
             # Replanning the same completed session must not advance the dwell
@@ -373,6 +438,7 @@ class _AbsoluteTrendSignal:
                 sessions_in_state=1,
                 state_transition=False,
                 within_band_drift=False,
+                reset_reason=reset_reason,
             )
         if previous.state == "risk_off":
             exit_level = self.threshold * (1.0 + policy.exit_depth)
@@ -388,6 +454,7 @@ class _AbsoluteTrendSignal:
                     sessions_in_state=1,
                     state_transition=True,
                     within_band_drift=False,
+                    reset_reason=reset_reason,
                 )
             return _AbsoluteTrendState(
                 latest_session=self.latest_session,
@@ -398,6 +465,7 @@ class _AbsoluteTrendSignal:
                 # The entry rule no longer holds, so only hysteresis is
                 # keeping this symbol risk-off.
                 within_band_drift=not entry,
+                reset_reason=reset_reason,
             )
         if entry:
             return _AbsoluteTrendState(
@@ -407,6 +475,7 @@ class _AbsoluteTrendSignal:
                 sessions_in_state=1,
                 state_transition=True,
                 within_band_drift=False,
+                reset_reason=reset_reason,
             )
         return _AbsoluteTrendState(
             latest_session=self.latest_session,
@@ -415,6 +484,7 @@ class _AbsoluteTrendSignal:
             sessions_in_state=previous.sessions_in_state + 1,
             state_transition=False,
             within_band_drift=False,
+            reset_reason=reset_reason,
         )
 
     def target_details(
@@ -441,6 +511,7 @@ class _AbsoluteTrendSignal:
             "previous_state": state.previous_state,
             "state_transition": state.state_transition,
             "within_band_drift": state.within_band_drift,
+            "state_reset_reason": state.reset_reason,
             "sessions_in_state": state.sessions_in_state,
             "shortfall": self.shortfall,
             "mode": policy.mode,
@@ -2825,22 +2896,72 @@ class RegimeRebalanceEngine:
         previous_symbols = (
             previous_symbols_raw if isinstance(previous_symbols_raw, dict) else {}
         )
+        previous_state_version = (
+            previous_state.get("state_version")
+            if isinstance(previous_state, dict)
+            else None
+        )
+
+        def abort_unusable_state(symbol: str, reason: str, detail: str) -> None:
+            log.error(
+                f"{symbol}: absolute trend persisted state is unusable "
+                f"({reason}: {detail}); aborting rebalancing."
+            )
+            raise RuntimeError(
+                f"{symbol}: absolute trend cannot resolve a deadband state from "
+                f"the persisted record ({reason})."
+            )
 
         def resolved_previous_state(
-            symbol: str, lookback_days: int
-        ) -> _AbsoluteTrendState | None:
+            symbol: str, lookback_days: int, mode: str
+        ) -> tuple[_AbsoluteTrendState | None, str | None]:
+            """Return the persisted state and why it could not be applied as-is.
+
+            An absent record is a cold start. A record written by an older
+            payload version is salvaged by its recorded risk state. Anything
+            else is corruption, which must not release a hysteresis-held
+            risk-off: deadband mode aborts, while a cliff can reset because its
+            state is derived purely from the entry rule.
+            """
+
+            payload = previous_symbols.get(symbol)
+            if payload is None:
+                return None, None
+            reason = _ABSOLUTE_TREND_INVALID_REASON
+            detail = "unreadable"
             try:
-                return _AbsoluteTrendState.from_payload(
-                    previous_symbols.get(symbol),
+                state = _AbsoluteTrendState.from_payload(
+                    payload,
                     lookback_days=lookback_days,
+                    state_version=previous_state_version,
                 )
-            except (TypeError, ValueError) as exc:
-                if symbol in previous_symbols:
-                    log.warning(
-                        f"{symbol}: ignoring persisted absolute trend state "
-                        f"({exc}); resolving this session from the entry rule."
+            except _UnsupportedAbsoluteTrendStateVersion:
+                reason = _ABSOLUTE_TREND_VERSION_REASON
+                detail = (
+                    f"state_version={previous_state_version!r} is not "
+                    f"{ABSOLUTE_TREND_STATE_VERSION}"
+                )
+                salvaged = _salvage_legacy_state(payload, lookback_days=lookback_days)
+                if salvaged is not None:
+                    log.error(
+                        f"ALERT: {symbol}: persisted absolute trend state predates "
+                        f"the current payload version ({detail}); keeping its "
+                        f"recorded {salvaged.state.replace('_', '-')} state with a "
+                        "reset dwell counter."
                     )
-                return None
+                    return salvaged, _ABSOLUTE_TREND_LEGACY_REASON
+            except (TypeError, ValueError) as exc:
+                detail = str(exc)
+            else:
+                return state, None
+            if mode == "deadband":
+                abort_unusable_state(symbol, reason, detail)
+            log.error(
+                f"ALERT: {symbol}: absolute trend persisted state is unusable "
+                f"({reason}: {detail}); an entry rule reset cannot lose exposure "
+                "in cliff mode, so this session resolves from the entry rule."
+            )
+            return None, reason
 
         def apply_signal(
             symbol: str,
@@ -2873,14 +2994,45 @@ class RegimeRebalanceEngine:
                     payload,
                     lookback_days=lookback_days,
                 )
-                state = _AbsoluteTrendState.from_payload(
-                    payload,
-                    lookback_days=lookback_days,
-                )
             except (TypeError, ValueError) as exc:
                 log.error(
                     f"{symbol}: absolute trend history is unavailable and no "
-                    "valid persisted state exists; aborting rebalancing."
+                    f"valid persisted state exists ({exc}); aborting rebalancing."
+                )
+                raise RuntimeError(
+                    f"{symbol}: absolute trend requires current history or a "
+                    "valid persisted state."
+                ) from exc
+            try:
+                state = _AbsoluteTrendState.from_payload(
+                    payload,
+                    lookback_days=lookback_days,
+                    state_version=previous_state_version,
+                )
+            except _UnsupportedAbsoluteTrendStateVersion:
+                # The closes survive in older records, so a legacy record still
+                # supports the no-history path by its recorded risk state.
+                state = _salvage_legacy_state(payload, lookback_days=lookback_days)
+                if state is None:
+                    log.error(
+                        f"{symbol}: absolute trend history is unavailable and the "
+                        "persisted record predates the current payload version "
+                        "without a usable risk state; aborting rebalancing."
+                    )
+                    raise RuntimeError(
+                        f"{symbol}: absolute trend requires current history or a "
+                        "valid persisted state."
+                    ) from None
+                log.error(
+                    f"ALERT: {symbol}: persisted absolute trend state predates the "
+                    f"current payload version; retaining its recorded "
+                    f"{state.state.replace('_', '-')} state with a reset dwell "
+                    "counter while history is unavailable."
+                )
+            except (TypeError, ValueError) as exc:
+                log.error(
+                    f"{symbol}: absolute trend history is unavailable and the "
+                    f"persisted state is unusable ({exc}); aborting rebalancing."
                 )
                 raise RuntimeError(
                     f"{symbol}: absolute trend requires current history or a "
@@ -2930,9 +3082,15 @@ class RegimeRebalanceEngine:
                     )
                     continue
 
+                previous, reset_reason = resolved_previous_state(
+                    symbol,
+                    lookback_days,
+                    trend_policies[symbol].mode,
+                )
                 state = signal.resolve(
-                    previous=resolved_previous_state(symbol, lookback_days),
+                    previous=previous,
                     policy=trend_policies[symbol],
+                    reset_reason=reset_reason,
                 )
                 details = apply_signal(symbol, signal, state, history_source="fresh")
                 log.notice(
@@ -4322,6 +4480,7 @@ class RegimeRebalanceEngine:
             if trend_details and not self.data_store.record_event(
                 ABSOLUTE_TREND_STATE_EVENT,
                 {
+                    "state_version": ABSOLUTE_TREND_STATE_VERSION,
                     "pre_trend_total_effective_weight": (
                         pre_trend_total_effective_weight
                     ),

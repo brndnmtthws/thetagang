@@ -590,6 +590,37 @@ def _absolute_trend(
     )
 
 
+def _record_absolute_trend_state(
+    manager: Any,
+    symbols: dict[str, object],
+    *,
+    state_version: int | None = 1,
+) -> None:
+    payload: dict[str, object] = {"symbols": symbols}
+    if state_version is not None:
+        payload["state_version"] = state_version
+    manager.data_store.record_event("absolute_trend_state", payload)
+
+
+def _legacy_absolute_trend_payload(
+    *,
+    lookback_days: int = 3,
+    risk_off: bool = True,
+    latest_session: str = "2026-08-21",
+) -> dict[str, object]:
+    """The pre-version record shape: signal fields plus a risk state."""
+
+    return {
+        "lookback_days": lookback_days,
+        "latest_session": latest_session,
+        "latest_close": 90.0,
+        "moving_average": 100.0,
+        "momentum_reference_close": 105.0,
+        "lookback_return": 90.0 / 105.0 - 1.0,
+        "risk_off": risk_off,
+    }
+
+
 def _absolute_trend_history_cache(
     mocker,
     closes: list[float],
@@ -2402,16 +2433,14 @@ async def test_absolute_trend_policy_exit_hysteresis(
     manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
         lookback_days=3, risk_off_multiplier=0.25, **policy
     )
-    manager.data_store.record_event(
-        "absolute_trend_state",
+    _record_absolute_trend_state(
+        manager,
         {
-            "symbols": {
-                "AAA": _absolute_trend_signal_payload(
-                    lookback_days=3,
-                    risk_off=previous_risk_off,
-                    sessions_in_state=previous_sessions,
-                )
-            }
+            "AAA": _absolute_trend_signal_payload(
+                lookback_days=3,
+                risk_off=previous_risk_off,
+                sessions_in_state=previous_sessions,
+            )
         },
     )
 
@@ -2422,6 +2451,7 @@ async def test_absolute_trend_policy_exit_hysteresis(
     )
 
     trend = details["AAA"]
+    assert trend["state_reset_reason"] is None
     assert trend["state"] == expected_state
     assert trend["previous_state"] == expected_previous_state
     assert trend["state_transition"] is expected_transition
@@ -2433,6 +2463,196 @@ async def test_absolute_trend_policy_exit_hysteresis(
 
 
 @pytest.mark.asyncio
+async def test_absolute_trend_legacy_state_keeps_hysteresis_held_risk_off(
+    portfolio_manager_with_db: Any, mocker: Any
+) -> None:
+    """A record from an older payload version must not release held risk-off.
+
+    The close sits above the entry threshold but inside the exit band, so only
+    the persisted state can keep the symbol risk-off. Re-deriving from the
+    entry rule here would re-risk the symbol, which is exactly what the
+    deadband exists to prevent.
+    """
+
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3, risk_off_multiplier=0.25, mode="deadband", exit_depth=0.05
+    )
+    _record_absolute_trend_state(
+        manager,
+        {"AAA": _legacy_absolute_trend_payload(lookback_days=3, risk_off=True)},
+        state_version=None,
+    )
+    history_cache = _absolute_trend_history_cache(
+        mocker, [100.0, 100.0, 100.0, 102.0], lookback_days=3
+    )
+
+    weights, details = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
+        history_cache,
+    )
+
+    trend = details["AAA"]
+    assert trend["state"] == "risk_off"
+    assert trend["state_reset_reason"] == "legacy_payload"
+    assert trend["sessions_in_state"] == 2
+    assert trend["within_band_drift"] is True
+    assert trend["applied_multiplier"] == pytest.approx(0.25)
+    assert weights["AAA"] == pytest.approx(0.1)
+
+    # Replanning the same session republishes the record, so the reset reason
+    # stays visible to an A/B that counts drift sessions.
+    _weights, replan = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
+        _absolute_trend_history_cache(
+            mocker, [100.0, 100.0, 100.0, 102.0], lookback_days=3
+        ),
+    )
+    assert replan["AAA"]["state_reset_reason"] == "legacy_payload"
+    assert replan["AAA"]["state"] == "risk_off"
+    assert replan["AAA"]["sessions_in_state"] == 2
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_legacy_state_still_enters_risk_off(
+    portfolio_manager_with_db: Any, mocker: Any
+) -> None:
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3, risk_off_multiplier=0.25
+    )
+    _record_absolute_trend_state(
+        manager,
+        {"AAA": _legacy_absolute_trend_payload(lookback_days=3, risk_off=False)},
+        state_version=None,
+    )
+
+    _, details = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
+        _absolute_trend_history_cache(
+            mocker, [100.0, 100.0, 100.0, 90.0], lookback_days=3
+        ),
+    )
+
+    trend = details["AAA"]
+    assert trend["state"] == "risk_off"
+    assert trend["previous_state"] == "risk_on"
+    assert trend["state_transition"] is True
+    assert trend["state_reset_reason"] == "legacy_payload"
+    assert trend["applied_multiplier"] == pytest.approx(0.25)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            {**_absolute_trend_signal_payload(lookback_days=3), "state": "sideways"},
+            id="corrupt-versioned-state",
+        ),
+        pytest.param(
+            {
+                key: value
+                for key, value in _legacy_absolute_trend_payload(
+                    lookback_days=3
+                ).items()
+                if key != "risk_off"
+            },
+            id="legacy-without-risk-state",
+        ),
+    ],
+)
+async def test_absolute_trend_unusable_state_fails_closed_in_deadband(
+    portfolio_manager_with_db: Any, mocker: Any, payload: dict[str, object]
+) -> None:
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3, mode="deadband", exit_depth=0.05
+    )
+    _record_absolute_trend_state(
+        manager,
+        {"AAA": payload},
+        state_version=None if "state" not in payload else 1,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot resolve a deadband state"):
+        await manager.regime_engine._apply_absolute_trend(
+            {"AAA": 0.4},
+            manager.config.portfolio.symbols,
+            _absolute_trend_history_cache(
+                mocker, [100.0, 100.0, 100.0, 102.0], lookback_days=3
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_unusable_state_resets_cliff_with_reason(
+    portfolio_manager_with_db: Any, mocker: Any
+) -> None:
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend(
+        lookback_days=3, risk_off_multiplier=0.25
+    )
+    _record_absolute_trend_state(
+        manager,
+        {
+            "AAA": {
+                **_absolute_trend_signal_payload(lookback_days=3),
+                "state": "sideways",
+            }
+        },
+    )
+
+    _, details = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
+        _absolute_trend_history_cache(
+            mocker, [100.0, 100.0, 100.0, 90.0], lookback_days=3
+        ),
+    )
+
+    # A cliff derives its state from the entry rule alone, so the reset loses
+    # bookkeeping only, and the reason keeps it visible.
+    trend = details["AAA"]
+    assert trend["state"] == "risk_off"
+    assert trend["previous_state"] is None
+    assert trend["state_reset_reason"] == "invalid_persisted_state"
+    assert trend["applied_multiplier"] == pytest.approx(0.25)
+
+
+@pytest.mark.asyncio
+async def test_absolute_trend_legacy_state_serves_unavailable_history(
+    portfolio_manager_with_db: Any, mocker: Any
+) -> None:
+    manager = portfolio_manager_with_db
+    manager.config.portfolio.symbols["AAA"].absolute_trend = _absolute_trend()
+    _record_absolute_trend_state(
+        manager,
+        {"AAA": _legacy_absolute_trend_payload(lookback_days=168, risk_off=True)},
+        state_version=None,
+    )
+    history_cache = SimpleNamespace(
+        get=mocker.AsyncMock(side_effect=TimeoutError("history unavailable"))
+    )
+
+    weights, details = await manager.regime_engine._apply_absolute_trend(
+        {"AAA": 0.4},
+        manager.config.portfolio.symbols,
+        history_cache,
+    )
+
+    trend = details["AAA"]
+    assert weights["AAA"] == pytest.approx(0.06)
+    assert trend["history_source"] == "persisted"
+    assert trend["state"] == "risk_off"
+    assert trend["state_reset_reason"] == "legacy_payload"
+    assert trend["sessions_in_state"] == 1
+
+
+@pytest.mark.asyncio
 async def test_absolute_trend_same_session_replan_keeps_transition(
     portfolio_manager_with_db: Any, mocker: Any
 ) -> None:
@@ -2441,18 +2661,16 @@ async def test_absolute_trend_same_session_replan_keeps_transition(
         lookback_days=3, mode="deadband", exit_depth=0.05
     )
     dates = _required_regime_history_dates(4)
-    manager.data_store.record_event(
-        "absolute_trend_state",
+    _record_absolute_trend_state(
+        manager,
         {
-            "symbols": {
-                "AAA": _absolute_trend_signal_payload(
-                    lookback_days=3,
-                    sessions_in_state=4,
-                    state_transition=True,
-                    within_band_drift=True,
-                )
-                | {"latest_session": str(dates[-1])}
-            }
+            "AAA": _absolute_trend_signal_payload(
+                lookback_days=3,
+                sessions_in_state=4,
+                state_transition=True,
+                within_band_drift=True,
+            )
+            | {"latest_session": str(dates[-1])}
         },
     )
     history_cache = SimpleNamespace(
@@ -2592,16 +2810,14 @@ async def test_absolute_trend_reuses_persisted_state_when_history_fails(
     portfolio_manager_with_db.config.portfolio.symbols[
         "AAA"
     ].absolute_trend = _absolute_trend()
-    portfolio_manager_with_db.data_store.record_event(
-        "absolute_trend_state",
+    _record_absolute_trend_state(
+        portfolio_manager_with_db,
         {
-            "symbols": {
-                "AAA": _absolute_trend_signal_payload(
-                    sessions_in_state=4,
-                    state_transition=True,
-                    within_band_drift=True,
-                )
-            }
+            "AAA": _absolute_trend_signal_payload(
+                sessions_in_state=4,
+                state_transition=True,
+                within_band_drift=True,
+            )
         },
     )
     history_cache = SimpleNamespace(
@@ -2678,9 +2894,9 @@ async def test_absolute_trend_history_failure_without_valid_state_aborts(
         "AAA"
     ].absolute_trend = _absolute_trend()
     if persisted_signal is not None:
-        portfolio_manager_with_db.data_store.record_event(
-            "absolute_trend_state",
-            {"symbols": {"AAA": persisted_signal}},
+        _record_absolute_trend_state(
+            portfolio_manager_with_db,
+            {"AAA": persisted_signal},
         )
     history_cache = SimpleNamespace(
         get=mocker.AsyncMock(side_effect=TimeoutError("history unavailable"))
@@ -2701,9 +2917,11 @@ async def test_absolute_trend_invalid_persisted_symbol_map_aborts_cleanly(
     portfolio_manager_with_db.config.portfolio.symbols[
         "AAA"
     ].absolute_trend = _absolute_trend()
+    # A symbol map that is not a dict is corrupt rather than legacy, so the
+    # record still claims the current version.
     portfolio_manager_with_db.data_store.record_event(
         "absolute_trend_state",
-        {"symbols": []},
+        {"state_version": 1, "symbols": []},
     )
     history_cache = SimpleNamespace(
         get=mocker.AsyncMock(side_effect=TimeoutError("history unavailable"))
@@ -2780,6 +2998,8 @@ async def test_absolute_trend_preserves_volatility_state_and_forces_hard_band_se
     assert trend["sessions_in_state"] == 1
     assert trend["state_transition"] is False
     assert trend["within_band_drift"] is False
+    # No record existed, so this is a cold start rather than a reset.
+    assert trend["state_reset_reason"] is None
     assert trend["shortfall"] == pytest.approx(0.10)
     assert trend["mode"] == "cliff"
     assert trend["exit_depth"] == pytest.approx(0.0)

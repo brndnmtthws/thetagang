@@ -103,6 +103,20 @@ the entry rule no longer held), `sessions_in_state`, `previous_state`, and the
 active `mode`, `exit_depth`, and `min_dwell_sessions`. Boundary chatter and rule
 differences are read from those events, not inferred from trade counts.
 
+Each `absolute_trend_state` event carries the payload `state_version` that wrote
+it, and every symbol records `state_reset_reason`: null when the previous record
+was applied as-is or when no record existed (a cold start), and otherwise why it
+could not be. A record written by an older `state_version` is salvaged by its
+recorded risk state and reported as `legacy_payload`, so an upgrade keeps any
+hysteresis-held risk-off and only restarts the dwell counter. A record that
+claims the current version and is still unreadable is `invalid_persisted_state`
+(or `unsupported_state_version` when only the version is wrong). Deadband mode
+aborts regime-rebalance planning in that case, because a reset there can release
+exposure the deadband was holding; cliff mode re-resolves from the entry rule,
+which cannot change exposure, and says so in the event. An A/B that counts drift
+sessions must therefore filter on `state_reset_reason` rather than assume every
+reset shows up as drift.
+
 The listed TQQQ sizing features—returns, moving-average distance, trend,
 realized volatility, volatility acceleration, drawdown, close-based choppiness,
 efficiency, relative trends, correlations, and PCA concentration—can all be
