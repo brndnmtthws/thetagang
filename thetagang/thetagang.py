@@ -13,6 +13,7 @@ from thetagang.config import (
     Config,
     config_deprecation_warnings,
     enabled_stage_ids_from_run,
+    expand_env_vars_in_config_doc,
     stage_enabled_map,
 )
 from thetagang.config_migration.startup_migration import (
@@ -77,11 +78,10 @@ def start(
                 "Config already uses schema v2. Exiting because --migrate-config was set."
             )
         return
-
     config_doc = tomlkit.parse(raw_config).unwrap()
     for warning in config_deprecation_warnings(config_doc):
         log.warning(warning)
-    config = Config(**config_doc)
+    config = Config(**expand_env_vars_in_config_doc(config_doc))
     run_stage_flags = stage_enabled_map(config)
     run_stage_order = enabled_stage_ids_from_run(config.run)
 

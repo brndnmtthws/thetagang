@@ -181,6 +181,11 @@ tradingMode = 'paper'
 RaiseRequestErrors = false
 password           = 'demo'
 userid             = 'demo'
+# Secrets can be loaded from the environment instead of hardcoding them here.
+# Any config string supports `$VAR`, `${VAR}`, and `${VAR:-default}` (use
+# `$$` for a literal `$`), e.g. `password = "${IBKR_PASSWORD}"`. Unset
+# variables without a default fail fast at startup. This also works for
+# `runtime.account.number` and `runtime.database.url`.
 # Change this to point to your config.ini for IBC
 ibcIni = '/etc/thetagang/config.ini'
 # Change or unset this to use something other than the Docker bundled OpenJDK.

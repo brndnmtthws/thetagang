@@ -452,11 +452,16 @@ much, consider [running ThetaGang with Docker](#running-with-docker).
 curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/thetagang.toml -o ./thetagang.toml
 ```
 
-At a minimum, update:
 - `account.number`
 - `ibc.userid` and `ibc.password`
 - `ibc.tradingMode = "paper"`
 - your `symbols.<SYMBOL>.weight` allocations
+
+Secrets don't need to live in the file: any config string supports `$VAR`,
+`${VAR}`, and `${VAR:-default}` from the environment (e.g.
+`password = "${IBKR_PASSWORD}"`), which is handy for `ibc.userid`,
+`ibc.password`, and `account.number`. Unset variables without a default abort
+startup with an error naming the variable.
 
 If you're running locally (not Docker), update the Docker defaults:
 - `ibc.ibcIni` should point to your local `config.ini`
