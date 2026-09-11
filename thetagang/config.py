@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import os
+import re
 from collections import defaultdict
 from collections.abc import Mapping
 from enum import Enum
@@ -1084,3 +1086,68 @@ def config_deprecation_warnings(config_doc: Mapping[str, Any]) -> list[str]:
     if "shares_only" not in regime_rebalance:
         return []
     return [SHARES_ONLY_DEPRECATION_MESSAGE]
+
+
+_ENV_VAR_PATTERN = re.compile(r"\$\$|\$(\w+)|\$\{([^}]+)\}")
+
+
+def _expand_env_vars_in_string(value: str, path: str) -> str:
+    """Expand `$VAR`, `${VAR}`, and `${VAR:-default}` references in one value."""
+
+    def replace(match: re.Match[str]) -> str:
+        if match.group(0) == "$$":
+            return "$"
+        name = match.group(1)
+        default = ""
+        has_default = False
+        braced = match.group(2)
+        if braced is not None:
+            name, sep, default = braced.partition(":-")
+            name = name.strip()
+            has_default = bool(sep)
+            if not name:
+                raise ValueError(
+                    f"Config value at '{path}' has an empty environment "
+                    "variable reference"
+                )
+            if has_default and not default:
+                raise ValueError(
+                    f"Config value at '{path}' has an empty default for "
+                    f"environment variable '{name}'"
+                )
+        if name in os.environ:
+            return os.environ[name]
+        if has_default:
+            return default
+        raise ValueError(
+            f"Config value at '{path}' references unset environment "
+            f"variable '{name}' (no default provided)"
+        )
+
+    return _ENV_VAR_PATTERN.sub(replace, value)
+
+
+def expand_env_vars_in_config_doc(config_doc: dict[str, Any]) -> dict[str, Any]:
+    """Expand env var references in every string in a parsed config document.
+
+    Supports `$VAR`, `${VAR}`, and `${VAR:-default}`; `$$` is a literal `$`.
+    Unset variables without a default raise `ValueError` naming the variable,
+    so misconfigured secrets fail fast instead of authenticating as `"${...}"`.
+    The document is mutated in place and returned for call-site convenience.
+    """
+
+    def walk(node: Any, path: str) -> Any:
+        if isinstance(node, str):
+            return _expand_env_vars_in_string(node, path or "<root>")
+        if isinstance(node, dict):
+            for key, child in node.items():
+                node[key] = walk(child, f"{path}.{key}" if path else str(key))
+            return node
+        if isinstance(node, list):
+            for index, child in enumerate(node):
+                node[index] = walk(child, f"{path}[{index}]")
+            return node
+        return node
+
+    walk(config_doc, "")
+    return config_doc

@@ -9,6 +9,7 @@ from thetagang.config import (
     Config,
     RebalanceMode,
     config_deprecation_warnings,
+    expand_env_vars_in_config_doc,
     stage_enabled_map,
     stage_enabled_map_from_run,
 )
@@ -1248,3 +1249,57 @@ def test_v2_rejects_transitional_infrastructure_key() -> None:
                 },
             }
         )
+
+
+def test_env_expansion_resolves_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IBKR_USERID", "someuser")
+    monkeypatch.setenv("IBKR_PASSWORD", "s3cret")
+    doc = {
+        "runtime": {
+            "account": {"number": "$IBKR_ACCOUNT"},
+            "ibc": {"userid": "${IBKR_USERID}", "password": "${IBKR_PASSWORD}"},
+        }
+    }
+    monkeypatch.setenv("IBKR_ACCOUNT", "DU1234567")
+    assert expand_env_vars_in_config_doc(doc) == {
+        "runtime": {
+            "account": {"number": "DU1234567"},
+            "ibc": {"userid": "someuser", "password": "s3cret"},
+        }
+    }
+
+
+def test_env_expansion_supports_defaults_and_escapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("THETAGANG_MISSING_SECRET", raising=False)
+    doc = {
+        "a": "${THETAGANG_MISSING_SECRET:-fallback}",
+        "b": "costs $$5",
+        "c": ["${THETAGANG_MISSING_SECRET:-x}", 42, True],
+    }
+    assert expand_env_vars_in_config_doc(doc) == {
+        "a": "fallback",
+        "b": "costs $5",
+        "c": ["x", 42, True],
+    }
+
+
+def test_env_expansion_rejects_unset_without_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("THETAGANG_MISSING_SECRET", raising=False)
+    with pytest.raises(ValueError, match="THETAGANG_MISSING_SECRET"):
+        expand_env_vars_in_config_doc({"password": "${THETAGANG_MISSING_SECRET}"})
+
+
+def test_env_expansion_leaves_plain_values_untouched() -> None:
+    doc = {"number": "DU1234567", "port": 7497, "enabled": True, "tags": ["a", "b"]}
+    assert expand_env_vars_in_config_doc(doc) == {
+        "number": "DU1234567",
+        "port": 7497,
+        "enabled": True,
+        "tags": ["a", "b"],
+    }
