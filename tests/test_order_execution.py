@@ -1175,8 +1175,74 @@ async def test_error_cancelled_rejected_replacement_stops(mocker, capsys) -> Non
 async def test_rejection_reason_arrives_within_grace(mocker, monkeypatch) -> None:
     monkeypatch.setattr("thetagang.order_execution.ORDER_ERROR_GRACE_SECONDS", 1.0)
     config = _config(
-        execution={"fill_timeout": 300, "on_timeout": "cancel", "final_wait": 1}
+        execution={
+            "fill_timeout": 300,
+            "on_timeout": "marketable_limit",
+            "final_wait": 1,
+        }
     )
+    policy = config.portfolio.symbols["AAA"].execution
+    assert policy is not None
+    contract = _option()
+    order = LimitOrder("BUY", 1, 20.38, account="DUX")
+    trade = mocker.Mock(
+        contract=contract,
+        order=order,
+        orderStatus=SimpleNamespace(status="Inactive", filled=0.0, remaining=1.0),
+    )
+    trade.isDone.return_value = True
+    records = [trade]
+    trades = mocker.Mock(spec=Trades)
+    trades.records.side_effect = lambda: records
+    ibkr = mocker.Mock()
+    ibkr.get_ticker_for_contract = mocker.AsyncMock(
+        return_value=_ticker(contract, ask=20.40)
+    )
+    ibkr.wait_for_orders_complete = mocker.AsyncMock(return_value=[])
+    start = time.monotonic()
+
+    def order_error(_order_id):
+        if time.monotonic() - start >= 0.05:
+            return (201, "Order rejected - reason: insufficient margin")
+        return None
+
+    ibkr.order_error.side_effect = order_error
+
+    def submit_order(submitted_contract, submitted_order, idx):
+        replacement_trade = mocker.Mock(
+            contract=submitted_contract,
+            order=submitted_order,
+            orderStatus=SimpleNamespace(status="Filled", filled=1.0, remaining=0.0),
+        )
+        replacement_trade.isDone.return_value = True
+        records[idx] = replacement_trade
+        return True
+
+    trades.submit_order.side_effect = submit_order
+    data_store = mocker.Mock()
+    manager = OrderExecutionManager(config, ibkr, data_store=data_store)
+
+    await manager._handle_rejected(trades, 0, policy)
+
+    rejected_events = [
+        call
+        for call in data_store.record_event.call_args_list
+        if call.args[0] == "order_broker_rejected"
+    ]
+    assert len(rejected_events) == 1
+    payload = rejected_events[0].args[1]
+    assert payload["error_code"] == 201
+    assert payload["error_message"] == "Order rejected - reason: insufficient margin"
+    assert trades.submit_order.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_no_grace_wait_when_no_replacement_will_be_submitted(
+    mocker, monkeypatch
+) -> None:
+    """leave_open/cancel actions must not hold the run for a late reason."""
+    monkeypatch.setattr("thetagang.order_execution.ORDER_ERROR_GRACE_SECONDS", 5.0)
+    config = _config(execution={"fill_timeout": 300, "on_timeout": "cancel"})
     policy = config.portfolio.symbols["AAA"].execution
     assert policy is not None
     contract = _option()
@@ -1190,20 +1256,12 @@ async def test_rejection_reason_arrives_within_grace(mocker, monkeypatch) -> Non
     trades = mocker.Mock(spec=Trades)
     trades.records.return_value = [trade]
     ibkr = mocker.Mock()
-    start = time.monotonic()
-
-    def order_error(_order_id):
-        if time.monotonic() - start >= 0.05:
-            return (201, "Order rejected - reason: insufficient margin")
-        return None
-
-    ibkr.order_error.side_effect = order_error
+    ibkr.order_error.return_value = None
     data_store = mocker.Mock()
     manager = OrderExecutionManager(config, ibkr, data_store=data_store)
 
+    started = time.monotonic()
     await manager._handle_rejected(trades, 0, policy)
-
-    payload = data_store.record_event.call_args.args[1]
-    assert payload["error_code"] == 201
-    assert payload["error_message"] == "Order rejected - reason: insufficient margin"
+    assert time.monotonic() - started < 1.0
+    ibkr.order_error.assert_called_once()
     trades.submit_order.assert_not_called()

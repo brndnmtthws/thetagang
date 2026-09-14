@@ -418,15 +418,18 @@ class IBKR:
             )
 
     def _trade_for_error_req_id(self, reqId: int) -> Trade | None:
+        """Find this session's trade for an order-bound error reqId.
+
+        Mirrors ib_async's own lookup in wrapper.error(): the
+        (clientId, reqId) key only matches orders this API client placed, so
+        a request id from this client's counter can never be attributed to an
+        imported order from another client whose orderId happens to collide
+        with it (ib.trades() includes those imported orders).
+        """
         if not isinstance(reqId, int) or reqId <= 0:
-            # -1 marks non-order errors; order ids come from the same counter
-            # as request ids, so a positive reqId cannot collide with a data
-            # request id that belongs to a different order.
+            # -1 marks non-order errors.
             return None
-        for trade in self.ib.trades():
-            if getattr(trade, "order", None) and trade.order.orderId == reqId:
-                return trade
-        return None
+        return self.ib.wrapper.trades.get((self.ib.wrapper.clientId, reqId))
 
     def order_error(self, order_id: int | None) -> tuple[int, str] | None:
         """Return the most recent broker error (code, message) for an order id."""

@@ -636,7 +636,8 @@ async def test_on_error_records_order_error_for_known_order(
     mock_trade.order.action = "BUY"
     data_store = mocker.Mock()
     ibkr.data_store = data_store
-    mock_ib.trades.return_value = [mock_trade]
+    mock_ib.wrapper.clientId = 0
+    mock_ib.wrapper.trades = {(0, 123): mock_trade}
 
     ibkr._on_error(123, 431, "margin requirement is not met", None)
 
@@ -654,10 +655,23 @@ async def test_on_error_records_order_error_for_known_order(
     assert ibkr.order_error(123) == (431, "margin requirement is not met")
 
 
-async def test_on_error_ignores_unknown_order_req_id(ibkr, mock_ib, mock_trade, mocker):
+async def test_on_error_ignores_other_client_order_with_colliding_req_id(
+    ibkr, mock_ib, mock_trade, mocker
+):
+    """A data-request error must not match an imported other-client order
+    whose orderId equals the request id (ib.trades() includes those)."""
+    other_client_trade = mocker.Mock(spec=Trade)
+    other_client_trade.contract = mocker.Mock(spec=Contract)
+    other_client_trade.contract.symbol = "OTHER"
+    other_client_trade.order = mocker.Mock(spec=Order)
+    other_client_trade.order.orderId = 999
     data_store = mocker.Mock()
     ibkr.data_store = data_store
-    mock_ib.trades.return_value = [mock_trade]
+    mock_ib.wrapper.clientId = 0
+    mock_ib.wrapper.trades = {
+        (0, 123): mock_trade,
+        (1, 999): other_client_trade,
+    }
 
     ibkr._on_error(999, 165, "Historical market data service query message", None)
 
@@ -668,7 +682,8 @@ async def test_on_error_ignores_unknown_order_req_id(ibkr, mock_ib, mock_trade, 
 async def test_on_error_ignores_non_order_errors(ibkr, mock_ib, mock_trade, mocker):
     data_store = mocker.Mock()
     ibkr.data_store = data_store
-    mock_ib.trades.return_value = [mock_trade]
+    mock_ib.wrapper.clientId = 0
+    mock_ib.wrapper.trades = {(0, 123): mock_trade}
 
     ibkr._on_error(-1, 2105, "Disconnecting...", None)
 
@@ -679,7 +694,8 @@ async def test_on_error_ignores_non_order_errors(ibkr, mock_ib, mock_trade, mock
 async def test_on_error_records_latest_error_without_data_store(
     ibkr, mock_ib, mock_trade
 ):
-    mock_ib.trades.return_value = [mock_trade]
+    mock_ib.wrapper.clientId = 0
+    mock_ib.wrapper.trades = {(0, 123): mock_trade}
 
     ibkr._on_error(123, 202, "Order cancelled - Reason: ", None)
 

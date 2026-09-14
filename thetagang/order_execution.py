@@ -35,8 +35,9 @@ REJECT_ERROR_CODES: frozenset[int] = frozenset({201})
 # or a price/risk check) rather than a rejection: 202 "Order Canceled - ...".
 CANCEL_ERROR_CODES: frozenset[int] = frozenset({202})
 # TWS does not order status and error callbacks, so a rejection reason can
-# arrive after the status. Wait at most this long for it before recording a
-# broker rejection.
+# arrive after the status. Before submitting a replacement for a rejected
+# order, wait at most this long for the reason; paths that submit nothing
+# record whatever reason is already present.
 ORDER_ERROR_GRACE_SECONDS = 2.0
 
 
@@ -596,9 +597,11 @@ class OrderExecutionManager:
         """Fetch the broker error for an order, waiting briefly for late ones.
 
         Status and error callbacks are not ordered by TWS, so the reason for
-        a rejection can arrive after the status. Wait at most
-        ORDER_ERROR_GRACE_SECONDS for it so the rejection record carries the
-        reason whenever the broker sent one.
+        a rejection can arrive after the status. Call this only on paths that
+        submit a replacement: wait at most ORDER_ERROR_GRACE_SECONDS for the
+        reason so the rejection record carries it whenever the broker sent
+        one. Paths that submit nothing should read `order_error` directly
+        instead of holding the run.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + ORDER_ERROR_GRACE_SECONDS
@@ -664,14 +667,19 @@ class OrderExecutionManager:
         symbol = trade.contract.symbol
         status = str(getattr(trade.orderStatus, "status", "Unknown"))
         order_id = getattr(trade.order, "orderId", None)
-        error = await self._order_error_with_grace(order_id)
+        action = self._inactive_action(policy)
+        if action in ("leave_open", "cancel"):
+            # No replacement will follow, so don't hold the run waiting for a
+            # late error message; record whatever reason is already present.
+            error = self.ibkr.order_error(order_id)
+        else:
+            error = await self._order_error_with_grace(order_id)
         reason = f", broker error {error[0]}: {error[1]}" if error else ""
         log.warning(
             f"{symbol}: Configured order was rejected by the broker without "
             f"a complete fill (status={status}{reason})."
         )
         remaining = self._remaining_from_status(trade)
-        action = self._inactive_action(policy)
         self._record_event(
             "order_broker_rejected",
             trade,
@@ -922,7 +930,9 @@ class OrderExecutionManager:
             )
             return
         if self._is_broker_rejected(replacement_trade):
-            replacement_error = await self._order_error_with_grace(
+            # No further replacement will be submitted, so don't wait for a
+            # late error message; record whatever reason is already present.
+            replacement_error = self.ibkr.order_error(
                 getattr(replacement_trade.order, "orderId", None)
             )
             detail = (
