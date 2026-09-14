@@ -18,12 +18,12 @@ def mock_ib(mocker):
 def mock_config(mocker):
     """Fixture to create a mock Config object."""
     config = mocker.Mock()
-    config.account = mocker.Mock()
-    config.account.number = "TEST123"
-    config.ib_async = mocker.Mock()
-    config.ib_async.api_response_wait_time = 1
-    config.orders = mocker.Mock()
-    config.orders.exchange = "SMART"
+    config.runtime.account = mocker.Mock()
+    config.runtime.account.number = "TEST123"
+    config.runtime.ib_async = mocker.Mock()
+    config.runtime.ib_async.api_response_wait_time = 1
+    config.runtime.orders = mocker.Mock()
+    config.runtime.orders.exchange = "SMART"
     return config
 
 
