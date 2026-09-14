@@ -124,6 +124,41 @@ def test_symbol_execution_timeout_action_requires_timeout() -> None:
         Config(**data)
 
 
+def test_symbol_execution_on_inactive_parses_and_defaults_to_on_timeout() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["execution"] = {
+        "fill_timeout": 300,
+        "on_timeout": "marketable_limit",
+        "on_inactive": "cancel",
+    }
+
+    config = Config(**data)
+    execution = config.portfolio.symbols["AAA"].execution
+
+    assert execution is not None
+    assert execution.on_inactive == "cancel"
+
+
+def test_symbol_execution_on_inactive_requires_timeout() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["execution"] = {"on_inactive": "market"}
+
+    with pytest.raises(ValueError, match="execution.fill_timeout"):
+        Config(**data)
+
+
+def test_symbol_execution_on_inactive_leave_open_allowed_without_timeout() -> None:
+    data = _base_config({"strategies": ["wheel"]})
+    data["portfolio"]["symbols"]["AAA"]["execution"] = {"on_inactive": "leave_open"}
+
+    config = Config(**data)
+    execution = config.portfolio.symbols["AAA"].execution
+
+    assert execution is not None
+    assert execution.on_inactive == "leave_open"
+    assert execution.fill_timeout is None
+
+
 def test_tail_hedge_rejects_removed_strike_ratio() -> None:
     data = _base_config({"strategies": ["tail_hedge"]})
     data["strategies"]["tail_hedge"] = {

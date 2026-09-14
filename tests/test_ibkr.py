@@ -38,6 +38,8 @@ def mock_ib(mocker):
     mock.orderStatusEvent.__iadd__ = mocker.Mock(
         return_value=None
     )  # Allow += operation
+    mock.errorEvent = mocker.Mock()
+    mock.errorEvent.__iadd__ = mocker.Mock(return_value=None)  # Allow += operation
     mock.client = mocker.Mock()
     mock.wrapper = mocker.Mock()
     mock.wrapper.accountValues = {}
@@ -626,3 +628,59 @@ async def test_historical_duration_boundaries(ibkr, mock_ib, duration, expected)
     await ibkr.request_historical_data(Stock("AAA", "SMART", "USD"), duration)
     assert mock_ib.reqHistoricalDataAsync.await_args is not None
     assert mock_ib.reqHistoricalDataAsync.await_args.args[2] == expected
+
+
+async def test_on_error_records_order_error_for_known_order(
+    ibkr, mock_ib, mock_trade, mocker
+):
+    mock_trade.order.action = "BUY"
+    data_store = mocker.Mock()
+    ibkr.data_store = data_store
+    mock_ib.trades.return_value = [mock_trade]
+
+    ibkr._on_error(123, 431, "margin requirement is not met", None)
+
+    data_store.record_event.assert_called_once_with(
+        "order_error",
+        {
+            "symbol": "TEST",
+            "order_id": 123,
+            "action": "BUY",
+            "code": 431,
+            "message": "margin requirement is not met",
+        },
+        symbol="TEST",
+    )
+    assert ibkr.order_error(123) == (431, "margin requirement is not met")
+
+
+async def test_on_error_ignores_unknown_order_req_id(ibkr, mock_ib, mock_trade, mocker):
+    data_store = mocker.Mock()
+    ibkr.data_store = data_store
+    mock_ib.trades.return_value = [mock_trade]
+
+    ibkr._on_error(999, 165, "Historical market data service query message", None)
+
+    data_store.record_event.assert_not_called()
+    assert ibkr.order_error(999) is None
+
+
+async def test_on_error_ignores_non_order_errors(ibkr, mock_ib, mock_trade, mocker):
+    data_store = mocker.Mock()
+    ibkr.data_store = data_store
+    mock_ib.trades.return_value = [mock_trade]
+
+    ibkr._on_error(-1, 2105, "Disconnecting...", None)
+
+    data_store.record_event.assert_not_called()
+    assert ibkr.order_error(None) is None
+
+
+async def test_on_error_records_latest_error_without_data_store(
+    ibkr, mock_ib, mock_trade
+):
+    mock_ib.trades.return_value = [mock_trade]
+
+    ibkr._on_error(123, 202, "Order cancelled - Reason: ", None)
+
+    assert ibkr.order_error(123) == (202, "Order cancelled - Reason: ")

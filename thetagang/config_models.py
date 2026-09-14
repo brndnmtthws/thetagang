@@ -700,6 +700,9 @@ class SymbolConfig(BaseModel):
         on_timeout: Literal["leave_open", "cancel", "marketable_limit", "market"] = (
             "leave_open"
         )
+        on_inactive: (
+            Literal["leave_open", "cancel", "marketable_limit", "market"] | None
+        ) = None
         final_wait: int = Field(default=30, ge=1)
 
         @model_validator(mode="after")
@@ -707,6 +710,14 @@ class SymbolConfig(BaseModel):
             if self.fill_timeout is None and self.on_timeout != "leave_open":
                 raise ValueError(
                     "execution.fill_timeout is required when on_timeout is not "
+                    "leave_open"
+                )
+            if self.fill_timeout is None and self.on_inactive not in (
+                None,
+                "leave_open",
+            ):
+                raise ValueError(
+                    "execution.fill_timeout is required when on_inactive is not "
                     "leave_open"
                 )
             return self

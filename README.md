@@ -329,7 +329,8 @@ buy_price = "ask"                # bid | ask | mid
 sell_price = "bid"               # bid | ask | mid
 fill_timeout = 300               # Supervise this order for five minutes
 on_timeout = "marketable_limit"  # leave_open | cancel | marketable_limit | market
-final_wait = 30                   # Cancel an incomplete replacement after 30 seconds
+on_inactive = "marketable_limit" # Same actions when the broker rejects the order (defaults to on_timeout)
+final_wait = 30                  # Cancel an incomplete replacement after 30 seconds
 ```
 
 The configured quote is used for initial submission and, when `fill_timeout`
@@ -343,6 +344,17 @@ replacement is submitted. Tail-hedge orders retain their separate execution
 safeguards. Configured limit prices also preserve the sign of combo orders and the
 `minimum_credit` floor, so a credit order cannot be silently converted into a
 debit.
+
+When the broker rejects an order, IBKR either reports the terminal `Inactive`
+status or delivers a rejection error (code 201) that arrives as `Cancelled`;
+ThetaGang logs the reason and records it as an `order_error` event. The same
+`on_timeout` actions apply to those rejected orders, gated by `on_inactive`
+(which inherits `on_timeout` when unset): exactly one replacement may be
+submitted for the unfilled quantity, and if the replacement is itself
+rejected, nothing further is submitted. External cancellations (error code
+202), ThetaGang's own cancellations, and unrecognized error codes are never
+replaced — classification fails closed. Setting
+`on_inactive = "leave_open"` keeps rejected orders unreplaced.
 
 #### Algorithm Configuration
 Customize order execution algorithms:

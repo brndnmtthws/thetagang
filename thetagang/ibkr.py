@@ -59,10 +59,12 @@ class IBKR:
     ) -> None:
         self.ib = ib
         self.ib.orderStatusEvent += self.orderStatusEvent
+        self.ib.errorEvent += self._on_error
         self.api_response_wait_time = api_response_wait_time
         self.default_order_exchange = default_order_exchange
         self.data_store = data_store
         self.dry_run = dry_run
+        self.__order_errors: dict[int, tuple[int, str]] = {}
         self.__market_data_semaphore = asyncio.Semaphore(
             MAX_CONCURRENT_MARKET_DATA_STREAMS
         )
@@ -387,6 +389,53 @@ class IBKR:
             )
         if self.data_store:
             self.data_store.record_order_status(trade)
+
+    def _on_error(self, reqId: int, code: int, msg: str, contract: Contract) -> None:
+        """Capture broker errors tied to this session's orders.
+
+        TWS delivers the reason an order was rejected or destroyed by its
+        risk management (e.g. an order going ``Inactive``) as an error message
+        whose reqId is the order's id. ib_async only logs these to its own
+        (silenced) logger, so capture them here for logging and audit.
+        """
+        trade = self._trade_for_error_req_id(reqId)
+        if trade is None:
+            return
+        symbol = trade.contract.symbol
+        log.warning(f"{symbol}: Broker error {code}: {msg}")
+        self.__order_errors[int(reqId)] = (int(code), str(msg))
+        if self.data_store:
+            self.data_store.record_event(
+                "order_error",
+                {
+                    "symbol": symbol,
+                    "order_id": int(reqId),
+                    "action": getattr(trade.order, "action", None),
+                    "code": int(code),
+                    "message": str(msg),
+                },
+                symbol=symbol,
+            )
+
+    def _trade_for_error_req_id(self, reqId: int) -> Trade | None:
+        if not isinstance(reqId, int) or reqId <= 0:
+            # -1 marks non-order errors; order ids come from the same counter
+            # as request ids, so a positive reqId cannot collide with a data
+            # request id that belongs to a different order.
+            return None
+        for trade in self.ib.trades():
+            if getattr(trade, "order", None) and trade.order.orderId == reqId:
+                return trade
+        return None
+
+    def order_error(self, order_id: int | None) -> tuple[int, str] | None:
+        """Return the most recent broker error (code, message) for an order id."""
+        if order_id is None:
+            return None
+        try:
+            return self.__order_errors.get(int(order_id))
+        except (TypeError, ValueError):
+            return None
 
     async def __market_data_streaming_handler__(
         self,

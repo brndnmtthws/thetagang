@@ -25,6 +25,20 @@ from thetagang.util import would_increase_spread
 
 PriceStrategy: TypeAlias = Literal["bid", "ask", "mid"]
 
+# IB error codes that mark an order rejection: the broker destroyed the order
+# without executing it. Verified against IB's documented error table
+# (https://interactivebrokers.github.io/tws-api/message_codes.html):
+# 201 "Order rejected - reason: ...". Extend this set from observed
+# `order_error` events rather than guessing; unknown codes fail closed.
+REJECT_ERROR_CODES: frozenset[int] = frozenset({201})
+# IB error codes that report an external cancellation (by IBKR, the exchange,
+# or a price/risk check) rather than a rejection: 202 "Order Canceled - ...".
+CANCEL_ERROR_CODES: frozenset[int] = frozenset({202})
+# TWS does not order status and error callbacks, so a rejection reason can
+# arrive after the status. Wait at most this long for it before recording a
+# broker rejection.
+ORDER_ERROR_GRACE_SECONDS = 2.0
+
 
 class OrderExecutionManager:
     """Apply opt-in pricing and supervise configured broker orders."""
@@ -456,11 +470,7 @@ class OrderExecutionManager:
             if self.trade_fully_filled(current_trade):
                 return
             if current_trade.isDone():
-                log.warning(
-                    f"{current_trade.contract.symbol}: Configured order reached "
-                    f"terminal status={current_trade.orderStatus.status} without a "
-                    "complete fill."
-                )
+                await self._handle_terminal_state(trades, idx, policy, current_trade)
                 return
 
             should_reprice = strategy is not None or (
@@ -477,18 +487,13 @@ class OrderExecutionManager:
                 wait_time = min(delay, wait_budget)
             else:
                 wait_time = wait_budget
-
             await self.ibkr.wait_for_orders_complete([current_trade], wait_time)
             wait_budget -= wait_time
             current_trade = trades.records()[idx]
             if self.trade_fully_filled(current_trade):
                 return
             if current_trade.isDone():
-                log.warning(
-                    f"{current_trade.contract.symbol}: Configured order reached "
-                    f"terminal status={current_trade.orderStatus.status} without a "
-                    "complete fill."
-                )
+                await self._handle_terminal_state(trades, idx, policy, current_trade)
                 return
 
             if should_reprice:
@@ -507,6 +512,208 @@ class OrderExecutionManager:
                     legacy_repriced = True
 
         await self._handle_timeout(trades, idx, policy)
+
+    async def _handle_terminal_state(
+        self,
+        trades: Trades,
+        idx: int,
+        policy: SymbolConfig.Execution,
+        trade: Any,
+    ) -> None:
+        """React to an order that reached a done state without a complete fill."""
+        if self._is_inactive(trade):
+            await self._handle_rejected(trades, idx, policy)
+            return
+        if self._is_cancelled(trade):
+            await self._handle_cancelled(trades, idx, policy, trade)
+            return
+        log.warning(
+            f"{trade.contract.symbol}: Configured order reached terminal "
+            f"status={trade.orderStatus.status} without a complete fill."
+        )
+
+    @staticmethod
+    def _is_cancelled(trade: Any) -> bool:
+        status = str(
+            getattr(getattr(trade, "orderStatus", None), "status", "")
+        ).casefold()
+        return status == "cancelled"
+
+    async def _handle_cancelled(
+        self,
+        trades: Trades,
+        idx: int,
+        policy: SymbolConfig.Execution,
+        trade: Any,
+    ) -> None:
+        """Classify a Cancelled order; replace it only when the broker rejected it.
+
+        ib_async's wrapper synchronously marks an unfinished order Cancelled
+        when a non-warning order error arrives (appending a log entry with the
+        error code and emitting the reason on errorEvent in the same
+        callback), so `order_error` is already populated by the time this
+        supervisor observes the status. A rejection can therefore reach us as
+        Cancelled with a REJECT_ERROR_CODES reason; ThetaGang's own
+        cancellations and ApiCancelled carry no such reason and stay
+        unreplaced, and unrecognized codes fail closed.
+        """
+        symbol = trade.contract.symbol
+        error = self.ibkr.order_error(getattr(trade.order, "orderId", None))
+        if error is None:
+            log.warning(
+                f"{symbol}: Configured order reached terminal status=Cancelled "
+                "without a complete fill."
+            )
+            return
+        code = error[0]
+        if code in REJECT_ERROR_CODES:
+            await self._handle_rejected(trades, idx, policy)
+            return
+        if code in CANCEL_ERROR_CODES:
+            log.warning(
+                f"{symbol}: Order was canceled by the broker (broker error "
+                f"{error[0]}: {error[1]}); no replacement will be submitted."
+            )
+            return
+        log.warning(
+            f"{symbol}: Order ended Cancelled with unclassified broker "
+            f"error {error[0]}: {error[1]}; no replacement will be submitted."
+        )
+
+    def _is_broker_rejected(self, trade: Any) -> bool:
+        """True when the trade ended broker-rejected, not normally cancelled."""
+        if self._is_inactive(trade):
+            return True
+        if not self._is_cancelled(trade):
+            return False
+        error = self.ibkr.order_error(getattr(trade.order, "orderId", None))
+        return error is not None and error[0] in REJECT_ERROR_CODES
+
+    async def _order_error_with_grace(
+        self,
+        order_id: Any,
+    ) -> tuple[int, str] | None:
+        """Fetch the broker error for an order, waiting briefly for late ones.
+
+        Status and error callbacks are not ordered by TWS, so the reason for
+        a rejection can arrive after the status. Wait at most
+        ORDER_ERROR_GRACE_SECONDS for it so the rejection record carries the
+        reason whenever the broker sent one.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + ORDER_ERROR_GRACE_SECONDS
+        while True:
+            error = self.ibkr.order_error(order_id)
+            if error is not None:
+                return error
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(0.25, remaining))
+
+    @staticmethod
+    def _is_inactive(trade: Any) -> bool:
+        status = str(
+            getattr(getattr(trade, "orderStatus", None), "status", "")
+        ).casefold()
+        return status == "inactive"
+
+    @staticmethod
+    def _inactive_action(policy: SymbolConfig.Execution) -> str:
+        action = policy.on_inactive
+        if action is None:
+            action = policy.on_timeout
+        return action
+
+    @staticmethod
+    def _remaining_from_status(trade: Any) -> float | None:
+        """Compute the unfilled quantity from order state without cancelling."""
+        try:
+            requested = float(trade.order.totalQuantity)
+            filled = float(trade.orderStatus.filled or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if (
+            not math.isfinite(requested)
+            or requested <= 0
+            or not math.isfinite(filled)
+            or filled < 0
+            or filled > requested
+        ):
+            return None
+        return max(0.0, requested - filled)
+
+    async def _handle_rejected(
+        self,
+        trades: Trades,
+        idx: int,
+        policy: SymbolConfig.Execution,
+    ) -> None:
+        """React to an order the broker rejected before it could finish.
+
+        Two manifestations reach this path: the terminal ``Inactive`` status
+        (destroyed by IBKR's risk management), or a ``Cancelled`` status that
+        ib_async's wrapper wrote when a rejection error arrived first. Both
+        are terminal at the broker: the order can never execute and ib_async
+        drops it from openTrades, so there is nothing left to cancel and no
+        point sending cancelOrder (it would only generate a spurious broker
+        error). Submit at most one replacement for the unfilled remainder,
+        then cancel whatever the replacement leaves behind.
+        """
+        trade = trades.records()[idx]
+        symbol = trade.contract.symbol
+        status = str(getattr(trade.orderStatus, "status", "Unknown"))
+        order_id = getattr(trade.order, "orderId", None)
+        error = await self._order_error_with_grace(order_id)
+        reason = f", broker error {error[0]}: {error[1]}" if error else ""
+        log.warning(
+            f"{symbol}: Configured order was rejected by the broker without "
+            f"a complete fill (status={status}{reason})."
+        )
+        remaining = self._remaining_from_status(trade)
+        action = self._inactive_action(policy)
+        self._record_event(
+            "order_broker_rejected",
+            trade,
+            status=status,
+            rejection_action=action,
+            remaining=remaining,
+            error_code=error[0] if error else None,
+            error_message=error[1] if error else None,
+        )
+        if remaining is None:
+            log.error(
+                f"{symbol}: Invalid fill quantities on rejected order; "
+                "not submitting a replacement order."
+            )
+            return
+        if math.isclose(remaining, 0.0, abs_tol=1e-9):
+            log.warning(
+                f"{symbol}: Rejected order reported a complete fill; "
+                "not submitting a replacement order."
+            )
+            return
+        if action == "leave_open":
+            log.info(
+                f"{symbol}: Leaving the rejected order's remainder "
+                f"quantity={remaining:g} unreplaced."
+            )
+            return
+        if action == "cancel":
+            log.warning(
+                f"{symbol}: Rejected order was already destroyed by the "
+                f"broker; no replacement will be submitted for "
+                f"quantity={remaining:g}."
+            )
+            return
+        if action == "market":
+            await self._submit_replacement(
+                trades, idx, policy, remaining, "market", "Rejected"
+            )
+        else:
+            await self._submit_replacement(
+                trades, idx, policy, remaining, "marketable_limit", "Rejected"
+            )
 
     @staticmethod
     def _cancellation_confirmed(trade: Any) -> bool:
@@ -642,7 +849,6 @@ class OrderExecutionManager:
             )
             return
 
-        original_order = trade.order
         remaining = await self._cancel_and_get_remaining(trade)
         if remaining is None or math.isclose(remaining, 0.0, abs_tol=1e-9):
             return
@@ -660,6 +866,27 @@ class OrderExecutionManager:
             return
 
         if policy.on_timeout == "market":
+            await self._submit_replacement(
+                trades, idx, policy, remaining, "market", "Timeout"
+            )
+        else:
+            await self._submit_replacement(
+                trades, idx, policy, remaining, "marketable_limit", "Timeout"
+            )
+
+    async def _submit_replacement(
+        self,
+        trades: Trades,
+        idx: int,
+        policy: SymbolConfig.Execution,
+        remaining: float,
+        fallback: Literal["market", "marketable_limit"],
+        label: str,
+    ) -> None:
+        """Submit one replacement order, then cancel what it leaves unfilled."""
+        trade = trades.records()[idx]
+        original_order = trade.order
+        if fallback == "market":
             if getattr(trade.contract, "secType", None) == "BAG":
                 log.error(
                     f"{trade.contract.symbol}: Market fallback is not supported "
@@ -678,7 +905,7 @@ class OrderExecutionManager:
             return
         if not trades.submit_order(trade.contract, replacement, idx):
             log.error(
-                f"{trade.contract.symbol}: Failed to submit timeout replacement order."
+                f"{trade.contract.symbol}: Failed to submit {label} replacement order."
             )
             return
 
@@ -690,22 +917,43 @@ class OrderExecutionManager:
         replacement_trade = trades.records()[idx]
         if not incomplete and self.trade_fully_filled(replacement_trade):
             log.notice(
-                f"{replacement_trade.contract.symbol}: Timeout replacement order "
+                f"{replacement_trade.contract.symbol}: {label} replacement order "
                 "filled completely."
             )
             return
-
+        if self._is_broker_rejected(replacement_trade):
+            replacement_error = await self._order_error_with_grace(
+                getattr(replacement_trade.order, "orderId", None)
+            )
+            detail = (
+                f" (broker error {replacement_error[0]}: {replacement_error[1]})"
+                if replacement_error
+                else ""
+            )
+            log.error(
+                f"{replacement_trade.contract.symbol}: {label} replacement was "
+                f"rejected by the broker{detail}; no further replacement will "
+                "be submitted."
+            )
+            self._record_event(
+                "order_replacement_rejected",
+                replacement_trade,
+                status=str(getattr(replacement_trade.orderStatus, "status", "Unknown")),
+                error_code=replacement_error[0] if replacement_error else None,
+                error_message=(replacement_error[1] if replacement_error else None),
+            )
+            return
         remaining_after_replacement = await self._cancel_and_get_remaining(
             replacement_trade
         )
         if remaining_after_replacement is None:
             log.error(
-                f"{replacement_trade.contract.symbol}: Timeout replacement did "
+                f"{replacement_trade.contract.symbol}: {label} replacement did "
                 "not fill completely and cancellation could not be confirmed."
             )
         else:
             log.error(
-                f"{replacement_trade.contract.symbol}: Timeout replacement did "
+                f"{replacement_trade.contract.symbol}: {label} replacement did "
                 "not fill completely; canceled remaining "
                 f"quantity={remaining_after_replacement:g}."
             )
