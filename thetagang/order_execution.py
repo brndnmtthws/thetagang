@@ -666,6 +666,7 @@ class OrderExecutionManager:
         trade = trades.records()[idx]
         symbol = trade.contract.symbol
         status = str(getattr(trade.orderStatus, "status", "Unknown"))
+        why_held = getattr(trade.orderStatus, "whyHeld", None) or None
         order_id = getattr(trade.order, "orderId", None)
         action = self._inactive_action(policy)
         if action in ("leave_open", "cancel"):
@@ -674,7 +675,12 @@ class OrderExecutionManager:
             error = self.ibkr.order_error(order_id)
         else:
             error = await self._order_error_with_grace(order_id)
-        reason = f", broker error {error[0]}: {error[1]}" if error else ""
+        reason_parts = []
+        if error:
+            reason_parts.append(f"broker error {error[0]}: {error[1]}")
+        if why_held:
+            reason_parts.append(f"whyHeld={why_held}")
+        reason = f", {', '.join(reason_parts)}" if reason_parts else ""
         log.warning(
             f"{symbol}: Configured order was rejected by the broker without "
             f"a complete fill (status={status}{reason})."
@@ -688,6 +694,7 @@ class OrderExecutionManager:
             remaining=remaining,
             error_code=error[0] if error else None,
             error_message=error[1] if error else None,
+            why_held=why_held,
         )
         if remaining is None:
             log.error(
@@ -935,11 +942,17 @@ class OrderExecutionManager:
             replacement_error = self.ibkr.order_error(
                 getattr(replacement_trade.order, "orderId", None)
             )
-            detail = (
-                f" (broker error {replacement_error[0]}: {replacement_error[1]})"
-                if replacement_error
-                else ""
+            replacement_why_held = (
+                getattr(replacement_trade.orderStatus, "whyHeld", None) or None
             )
+            reasons = []
+            if replacement_error:
+                reasons.append(
+                    f"broker error {replacement_error[0]}: {replacement_error[1]}"
+                )
+            if replacement_why_held:
+                reasons.append(f"whyHeld={replacement_why_held}")
+            detail = f" ({', '.join(reasons)})" if reasons else ""
             log.error(
                 f"{replacement_trade.contract.symbol}: {label} replacement was "
                 f"rejected by the broker{detail}; no further replacement will "
@@ -951,6 +964,7 @@ class OrderExecutionManager:
                 status=str(getattr(replacement_trade.orderStatus, "status", "Unknown")),
                 error_code=replacement_error[0] if replacement_error else None,
                 error_message=(replacement_error[1] if replacement_error else None),
+                why_held=replacement_why_held,
             )
             return
         remaining_after_replacement = await self._cancel_and_get_remaining(

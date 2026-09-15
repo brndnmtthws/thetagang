@@ -131,6 +131,8 @@ def mock_ib(mocker):
     mock.orderStatusEvent.__iadd__ = mocker.Mock(return_value=None)
     mock.errorEvent = mocker.Mock()
     mock.errorEvent.__iadd__ = mocker.Mock(return_value=None)
+    mock.execDetailsEvent = mocker.Mock()
+    mock.execDetailsEvent.__iadd__ = mocker.Mock(return_value=None)
     return mock
 
 

@@ -788,6 +788,49 @@ class PortfolioManager:
                 raise RuntimeError("Post-harvest rebalance preparation was incomplete")
         return account_summary, portfolio_positions
 
+    @staticmethod
+    def _incomplete_order_details(trade: Any) -> dict[str, Any]:
+        contract = getattr(trade, "contract", None)
+        order = getattr(trade, "order", None)
+        status = getattr(trade, "orderStatus", None)
+        return {
+            "symbol": getattr(contract, "symbol", None),
+            "order_id": getattr(order, "orderId", None),
+            "action": getattr(order, "action", None),
+            "quantity": getattr(order, "totalQuantity", None),
+            "status": getattr(status, "status", None),
+            "filled": getattr(status, "filled", None),
+            "remaining": getattr(status, "remaining", None),
+            "why_held": getattr(status, "whyHeld", None) or None,
+        }
+
+    def _raise_for_incomplete_orders(self) -> None:
+        incomplete = [
+            self._incomplete_order_details(trade)
+            for trade in self.trades.records()
+            if trade and not self._trade_fully_filled(trade)
+        ]
+        if not incomplete:
+            return
+        summary = "; ".join(
+            (
+                f"{item['symbol']} {item['action']} quantity={item['quantity']} "
+                f"order_id={item['order_id']} status={item['status']} "
+                f"filled={item['filled']} remaining={item['remaining']} "
+                f"whyHeld={item['why_held'] or 'none'}"
+            )
+            for item in incomplete
+        )
+        log.error(f"ALERT: Run completed with rejected or unfilled orders: {summary}")
+        if self.data_store:
+            self.data_store.record_event(
+                "run_incomplete_orders",
+                {"orders": incomplete},
+            )
+        raise RuntimeError(
+            f"Run completed with {len(incomplete)} rejected or unfilled order(s)"
+        )
+
     async def manage(self) -> None:
         had_error = False
         try:
@@ -903,65 +946,44 @@ class PortfolioManager:
 
                 self.orders.print_summary()
             else:
-                self.submit_orders()
+                with self.ibkr.supervise_order_errors(self.trades.records):
+                    self.submit_orders()
 
-                try:
-                    await self.ibkr.wait_for_submitting_orders(self.trades.records())
-                except RuntimeError as exc:
-                    # DAY orders can remain working at the broker after submission.
-                    # Keep running and let later status checks/logs report open orders.
-                    log.warning(f"Order submission wait timed out: {exc}")
+                    try:
+                        await self.ibkr.wait_for_submitting_orders(
+                            self.trades.records()
+                        )
+                    except RuntimeError as exc:
+                        # DAY orders can remain working at the broker after
+                        # submission. Continue through execution supervision,
+                        # then fail the run if they remain incomplete.
+                        log.warning(f"Order submission wait timed out: {exc}")
 
-                await self.adjust_prices()
+                    await self.adjust_prices()
 
-                try:
-                    await self.ibkr.wait_for_submitting_orders(self.trades.records())
-                except RuntimeError as exc:
-                    log.warning(f"Post-adjust order submission wait timed out: {exc}")
-                working_statuses = {"PendingSubmit", "PreSubmitted", "Submitted"}
-                incomplete_trades = [
-                    trade
-                    for trade in self.trades.records()
-                    if trade and not trade.isDone()
-                ]
-                still_working = [
-                    trade
-                    for trade in incomplete_trades
-                    if getattr(trade.orderStatus, "status", "") in working_statuses
-                ]
-                unexpected_state = [
-                    trade for trade in incomplete_trades if trade not in still_working
-                ]
-                open_orders = ", ".join(
-                    f"{trade.contract.symbol} (OrderId: {trade.order.orderId}, status={getattr(trade.orderStatus, 'status', 'UNKNOWN')})"
-                    for trade in still_working
-                )
-                if open_orders:
-                    log.info(
-                        "Run completed with working submitted orders still open at broker: "
-                        f"{open_orders}"
-                    )
-                if unexpected_state:
-                    unexpected_orders = ", ".join(
-                        f"{trade.contract.symbol} (OrderId: {trade.order.orderId}, status={getattr(trade.orderStatus, 'status', 'UNKNOWN')})"
-                        for trade in unexpected_state
-                    )
-                    log.warning(
-                        "Run completed with non-working incomplete orders at broker: "
-                        f"{unexpected_orders}"
-                    )
+                    try:
+                        await self.ibkr.wait_for_submitting_orders(
+                            self.trades.records()
+                        )
+                    except RuntimeError as exc:
+                        log.warning(
+                            f"Post-adjust order submission wait timed out: {exc}"
+                        )
+                    self._raise_for_incomplete_orders()
 
             log.info("ThetaGang is done, shutting down! Cya next time. :sparkles:")
-        except:
+        except Exception as exc:
             had_error = True
             log.error("ThetaGang terminated with error...")
+            if not self.completion_future.done():
+                self.completion_future.set_exception(exc)
             raise
 
         finally:
-            # Shut it down
             if self.data_store:
                 self.data_store.record_event("run_end", {"success": not had_error})
-            self.completion_future.set_result(True)
+            if not had_error and not self.completion_future.done():
+                self.completion_future.set_result(True)
 
     async def get_maximum_new_contracts_for(
         self,

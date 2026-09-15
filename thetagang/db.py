@@ -152,6 +152,7 @@ class OrderStatus(Base):
     avg_fill_price: Mapped[float | None] = mapped_column(Float)
     last_fill_price: Mapped[float | None] = mapped_column(Float)
     perm_id: Mapped[int | None] = mapped_column(Integer)
+    why_held: Mapped[str | None] = mapped_column(String)
 
 
 class ExecutionRecord(Base):
@@ -677,6 +678,7 @@ class DataStore:
                         remaining=getattr(status, "remaining", None),
                         avg_fill_price=getattr(status, "avgFillPrice", None),
                         last_fill_price=getattr(status, "lastFillPrice", None),
+                        why_held=getattr(status, "whyHeld", None),
                         perm_id=getattr(order, "permId", None),
                     )
                 )

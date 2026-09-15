@@ -319,9 +319,10 @@ adjust_price_after_delay = true  # Adjusts to midpoint after delay
 
 #### Per-Symbol Execution Policies
 
-Per-symbol execution behavior is opt-in. Without an `execution` table, ThetaGang
-keeps its existing behavior and leaves unfinished DAY limit orders working at the
-broker when the run ends.
+Per-symbol repricing and fallback behavior is opt-in. Without an `execution`
+table, ThetaGang leaves unfinished DAY limit orders working at the broker, but
+the final order check emits an `ALERT` and exits non-zero whenever any submitted
+order is rejected or not fully filled.
 
 ```toml
 [portfolio.symbols.SPY.execution]
@@ -347,13 +348,17 @@ debit.
 
 When the broker rejects an order, IBKR either reports the terminal `Inactive`
 status or delivers a rejection error (code 201) that arrives as `Cancelled`;
-ThetaGang logs the reason and records it as an `order_error` event. The same
-`on_timeout` actions apply to those rejected orders, gated by `on_inactive`
-(which inherits `on_timeout` when unset): exactly one replacement may be
-submitted for the unfilled quantity, and if the replacement is itself
-rejected, nothing further is submitted. External cancellations (error code
-202), ThetaGang's own cancellations, and unrecognized error codes are never
-replaced — classification fails closed. Setting
+ThetaGang logs the reason and records it as an `order_error` event. An unmatched
+request ID is audited only when it can be scoped to the current live submission
+batch; routine connection and unrelated request errors remain filtered. When one
+order can be identified safely, the error is correlated back to that order.
+`order_statuses` and rejection events also retain IBKR's `whyHeld` value. The
+same `on_timeout` actions apply to rejected orders,
+gated by `on_inactive` (which inherits `on_timeout` when unset): exactly one
+replacement may be submitted for the unfilled quantity, and if the replacement
+is itself rejected, nothing further is submitted. External cancellations
+(error code 202), ThetaGang's own cancellations, and unrecognized error codes
+are never replaced — classification fails closed. Setting
 `on_inactive = "leave_open"` keeps rejected orders unreplaced.
 
 #### Algorithm Configuration
@@ -504,8 +509,10 @@ Example: `THETAGANG_CONFIG=./thetagang.toml`.
 ## State Database
 
 ThetaGang can persist a SQLite database with order activity, executions,
-historical bars, account snapshots, and decision gates. By default, the database
-is created relative to your config file, and it is reused across runs to build a
+historical bars, account snapshots, and decision gates. Live fills are recorded
+from IBKR's execution-detail event as they arrive; explicit execution-history
+requests also backfill the same table idempotently. By default, the database is
+created relative to your config file, and it is reused across runs to build a
 long-lived history.
 
 ```toml
