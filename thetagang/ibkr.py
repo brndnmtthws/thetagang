@@ -1,6 +1,7 @@
 import asyncio
 import math
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
+from contextlib import contextmanager
 from enum import Enum
 from typing import Any, cast
 
@@ -31,6 +32,25 @@ from thetagang.db import DataStore
 console = Console()
 
 MAX_CONCURRENT_MARKET_DATA_STREAMS = 50
+ROUTINE_UNSCOPED_ERROR_CODES = frozenset(
+    {
+        1100,
+        1101,
+        1102,
+        1300,
+        2100,
+        2101,
+        2102,
+        2103,
+        2104,
+        2105,
+        2106,
+        2107,
+        2108,
+        2110,
+        2158,
+    }
+)
 
 
 class TickerField(Enum):
@@ -58,13 +78,15 @@ class IBKR:
         dry_run: bool = False,
     ) -> None:
         self.ib = ib
+        self.data_store = data_store
         self.ib.orderStatusEvent += self.orderStatusEvent
         self.ib.errorEvent += self._on_error
+        self.ib.execDetailsEvent += self._on_exec_details
         self.api_response_wait_time = api_response_wait_time
         self.default_order_exchange = default_order_exchange
-        self.data_store = data_store
         self.dry_run = dry_run
         self.__order_errors: dict[int, tuple[int, str]] = {}
+        self.__supervised_trades: Callable[[], list[Trade]] | None = None
         self.__market_data_semaphore = asyncio.Semaphore(
             MAX_CONCURRENT_MARKET_DATA_STREAMS
         )
@@ -374,6 +396,24 @@ class IBKR:
             self.api_response_wait_time,
         )
 
+    @contextmanager
+    def supervise_order_errors(
+        self,
+        trades: Callable[[], list[Trade]],
+    ) -> Iterator[None]:
+        """Capture unmatched order errors only for this live submission batch."""
+        previous = self.__supervised_trades
+        self.__supervised_trades = trades
+        try:
+            yield
+        finally:
+            self.__supervised_trades = previous
+
+    def _on_exec_details(self, _trade: Trade, fill: Fill) -> None:
+        """Persist each execution as IBKR reports it."""
+        if self.data_store:
+            self.data_store.record_executions([fill])
+
     def orderStatusEvent(self, trade: Trade) -> None:
         if "Filled" in trade.orderStatus.status:
             log.info(f"{trade.contract.symbol}: Order filled")
@@ -390,32 +430,116 @@ class IBKR:
         if self.data_store:
             self.data_store.record_order_status(trade)
 
-    def _on_error(self, reqId: int, code: int, msg: str, contract: Contract) -> None:
-        """Capture broker errors tied to this session's orders.
+    def _supervised_error_candidates(self) -> list[Trade]:
+        if self.__supervised_trades is None:
+            return []
+        try:
+            trades = self.__supervised_trades()
+        except Exception as exc:  # noqa: BLE001
+            log.warning(f"Unable to inspect supervised orders: {exc}")
+            return []
+        return [
+            trade
+            for trade in trades
+            if trade
+            and str(
+                getattr(getattr(trade, "orderStatus", None), "status", "")
+            ).casefold()
+            != "filled"
+        ]
 
-        TWS delivers the reason an order was rejected or destroyed by its
-        risk management (e.g. an order going ``Inactive``) as an error message
-        whose reqId is the order's id. ib_async only logs these to its own
-        (silenced) logger, so capture them here for logging and audit.
-        """
+    @staticmethod
+    def _candidate_for_unscoped_error(
+        candidates: list[Trade],
+        contract: Contract | None,
+    ) -> Trade | None:
+        terminal = [
+            trade
+            for trade in candidates
+            if str(
+                getattr(getattr(trade, "orderStatus", None), "status", "")
+            ).casefold()
+            in {"inactive", "cancelled", "canceled", "apicancelled", "apicanceled"}
+        ]
+        if len(terminal) == 1:
+            return terminal[0]
+        symbol = getattr(contract, "symbol", None)
+        if symbol:
+            matching_symbol = [
+                trade
+                for trade in candidates
+                if getattr(getattr(trade, "contract", None), "symbol", None) == symbol
+            ]
+            if len(matching_symbol) == 1:
+                return matching_symbol[0]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _on_error(
+        self,
+        reqId: int,
+        code: int,
+        msg: str,
+        contract: Contract | None,
+    ) -> None:
+        """Capture broker errors that can be attributed to supervised orders."""
         trade = self._trade_for_error_req_id(reqId)
+        matched = trade is not None
+        candidates: list[Trade] = []
         if trade is None:
-            return
-        symbol = trade.contract.symbol
-        log.warning(f"{symbol}: Broker error {code}: {msg}")
-        self.__order_errors[int(reqId)] = (int(code), str(msg))
-        if self.data_store:
-            self.data_store.record_event(
-                "order_error",
-                {
-                    "symbol": symbol,
-                    "order_id": int(reqId),
-                    "action": getattr(trade.order, "action", None),
-                    "code": int(code),
-                    "message": str(msg),
-                },
-                symbol=symbol,
+            candidates = self._supervised_error_candidates()
+            if reqId > 0:
+                trade = next(
+                    (
+                        candidate
+                        for candidate in candidates
+                        if getattr(getattr(candidate, "order", None), "orderId", None)
+                        == reqId
+                    ),
+                    None,
+                )
+                if trade is None:
+                    return
+            elif candidates and code not in ROUTINE_UNSCOPED_ERROR_CODES:
+                trade = self._candidate_for_unscoped_error(candidates, contract)
+            else:
+                return
+            if trade is None and not candidates:
+                return
+
+        symbol = getattr(getattr(trade, "contract", None), "symbol", None)
+        order = getattr(trade, "order", None)
+        order_id = getattr(order, "orderId", None)
+        action = getattr(order, "action", None)
+        if trade is not None and order_id is not None:
+            self.__order_errors[int(order_id)] = (int(code), str(msg))
+
+        if matched:
+            log.warning(f"{symbol}: Broker error {code}: {msg}")
+        else:
+            prefix = f"{symbol}: " if symbol else ""
+            log.warning(
+                f"{prefix}Unmatched broker error reqId={reqId}, code={code}: {msg}"
             )
+        if self.data_store:
+            payload: dict[str, Any] = {
+                "symbol": symbol,
+                "order_id": order_id,
+                "action": action,
+                "code": int(code),
+                "message": str(msg),
+            }
+            if not matched:
+                payload.update(
+                    {
+                        "request_id": reqId,
+                        "matched": False,
+                        "candidate_order_ids": [
+                            getattr(getattr(candidate, "order", None), "orderId", None)
+                            for candidate in candidates
+                        ],
+                    }
+                )
+            self.data_store.record_event("order_error", payload, symbol=symbol)
 
     def _trade_for_error_req_id(self, reqId: int) -> Trade | None:
         """Find this session's trade for an order-bound error reqId.

@@ -18,6 +18,7 @@ from thetagang.db import (
     HistoricalBar,
     OrderIntent,
     OrderRecord,
+    OrderStatus,
     TailHedgeEntry,
     run_migrations,
     sqlite_db_path,
@@ -175,6 +176,10 @@ def test_tail_hedge_migration_upgrades_and_downgrades(tmp_path) -> None:
     command.upgrade(alembic_cfg, "0002_add_order_intents")
     engine = create_engine(db_url, future=True)
     columns = {column["name"] for column in inspect(engine).get_columns("executions")}
+    status_columns = {
+        column["name"] for column in inspect(engine).get_columns("order_statuses")
+    }
+    assert "why_held" not in status_columns
     assert "account" not in columns
     assert "tail_hedge_entries" not in inspect(engine).get_table_names()
     engine.dispose()
@@ -183,6 +188,10 @@ def test_tail_hedge_migration_upgrades_and_downgrades(tmp_path) -> None:
     engine = create_engine(db_url, future=True)
     columns = {column["name"] for column in inspect(engine).get_columns("executions")}
     assert "account" in columns
+    status_columns = {
+        column["name"] for column in inspect(engine).get_columns("order_statuses")
+    }
+    assert "why_held" in status_columns
     assert "commission" not in columns
     tail_columns = {
         column["name"] for column in inspect(engine).get_columns("tail_hedge_entries")
@@ -198,6 +207,10 @@ def test_tail_hedge_migration_upgrades_and_downgrades(tmp_path) -> None:
     engine = create_engine(db_url, future=True)
     columns = {column["name"] for column in inspect(engine).get_columns("executions")}
     assert "account" not in columns
+    status_columns = {
+        column["name"] for column in inspect(engine).get_columns("order_statuses")
+    }
+    assert "why_held" not in status_columns
     assert "tail_hedge_entries" not in inspect(engine).get_table_names()
     engine.dispose()
 
@@ -404,6 +417,33 @@ def test_get_historical_bars_filters_by_symbol_timeframe_and_time(tmp_path) -> N
     assert len(bars) == 1
     assert bars[0].date == _naive_utc(2024, 1, 5)
     assert bars[0].close == 2.0
+
+
+def test_record_order_status_persists_why_held(tmp_path) -> None:
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'state.db'}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=False,
+        config_text="test",
+    )
+    data_store.record_order_status(
+        SimpleNamespace(
+            order=SimpleNamespace(orderId=42, permId=84),
+            orderStatus=SimpleNamespace(
+                status="Inactive",
+                filled=0.0,
+                remaining=1.0,
+                avgFillPrice=0.0,
+                lastFillPrice=0.0,
+                whyHeld="insufficient buying power",
+            ),
+        )
+    )
+
+    with data_store.session_scope() as session:
+        status = session.execute(select(OrderStatus)).scalar_one()
+        assert status.status == "Inactive"
+        assert status.why_held == "insufficient buying power"
 
 
 def test_record_executions_parses_string_times(tmp_path) -> None:
