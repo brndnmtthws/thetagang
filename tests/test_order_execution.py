@@ -714,6 +714,7 @@ async def test_rejected_replacement_stops_without_retry(mocker, capsys) -> None:
             status="Inactive",
             filled=0.0,
             remaining=13.0,
+            whyHeld="broker risk check",
         )
         replacement_trade = mocker.Mock(
             contract=submitted_contract,
@@ -747,6 +748,7 @@ async def test_rejected_replacement_stops_without_retry(mocker, capsys) -> None:
         "status": "Inactive",
         "error_code": None,
         "error_message": None,
+        "why_held": "broker risk check",
     }
 
 
@@ -855,7 +857,12 @@ async def test_inactive_reports_broker_reason_and_records_event(mocker) -> None:
     trade = mocker.Mock(
         contract=contract,
         order=order,
-        orderStatus=SimpleNamespace(status="Inactive", filled=0.0, remaining=1.0),
+        orderStatus=SimpleNamespace(
+            status="Inactive",
+            filled=0.0,
+            remaining=1.0,
+            whyHeld="insufficient buying power",
+        ),
     )
     trade.isDone.return_value = True
     trades = mocker.Mock(spec=Trades)
@@ -886,6 +893,7 @@ async def test_inactive_reports_broker_reason_and_records_event(mocker) -> None:
             "remaining": 1.0,
             "error_code": 431,
             "error_message": "The order wouldn't conform to the margin requirements",
+            "why_held": "insufficient buying power",
         },
     )
 

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -36,6 +37,8 @@ def mock_ib(mocker):
     mock.orderStatusEvent.__iadd__ = mocker.Mock(return_value=None)
     mock.errorEvent = mocker.Mock()
     mock.errorEvent.__iadd__ = mocker.Mock(return_value=None)
+    mock.execDetailsEvent = mocker.Mock()
+    mock.execDetailsEvent.__iadd__ = mocker.Mock(return_value=None)
     mock.openTrades.return_value = []
     return mock
 
@@ -844,7 +847,24 @@ class TestPortfolioManager:
         pm.submit_orders = mocker.Mock()
         pm.adjust_prices = mocker.AsyncMock()
         pm.trades = mocker.Mock()
-        pm.trades.records = mocker.Mock(return_value=[mocker.Mock()])
+        pm.trades.records = mocker.Mock(
+            return_value=[
+                SimpleNamespace(
+                    contract=SimpleNamespace(symbol="SPY"),
+                    order=SimpleNamespace(
+                        orderId=123,
+                        action="BUY",
+                        totalQuantity=1,
+                    ),
+                    orderStatus=SimpleNamespace(
+                        status="Filled",
+                        filled=1.0,
+                        remaining=0.0,
+                        whyHeld="",
+                    ),
+                )
+            ]
+        )
 
         mocker.patch(
             "thetagang.portfolio_manager.run_equity_rebalance_stages",
@@ -861,15 +881,17 @@ class TestPortfolioManager:
         pm.adjust_prices.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_manage_allows_incomplete_working_orders(
-        self, mock_ib, mock_config, mocker
+    async def test_manage_alerts_and_fails_for_incomplete_orders(
+        self, mock_ib, mock_config, mocker, capsys
     ):
-        completion_future = mocker.Mock()
+        completion_future = asyncio.get_running_loop().create_future()
+        data_store = mocker.Mock()
         pm = PortfolioManager(
             mock_config,
             mock_ib,
             completion_future,
             dry_run=False,
+            data_store=data_store,
             run_stage_order=["equity_buy_rebalance"],
         )
 
@@ -882,9 +904,13 @@ class TestPortfolioManager:
 
         trade = mocker.Mock()
         trade.contract = mocker.Mock(symbol="SPY")
-        trade.order = mocker.Mock(orderId=123)
-        trade.orderStatus = mocker.Mock(status="Submitted", filled=0.0, remaining=1.0)
-        trade.isDone.return_value = False
+        trade.order = mocker.Mock(orderId=123, action="BUY", totalQuantity=2)
+        trade.orderStatus = mocker.Mock(
+            status="Inactive",
+            filled=0.0,
+            remaining=2.0,
+            whyHeld="insufficient buying power",
+        )
 
         pm.trades = mocker.Mock()
         pm.trades.records = mocker.Mock(return_value=[trade])
@@ -895,7 +921,41 @@ class TestPortfolioManager:
         )
         pm.ibkr.wait_for_submitting_orders = mocker.AsyncMock(return_value=None)
 
-        await pm.manage()
+        with pytest.raises(
+            RuntimeError,
+            match="1 rejected or unfilled order",
+        ) as raised:
+            await pm.manage()
+
+        assert completion_future.exception() is raised.value
+        output = " ".join(capsys.readouterr().out.split())
+        assert (
+            "ALERT: Run completed with rejected or unfilled orders: "
+            "SPY BUY quantity=2 order_id=123 status=Inactive filled=0.0 "
+            "remaining=2.0 whyHeld=insufficient buying power"
+        ) in output
+        incomplete_events = [
+            call
+            for call in data_store.record_event.call_args_list
+            if call.args[0] == "run_incomplete_orders"
+        ]
+        assert len(incomplete_events) == 1
+        assert incomplete_events[0].args[1]["orders"] == [
+            {
+                "symbol": "SPY",
+                "order_id": 123,
+                "action": "BUY",
+                "quantity": 2,
+                "status": "Inactive",
+                "filled": 0.0,
+                "remaining": 2.0,
+                "why_held": "insufficient buying power",
+            }
+        ]
+        assert data_store.record_event.call_args_list[-1].args == (
+            "run_end",
+            {"success": False},
+        )
 
     @pytest.mark.asyncio
     async def test_tail_harvest_phase_reprices_then_fills(

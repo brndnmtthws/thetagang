@@ -15,8 +15,10 @@ from ib_async import (
     Trade,
 )
 from ib_async.wrapper import RequestError
+from sqlalchemy import select
 
 from thetagang import log
+from thetagang.db import DataStore, ExecutionRecord
 from thetagang.ibkr import (
     IBKR,
     MAX_CONCURRENT_MARKET_DATA_STREAMS,
@@ -40,9 +42,12 @@ def mock_ib(mocker):
     )  # Allow += operation
     mock.errorEvent = mocker.Mock()
     mock.errorEvent.__iadd__ = mocker.Mock(return_value=None)  # Allow += operation
+    mock.execDetailsEvent = mocker.Mock()
+    mock.execDetailsEvent.__iadd__ = mocker.Mock(return_value=None)
     mock.client = mocker.Mock()
     mock.wrapper = mocker.Mock()
     mock.wrapper.accountValues = {}
+    mock.wrapper.trades = {}
     mock.wrapper.ticker2ReqId = {"mktData": {}}
     mock.ticker.return_value = None
     mock.cancelMktData.return_value = True
@@ -320,6 +325,45 @@ async def test_request_executions_records_returned_fills(mock_ib, mocker):
 
     assert await ibkr.request_executions() == fills
     data_store.record_executions.assert_called_once_with(fills)
+
+
+async def test_exec_details_event_persists_each_fill(tmp_path):
+    ib = IB()
+    data_store = DataStore(
+        f"sqlite:///{tmp_path / 'state.db'}",
+        str(tmp_path / "thetagang.toml"),
+        dry_run=False,
+        config_text="test",
+    )
+    _ibkr = IBKR(
+        ib=ib,
+        api_response_wait_time=1,
+        default_order_exchange="SMART",
+        data_store=data_store,
+    )
+    fill = SimpleNamespace(
+        execution=SimpleNamespace(
+            execId="exec-1",
+            acctNumber="TEST123",
+            orderId=42,
+            orderRef="tg:test",
+            side="BOT",
+            shares=3,
+            price=25.5,
+            time="20260915 12:00:00",
+            exchange="NYSE",
+        ),
+        contract=SimpleNamespace(symbol="KMLM"),
+        time=None,
+    )
+
+    ib.execDetailsEvent.emit(None, fill)
+
+    with data_store.session_scope() as session:
+        execution = session.execute(select(ExecutionRecord)).scalar_one()
+        assert execution.exec_id == "exec-1"
+        assert execution.symbol == "KMLM"
+        assert execution.shares == 3
 
 
 async def test_market_data_streaming_handler_requires_conid(ibkr, mock_ib, mocker):
@@ -673,7 +717,9 @@ async def test_on_error_ignores_other_client_order_with_colliding_req_id(
         (1, 999): other_client_trade,
     }
 
-    ibkr._on_error(999, 165, "Historical market data service query message", None)
+    mock_trade.orderStatus.status = "Submitted"
+    with ibkr.supervise_order_errors(lambda: [mock_trade]):
+        ibkr._on_error(999, 165, "Historical market data service query message", None)
 
     data_store.record_event.assert_not_called()
     assert ibkr.order_error(999) is None
@@ -685,10 +731,98 @@ async def test_on_error_ignores_non_order_errors(ibkr, mock_ib, mock_trade, mock
     mock_ib.wrapper.clientId = 0
     mock_ib.wrapper.trades = {(0, 123): mock_trade}
 
-    ibkr._on_error(-1, 2105, "Disconnecting...", None)
+    mock_trade.orderStatus.status = "Submitted"
+    with ibkr.supervise_order_errors(lambda: [mock_trade]):
+        ibkr._on_error(-1, 2105, "Disconnecting...", None)
 
     data_store.record_event.assert_not_called()
     assert ibkr.order_error(None) is None
+
+
+@pytest.mark.parametrize(
+    ("request_id", "order_id", "code"),
+    [(-1, 123, 431), (999, 999, 201)],
+)
+async def test_on_error_correlates_unmatched_errors_during_order_supervision(
+    ibkr,
+    mock_trade,
+    mocker,
+    capsys,
+    request_id,
+    order_id,
+    code,
+):
+    data_store = mocker.Mock()
+    ibkr.data_store = data_store
+    mock_trade.contract.symbol = "TEST"
+    mock_trade.order.orderId = order_id
+    mock_trade.order.action = "BUY"
+    mock_trade.orderStatus.status = "Inactive"
+
+    with ibkr.supervise_order_errors(lambda: [mock_trade]):
+        ibkr._on_error(
+            request_id,
+            code,
+            "Order rejected - reason: buying power",
+            None,
+        )
+
+    data_store.record_event.assert_called_once_with(
+        "order_error",
+        {
+            "symbol": "TEST",
+            "order_id": order_id,
+            "action": "BUY",
+            "code": code,
+            "message": "Order rejected - reason: buying power",
+            "request_id": request_id,
+            "matched": False,
+            "candidate_order_ids": [order_id],
+        },
+        symbol="TEST",
+    )
+    assert f"Unmatched broker error reqId={request_id}, code={code}" in (
+        capsys.readouterr().out
+    )
+    assert ibkr.order_error(order_id) == (
+        code,
+        "Order rejected - reason: buying power",
+    )
+
+
+async def test_on_error_ignores_unscoped_order_error_without_supervised_orders(
+    ibkr,
+    mocker,
+):
+    data_store = mocker.Mock()
+    ibkr.data_store = data_store
+
+    with ibkr.supervise_order_errors(list):
+        ibkr._on_error(-1, 201, "Order rejected - reason: buying power", None)
+
+    data_store.record_event.assert_not_called()
+
+
+async def test_on_error_does_not_guess_between_supervised_orders(ibkr, mocker):
+    data_store = mocker.Mock()
+    ibkr.data_store = data_store
+    trades = [
+        SimpleNamespace(
+            contract=SimpleNamespace(symbol=symbol),
+            order=SimpleNamespace(orderId=order_id, action="BUY"),
+            orderStatus=SimpleNamespace(status="Inactive"),
+        )
+        for order_id, symbol in [(123, "AAA"), (124, "BBB")]
+    ]
+
+    with ibkr.supervise_order_errors(lambda: trades):
+        ibkr._on_error(-1, 201, "Order rejected - reason: buying power", None)
+
+    payload = data_store.record_event.call_args.args[1]
+    assert payload["order_id"] is None
+    assert payload["candidate_order_ids"] == [123, 124]
+    assert ibkr.order_error(123) is None
+    assert ibkr.order_error(124) is None
 
 
 async def test_on_error_records_latest_error_without_data_store(
