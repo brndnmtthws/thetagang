@@ -492,6 +492,74 @@ async def test_market_timeout_replaces_only_confirmed_remainder(mocker) -> None:
 
 
 @pytest.mark.asyncio
+async def test_unfilled_replacement_stays_working_after_final_wait(mocker) -> None:
+    config = _config(
+        execution={
+            "fill_timeout": 300,
+            "on_timeout": "marketable_limit",
+            "final_wait": 1,
+        }
+    )
+    policy = config.portfolio.symbols["AAA"].execution
+    assert policy is not None
+    contract = _option()
+    original_order = LimitOrder("BUY", 6, 0.5, account="DUX", orderRef="tg:test")
+    statuses = {
+        id(original_order): SimpleNamespace(
+            status="Submitted", filled=0.0, remaining=6.0
+        )
+    }
+
+    def trade_for(submitted_contract, submitted_order):
+        status = statuses[id(submitted_order)]
+        trade = mocker.Mock(
+            contract=submitted_contract,
+            order=submitted_order,
+            orderStatus=status,
+        )
+        trade.isDone.side_effect = lambda: status.status in {"Cancelled", "Filled"}
+        return trade
+
+    records = [trade_for(contract, original_order)]
+    ibkr = mocker.Mock()
+
+    def cancel_order(order):
+        statuses[id(order)].status = "Cancelled"
+
+    async def wait_for_orders_complete(waiting, _timeout):
+        return [trade for trade in waiting if not trade.isDone()]
+
+    ibkr.cancel_order.side_effect = cancel_order
+    ibkr.wait_for_orders_complete = mocker.AsyncMock(
+        side_effect=wait_for_orders_complete
+    )
+    ibkr.order_error.return_value = None
+    ibkr.get_ticker_for_contract = mocker.AsyncMock(
+        return_value=_ticker(contract, ask=0.55)
+    )
+    trades = mocker.Mock(spec=Trades)
+    trades.records.side_effect = lambda: records
+
+    def submit_order(submitted_contract, submitted_order, idx):
+        statuses[id(submitted_order)] = SimpleNamespace(
+            status="Submitted", filled=0.0, remaining=6.0
+        )
+        records[idx] = trade_for(submitted_contract, submitted_order)
+        return True
+
+    trades.submit_order.side_effect = submit_order
+    manager = OrderExecutionManager(config, ibkr)
+
+    await manager._handle_timeout(trades, 0, policy)
+
+    ibkr.cancel_order.assert_called_once_with(original_order)
+    replacement = records[0]
+    assert replacement.order is not original_order
+    assert replacement.order.lmtPrice == pytest.approx(0.55)
+    assert replacement.orderStatus.status == "Submitted"
+
+
+@pytest.mark.asyncio
 async def test_market_timeout_cancels_combo_without_replacement(mocker) -> None:
     config = _config(
         execution={"fill_timeout": 300, "on_timeout": "market", "final_wait": 1}

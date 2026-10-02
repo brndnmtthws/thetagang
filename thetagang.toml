@@ -551,8 +551,8 @@ daily_stddev_window = "30 D"
   # `fill_timeout` enables bounded supervision. At the timeout, `on_timeout` may
   # be "leave_open", "cancel", "marketable_limit", or "market". Marketable-limit
   # replacements use the current ask for buys and bid for sells. A raw market
-  # fallback is opt-in and is not supported for combo orders. Any replacement that
-  # remains incomplete after `final_wait` seconds is canceled.
+  # fallback is opt-in and is not supported for combo orders. A replacement that
+  # remains incomplete after `final_wait` seconds is left working at the broker.
   #
   # `on_inactive` applies the same set of actions when the broker rejects an
   # order, either into the terminal `Inactive` state or as a rejection error
