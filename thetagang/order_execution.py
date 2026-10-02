@@ -660,8 +660,8 @@ class OrderExecutionManager:
         are terminal at the broker: the order can never execute and ib_async
         drops it from openTrades, so there is nothing left to cancel and no
         point sending cancelOrder (it would only generate a spurious broker
-        error). Submit at most one replacement for the unfilled remainder,
-        then cancel whatever the replacement leaves behind.
+        error). Submit at most one replacement for the unfilled remainder and
+        leave whatever the replacement does not fill working at the broker.
         """
         trade = trades.records()[idx]
         symbol = trade.contract.symbol
@@ -898,7 +898,7 @@ class OrderExecutionManager:
         fallback: Literal["market", "marketable_limit"],
         label: str,
     ) -> None:
-        """Submit one replacement order, then cancel what it leaves unfilled."""
+        """Submit one replacement order and leave any unfilled part working."""
         trade = trades.records()[idx]
         original_order = trade.order
         if fallback == "market":
@@ -925,16 +925,11 @@ class OrderExecutionManager:
             return
 
         replacement_trade = trades.records()[idx]
-        incomplete = await self.ibkr.wait_for_orders_complete(
-            [replacement_trade],
-            policy.final_wait,
-        )
+        await self.ibkr.wait_for_orders_complete([replacement_trade], policy.final_wait)
         replacement_trade = trades.records()[idx]
-        if not incomplete and self.trade_fully_filled(replacement_trade):
-            log.notice(
-                f"{replacement_trade.contract.symbol}: {label} replacement order "
-                "filled completely."
-            )
+        symbol = replacement_trade.contract.symbol
+        if self.trade_fully_filled(replacement_trade):
+            log.notice(f"{symbol}: {label} replacement order filled completely.")
             return
         if self._is_broker_rejected(replacement_trade):
             # No further replacement will be submitted, so don't wait for a
@@ -967,17 +962,16 @@ class OrderExecutionManager:
                 why_held=replacement_why_held,
             )
             return
-        remaining_after_replacement = await self._cancel_and_get_remaining(
-            replacement_trade
+        order_status = replacement_trade.orderStatus
+        status = getattr(order_status, "status", "Unknown")
+        if replacement_trade.isDone():
+            log.error(
+                f"{symbol}: {label} replacement ended with status={status} without "
+                "a complete fill; no further replacement will be submitted."
+            )
+            return
+        log.warning(
+            f"{symbol}: {label} replacement did not fill within "
+            f"final_wait={policy.final_wait}s; leaving it working at the broker "
+            f"(status={status}, remaining={getattr(order_status, 'remaining', None)})."
         )
-        if remaining_after_replacement is None:
-            log.error(
-                f"{replacement_trade.contract.symbol}: {label} replacement did "
-                "not fill completely and cancellation could not be confirmed."
-            )
-        else:
-            log.error(
-                f"{replacement_trade.contract.symbol}: {label} replacement did "
-                "not fill completely; canceled remaining "
-                f"quantity={remaining_after_replacement:g}."
-            )
