@@ -57,7 +57,7 @@ ADD ./tws/Jts /root/Jts
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
 ADD docker/patch-ibc-java-logging.sh /src/patch-ibc-java-logging.sh
-ADD ./data/jxbrowser-linux64-arm-7.29.jar /root/Jts/1045/jars/
+ADD ./data/jxbrowser-linux64-arm-7.29.jar /root/Jts/1050/jars/
 ADD ./thetagang/ibgateway-log4j2.xml /opt/thetagang/ibgateway-log4j2.xml
 
 RUN wget -qO- https://astral.sh/uv/install.sh | sh \

@@ -185,7 +185,7 @@ def test_watchdog_runs_inside_task(monkeypatch, tmp_path):
     assert captured["watchdog"].started is True
     assert captured["watchdog"].stopped is True
     assert captured["ibc"].terminated is True
-    assert captured["ibc"].twsVersion == 1045
+    assert captured["ibc"].twsVersion == 1050
     assert captured["watchdog_kwargs"]["account"] == "DU1234567"
     assert captured["watchdog_kwargs"]["raiseSyncErrors"] is True
 
