@@ -61,8 +61,8 @@ ADD ./data/jxbrowser-linux64-arm-7.29.jar /root/Jts/1050/jars/
 ADD ./thetagang/ibgateway-log4j2.xml /opt/thetagang/ibgateway-log4j2.xml
 
 RUN wget -qO- https://astral.sh/uv/install.sh | sh \
-  && uv python install 3.14 \
-  && uv venv /opt/venv --python 3.14 \
+  && uv python install 3.15 \
+  && uv venv /opt/venv --python 3.15 \
   && if test "$(dpkg --print-architecture)" = "armhf" ; then export PIP_EXTRA_INDEX_URL=https://www.piwheels.org/simple ; fi \
   && uv pip install --python /opt/venv/bin/python dist/thetagang-*.whl \
   && rm -rf /root/.cache \

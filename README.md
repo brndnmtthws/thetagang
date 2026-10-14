@@ -291,7 +291,7 @@ maximum_new_contracts_percent = 0.5  # Or limit by percentage
 
 - An Interactive Brokers account (paper or live)
 - [ib_async](https://github.com/ib-api-reloaded/ib_async) and [IBC](https://github.com/IbcAlpha/IBC) (bundled IBC config targets TWS/Gateway `1050`)
-- Python 3.11–3.14 and [`uv`](https://docs.astral.sh/uv/) (for local development)
+- Python 3.11–3.15 and [`uv`](https://docs.astral.sh/uv/) (for local development)
 - For option-writing strategies (`wheel`), sufficient capital/margin to cover 100-share standard option contracts on liquid underlyings. Equity-only strategies (`regime_rebalance` or share rebalancing) can size in single shares.
 
 ## Installation

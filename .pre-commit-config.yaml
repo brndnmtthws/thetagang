@@ -19,13 +19,13 @@ repos:
       - id: ruff-format
   - repo: https://github.com/astral-sh/uv-pre-commit
     # uv version.
-    rev: 0.9.8
+    rev: 0.13.1
     hooks:
       - id: uv-sync
         args: ["--locked", "--all-packages"]
   - repo: https://github.com/astral-sh/uv-pre-commit
     # uv version.
-    rev: 0.9.8
+    rev: 0.13.1
     hooks:
       # Update the uv lockfile
       - id: uv-lock
