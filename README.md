@@ -73,16 +73,13 @@ margin_usage = 0.8  # Optional override of runtime.account.margin_usage
 
 ### Direct Share Rebalancing
 
-When running `wheel`, symbols can be rebalanced directly with shares (`buy_only`, `sell_only`, or `both`) instead of—or alongside—options when premiums or liquidity are insufficient:
+When running `wheel`, symbols can be rebalanced directly with shares instead of—or alongside—options when premiums or liquidity are insufficient. Configure the v2 policy (the legacy `buy_only_rebalancing` symbol flags alone do not enable this; the v2 default mode is `off`):
 
 ```toml
-[portfolio.symbols.AAPL]
-buy_only_rebalancing = true
-buy_only_min_threshold_shares = 10  # Minimum shares to buy
-buy_only_min_threshold_amount = 1000  # Minimum dollar amount to buy
+[strategies.wheel.equity_rebalance.symbol_overrides.AAPL]
+mode = "buy_only"  # buy_only | sell_only | both
+min_threshold_shares = 10  # Minimum shares to buy
 ```
-
-In schema v2, unified stock rebalance policies can also be configured under `strategies.wheel.equity_rebalance` or `strategies.regime_rebalance.equity_rebalance`.
 
 ### Options Income & The Wheel (`wheel`)
 
@@ -178,16 +175,17 @@ maintain_high_water_mark = true
 ```
 
 #### Close If Unable to Roll
-Close profitable short positions when no qualifying roll contract is found:
+Close profitable short positions when no qualifying roll contract is found (requires `roll_when.max_dte` set, with the position DTE at or below it):
 
 ```toml
 [strategies.wheel.defaults.roll_when]
 close_if_unable_to_roll = true
+max_dte = 180  # Required: close only applies when DTE <= max_dte
 ```
 
 ### Order Management
 
-Resubmit unfilled limit orders at the current midpoint after a random delay within `runtime.orders.price_update_delay`:
+Limit-order repricing is opt-in per symbol. Either set `adjust_price_after_delay = true` (one legacy midpoint-averaging adjustment after a random delay within `runtime.orders.price_update_delay`) or configure a per-symbol `execution` policy with `fill_timeout` for supervised repricing at the configured bid/ask/mid quote. Otherwise unfinished DAY limit orders stay working at the broker.
 
 #### Per-Symbol Execution Policies
 
