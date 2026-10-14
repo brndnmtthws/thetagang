@@ -168,7 +168,7 @@ class TailHarvestDecisionInput(DecisionInput):
 
 
 class TailHarvestDecisionRequest(ExternalDecisionRequestEnvelope):
-    decision_type: Literal["tail_hedge_harvest"]
+    decision_type: Literal["tail_hedge_harvest"]  # ty: ignore[invalid-mutable-override] # pydantic discriminator: validated at construction, never mutated via base
     input: TailHarvestDecisionInput
 
 
@@ -180,8 +180,8 @@ class TailHarvestDecisionOutput(BaseModel):
 
 
 class TailHarvestDecisionResponse(ExternalDecisionResponseEnvelope):
-    decision_type: Literal["tail_hedge_harvest"]
-    as_of_session: date
+    decision_type: Literal["tail_hedge_harvest"]  # ty: ignore[invalid-mutable-override] # pydantic discriminator: validated at construction, never mutated via base
+    as_of_session: date  # ty: ignore[invalid-mutable-override] # required session for market decisions; base permits None for non-market decisions
     output: TailHarvestDecisionOutput
 
 

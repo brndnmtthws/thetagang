@@ -5,7 +5,7 @@ import logging
 import os
 import platform
 import shutil
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -348,7 +348,7 @@ class DataStore:
         self.run_id = self._create_run(self.config_path, dry_run, config_text)
 
     @contextmanager
-    def session_scope(self) -> Iterator[Any]:
+    def session_scope(self) -> Generator[Any, None, None]:
         session = self.Session()
         try:
             yield session

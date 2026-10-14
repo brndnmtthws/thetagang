@@ -1,6 +1,6 @@
 import asyncio
 import sys
-from collections.abc import Coroutine, Iterable, Iterator
+from collections.abc import Coroutine, Iterable, Iterator, Sequence
 from typing import Any
 
 from annotated_types import T
@@ -49,7 +49,9 @@ def print(content: Panel | Table) -> None:
     console.print(content)
 
 
-async def track_async(tasks: list[Coroutine[Any, Any, T]], description: str) -> list[T]:
+async def track_async(
+    tasks: Sequence[Coroutine[Any, Any, T]], description: str
+) -> list[T]:
     results = []
     total_tasks = len(tasks)
 

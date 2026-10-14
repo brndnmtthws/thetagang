@@ -1,6 +1,6 @@
 import asyncio
 import math
-from collections.abc import Awaitable, Callable, Coroutine, Iterator
+from collections.abc import Awaitable, Callable, Coroutine, Generator
 from contextlib import contextmanager
 from enum import Enum
 from typing import Any, cast
@@ -400,7 +400,7 @@ class IBKR:
     def supervise_order_errors(
         self,
         trades: Callable[[], list[Trade]],
-    ) -> Iterator[None]:
+    ) -> Generator[None, None, None]:
         """Capture unmatched order errors only for this live submission batch."""
         previous = self.__supervised_trades
         self.__supervised_trades = trades
