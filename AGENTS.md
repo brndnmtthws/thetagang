@@ -1,39 +1,40 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-- Core trading code lives in `thetagang/`; the CLI entry point is `thetagang/entry.py`, with the main orchestration in `portfolio_manager.py` and configuration models
-in `config.py`.
-- The Click CLI command is defined in `thetagang/main.py` and re-exported by
-  `thetagang/entry.py` for the `thetagang` console script.
-- Runtime startup wiring (config loading, IBKR/IBC setup, event loop, dry run
-  control flow) lives in `thetagang/thetagang.py`.
-- Broker integrations and execution helpers sit in `thetagang/ibkr.py`, `orders.py`, and related utilities under the same package.
-- Supporting scripts and assets reside in `tws/`, `lib/`, and the packaging files `pyproject.toml` and `uv.lock`; sample configs and data are under `data/` and
-`thetagang.toml`.
-- Tests mirror the module layout inside `tests/`; fixtures and async helpers are centralized in `tests/conftest.py`.
+ThetaGang is a low-frequency, systematic portfolio execution and risk-management tool for Interactive Brokers (IBKR). It executes stage-driven strategies (`wheel`, `regime_rebalance`, `tail_hedge`, `vix_call_hedge`, `cash_management`) with dry-run support and exchange-hours gating.
+
+## Project Structure
+- `thetagang/entry.py` & `thetagang/main.py`: Click CLI entry point for the `thetagang` console script.
+- `thetagang/thetagang.py`: Startup wiring, config loading, IBKR/IBC setup, event loop, and dry-run control flow.
+- `thetagang/portfolio_manager.py`: Stage orchestration and runtime execution across strategies.
+- `thetagang/strategies/`: Strategy runners and engines (`equity`, `options`, `regime_engine`, `tail_hedge_engine`, `post`).
+- `thetagang/config.py`, `config_models.py`, `legacy_config.py`, `config_migration/`: Pydantic v2 schema validation, stage resolution, and v1-to-v2 migration.
+- `thetagang/accounting.py`: Capital base calculations (`net_liquidation`, `wheel_buying_power`, `regime_rebalance`) and position taxonomy.
+- `thetagang/ibkr.py`, `order_execution.py`, `orders.py`, `trades.py`: Broker integration, order supervision, repricing, and execution tracking.
+- `thetagang/external_decisions.py`: Subprocess protocol for bounded external decision providers.
+- `thetagang/db.py`: SQLite persistence for orders, executions, historical bars, snapshots, and decision gates.
+- `thetagang.toml`: Sample configuration.
+- `tests/`: Pytest suite mirroring `thetagang/`, with shared fixtures in `tests/conftest.py`.
 
 ## Build, Test, and Development Commands
-- `uv run thetagang --config thetagang.toml --dry-run` — execute the bot without submitting live trades.
-- `uv run pytest` — run the full test suite; append a path (e.g., `tests/test_portfolio_manager.py`) to scope runs.
-- `uv run pytest --cov=thetagang` — gather coverage for trading logic changes.
-- `uv run ruff check .` / `uv run ruff format .` — lint and auto-format the codebase.
-- `uv run ty check` — perform static type checking.
-- `uv run pre-commit run --all-files` — replicate the CI hook set before pushing.
+- `uv run thetagang --config thetagang.toml --dry-run` — run without submitting live orders.
+- `uv run pytest` — run the test suite (append a path like `tests/test_portfolio_manager.py` to scope).
+- `uv run pytest --cov=thetagang` — run tests with coverage.
+- `uv run ruff check .` / `uv run ruff format .` — lint and format.
+- `uv run ty check` — static type checking.
+- `uv run pre-commit run --all-files` — run all pre-commit hooks.
 
-## Coding Style & Naming Conventions
-- Python ≥3.11 with 4-space indentation and Ruff-enforced 88 character lines; keep imports sorted via Ruff.
-- Use snake_case for functions and variables, CapWords for classes, and descriptive config keys; follow existing naming inside `portfolio_manager.py`.
-- Annotate new or modified functions with precise type hints and keep module-level constants uppercase.
-- Add configuration-driven behavior through Pydantic models in `config.py`, ensuring defaults and validation match `thetagang.toml`.
+## Coding Style & Conventions
+- Python ≥3.11, 4-space indentation, 88-character line limit (enforced by Ruff).
+- `snake_case` for functions/variables, `CapWords` for classes, `UPPERCASE` for module constants.
+- Type-annotate all new or modified functions.
+- Define configuration changes via Pydantic models in `config_models.py` and `config.py`, keeping defaults and validation aligned with `thetagang.toml`.
 
 ## Testing Guidelines
-- Tests rely on `pytest` and `pytest-asyncio`; name files `test_<module>.py` and prefer async tests for IBKR flows.
-- Stub external calls with fixtures from `tests/` to prevent network usage; extend them when adding API paths.
-- Cover edge cases for buy/sell-only rebalancing and order routing when adjusting portfolio logic.
-- Run `uv run pytest --cov=thetagang` before submitting changes and ensure new features include targeted assertions.
+- Use `pytest` and `pytest-asyncio`; name files `test_<module>.py`.
+- Stub all broker and network calls using fixtures in `tests/`.
+- Cover safety invariants: `dry_run` gating, exchange-hours checks, stage ordering, rebalancing bands, and option sizing/rolling bounds.
 
 ## Commit & Pull Request Guidelines
-- Follow the conventional commit style seen in history (`fix:`, `feat:`, `chore:`) with optional scopes (`fix(portfolio): enforce buy-only thresholds`).
-- Keep subject lines in present tense ≤72 characters and use bodies to explain intent, risk, and testing evidence.
-- Rebase or squash noisy work-in-progress commits prior to open PRs.
-- PR descriptions should note behavioral impacts, list validation commands, link issues, and include relevant logs or screenshots for trading output adjustments.
+- Use Conventional Commits (`fix:`, `feat:`, `chore:`) with optional scopes (`fix(portfolio): enforce buy-only thresholds`), present tense, ≤72 characters.
+- Squash or rebase noisy WIP commits before opening a PR.
+- Document behavioral impact, risk-control implications, and validation commands run in the PR description.

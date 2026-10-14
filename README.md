@@ -1,221 +1,55 @@
 [![Docker publish](https://github.com/brndnmtthws/thetagang/workflows/Docker%20publish/badge.svg)](https://hub.docker.com/r/brndnmtthws/thetagang) [![Python Publish](https://github.com/brndnmtthws/thetagang/workflows/Python%20Publish/badge.svg)](https://pypi.org/project/thetagang/) [![Docker Pulls](https://img.shields.io/docker/pulls/brndnmtthws/thetagang)](https://hub.docker.com/r/brndnmtthws/thetagang) [![PyPI download month](https://img.shields.io/pypi/dm/thetagang?label=PyPI%20downloads)](https://pypi.python.org/pypi/thetagang/)
 
-[💬 Join the Matrix chat, we can get money together](https://matrix.to/#/#thetagang:frens.io).
+[💬 Matrix chat](https://matrix.to/#/#thetagang:frens.io)
 
 # Θ ThetaGang Θ
 
-_Beat the capitalists at their own game with ThetaGang 📈_
-
 ![Decay my sweet babies](thetagang.jpg)
 
-ThetaGang is an [IBKR](https://www.interactivebrokers.com/) trading bot that
-started as a basic implementation of "The Wheel" strategy and has grown into a
-broader, configurable portfolio automation tool. ThetaGang still supports a
-modified version of The Wheel, and now also includes features like direct share
-rebalancing, cash management, VIX call hedging, regime-aware rebalancing, and
-exchange-hours gating.
+ThetaGang is a low-frequency, systematic portfolio execution tool for [Interactive Brokers (IBKR)](https://www.interactivebrokers.com/). Designed for long-horizon allocation and "get rich slowly" execution, it runs on a scheduled cadence (typically daily, weekly, or monthly via cron) to maintain target portfolio weights, manage hedges, and execute option or share orders within explicit risk controls.
 
-## Risk Disclaimer
+Core capabilities:
+- Stage-driven execution pipeline controlled by `run.strategies` or `run.stages`
+- [Portfolio accounting model](docs/accounting.md) with isolated capital bases (`net_liquidation`, `wheel_buying_power`, `regime_rebalance`)
+- Regime-aware equity rebalancing (`regime_rebalance`) with volatility targeting, absolute-trend rules, and soft/hard drift bands
+- Direct share rebalancing (`buy_only`, `sell_only`, or `both`)
+- Systematic options income and rolling (`wheel`: put/call writing, target DTE/delta selection, strike caps, and net-contract calculation for spreads/PMCCs)
+- [Long-put tail hedging](docs/tail-hedging.md) (`tail_hedge`) and VIX call hedging (`vix_call_hedge`)
+- Cash sweep management (`cash_management`) via short-term treasury ETFs (e.g., `SGOV`)
+- [External decision providers](docs/external-decisions.md) for bounded target-weight multipliers and tail-harvest gating
+- Exchange-hours enforcement, dry-run validation (`--dry-run`), per-symbol order supervision, and SQLite state/execution tracking
 
-**⚠️ WARNING: Options trading involves substantial risk and is not suitable for
-all investors.** Selling options can result in significant losses, potentially
-exceeding your initial investment. Selling naked puts has theoretically unlimited
-downside risk if the underlying asset goes to zero. This is not a "free money"
-strategy—you are being compensated for taking on real financial risk.
-
-Before using ThetaGang:
-- Understand that you can lose money, especially in trending or volatile markets
-- Ensure you have sufficient capital to handle worst-case scenarios
-- Be prepared to own the underlying securities at potentially unfavorable prices
-- Consider paper trading first to understand the mechanics and risks
-- Consult with a financial advisor if you're unsure about the risks
-
-## How it works
-
-The strategy, as implemented here, is intended to be used to augment a
-typical index-fund based portfolio with specific asset allocations. The
-default configuration includes a diversified portfolio with SPY (40%), QQQ
-(30%), TLT (20%), and smaller positions in individual stocks. This strategy
-reduces risk, but may also limit gains from big market swings. By reducing
-risk, one can increase leverage.
-
-ThetaGang is quite configurable, and you can adjust the parameters to suit your
-preferences and needs, but the default configuration is designed to be a good
-starting point. ThetaGang makes some assumptions about how to run this strategy,
-but you can tweak it to your liking by modifying the
-[`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml)
-file.
-
-The main difference between ThetaGang and simply buying and holding index funds
-is that this script will attempt to harvest volatility by selling options,
-rather than buying shares directly. This works because implied volatility is
-typically higher than realized volatility on average. Instead of buying shares,
-you write puts. This has pros and cons, which are outside the scope of this
-README.
-
-ThetaGang can also be used in combination with other strategies such as PMCCs,
-Zebra, stock replacement, and so forth. For these strategies, however, ThetaGang
-will not manage long positions for you. You will need to manage these positions
-yourself. ThetaGang will, however, continue to execute the short legs of these
-strategies as long as you have the buying power available and set the
-appropriate configuration (in particular, by setting
-`write_when.calculate_net_contracts = true`).
-
-### Running multiple strategies safely
-
-If you want to run materially different strategies, it is strongly recommended
-to use separate IBKR accounts (for example, separate linked sub-accounts) and
-fund each one independently.
-
-Mixing multiple strategy styles in one account can produce confusing or harmful
-interactions because ThetaGang decisions are account-level. Buying power usage,
-position targeting, rebalancing logic, option rolls, cash management, and hedge
-logic all see the same combined portfolio and can interfere with each other in
-ways that are hard to reason about.
-
-In practice, one strategy per account is usually the cleanest setup:
-- Cleaner risk boundaries and capital budgets
-- Cleaner performance attribution
-- Fewer unexpected cross-strategy side effects
-- Easier debugging when behavior is not what you expected
-
-Over time, additional features were added to support different portfolio
-workflows and risk controls. You can enable or disable them independently via
-config:
-
-- Direct share rebalancing (buy-only and sell-only modes)
-- Cash management via a cash-equivalent fund
-- VIX call hedging
-- [Long-put tail hedging](docs/tail-hedging.md)
-- [Portfolio accounting model](docs/accounting.md)
-- Regime-aware rebalancing gates
-- [External decision providers](docs/external-decisions.md)
-- Exchange-hours enforcement
-
-ThetaGang will try to acquire your desired allocation of each stock or ETF
-according to the weights you specify in the config. To acquire the positions,
-the script will write puts when conditions are met (config parameters, adequate
-buying power, acceptable contracts are available, enough shares needed, etc).
-
-ThetaGang will continue to roll any open option positions indefinitely, with the
-only exception being ITM puts (although this is configurable). Once puts are in
-the money, they will be ignored until they expire and are exercised (after which
-you will own the underlying). When rolling puts, the strike of the new contracts
-are capped at the old strike plus the premium received (to prevent your account
-from blowing due to over-ratcheting up the buying power usage).
-
-If puts are exercised due to being ITM at expiration, you will own the stock,
-and ThetaGang switches from writing puts to writing calls at a strike at least
-as high as the average cost of the stock held. To avoid missing out on upward
-moves, you can limit the number of calls that are written with
-`write_when.calls.cap_factor`, such as setting this to 0.5 to limit the number
-of calls to 50% of the shares held.
-
-Please note: this strategy is based on the assumption that implied volatility
-is, on average, always higher than realized volatility. In cases where this
-is not true, this strategy will cause you to lose money.
-
-In the case of deep ITM calls, the bot will prefer to roll the calls to next
-strike or expiration rather than allowing the underlying to get called away. If
-you don't have adequate buying power available in your account, it's possible
-that the options may get exercised instead of rolling forward and the process
-starts back at the beginning. Please keep in mind this may have tax
-implications, but that is outside the scope of this README.
-
-In normal usage, you would run the script as a cronjob on a daily, weekly, or
-monthly basis according to your preferences. Running more frequently than
-daily is not recommended, but the choice is yours. Some features (like
-regime-aware rebalancing) assume a daily cadence.
+See [`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml) for the full configuration reference.
 
 ![Paper account sample output](sample.png)
 
-### VIX call hedging
+## Risk Disclaimer
 
-ThetaGang can optionally hedge your account by purchasing VIX calls for the next
-month based on specified parameters. The strategy is based on the [Cboe VIX Tail
-Hedge Index](https://www.cboe.com/us/indices/dashboard/vxth/), which you can
-read about on the internet. You can enable this feature in `thetagang.toml`
-with:
+**⚠️ WARNING: Trading equities and options on margin involves substantial risk and is not suitable for all investors.** Selling options and using leverage can result in losses exceeding your initial investment. Selling naked puts carries substantial downside risk if the underlying asset falls sharply. This is not free money: premiums compensate for real financial risk.
 
-```toml
-[vix_call_hedge]
-enabled = true
-```
+Before using ThetaGang:
+- Understand that systematic strategies can lose money, especially in trending or volatile markets. The options-income approach assumes implied volatility exceeds realized volatility on average; when that fails, selling options loses.
+- Maintain sufficient capital and margin cushion for worst-case drawdowns.
+- Be prepared to take assignment of underlying securities at unfavorable prices when writing options.
+- Test configurations thoroughly in a paper account and with `--dry-run` before live execution.
 
-Default values are provided, based on the VXTH index, but you may configure
-them to your taste. Key parameters include:
+## Architecture & Strategies
 
-```toml
-[vix_call_hedge]
-enabled = true
-allocation = 0.01  # 1% of buying power
-close_hedges_when_vix_exceeds = 50  # Auto-close at high VIX
-ignore_dte = 5  # Don't hedge if expiry within 5 days
-```
+ThetaGang executes an ordered pipeline of stages resolved from `run.strategies` (or `run.stages`) in [`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml). Only the stages required by the enabled strategies run.
 
-See [`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/6eab3823120c10c0563e02c5d7f30dfcc0e333fc/thetagang.toml#L294-L331)
-for all available options.
+### Running Multiple Strategies Safely
 
-Buying VIX calls is not free, and it _will_ create some drag on your portfolio,
-but in times of extreme volatility–such as the COVID-related 2020 market
-panic–VIX calls can provide outsized returns.
+ThetaGang operates on account-level state: buying power, position targeting, rebalancing bands, option rolls, cash sweeps, and hedges all inspect the same account. To run materially different strategies without cross-strategy interference, isolate each strategy in its own IBKR sub-account with dedicated capital.
 
-### Cash management
+### Regime-Aware Rebalancing (`regime_rebalance`)
 
-At the time of writing, interest rates have reached yields that make bonds look
-attractive. To squeeze a little more juice, thetagang can do some simple cash
-management by purchasing a fund when you have extra cash. Although you do earn
-a yield on your cash balance, it's not the juiciest yield you can get, so a
-little optimization might help you earn 1 or 2 extra pennies to take the edge
-off your rent payments.
+Rebalances equity positions across configured symbols when allocations drift beyond relative bands around target weights:
+- **Soft band**: Gated by a choppiness/efficiency regime filter and a trading-session cooldown (tracked via `tg:regime-rebalance` order tags). Intended to harvest variance in choppy, mean-reverting markets.
+- **Hard band**: Safety rail that bypasses the regime filter and cooldown when drift exceeds the hard threshold, optionally rebalancing partway back to target (`hard_band_rebalance_fraction`).
+- **Flow & deficit rails**: Deploy inferred unallocated capacity or trim excess exposure when the rebalance base shifts. The flow rail infers capacity from base vs. sleeve value, not from broker deposits/withdrawals.
+- **Target modifiers**: Optional per-symbol volatility targeting (`volatility_weight`), `absolute_trend` risk-off rules, and bounded [external decision providers](docs/external-decisions.md).
 
-You can enable cash management with:
-
-```toml
-[cash_management]
-enabled = true
-fund = "SGOV"  # Default short-term treasury ETF
-buy_threshold = 0.01  # Buy when cash > 1% of buying power
-sell_threshold = 0.005  # Sell when cash < 0.5%
-
-[cash_management.orders]
-algo.strategy = "Vwap"  # Use VWAP for cash fund orders
-```
-
-This feature uses VWAP (Volume Weighted Average Price) orders by default to
-minimize market impact when moving in and out of cash positions. Refer to
-[`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/4fc34653786ec17fe6ce6ec2406b2d861277f934/thetagang.toml#L330-L377) for all the options.
-
-## Advanced Features
-
-ThetaGang includes several advanced features that provide fine-grained control over your trading strategy:
-
-### Buy-Only Rebalancing
-
-For symbols where options premiums are insufficient or unavailable, you can enable direct stock purchases for portfolio rebalancing:
-
-```toml
-[symbols.AAPL]
-buy_only_rebalancing = true
-buy_only_min_threshold_shares = 10  # Minimum shares to buy
-buy_only_min_threshold_amount = 1000  # Minimum dollar amount to buy
-```
-
-This feature is useful for maintaining target allocations in stocks with limited options liquidity or when you want to dollar-cost average into positions.
-
-### Regime-Aware Rebalancing
-
-Regime-aware rebalancing lets you gate share rebalances on a simple regime
-filter before acting. It builds a proxy series from the configured symbols’
-daily closes, then checks for “choppy/mean-reverting” conditions using
-choppiness and efficiency thresholds. If the regime passes, and allocations
-drift beyond the soft relative band around target weights (or cash flow moves
-all positions in the same direction), it queues share trades to move back
-toward targets. A hard relative band acts as a safety rail and triggers even
-when the regime filter fails, optionally rebalancing only partway back to
-target. A cooldown prevents frequent soft-band rebalances and is based on
-recent executions tagged with `tg:regime-rebalance`. When using this feature,
-run the script once per day.
+`regime_rebalance` enables only its equity-rebalance stage; it does not enable `wheel` option stages. (The legacy `strategies.regime_rebalance.shares_only` setting is deprecated and ignored.) Assumes a daily cadence; running more frequently than daily is not recommended.
 
 ```toml
 [run]
@@ -232,30 +66,73 @@ cooldown_days = 5
 choppiness_min = 3.0
 efficiency_max = 0.30
 order_history_lookback_days = 30
+
+[strategies.regime_rebalance.risk]
+margin_usage = 0.8  # Optional override of runtime.account.margin_usage
 ```
 
-The resolved `run.strategies` or `run.stages` plan controls which trading
-capabilities execute. `regime_rebalance` enables only its equity-rebalance
-stage; it does not enable wheel option writing or management. The historical
-`strategies.regime_rebalance.shares_only` setting is deprecated and ignored.
-Existing schema-v2 configurations that still include it load with a warning and
-should remove it.
+### Direct Share Rebalancing
 
-Regime target weights can be adjusted by a bounded external decision provider
-after volatility targeting. An external provider can also approve or veto an
-otherwise eligible tail-hedge harvest. ThetaGang supplies completed-session
-market history and the decision-specific portfolio context, then retains
-authority over allocation bounds, risk gates, contract selection, sizing, and
-order execution. See
-[External decision providers](docs/external-decisions.md) for the command
-protocol and configuration.
+When running `wheel`, symbols can be rebalanced directly with shares instead of—or alongside—options when premiums or liquidity are insufficient. Configure the v2 policy (the legacy `buy_only_rebalancing` symbol flags alone do not enable this; the v2 default mode is `off`):
+
+```toml
+[strategies.wheel.equity_rebalance.symbol_overrides.AAPL]
+mode = "buy_only"  # buy_only | sell_only | both
+min_threshold_shares = 10  # Minimum shares to buy
+```
+
+### Options Income & The Wheel (`wheel`)
+
+The `wheel` strategy acquires and manages target symbol allocations by selling puts instead of buying shares outright, then writing calls on assigned shares:
+
+1. **Put writing**: When a symbol is below its target allocation and conditions pass (buying power, DTE, delta, green/red day filters, minimum open interest), ThetaGang writes puts.
+2. **Rolling**: Open short options are rolled when P&L reaches `roll_when.pnl` or DTE falls to `roll_when.dte` (subject to `min_pnl`, `max_dte`, and credit/strike constraints). By default, ITM puts are left to expire and take assignment (`roll_when.puts.itm = false`), while ITM calls roll out to avoid assignment (`roll_when.calls.itm = true`). Rolled put strikes are capped based on the prior strike, premium received, and buyback cost.
+3. **Call writing**: Once shares are held, ThetaGang writes covered calls at or above the higher of average cost basis and any configured `strike_limit` (plus high-water-mark ratcheting when enabled). Upside can be left uncapped on a fraction of holdings using `write_when.calls.cap_factor`, `cap_target_floor`, or `excess_only = true`.
+4. **Spreads & PMCCs**: Setting `write_when.calculate_net_contracts = true` accounts for user-managed long option legs (e.g., LEAPs in PMCCs, calendars, or ZEBRAs) when sizing short legs. ThetaGang does not open, roll, or guarantee coverage from the long legs: manage expirations yourself to avoid naked short exposure.
+
+### Long-Put Tail Hedging (`tail_hedge`)
+
+Maintains a rolling ladder of long out-of-the-money puts within a fixed annual cost budget (`annual_budget`), ranking candidate contracts near `target_dte` (default 180 DTE) by catastrophe-payout multiple. Entries are sliced across the year (`entries_per_year`); missed entries are not made up. Harvests trim profitable puts toward `harvest_target_weight` once the sleeve exceeds `harvest_trigger_weight` of the regime base, requiring a same-symbol hard-underweight rebalance buy. Requires persistent SQLite storage. See [Long-put tail hedging](docs/tail-hedging.md).
+
+### VIX Call Hedging (`vix_call_hedge`)
+
+Purchases monthly VIX calls scaled to VIXMO regimes based on the [Cboe VIX Tail Hedge Index (VXTH)](https://www.cboe.com/us/indices/dashboard/vxth/) methodology, and automatically closes hedges when spot VIX exceeds `close_hedges_when_vix_exceeds`.
+
+```toml
+[strategies.vix_call_hedge]
+enabled = true
+close_hedges_when_vix_exceeds = 50.0  # Auto-close at high VIX
+ignore_dte = 5  # Ignore positions expiring within 5 days
+```
+
+See [`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml) for tiered VIXMO allocation tables.
+
+### Cash Management (`cash_management`)
+
+Sweeps cash above `target_cash_balance + buy_threshold` into a short-term treasury ETF (default `SGOV`) and sells back toward target when projected cash falls below `target_cash_balance - sell_threshold` (dollar amounts), using VWAP orders by default.
+
+```toml
+[strategies.cash_management]
+enabled = true
+cash_fund = "SGOV"  # Default short-term treasury ETF
+target_cash_balance = 0
+buy_threshold = 10000  # Buy fund when cash exceeds target by this much ($)
+sell_threshold = 10000  # Sell fund when cash falls below target by this much ($)
+
+[strategies.cash_management.orders.algo]
+strategy = "Vwap"  # Use VWAP for cash fund orders
+```
+
+See [`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml) for full options.
+
+## Execution & Risk Controls
 
 ### Exchange Hours Management
 
-Control when ThetaGang operates relative to market hours:
+Gate execution on market hours (via `exchange_calendars` ISO codes):
 
 ```toml
-[exchange_hours]
+[runtime.exchange_hours]
 exchange = "XNYS"  # NYSE by default
 action_when_closed = "wait"  # Options: "wait", "exit", "continue"
 delay_after_open = 1800  # Wait 30 minutes after market open
@@ -265,57 +142,50 @@ max_wait_until_open = 3600  # Max wait time if market is closed
 
 ### Strike Price Limits
 
-Set boundaries for option strikes to prevent writing options at unfavorable prices:
+Cap put strikes (upper bound) and floor call strikes (lower bound):
 
 ```toml
-[symbols.SPY.puts]
+[portfolio.symbols.SPY.puts]
 strike_limit = 400  # Don't write puts above $400
 
-[symbols.SPY.calls]
+[portfolio.symbols.SPY.calls]
 strike_limit = 450  # Don't write calls below $450
 ```
 
 ### Write Threshold Sigma
 
-Use standard deviation-based thresholds instead of fixed percentages:
+Gate option writes on daily log-return standard deviations instead of fixed percentages (overrides `write_threshold`):
 
 ```toml
-[constants]
+[strategies.wheel.defaults.constants]
 write_threshold_sigma = 1.0  # Write when 1 standard deviation from current price
 
-[symbols.QQQ.puts]
+[portfolio.symbols.QQQ.puts]
 write_threshold_sigma = 1.5  # More conservative for this symbol
 ```
 
-When specified, sigma thresholds override regular `write_threshold` values.
-
-### Advanced Rolling Features
+### Rolling Controls
 
 #### Maintain High Water Mark
 Prevent rolling calls to lower strikes:
 
 ```toml
-[roll_when.calls]
+[strategies.wheel.defaults.roll_when.calls]
 maintain_high_water_mark = true
 ```
 
 #### Close If Unable to Roll
-Automatically close positions when suitable roll contracts aren't available:
+Close profitable short positions when no qualifying roll contract is found (requires `roll_when.max_dte` set, with the position DTE at or below it):
 
 ```toml
-[roll_when]
+[strategies.wheel.defaults.roll_when]
 close_if_unable_to_roll = true
+max_dte = 180  # Required: close only applies when DTE <= max_dte
 ```
 
 ### Order Management
 
-#### Price Adjustments
-Automatically adjust limit orders after initial delay:
-
-```toml
-[portfolio.symbols.SPY]
-adjust_price_after_delay = true  # Adjusts to midpoint after delay
-```
+Limit-order repricing is opt-in per symbol. Either set `adjust_price_after_delay = true` (one legacy midpoint-averaging adjustment after a random delay within `runtime.orders.price_update_delay`) or configure a per-symbol `execution` policy with `fill_timeout` for supervised repricing at the configured bid/ask/mid quote. Otherwise unfinished DAY limit orders stay working at the broker.
 
 #### Per-Symbol Execution Policies
 
@@ -377,7 +247,7 @@ params = [["adaptivePriority", "Patient"]]
 Enable for spread strategies (PMCCs, calendars):
 
 ```toml
-[write_when]
+[strategies.wheel.defaults.write_when]
 calculate_net_contracts = true
 ```
 
@@ -385,7 +255,7 @@ calculate_net_contracts = true
 Write calls only on shares exceeding target allocation:
 
 ```toml
-[write_when.calls]
+[strategies.wheel.defaults.write_when.calls]
 excess_only = true
 ```
 
@@ -393,7 +263,7 @@ excess_only = true
 Temporarily disable trading for specific symbols:
 
 ```toml
-[symbols.TSLA]
+[portfolio.symbols.TSLA]
 no_trading = true  # Monitor only, no trades
 ```
 
@@ -402,7 +272,7 @@ no_trading = true  # Monitor only, no trades
 Fine-tune IBKR API behavior:
 
 ```toml
-[ib_async]
+[runtime.ib_async]
 api_response_wait_time = 60  # Seconds to wait for API responses
 logfile = "ib_async.log"  # Enable API logging for debugging
 ```
@@ -412,55 +282,27 @@ logfile = "ib_async.log"  # Enable API logging for debugging
 Set absolute caps on new contracts:
 
 ```toml
-[target]
+[strategies.wheel.defaults.target]
 maximum_new_contracts = 10  # Absolute limit per run
 maximum_new_contracts_percent = 0.5  # Or limit by percentage
 ```
 
-## Project status
-
-This project is, in its current state, considered to be complete. I'm open
-to contributions, but I am unlikely to accept PRs or feature requests that
-involve significant changes to the underlying algorithm.
-
-If you find something that you think is a bug, or some other issue, please
-[create a new issue](https://github.com/brndnmtthws/thetagang/issues/new).
-
 ## Requirements
 
-The bot is based on the [ib_async](https://github.com/ib-api-reloaded/ib_async)
-library, and uses [IBC](https://github.com/IbcAlpha/IBC) for managing the API
-gateway. The bundled IBC configuration targets the current stable TWS/Gateway
-version (see `IBC(1050, ...)` in the code).
-
-To use the bot, you'll need an Interactive Brokers account with a working
-installation of IBC. If you want to modify the bot, you'll need an
-installation of Python 3.11 to 3.14 with the
-[`uv`](https://docs.astral.sh/uv/) package manager.
-
-One more thing: to run this on a live account, you'll require enough capital
-to purchase at least 100 shares of the stocks or ETFs you choose. For
-example, if SPY is trading at $300/share you'd need $30,000 available. You
-can search for lower priced alternatives, but these tend to have low volume
-on options which may not be appropriate for this strategy. You should
-generally avoid low volume ETFs/stocks. If you don't have that kind of
-capital, you'll need to keep renting out your time until you can become a
-capitalist yourself.
+- An Interactive Brokers account (paper or live)
+- [ib_async](https://github.com/ib-api-reloaded/ib_async) and [IBC](https://github.com/IbcAlpha/IBC) (bundled IBC config targets TWS/Gateway `1050`)
+- Python 3.11–3.14 and [`uv`](https://docs.astral.sh/uv/) (for local development)
+- For option-writing strategies (`wheel`), sufficient capital/margin to cover 100-share standard option contracts on liquid underlyings. Equity-only strategies (`regime_rebalance` or share rebalancing) can size in single shares.
 
 ## Installation
 
-_Before running ThetaGang, you should set up an IBKR paper account to test the
-code._
+Test with an IBKR paper account before running live:
 
 ```console
 pip install thetagang
 ```
 
-It's recommended you familiarize yourself with
-[IBC](https://github.com/IbcAlpha/IBC) so you know how it works. You'll need
-to know how to configure the various knobs and settings, and make sure things
-like API ports are configured correctly. If you don't want to mess around too
-much, consider [running ThetaGang with Docker](#running-with-docker).
+Either configure a local [IBC](https://github.com/IbcAlpha/IBC) + TWS/IB Gateway installation, or [run ThetaGang with Docker](#up-and-running-with-docker).
 
 ## Quickstart (paper trading)
 
@@ -517,7 +359,7 @@ created relative to your config file, and it is reused across runs to build a
 long-lived history.
 
 ```toml
-[database]
+[runtime.database]
 enabled = true
 path = "data/thetagang.db"
 # url = "sqlite:////abs/path/thetagang.db"
@@ -528,20 +370,9 @@ volume so the database persists between runs.
 
 ## Up and running with Docker
 
-My preferred way for running ThetaGang is to use a cronjob to execute Docker
-commands. I've built a Docker image as part of this project, which you can
-use with your installation. There's a [prebuilt Docker image
-here](https://hub.docker.com/repository/docker/brndnmtthws/thetagang).
+A prebuilt image is published at [`brndnmtthws/thetagang`](https://hub.docker.com/repository/docker/brndnmtthws/thetagang) with IBC and IB Gateway bundled.
 
-To run ThetaGang within Docker, you'll need to pass `config.ini` for [IBC
-configuration](https://github.com/IbcAlpha/IBC/blob/master/userguide.md) and
-[`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml) for ThetaGang. There's a sample
-[`ibc-config.ini`](https://github.com/brndnmtthws/thetagang/blob/main/ibc-config.ini) included in this repo for your convenience.
-
-The easiest way to get the config files into the container is by mounting a
-volume.
-
-To get started, grab a copy of `thetagang.toml` and `config.ini`:
+Mount a directory containing [`thetagang.toml`](https://github.com/brndnmtthws/thetagang/blob/main/thetagang.toml) and IBC's `config.ini` (sample: [`ibc-config.ini`](https://github.com/brndnmtthws/thetagang/blob/main/ibc-config.ini)):
 
 ```console
 mkdir ~/thetagang
@@ -550,13 +381,9 @@ curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/thetagang.
 curl -Lq https://raw.githubusercontent.com/brndnmtthws/thetagang/main/ibc-config.ini -o ./config.ini
 ```
 
-Edit `~/thetagang/thetagang.toml` to suit your needs. Pay particular
-attention to the symbols and weights. At a minimum, you must change the
-username, password, and account number. You may also want to change the
-trading move from paper to live when needed. If you enable the database,
-create `~/thetagang/data/` so the SQLite file is persisted.
+Update `~/thetagang/thetagang.toml` with your symbols, weights, `userid`, `password`, `account.number`, and `tradingMode`. If `database.enabled = true`, create `~/thetagang/data/` so the SQLite database persists across container runs.
 
-Now, to run ThetaGang with Docker:
+Run with Docker:
 
 ```console
 docker run --rm -i --net host \
@@ -576,9 +403,7 @@ docker run --rm -i \
     --config /etc/thetagang/thetagang.toml
 ```
 
-Lastly, to run ThetaGang as a daily cronjob Monday to Friday at 9am, add
-something like this to your crontab (on systems with a cron installation, use
-`crontab -e` to edit your crontab):
+To run daily Monday–Friday at 9:00 AM via `crontab -e`:
 
 ```crontab
 0 9 * * 1-5 docker run --rm -i -v ~/thetagang:/etc/thetagang brndnmtthws/thetagang:main --config /etc/thetagang/thetagang.toml
@@ -590,15 +415,15 @@ something like this to your crontab (on systems with a cron installation, use
 Focus on stability with major index ETFs:
 
 ```toml
-[symbols.SPY]
+[portfolio.symbols.SPY]
 weight = 0.50
 delta = 0.20  # Lower delta for safer strikes
 
-[symbols.TLT]
+[portfolio.symbols.TLT]
 weight = 0.30
 delta = 0.15
 
-[symbols.GLD]
+[portfolio.symbols.GLD]
 weight = 0.20
 delta = 0.15
 ```
@@ -607,31 +432,30 @@ delta = 0.15
 Higher risk tolerance with VIX protection:
 
 ```toml
-[symbols.QQQ]
+[portfolio.symbols.QQQ]
 weight = 0.60
 delta = 0.30
 
-[symbols.ARKK]
+[portfolio.symbols.ARKK]
 weight = 0.30
 delta = 0.35
 
-[symbols.IWM]
+[portfolio.symbols.IWM]
 weight = 0.10
 delta = 0.30
 
-[vix_call_hedge]
+[strategies.vix_call_hedge]
 enabled = true
-allocation = 0.01  # 1% of buying power
 ```
 
 ### PMCC Strategy
 Poor man's covered calls with net contract calculation:
 
 ```toml
-[write_when]
+[strategies.wheel.defaults.write_when]
 calculate_net_contracts = true  # Essential for spreads
 
-[symbols.SPY]
+[portfolio.symbols.SPY]
 weight = 1.0
 # Manage long calls separately
 # ThetaGang will write short calls against them
@@ -641,31 +465,17 @@ weight = 1.0
 Trade only during stable market hours:
 
 ```toml
-[exchange_hours]
+[runtime.exchange_hours]
 delay_after_open = 3600  # Wait 1 hour after open
 delay_before_close = 3600  # Stop 1 hour before close
 action_when_closed = "exit"  # Don't run outside hours
 ```
 
-## Determining which ETFs or stocks to run ThetaGang with
+## Portfolio Selection Notes
 
-I leave this as an exercise to the reader, however I will provide a few
-recommendations and resources:
-
-### Recommendations
-
-- Stick with high volume ETFs or stocks
-- Careful with margin usage, you'll want to calculate the worst case scenario
-  and provide plenty of cushion for yourself based on your portfolio
-
-### Resources
-
-- For discussions about selling options, check out
-  [r/thetagang](https://www.reddit.com/r/thetagang/)
-- For backtesting portfolios, you can use [this
-  tool](https://www.portfoliovisualizer.com/backtest-portfolio) and [this
-  tool](https://www.portfoliovisualizer.com/optimize-portfolio) to get an idea
-  of drawdown and typical volatility
+- Use liquid ETFs or large-cap equities with tight bid-ask spreads (and high option open interest if trading options).
+- Model worst-case drawdown and margin requirements before setting `margin_usage`. Useful backtesting tools: [Portfolio Visualizer Backtest](https://www.portfoliovisualizer.com/backtest-portfolio) and [Portfolio Optimization](https://www.portfoliovisualizer.com/optimize-portfolio).
+- Community discussion: [r/thetagang](https://www.reddit.com/r/thetagang/).
 
 ## Running without IBC
 
