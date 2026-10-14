@@ -157,7 +157,7 @@ class TargetWeightDecisionInput(DecisionInput):
 
 
 class TargetWeightDecisionRequest(ExternalDecisionRequestEnvelope):
-    decision_type: Literal["regime_target_weights"]
+    decision_type: Literal["regime_target_weights"]  # ty: ignore[invalid-mutable-override] # pydantic discriminator: validated at construction, never mutated via base
     input: TargetWeightDecisionInput
 
 
@@ -175,8 +175,8 @@ class TargetWeightDecisionOutput(BaseModel):
 
 
 class TargetWeightDecisionResponse(ExternalDecisionResponseEnvelope):
-    decision_type: Literal["regime_target_weights"]
-    as_of_session: date
+    decision_type: Literal["regime_target_weights"]  # ty: ignore[invalid-mutable-override] # pydantic discriminator: validated at construction, never mutated via base
+    as_of_session: date  # ty: ignore[invalid-mutable-override] # required session for market decisions; base permits None for non-market decisions
     output: TargetWeightDecisionOutput
 
 
