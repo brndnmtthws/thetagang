@@ -4082,6 +4082,102 @@ async def test_regime_rebalance_hard_band_partial_rebalance(portfolio_manager, m
     assert orders == [("AAA", "NYSE", -5), ("BBB", "NYSE", 5)]
 
 
+def _configure_partial_hard_band(portfolio_manager) -> None:
+    regime = portfolio_manager.config.strategies.regime_rebalance
+    regime.soft_band = 0.30
+    regime.hard_band = 0.10
+    regime.hard_band_rebalance_fraction = 0.5
+    regime.choppiness_min = 10.0
+    regime.efficiency_max = 0.01
+
+
+async def _partial_hard_band_orders(
+    portfolio_manager, mocker, *, net_liquidation, positions, prices, weights=None
+):
+    if weights is not None:
+        portfolio_manager.regime_engine._resolve_effective_weights = mocker.AsyncMock(
+            return_value=(dict(weights), {})
+        )
+    account_summary = {"NetLiquidation": SimpleNamespace(value=str(net_liquidation))}
+    portfolio_positions = {
+        symbol: [
+            SimpleNamespace(contract=Stock(symbol, "SMART", "USD"), position=position)
+        ]
+        for symbol, position in positions.items()
+    }
+    _mock_regime_tickers(
+        portfolio_manager, mocker, aaa_price=prices["AAA"], bbb_price=prices["BBB"]
+    )
+    _mock_regime_history(portfolio_manager, mocker, [100.0, 110.0, 100.0, 110.0])
+    portfolio_manager.ibkr.request_executions = mocker.AsyncMock(return_value=[])
+    _, orders = await portfolio_manager.regime_engine.check_regime_rebalance_positions(
+        account_summary, portfolio_positions
+    )
+    return orders
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_hard_band_sells_last_share_of_zero_target(
+    portfolio_manager, mocker
+):
+    _configure_partial_hard_band(portfolio_manager)
+
+    orders = await _partial_hard_band_orders(
+        portfolio_manager,
+        mocker,
+        net_liquidation=2000,
+        positions={"AAA": 19, "BBB": 1},
+        prices={"AAA": 100.0, "BBB": 100.0},
+        weights={"AAA": 1.0, "BBB": 0.0},
+    )
+
+    # Half-to-even rounding of -0.5 gave 0 and stranded the share forever.
+    assert ("BBB", "NYSE", -1) in orders
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_hard_band_odd_gap_rounds_up_without_overshoot(
+    portfolio_manager, mocker
+):
+    _configure_partial_hard_band(portfolio_manager)
+
+    orders = await _partial_hard_band_orders(
+        portfolio_manager,
+        mocker,
+        net_liquidation=2000,
+        positions={"AAA": 15, "BBB": 5},
+        prices={"AAA": 100.0, "BBB": 100.0},
+    )
+
+    # Five-share gaps at fraction 0.5 trade three shares, short of the target.
+    assert orders == [("AAA", "NYSE", -3), ("BBB", "NYSE", 3)]
+
+
+@pytest.mark.asyncio
+async def test_regime_rebalance_hard_band_zero_target_exit_finishes(
+    portfolio_manager, mocker
+):
+    _configure_partial_hard_band(portfolio_manager)
+    positions = {"AAA": 2000, "BBB": 492}
+    bbb_path = [positions["BBB"]]
+
+    while positions["BBB"] and len(bbb_path) < 20:
+        orders = await _partial_hard_band_orders(
+            portfolio_manager,
+            mocker,
+            net_liquidation=positions["AAA"] + positions["BBB"],
+            positions=positions,
+            prices={"AAA": 1.0, "BBB": 1.0},
+            weights={"AAA": 1.0, "BBB": 0.0},
+        )
+        for symbol, _exchange, quantity in orders:
+            positions[symbol] += quantity
+        assert positions["BBB"] >= 0
+        bbb_path.append(positions["BBB"])
+
+    assert bbb_path == [492, 246, 123, 61, 30, 15, 7, 3, 1, 0]
+
+
 @pytest.mark.asyncio
 async def test_regime_rebalance_soft_band_blocked_by_regime(portfolio_manager, mocker):
     portfolio_manager.config.strategies.regime_rebalance.soft_band = 0.10
