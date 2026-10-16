@@ -3903,7 +3903,18 @@ class RegimeRebalanceEngine:
             for symbol in symbols:
                 desired = target_shares[symbol] - current_positions[symbol]
                 if hard_rebalance and not math.isclose(rebalance_fraction, 1.0):
-                    desired = round(desired * rebalance_fraction)
+                    # Round the magnitude up so every hard step moves at least
+                    # one share toward the target and never past it. Half-to-even
+                    # rounding left a one-share residual under a zero target, and
+                    # its full drift re-triggered a hard rebalance on every run.
+                    # The tolerance keeps products such as 10 * 0.3 from rounding
+                    # up a whole share.
+                    desired = int(
+                        math.copysign(
+                            math.ceil(abs(desired) * rebalance_fraction - 1e-9),
+                            desired,
+                        )
+                    )
                 if desired == 0:
                     continue
                 if symbol in allowed_symbols:
