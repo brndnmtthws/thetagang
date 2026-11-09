@@ -40,7 +40,7 @@ jobs:
           enable-cache: true
 
       - name: Install the project
-        run: uv sync --all-extras --dev
+        run: uv sync --locked --all-extras --dev
 
       - name: Test with pytest
         run: uv run pytest -q tests
@@ -72,7 +72,7 @@ jobs:
           enable-cache: true
 
       - name: Install the project
-        run: uv sync --all-extras
+        run: uv sync --locked --all-extras
 
       - name: Build package
         run: uv build
@@ -111,7 +111,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ github.actor }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.DOCKERHUB_ACCOUNT }}/${{ env.IMAGE_NAME }}
 
       # Build and push Docker image with Buildx (don't push on PR)
       # https://github.com/docker/build-push-action

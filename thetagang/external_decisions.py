@@ -278,7 +278,7 @@ class CommandExternalDecisionProvider:
                 "external decision provider pipes could not be created"
             )
 
-        tasks = [
+        tasks = (
             asyncio.create_task(self._write_request(process.stdin, request_bytes)),
             asyncio.create_task(
                 self._read_response(
@@ -288,7 +288,7 @@ class CommandExternalDecisionProvider:
             ),
             asyncio.create_task(self._read_stderr(process.stderr)),
             asyncio.create_task(process.wait()),
-        ]
+        )
         communication = asyncio.gather(*tasks)
         try:
             _, stdout, stderr, _ = await asyncio.wait_for(
