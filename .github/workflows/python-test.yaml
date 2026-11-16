@@ -38,4 +38,4 @@ jobs:
         run: uv run ruff format --check --diff
 
       - name: Check types with ty
-        run: uvx ty check
+        run: uv run --locked ty check
