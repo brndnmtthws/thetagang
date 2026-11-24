@@ -1,9 +1,21 @@
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
-from ib_async import IB, AccountValue, LimitOrder, Option, Stock, Ticker
+from ib_async import (
+    IB,
+    AccountValue,
+    LimitOrder,
+    Option,
+    OrderStatus,
+    Stock,
+    Ticker,
+    Trade,
+)
+from pytest_mock import MockerFixture
 
 from thetagang.db import DataStore
 from thetagang.portfolio_manager import PortfolioManager
@@ -1163,6 +1175,131 @@ class TestPortfolioManager:
             portfolio_manager.ibkr.wait_for_orders_complete.await_count
             == expected_waits
         )
+
+    @pytest.mark.asyncio
+    async def test_tail_harvest_amend_failure_cancels_current_working_trades(
+        self,
+        portfolio_manager: PortfolioManager,
+        mock_ib: Mock,
+        mocker: MockerFixture,
+        tmp_path: Path,
+    ) -> None:
+        pm = portfolio_manager
+        pm.run_stage_order = ["equity_regime_rebalance", "equity_buy_rebalance"]
+        pm.completion_future = asyncio.get_running_loop().create_future()
+        pm.config.runtime.orders.price_update_delay = [1, 2]
+        pm.data_store = DataStore(
+            f"sqlite:///{tmp_path / 'tail-harvest.db'}",
+            str(tmp_path / "config.toml"),
+            dry_run=False,
+        )
+        store = TailHedgeStateStore(pm.data_store, pm.account_number)
+        state = TailHedgeState()
+        records = []
+        entered_at = _naive_utc(2026, 8, 15, 12)
+        amended_id, failed_id, sibling_id, filled_id = 123, 124, 125, 126
+        phase_ids = [amended_id, failed_id, sibling_id, filled_id]
+        for con_id in phase_ids:
+            contract = Option("SPY", "20271217", 300, "P", "SMART", conId=con_id)
+            order = tail_order(pm, "SELL", 1, f"tg:tail-harvest:SPY:{con_id}")
+            records.append((contract, order, None))
+            cohort = TailHedgeCohort(
+                entry_id=str(con_id),
+                symbol=contract.symbol,
+                status="active",
+                con_id=con_id,
+                expiration=contract.lastTradeDateOrContractMonth,
+                strike=contract.strike,
+                quantity=1,
+                entry_limit_price=1.0,
+                entered_at=entered_at,
+                estimated_cost=100.0,
+            )
+            cohort.begin_recovery(
+                quantity=1, proceeds_per_contract=100.0, enqueued_at=entered_at
+            )
+            state.cohorts.append(cohort)
+        store.save(state)
+        mock_ib.portfolio.return_value = [
+            position(pm, contract, 1) for contract, _, _ in records
+        ]
+
+        unrelated = Trade(Stock("QQQ", "SMART", "USD"), LimitOrder("BUY", 1, 100))
+        mock_ib.placeOrder.return_value = unrelated
+        pm.trades.submit_order(unrelated.contract, unrelated.order)
+
+        amendment_error = ConnectionError("amendment acceptance unknown")
+
+        def place_order(contract: Option, order: LimitOrder) -> Trade:
+            if order.orderId and contract.conId == failed_id:
+                raise amendment_error
+            order.orderId = contract.conId
+            status = (
+                OrderStatus(status="Filled", filled=1)
+                if contract.conId == filled_id
+                else OrderStatus(status="Submitted", remaining=1)
+            )
+            return Trade(contract, order, status)
+
+        def cancel_order(order: LimitOrder) -> None:
+            if order.orderId == amended_id:
+                raise ConnectionError("cancel acceptance unknown")
+            for trade in pm.trades.records():
+                if trade.order is order:
+                    trade.orderStatus.status = "Cancelled"
+
+        mock_ib.placeOrder.reset_mock()
+        mock_ib.placeOrder.side_effect = place_order
+        mock_ib.cancelOrder.side_effect = cancel_order
+        mocker.patch.object(pm, "initialize_account")
+        mocker.patch.object(pm, "summarize_account", return_value=({}, {}))
+
+        async def plan_harvests(
+            *_args: object, **_kwargs: object
+        ) -> list[tuple[str, str, int]]:
+            for record in records:
+                pm.orders.add_order(*record)
+            return []
+
+        mocker.patch.object(pm, "_plan_regime_rebalance", side_effect=plan_harvests)
+        rebalance = mocker.patch(
+            "thetagang.portfolio_manager.run_equity_rebalance_stages"
+        )
+        mocker.patch.object(pm.ibkr, "wait_for_submitting_orders")
+        wait = mocker.patch.object(
+            pm.ibkr,
+            "wait_for_orders_complete",
+            side_effect=lambda trades, _: [
+                trade for trade in trades if not trade.isDone()
+            ],
+        )
+        ticker = mocker.Mock(spec=Ticker)
+        ticker.midpoint.return_value = 0.5
+        mocker.patch.object(pm.ibkr, "get_ticker_for_contract", return_value=ticker)
+
+        with pytest.raises(OrderSubmissionError) as raised:
+            await pm.manage()
+
+        assert raised.value.__cause__ is amendment_error
+        assert pm.completion_future.exception() is raised.value
+        assert [call.args[0].conId for call in mock_ib.placeOrder.call_args_list] == [
+            *phase_ids,
+            amended_id,
+            failed_id,
+        ]
+        _, amended, failed, sibling, _ = pm.trades.records()
+        assert amended.order is not records[0][1]
+        cancel_calls = mock_ib.cancelOrder.call_args_list
+        assert [call.args[0].orderId for call in cancel_calls] == [
+            amended_id,
+            failed_id,
+            sibling_id,
+        ]
+        assert cancel_calls[0].args[0] is amended.order
+        assert wait.await_count == 2
+        wait.assert_awaited_with([failed, sibling], 1)
+        assert store.load() == state
+        rebalance.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_regime_stage_recalculates_after_filled_tail_harvest(

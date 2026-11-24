@@ -1133,7 +1133,8 @@ class PortfolioManager:
         return OrderExecutionManager.trade_fully_filled(trade)
 
     async def _cancel_incomplete_trades(self, trades: list[Any]) -> None:
-        canceled_trades = []
+        """Request each cancellation independently without clearing reservations."""
+        cancellation_requested = []
         for trade in trades:
             if self._trade_fully_filled(trade) or trade.isDone():
                 continue
@@ -1141,17 +1142,25 @@ class PortfolioManager:
                 f"{trade.contract.symbol}: Canceling incomplete tail harvest "
                 f"after bounded fill attempt."
             )
-            self.ibkr.cancel_order(trade.order)
-            canceled_trades.append(trade)
-        if not canceled_trades:
+            try:
+                self.ibkr.cancel_order(trade.order)
+            except Exception as exc:  # noqa: BLE001
+                log.error(
+                    f"{trade.contract.symbol}: Cancellation request failed for "
+                    f"tail harvest order {trade.order.orderId}: {exc}"
+                )
+                continue
+            cancellation_requested.append(trade)
+        if not cancellation_requested:
             return
-        still_working = await self.ibkr.wait_for_orders_complete(
-            canceled_trades,
-            max(
-                1,
-                min(60, self.config.runtime.ib_async.api_response_wait_time),
-            ),
-        )
+        try:
+            still_working = await self.ibkr.wait_for_orders_complete(
+                cancellation_requested,
+                max(1, min(60, self.config.runtime.ib_async.api_response_wait_time)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error(f"Could not confirm tail-harvest cancellations: {exc}")
+            return
         if still_working:
             log.error(
                 "Tail-harvest cancellation was not confirmed before shutdown; "
@@ -1172,12 +1181,7 @@ class PortfolioManager:
         try:
             self.submit_orders(order_records)
         except OrderSubmissionError:
-            try:
-                await self._cancel_incomplete_trades(
-                    self.trades.records()[trade_start:]
-                )
-            except (OSError, RuntimeError) as exc:
-                log.error(f"Could not cancel earlier tail harvests: {exc}")
+            await self._cancel_incomplete_trades(self.trades.records()[trade_start:])
             raise
         trade_indices = list(range(trade_start, len(self.trades.records())))
         phase_trades = [self.trades.records()[idx] for idx in trade_indices]
@@ -1225,7 +1229,14 @@ class PortfolioManager:
                     remaining = deadline - loop.time()
                     if remaining <= 0:
                         break
-                    await self._reprice_trade(idx, trade, timeout=remaining)
+                    try:
+                        await self._reprice_trade(idx, trade, timeout=remaining)
+                    except OrderSubmissionError:
+                        # A successful earlier amendment may have replaced its trade.
+                        await self._cancel_incomplete_trades(
+                            [self.trades.records()[i] for i in trade_indices]
+                        )
+                        raise
 
         phase_trades = [self.trades.records()[idx] for idx in trade_indices]
         incomplete = [
