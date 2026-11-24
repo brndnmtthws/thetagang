@@ -158,8 +158,9 @@ class PostStrategyEngine:
             if close_vix_calls and vix_ticker and threshold:
                 for position in portfolio_positions.get("VIX", []):
                     if (
-                        position.contract.right.startswith("C")
-                        and position.position < 0
+                        not isinstance(position.contract, Option)
+                        or not position.contract.right.startswith("C")
+                        or position.position <= 0
                     ):
                         continue
                     position.contract.exchange = self.order_ops.get_order_exchange()
@@ -169,10 +170,9 @@ class PostStrategyEngine:
                     price = self.order_ops.round_vix_price(
                         round(get_lower_price(sell_ticker), 2)
                     )
-                    qty = abs(position.position)
                     order = self.order_ops.create_limit_order(
                         action="SELL",
-                        quantity=qty,
+                        quantity=position.position,
                         limit_price=price,
                         transmit=True,
                     )
@@ -185,24 +185,14 @@ class PostStrategyEngine:
         try:
             vixmo_contract = Index("VIXMO", "CBOE", "USD")
             vixmo_ticker = await self.ibkr.get_ticker_for_contract(vixmo_contract)
+            vixmo = vixmo_ticker.marketPrice()
             weight = 0.0
             for allocation in self.config.strategies.vix_call_hedge.allocation:
-                if (
-                    (
-                        allocation.lower_bound
-                        and allocation.upper_bound
-                        and allocation.lower_bound
-                        <= vixmo_ticker.marketPrice()
-                        < allocation.upper_bound
-                    )
-                    or (
-                        allocation.lower_bound
-                        and allocation.lower_bound <= vixmo_ticker.marketPrice()
-                    )
-                    or (
-                        allocation.upper_bound
-                        and vixmo_ticker.marketPrice() < allocation.upper_bound
-                    )
+                lower, upper = allocation.lower_bound, allocation.upper_bound
+                if lower is None and upper is None:
+                    continue
+                if (lower is None or lower <= vixmo) and (
+                    upper is None or vixmo < upper
                 ):
                     weight = allocation.weight
                     break

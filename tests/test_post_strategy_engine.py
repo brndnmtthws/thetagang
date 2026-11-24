@@ -7,6 +7,7 @@ from ib_async import IB, AccountValue, MarketOrder
 from ib_async.contract import Contract, Option, Stock
 
 from thetagang.config import Config
+from thetagang.config_models import VIXCallHedgeConfig
 from thetagang.ibkr import IBKR
 from thetagang.orders import order_cash_notional
 from thetagang.strategies.post_engine import PostStrategyEngine
@@ -688,12 +689,11 @@ async def test_do_vix_hedging_closes_existing_calls_when_threshold_hit(mocker):
         "thetagang.strategies.post_engine.net_option_positions", return_value=1
     )
     mocker.patch("thetagang.strategies.post_engine.get_lower_price", return_value=2.0)
-    ibkr.get_ticker_for_contract = AsyncMock(
-        side_effect=[
-            SimpleNamespace(marketPrice=lambda: 30.0),
-            SimpleNamespace(contract=Contract()),
-        ]
-    )
+
+    async def quote(contract):
+        return SimpleNamespace(contract=contract, marketPrice=lambda: 30.0)
+
+    ibkr.get_ticker_for_contract = AsyncMock(side_effect=quote)
     vix_call = SimpleNamespace(
         contract=Option(
             symbol="VIX",
@@ -705,31 +705,40 @@ async def test_do_vix_hedging_closes_existing_calls_when_threshold_hit(mocker):
         ),
         position=1,
     )
+    other_positions = [
+        SimpleNamespace(
+            contract=Option("VIX", "20270115", strike, right, "SMART", currency="USD"),
+            position=quantity,
+        )
+        for strike, right, quantity in [(25, "C", -1), (20, "P", -1), (25, "P", 1)]
+    ]
 
     await engine.do_vix_hedging(
         {"NetLiquidation": SimpleNamespace(value="100000")},
-        {"VIX": [vix_call]},
+        {"VIX": [vix_call, *other_positions]},
     )
 
     order_ops.create_limit_order.assert_called_once()
     assert order_ops.create_limit_order.call_args.kwargs["action"] == "SELL"
     assert order_ops.create_limit_order.call_args.kwargs["quantity"] == 1
+    order_ops.enqueue_order.assert_called_once_with(vix_call.contract, "ORDER")
 
 
 @pytest.mark.asyncio
-async def test_do_vix_hedging_buys_new_hedge_from_allocation_band(mocker):
+@pytest.mark.parametrize(
+    ("vixmo", "quantity"), [(14.99, 0), (15.0, 5), (30.0, 2), (40.0, 2), (50.0, 0)]
+)
+async def test_do_vix_hedging_buys_new_hedge_from_allocation_band(
+    mocker, vixmo, quantity
+):
     engine, ibkr, order_ops, scanner = _make_engine(mocker)
-    engine.config.strategies.vix_call_hedge.enabled = True
-    engine.config.strategies.vix_call_hedge.close_hedges_when_vix_exceeds = None
-    engine.config.strategies.vix_call_hedge.allocation = [
-        SimpleNamespace(lower_bound=0.0, upper_bound=100.0, weight=0.01)
-    ]
+    engine.config.strategies.vix_call_hedge = VIXCallHedgeConfig(enabled=True)
     mocker.patch(
         "thetagang.strategies.post_engine.net_option_positions", return_value=0
     )
-    mocker.patch("thetagang.strategies.post_engine.get_lower_price", return_value=5.0)
+    mocker.patch("thetagang.strategies.post_engine.get_lower_price", return_value=2.0)
     ibkr.get_ticker_for_contract = AsyncMock(
-        return_value=SimpleNamespace(marketPrice=lambda: 15.0)
+        return_value=SimpleNamespace(marketPrice=lambda: vixmo)
     )
     contract = Option(
         symbol="VIX",
@@ -746,9 +755,15 @@ async def test_do_vix_hedging_buys_new_hedge_from_allocation_band(mocker):
 
     await engine.do_vix_hedging({"NetLiquidation": SimpleNamespace(value="100000")}, {})
 
+    if quantity == 0:
+        scanner.find_eligible_contracts.assert_not_awaited()
+        order_ops.enqueue_order.assert_not_called()
+        return
+
     order_ops.create_limit_order.assert_called_once()
     assert order_ops.create_limit_order.call_args.kwargs["action"] == "BUY"
-    assert order_ops.create_limit_order.call_args.kwargs["quantity"] == 2
+    assert order_ops.create_limit_order.call_args.kwargs["quantity"] == quantity
+    assert order_ops.create_limit_order.call_args.kwargs["limit_price"] == 2.0
 
 
 @pytest.mark.asyncio

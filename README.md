@@ -96,7 +96,7 @@ Maintains a rolling ladder of long out-of-the-money puts within a fixed annual c
 
 ### VIX Call Hedging (`vix_call_hedge`)
 
-Purchases monthly VIX calls scaled to VIXMO regimes based on the [Cboe VIX Tail Hedge Index (VXTH)](https://www.cboe.com/us/indices/dashboard/vxth/) methodology, and automatically closes hedges when spot VIX exceeds `close_hedges_when_vix_exceeds`.
+Purchases monthly VIX calls using the first matching VIXMO allocation band (inclusive lower bound, exclusive upper bound), based on the [Cboe VIX Tail Hedge Index (VXTH)](https://www.cboe.com/us/indices/dashboard/vxth/) methodology. When spot VIX exceeds `close_hedges_when_vix_exceeds`, the exit only sells long VIX calls.
 
 ```toml
 [strategies.vix_call_hedge]
