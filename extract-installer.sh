@@ -12,5 +12,7 @@ docker run --platform linux/amd64 --rm -v "$(pwd)/tws:/tws" debian sh -ec '
     yes "" | sh tws-installer.sh
     test -f /root/Jts/1053/tws.vmoptions
     rm -f /root/Jts/1053/uninstall
-    cp -r /root/Jts /tws
+    rm -rf /root/Jts/1053/jre
+    mkdir -p /tws/Jts
+    cp -r /root/Jts/1053 /tws/Jts
 '

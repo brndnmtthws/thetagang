@@ -18,7 +18,7 @@ smoke() (
         if [ "$0" = gateway ]; then set -- "$@" --gateway; fi
         printf "TradingMode=paper\n" > /tmp/ibc-smoke.ini
         exec bash /opt/ibc/scripts/ibcstart.sh "$@" \
-            --ibc-ini=/tmp/ibc-smoke.ini --java-path="$JAVA_HOME/bin" --mode=paper
+            --ibc-ini=/tmp/ibc-smoke.ini --mode=paper
     ' "$mode")
     trap 'docker rm -f "$container" > /dev/null' EXIT
 

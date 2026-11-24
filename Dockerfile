@@ -63,7 +63,7 @@ RUN apt-get update \
 
 WORKDIR /src
 
-ADD ./tws/Jts /root/Jts
+COPY ./tws/Jts/1053 /root/Jts/1053
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
 ADD docker/patch-ibc-java-logging.sh /src/patch-ibc-java-logging.sh
@@ -80,11 +80,14 @@ RUN if [ "$(dpkg --print-architecture)" = "arm64" ]; then \
   && uv pip install --python /opt/venv/bin/python dist/thetagang-*.whl \
   && rm -rf /root/.cache \
   && rm -rf dist \
-  && echo '--add-modules java.base,java.naming,java.management,javafx.base,javafx.controls,javafx.fxml,javafx.graphics,javafx.media,javafx.swing,javafx.web' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '--add-opens java.desktop/javax.swing=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '--add-opens java.desktop/java.awt=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '--add-opens java.base/java.util=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '--add-opens javafx.graphics/com.sun.javafx.application=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
+  && printf '%s\n' "$JAVA_HOME" > /root/Jts/1053/.install4j/pref_jre.cfg \
+  && printf '%s\n' \
+    '--add-modules java.base,java.naming,java.management,javafx.base,javafx.controls,javafx.fxml,javafx.graphics,javafx.media,javafx.swing,javafx.web' \
+    '--add-opens java.desktop/javax.swing=ALL-UNNAMED' \
+    '--add-opens java.desktop/java.awt=ALL-UNNAMED' \
+    '--add-opens java.base/java.util=ALL-UNNAMED' \
+    '--add-opens javafx.graphics/com.sun.javafx.application=ALL-UNNAMED' \
+    >> /root/Jts/1053/tws.vmoptions \
   && sh /src/patch-ibc-java-logging.sh \
   && echo '[Logon]' | tee -a /root/Jts/jts.ini \
   && echo 'UseSSL=true' | tee -a /root/Jts/jts.ini
