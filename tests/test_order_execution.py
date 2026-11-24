@@ -1,3 +1,4 @@
+import asyncio
 import time
 from types import SimpleNamespace
 
@@ -8,7 +9,7 @@ from thetagang.config import Config
 from thetagang.ibkr import IBKR
 from thetagang.order_execution import OrderExecutionManager
 from thetagang.strategies.tail_hedge_state import TAIL_HEDGE_ENTRY_ORDER_REF
-from thetagang.trades import Trades
+from thetagang.trades import OrderSubmissionError, Trades
 
 
 @pytest.fixture(autouse=True)
@@ -227,6 +228,52 @@ async def test_unconfigured_execution_does_not_wait_or_cancel(mocker) -> None:
     ibkr.get_ticker_for_contract.assert_not_awaited()
     ibkr.wait_for_orders_complete.assert_not_awaited()
     ibkr.cancel_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_amendment_error_stops_other_order_supervisors(mocker) -> None:
+    config = _config(execution={"buy_price": "ask", "fill_timeout": 5})
+    ibkr = mocker.Mock()
+    contract = _option()
+    accepted = [
+        Trade(
+            contract=contract,
+            order=LimitOrder("BUY", 1, 0.5, account="DUX", orderId=order_id),
+            orderStatus=OrderStatus(status="Submitted", remaining=1),
+        )
+        for order_id in (1, 2)
+    ]
+    error = ConnectionError("amendment disconnected")
+    ibkr.place_order.side_effect = [*accepted, error]
+    ibkr.get_ticker_for_contract = mocker.AsyncMock(
+        return_value=_ticker(contract, ask=0.6)
+    )
+    trades = Trades(ibkr)
+    for trade in accepted:
+        trades.submit_order(contract, trade.order)
+    second_started = asyncio.Event()
+    second_stopped = asyncio.Event()
+
+    async def wait_for_orders(current, _timeout):
+        if current[0] is accepted[0]:
+            await second_started.wait()
+            return
+        second_started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            second_stopped.set()
+
+    ibkr.wait_for_orders_complete = wait_for_orders
+    manager = OrderExecutionManager(config, ibkr)
+
+    with pytest.raises(OrderSubmissionError, match="Check broker orders") as raised:
+        await asyncio.wait_for(manager.execute(trades), timeout=2)
+
+    assert raised.value.__cause__ is error
+    assert second_stopped.is_set()
+    placement_calls = ibkr.place_order.call_args_list
+    assert [call.args[1].orderId for call in placement_calls] == [1, 2, 1]
 
 
 @pytest.mark.asyncio

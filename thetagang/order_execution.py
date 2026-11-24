@@ -20,7 +20,7 @@ from thetagang.strategies.tail_hedge_state import (
     TAIL_HEDGE_MIN_LIMIT_PRICE_ATTR,
     is_tail_order_ref,
 )
-from thetagang.trades import Trades
+from thetagang.trades import OrderSubmissionError, Trades
 from thetagang.util import would_increase_spread
 
 PriceStrategy: TypeAlias = Literal["bid", "ask", "mid"]
@@ -361,6 +361,8 @@ class OrderExecutionManager:
                 updated_order.lmtPrice = float(updated_price)
                 trades.submit_order(contract, updated_order, idx)
                 log.info(f"{contract.symbol}: Order updated, order={updated_order}")
+        except OrderSubmissionError:
+            raise
         except (
             TimeoutError,
             RequestError,
@@ -437,12 +439,19 @@ class OrderExecutionManager:
             if policy is not None and policy.fill_timeout is not None:
                 supervised.append((idx, trade, policy))
 
-        tasks: list[Any] = [self._adjust_legacy_prices(trades)]
+        tasks = [asyncio.create_task(self._adjust_legacy_prices(trades))]
         tasks.extend(
-            self._supervise_trade(trades, idx, trade, policy)
+            asyncio.create_task(self._supervise_trade(trades, idx, trade, policy))
             for idx, trade, policy in supervised
         )
-        await asyncio.gather(*tasks)
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            pending = [task for task in tasks if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
     async def _supervise_trade(
         self,
@@ -918,11 +927,7 @@ class OrderExecutionManager:
 
         if replacement is None:
             return
-        if not trades.submit_order(trade.contract, replacement, idx):
-            log.error(
-                f"{trade.contract.symbol}: Failed to submit {label} replacement order."
-            )
-            return
+        trades.submit_order(trade.contract, replacement, idx)
 
         replacement_trade = trades.records()[idx]
         await self.ibkr.wait_for_orders_complete([replacement_trade], policy.final_wait)

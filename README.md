@@ -342,12 +342,22 @@ thetagang -h
 
 Common flags:
 - `--config` path to a toml config (required)
-- `--dry-run` show proposed orders without submitting trades
+- `--dry-run` show proposed orders without submitting, modifying, or canceling broker orders
 - `--without-ibc` connect to a running IB Gateway/TWS you started yourself
 - `-v/--verbosity` increase log verbosity (repeatable)
 
 All CLI options support environment variables with the `THETAGANG_` prefix.
 Example: `THETAGANG_CONFIG=./thetagang.toml`.
+
+`runtime.account.cancel_orders` only cancels unfinished ThetaGang orders
+(`tg:` order reference) for managed symbols in the configured account. Manual
+and older untagged orders are left alone; review any legacy orders before
+your first live run after upgrading. Stale tail-hedge entries are still
+canceled independently of this setting; working tail reductions are preserved.
+
+If broker placement raises, the run fails and stops submitting orders. Earlier
+orders may still fill, and the broker may have accepted the order that raised.
+Check open orders and executions before retrying.
 
 ## State Database
 

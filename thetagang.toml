@@ -10,7 +10,7 @@ strategies = ["wheel", "vix_call_hedge", "cash_management"]
 # The account number to operate on
 number = "DU1234567"
 
-# Cancel any existing orders for the symbols configured at startup
+# Cancel unfinished ThetaGang-tagged orders for managed symbols at startup.
 cancel_orders = true
 
 # Maximum amount of margin to use, as a ratio of net liquidation. IB lets

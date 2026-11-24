@@ -2,7 +2,6 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from ib_async.order import LimitOrder
 
 from thetagang.config import Config
 from thetagang.orders import Orders
@@ -33,7 +32,8 @@ def test_order_operations_round_vix_price() -> None:
     assert ops.round_vix_price(3.03) == pytest.approx(3.05)
 
 
-def test_order_operations_enqueue_order_records_order(mocker) -> None:
+@pytest.mark.parametrize("order_ref", [None, "tg:regime-rebalance:AAPL"])
+def test_order_operations_records_owned_order(mocker, order_ref) -> None:
     orders = mocker.Mock()
     data_store = mocker.Mock()
     config = mocker.Mock()
@@ -49,10 +49,12 @@ def test_order_operations_enqueue_order_records_order(mocker) -> None:
     contract = mocker.Mock(
         symbol="AAPL", secType="STK", conId=1, exchange="SMART", currency="USD"
     )
-    order = LimitOrder("BUY", 1, 100.0)
+    order = ops.create_limit_order(
+        action="BUY", quantity=1, limit_price=100.0, order_ref=order_ref
+    )
 
     ops.enqueue_order(contract, order)
 
-    orders.add_order.assert_called_once()
-    data_store.record_order_intent.assert_called_once()
-    data_store.record_event.assert_called_once()
+    persisted_order = data_store.record_order_intent.call_args.args[1]
+    assert persisted_order.orderRef == (order_ref or "tg:order")
+    assert orders.add_order.call_args.args[1].orderRef == persisted_order.orderRef
