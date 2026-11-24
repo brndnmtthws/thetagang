@@ -5,7 +5,7 @@ schema_version = 2
 strategies = ["wheel", "vix_call_hedge", "cash_management"]
 [runtime.account]
 # The account number to operate on
-number = "DU1234567"
+number = "DU7152454"
 
 # Cancel any existing orders for the symbols configured at startup
 cancel_orders = true
@@ -66,7 +66,7 @@ exchange = "XNYS"
 # and "continue" to continue.
 #
 # Setting this to "continue" is equivalent to disabling this feature.
-action_when_closed = "exit"
+action_when_closed = "continue"
 
 # The maximum amount of time, in seconds, to wait for the market to open if you
 # set `exchange_hours.action_when_closed = "wait"`. For example, a value of 3600
@@ -133,7 +133,7 @@ path = "data/thetagang.db"
 # url = "sqlite:////path/to/thetagang.db"
 
 [runtime.ib_async]
-logfile = '/etc/thetagang/ib_async.log'
+logfile = './logs/ib_async.log'
 
 # Typically the amount of time needed when waiting on data from the IBKR API.
 # Sometimes it can take a while to retrieve data, and it's lazy-loaded by the
@@ -158,7 +158,7 @@ RaiseRequestErrors = false
 password           = 'demo'
 userid             = 'demo'
 # Change this to point to your config.ini for IBC
-ibcIni = '/etc/thetagang/config.ini'
+ibcIni = './config.ini'
 # Change or unset this to use something other than the Docker bundled OpenJDK.
 javaPath = '/opt/java/openjdk/bin'
 
@@ -702,7 +702,7 @@ daily_stddev_window = "30 D"
 # parts = 5
 
 [strategies.vix_call_hedge]
-enabled = false
+enabled = true
 
 # Target delta for calls that are purchased
 delta = 0.30
@@ -722,7 +722,7 @@ close_hedges_when_vix_exceeds = 50.0
 # value to create a call ladder. For example, if you set this to 5, thetagang
 # will ignore current VIX positions starting 5 days before expiry, and
 # potentially adding more. This allows you to create a simple call ladder.
-ignore_dte = 0
+ignore_dte = 5
 
   # The allocations are specified as an ordered list of allocation weights
   # according to an upper/lower bound on VIXMO (the 30 day VIX). Default values
@@ -760,7 +760,7 @@ ignore_dte = 0
 # sell the cash fund to get back to the target cash balance.
 #
 # Enables cash management
-enabled = false
+enabled = true
 
 # The fund to purchase with your cash. Example of cash funds are SGOV or SHV,
 # which are short-term treasury ETFs with reasonable fees. Be sure to check the

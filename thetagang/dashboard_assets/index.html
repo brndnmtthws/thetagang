@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ThetaGang · 交易复盘</title>
+  <meta name="description" content="本地中文交易仪表盘，查看每次执行、策略决策、订单状态与持仓快照。">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">θ</span><div>ThetaGang<small>交易复盘工作台</small></div></div>
+    <div class="history-heading"><h2>运行历史</h2><span id="run-count">—</span></div>
+    <label class="sr-only" for="mode">运行模式</label>
+    <select id="mode"><option value="all">全部运行</option><option value="trade">可下单运行</option><option value="preview">仅预演</option></select>
+    <div id="run-list" class="run-list" aria-label="选择一次运行"></div>
+    <div class="pagination"><button id="previous" aria-label="上一页">←</button><span id="page-number"></span><button id="next" aria-label="下一页">→</button></div>
+    <div class="sidebar-footer"><span class="lock-icon">◇</span><div>本机 · 只读记录<small>页面刷新不会触发交易</small></div></div>
+  </aside>
+  <main>
+    <header class="topbar"><div class="breadcrumb">执行记录 <span>/</span> <strong id="selected-id">—</strong></div><div class="toolbar"><label for="timezone" class="sr-only">显示时区</label><select id="timezone"><option value="Asia/Shanghai">北京时间</option><option value="America/New_York">美东时间</option><option value="UTC">UTC</option></select><button id="refresh" class="button">↻ 刷新记录</button></div></header>
+    <div id="error" class="error" role="alert" hidden></div>
+    <div id="loading" class="empty">正在读取本地执行记录…</div>
+    <div id="content" hidden>
+      <section class="run-title"><div><div class="eyebrow">EXECUTION REVIEW</div><h1 id="run-title">本次运行</h1><p id="run-meta"></p></div><a id="export" class="button" download>↓ 导出本次记录</a></section>
+      <div id="run-notice" class="notice"></div>
+      <section id="metrics" class="metrics" aria-label="账户快照"></section>
+      <nav class="tabs" aria-label="复盘视图"><button data-tab="overview" class="active" aria-current="page">运行总览</button><button data-tab="orders">订单与成交 <span id="order-count"></span></button><button data-tab="positions">持仓快照</button><button data-tab="decisions">策略决策</button></nav>
+      <section id="view-overview" class="view"></section>
+      <section id="view-orders" class="view" hidden></section>
+      <section id="view-positions" class="view" hidden></section>
+      <section id="view-decisions" class="view" hidden></section>
+      <footer class="page-footer"><span id="snapshot-info"></span><span id="refresh-info"></span></footer>
+    </div>
+  </main>
+</div>
+</body></html>

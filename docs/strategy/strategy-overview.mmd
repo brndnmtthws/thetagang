@@ -1,106 +1,74 @@
-flowchart TD
-    START([一次运行开始]) --> SNAP[读取账户快照<br/>持仓 · 工作挂单 · 本轮订单意图]
-    CFG[(TOML 配置<br/>权重 · 阈值 · DTE · Delta · 门控)] --> PLAN
-    SNAP --> PLAN[PortfolioManager<br/>按阶段顺序规划订单]
+flowchart TB
+    INIT["账户与持仓 / 工作挂单 / 配置"] --> MODE{"run 配置选择"}
+    NOTE["run.strategies 按规范顺序展开<br/>run.stages 保留显式顺序<br/>Call 要求 Put 被启用；顺序仍需 depends_on"] -.-> MODE
 
-    subgraph ORDER[固定阶段顺序]
-        direction LR
-        P[1 卖 Put]
-        C[2 卖 Call]
-        R[3 Regime 再平衡]
-        B[4 Buy-only 补仓]
-        S[5 Sell-only 减仓]
-        RO[6 展期]
-        CL[7 平仓]
-        V[8 VIX 对冲]
-        CA[9 现金管理]
-        P --> C --> R --> B --> S --> RO --> CL --> V --> CA
+    subgraph W["路线 A · Wheel"]
+      WT["资金 B = NLV × wheel margin<br/>目标股数 / 股票数 / 空头合约数"]
+      ENTRY["先卖 Put 规划 → 再卖 Call 规划<br/>Put 受买入股票模式抑制；Call 受卖出模式抑制"]
+      SCAN["方向 / 价格变动 / 数量 / 合约扫描<br/>DTE 下限；Delta 优选可回退超限<br/>新增张数分批限制至少为 1 张"]
+      EQUITY["股票补仓 / 减仓<br/>off / buy_only / sell_only / both"]
+      MANAGE["检查已有空头期权（排除 VIX）<br/>先判可展期，失败才检查 close_at_pnl"]
+      ROLL["展期：BUY 旧 + SELL 新<br/>同到期不同执行价也允许"]
+      CLOSE["平仓：BUY 买回空头<br/>可展期者即使超过止盈线也不会归此类"]
+      WT --> ENTRY --> SCAN --> EQUITY --> MANAGE
+      MANAGE -->|"可展期且阶段启用"| ROLL
+      MANAGE -->|"不可展期且 P&L 大于止盈线"| CLOSE
     end
-
-    PLAN --> ORDER
-    CA --> PREF[整批风险检查<br/>重复/反向 · 覆盖 · 支出 · 保证金]
-    PREF -->|dry-run| PREVIEW[只输出订单摘要]
-    PREF -->|实盘通过| SUBMIT[先记录恢复日志<br/>再提交与连续调价]
-    SUBMIT --> BROKER[(IBKR / TWS / Gateway)]
-    BROKER --> NEXT([记录结果并结束本轮])
-
-    subgraph WHEEL[Wheel：期权收益与仓位转换]
-        direction TB
-        WT[目标金额 = 权重 × 购买力<br/>目标股数 = floor(目标金额 / 价格)]
-        WG{交易允许？<br/>方向门控？<br/>当日变动达阈值？}
-        WS[期权扫描器<br/>DTE · max DTE · Delta · 价格<br/>行权价 · 未平仓量]
-        WP[卖出 Put<br/>需要股数 - 100×净空头 Put]
-        WCQ[目标空头 Call<br/>cap_factor · target_floor · excess_only]
-        WCG{股票数、成本线、方向门控<br/>及阈值通过？}
-        WC[卖出 Covered Call]
-        WM[管理空头期权]
-        WMG{ITM / 超额 / DTE / P&L<br/>roll_when 与 close_at_pnl}
-        WR[组合展期<br/>BUY 旧合约 + SELL 新合约]
-        WX[平仓<br/>BUY 平空 / SELL 平多]
-        WT --> WG --> WS --> WP
-        WT --> WCQ --> WCG --> WS --> WC
-        WP --> WM
-        WC --> WM
-        WM --> WMG
-        WMG -->|展期| WR
-        WMG -->|止盈/关闭| WX
+    subgraph R["路线 B · Regime 股票再平衡"]
+      RB["资金基准<br/>net_liq / net_liq_ex_options / managed_stocks"]
+      RW["基础权重 → 波动率调整 / 平滑 / 限幅<br/>有效权重直接乘资金基准，不归一到 100%"]
+      RD["相对偏离 + 历史代理组合<br/>市场状态 / 冷却期 / 可选 ratio gate"]
+      HARD{"Hard 触发？"}
+      SOFT{"Soft 触发且软门控通过？"}
+      DEF{"Deficit 达启动或持续阈值？"}
+      FLOW{"Flow 阈值 + 软门控<br/>股数缺口方向一致性通过？"}
+      RO["股票订单<br/>Hard 可部分回归；Hard/Soft 可追加缺口清理<br/>所有模式仍受方向、交易允许与最小阈值限制"]
+      HOLD["保持 / 无订单"]
+      RB --> RW --> RD --> HARD
+      HARD -->|是| RO
+      HARD -->|否| SOFT
+      SOFT -->|是| RO
+      SOFT -->|否| DEF
+      DEF -->|是| RO
+      DEF -->|否| FLOW
+      FLOW -->|是| RO
+      FLOW -->|否| HOLD
     end
-    P -.-> WP
-    C -.-> WC
-    RO -.-> WR
-    CL -.-> WX
+    MODE -->|"选择 Wheel"| WT
+    MODE -->|"选择 Regime，二者互斥"| RB
+    ROLL --> POST
+    CLOSE --> POST
+    MANAGE -->|无动作| POST
+    RO --> POST
+    HOLD --> POST
+    MODE -->|"只选后置阶段也可"| POST
 
-    subgraph REGIME[Regime-aware：状态门控的股票再平衡]
-        direction TB
-        RB[资金基准<br/>net_liq / managed_stocks / net_liq_ex_options]
-        RW[有效权重<br/>可按波动率调整并归一化]
-        RD[相对漂移<br/>abs(当前权重/目标权重 - 1)]
-        RG{软带 / 硬带？<br/>冷却期？Choppiness？Efficiency？Ratio gate？}
-        RM{模式}
-        RH[硬再平衡<br/>可只回归 fraction]
-        RS[软再平衡<br/>仅状态和冷却通过]
-        RF[Flow<br/>超额现金 + 方向一致性]
-        DF[Deficit rail<br/>先卖超配，必要时跌破目标补缺口]
-        RR[股票订单 + 预留后置现金]
-        RB --> RW --> RD --> RG --> RM
-        RM --> RH --> RR
-        RM --> RS --> RR
-        RM --> RF --> RR
-        RM --> DF --> RR
-    end
-    R -.-> RB
-
-    subgraph POST[后置策略]
-        direction TB
-        VX{已有净多 VIX Call？<br/>VIX 是否超过平仓线？}
-        VXC[卖出 VIX Call]
-        VM[VIXMO 区间 allocation<br/>预算 = NLV × weight]
-        VXB[目标 Delta / DTE 扫描<br/>买入 VIX Call]
-        VX -->|是且过线| VXC
-        VX -->|否| VM --> VXB
-        CB[有效现金<br/>TotalCash + 待发生现金变动 - Regime 预留]
-        CG{超过目标+买入阈值？<br/>低于目标-卖出阈值？}
-        CF[买入/卖出现金基金]
-        CB --> CG --> CF
-    end
-    V -.-> VX
-    CA -.-> CB
-
-    subgraph EXCLUSIONS[互斥与例外]
-        E1[wheel 与 regime_rebalance 互斥]
-        E2[shares_only：跳过期权写入和展期]
-        E3[options_write_calls 依赖 options_write_puts]
-        E4[多头期权不由 Wheel 自动管理]
-    end
-    CFG -.-> EXCLUSIONS
-
-    classDef core fill:#eaf3f8,stroke:#527d95,color:#173044
-    classDef wheel fill:#fff3df,stroke:#c58a2b,color:#5b3b08
+    POST{"VIX 阶段被选中且 enabled=true？"}
+    POST -->|是| VQ{"已有净多 VIX Call？"}
+    POST -->|否| CASH
+    VQ -->|是| VC{"现货 VIX 严格超过平仓线？"}
+    VC -->|否：持有| CASH
+    VC -->|"是：当前实现有持仓筛选缺口"| VS["生成 SELL 意图<br/>不是仅多头 Call；详见复核报告"]
+    VQ -->|"否：净数量小于等于 0"| VN{"现货 VIX 超过平仓线？"}
+    VN -->|是：不新买| CASH
+    VN -->|否| VB["读取 VIXMO / 计算 NLV 预算 / 买 Call<br/>默认分档越界：VIXMO≥15 实际命中 1%"]
+    VS --> CASH
+    VB --> CASH
+    CASH{"现金阶段被选中且 enabled=true？"}
+    CASH -->|是| CB["有效现金 = TotalCash − 待发生支出<br/>可扫现金 = 有效现金 − Regime 预留"]
+    CB --> CG{"可扫现金高于买阈值<br/>或有效现金低于卖阈值？"}
+    CG -->|是| CF["买 / 卖现金基金"]
+    CG -->|否| Q
+    CF --> Q
+    CASH -->|否| Q["本轮订单队列"]
+    Q --> RISK["统一批次检查 / 实盘 what-if<br/>不能替代 Delta、VIX 档位和 no_trading 语义校验"]
+    RISK -->|模拟| DRY["输出本地订单预览"]
+    RISK -->|实盘通过| EXEC["先写恢复日志 → 提交 → 调价 → 记录结果"]
+    RO -.->|"仅 Flow 产生买单后预留剩余正现金"| CB
+    SAMPLE["仓库示例：Wheel 阶段已选<br/>VIX 与现金阶段已选但 enabled=false<br/>Regime 未选"] -.-> MODE
+    classDef wheel fill:#fff3df,stroke:#c58a2b,color:#3f310e
     classDef regime fill:#f1ecfa,stroke:#8467a6,color:#35234e
     classDef post fill:#e8f6ee,stroke:#4e9870,color:#173b26
-    classDef risk fill:#f8ecec,stroke:#ae6262,color:#4f2222
-    class START,SNAP,PLAN,ORDER,P,C,R,B,S,RO,CL,V,CA,NEXT,CFG core
-    class WT,WG,WS,WP,WCQ,WCG,WC,WM,WMG,WR,WX wheel
-    class RB,RW,RD,RG,RM,RH,RS,RF,DF,RR regime
-    class VX,VXC,VM,VXB,CB,CG,CF post
-    class PREF,PREVIEW,SUBMIT,BROKER risk
+    class WT,ENTRY,SCAN,EQUITY,MANAGE,ROLL,CLOSE wheel
+    class RB,RW,RD,HARD,SOFT,DEF,FLOW,RO,HOLD regime
+    class POST,VQ,VC,VS,VN,VB,CASH,CB,CG,CF post

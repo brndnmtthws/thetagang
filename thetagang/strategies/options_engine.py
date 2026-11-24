@@ -152,6 +152,14 @@ class OptionsStrategyEngine:
         symbol_configs = resolve_symbol_configs(
             self.config, context="options uncovered position check"
         )
+        for symbol in symbols - portfolio_positions.keys():
+            self.order_ops.record_decision(
+                symbol,
+                "call_write",
+                "skipped",
+                "没有可用于覆盖 Call 的股票持仓",
+                current_shares=0,
+            )
 
         async def update_to_write_task(symbol: str) -> None:
             if symbol not in symbols:
@@ -217,6 +225,7 @@ class OptionsStrategyEngine:
             )
 
             (write_threshold, absolute_daily_change) = (None, None)
+            decision_reason = "已有 Call 覆盖或可覆盖股票不足，无需新增合约"
 
             async def is_ok_to_write_calls(
                 symbol: str,
@@ -225,14 +234,18 @@ class OptionsStrategyEngine:
                 stock_count: int,
             ) -> bool:
                 nonlocal write_threshold, absolute_daily_change
+                nonlocal decision_reason
                 if (
                     not ticker
                     or calls_to_write <= 0
                     or not self.config.trading_is_allowed(symbol)
                 ):
+                    if not self.config.trading_is_allowed(symbol):
+                        decision_reason = "该标的未允许交易"
                     return False
 
                 if self.config.is_sell_only_rebalancing(symbol):
+                    decision_reason = "该标的使用仅卖出股票再平衡，跳过卖 Call"
                     return False
 
                 (can_write_when_green, can_write_when_red) = self.config.can_write_when(
@@ -241,6 +254,7 @@ class OptionsStrategyEngine:
 
                 close_price = self.services.get_close_price(ticker)
                 if not can_write_when_green and ticker.marketPrice() > close_price:
+                    decision_reason = "标的上涨，配置不允许上涨日卖 Call"
                     call_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
@@ -248,6 +262,7 @@ class OptionsStrategyEngine:
                     )
                     return False
                 if not can_write_when_red and ticker.marketPrice() < close_price:
+                    decision_reason = "标的下跌，配置不允许下跌日卖 Call"
                     call_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
@@ -260,6 +275,7 @@ class OptionsStrategyEngine:
                     absolute_daily_change,
                 ) = await self.get_write_threshold(ticker, "C")
                 if absolute_daily_change < write_threshold:
+                    decision_reason = "日内价格变动未达到卖 Call 的触发阈值"
                     call_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
@@ -290,6 +306,7 @@ class OptionsStrategyEngine:
                         position_percent = current_stock_value / net_liquidation_value
 
                         if position_percent < min_percent:
+                            decision_reason = "股票持仓占净值比例未达到卖 Call 门槛"
                             call_actions_table.add_row(
                                 symbol,
                                 "[yellow]None",
@@ -309,6 +326,9 @@ class OptionsStrategyEngine:
                                 current_stock_value - target_value
                             ) / target_value
                             if relative_excess < min_percent_relative:
+                                decision_reason = (
+                                    "相对目标仓位的超额比例未达到卖 Call 门槛"
+                                )
                                 call_actions_table.add_row(
                                     symbol,
                                     "[yellow]None",
@@ -322,6 +342,21 @@ class OptionsStrategyEngine:
                 symbol, ticker, calls_to_write, stock_count
             )
             strike_limit = math.ceil(max([strike_limit, ticker.marketPrice()]))
+
+            self.order_ops.record_decision(
+                symbol,
+                "call_write",
+                "eligible" if ok_to_write else "skipped",
+                "通过卖 Call 门槛，进入合约筛选" if ok_to_write else decision_reason,
+                current_shares=stock_count,
+                target_shares=target_quantity,
+                contracts_needed=new_contracts_needed,
+                quantity=calls_to_write,
+                max_contracts=maximum_new_contracts,
+                strike_limit=strike_limit,
+                daily_change=absolute_daily_change,
+                threshold=write_threshold,
+            )
 
             if calls_to_write > 0 and ok_to_write:
                 call_actions_table.add_row(
@@ -368,6 +403,12 @@ class OptionsStrategyEngine:
                     minimum_price=lambda: self.config.runtime.orders.minimum_credit,
                 )
             except (RuntimeError, NoValidContractsError):
+                self.order_ops.record_decision(
+                    symbol,
+                    "option_scan",
+                    "error",
+                    "Call 合约筛选未找到可用结果或行情读取失败",
+                )
                 log.error(
                     f"{symbol}: Finding eligible contracts failed. Continuing anyway..."
                 )
@@ -379,6 +420,15 @@ class OptionsStrategyEngine:
                 limit_price=round(get_higher_price(sell_ticker), 2),
             )
             self.order_ops.enqueue_order(sell_ticker.contract, order)
+            self.order_ops.record_decision(
+                symbol,
+                "call_write",
+                "planned",
+                "Call 合约已选定并加入订单计划，尚不代表成交",
+                quantity=quantity,
+                limit_price=order.lmtPrice,
+                strike=getattr(sell_ticker.contract, "strike", None),
+            )
 
     async def write_puts(
         self, puts: List[Tuple[str, str, int, Optional[float]]]
@@ -397,6 +447,12 @@ class OptionsStrategyEngine:
                     minimum_price=lambda: self.config.runtime.orders.minimum_credit,
                 )
             except (RuntimeError, NoValidContractsError):
+                self.order_ops.record_decision(
+                    symbol,
+                    "option_scan",
+                    "error",
+                    "Put 合约筛选未找到可用结果或行情读取失败",
+                )
                 log.error(
                     f"{symbol}: Finding eligible contracts failed. Continuing anyway..."
                 )
@@ -408,6 +464,15 @@ class OptionsStrategyEngine:
                 limit_price=round(get_higher_price(sell_ticker), 2),
             )
             self.order_ops.enqueue_order(sell_ticker.contract, order)
+            self.order_ops.record_decision(
+                symbol,
+                "put_write",
+                "planned",
+                "Put 合约已选定并加入订单计划，尚不代表成交",
+                quantity=quantity,
+                limit_price=order.lmtPrice,
+                strike=getattr(sell_ticker.contract, "strike", None),
+            )
 
     async def check_if_can_write_puts(
         self,
@@ -485,6 +550,9 @@ class OptionsStrategyEngine:
                 or math.isnan(market_price)
                 or math.isclose(market_price, 0)
             ):
+                self.order_ops.record_decision(
+                    symbol, "put_write", "error", "标的价格无效，无法计算目标股数"
+                )
                 log.error(
                     f"Invalid market price for {symbol} (market_price={market_price}), skipping for now"
                 )
@@ -629,15 +697,26 @@ class OptionsStrategyEngine:
                     )
             positions_summary_table.add_section()
 
+            decision_reason = (
+                "该标的使用仅买入股票再平衡，跳过卖 Put"
+                if self.config.is_buy_only_rebalancing(symbol)
+                else "目标仓位缺口不足一张 Put，或已有 Put 已覆盖缺口"
+            )
+            write_threshold = absolute_daily_change = None
+
             async def is_ok_to_write_puts(
                 symbol: str,
                 ticker: Ticker,
                 puts_to_write: int,
             ) -> bool:
+                nonlocal decision_reason, write_threshold, absolute_daily_change
                 if puts_to_write <= 0 or not self.config.trading_is_allowed(symbol):
+                    if not self.config.trading_is_allowed(symbol):
+                        decision_reason = "该标的未允许交易"
                     return False
 
                 if self.config.is_buy_only_rebalancing(symbol):
+                    decision_reason = "该标的使用仅买入股票再平衡，跳过卖 Put"
                     return False
 
                 (can_write_when_green, can_write_when_red) = self.config.can_write_when(
@@ -646,6 +725,7 @@ class OptionsStrategyEngine:
 
                 close_price = self.services.get_close_price(ticker)
                 if not can_write_when_green and ticker.marketPrice() > close_price:
+                    decision_reason = "标的上涨，配置不允许上涨日卖 Put"
                     put_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
@@ -653,6 +733,7 @@ class OptionsStrategyEngine:
                     )
                     return False
                 if not can_write_when_red and ticker.marketPrice() < close_price:
+                    decision_reason = "标的下跌，配置不允许下跌日卖 Put"
                     put_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
@@ -665,6 +746,7 @@ class OptionsStrategyEngine:
                     absolute_daily_change,
                 ) = await self.get_write_threshold(ticker, "P")
                 if absolute_daily_change < write_threshold:
+                    decision_reason = "日内价格变动未达到卖 Put 的触发阈值"
                     put_actions_table.add_row(
                         symbol,
                         "[cyan1]None",
@@ -674,6 +756,22 @@ class OptionsStrategyEngine:
                 return True
 
             ok_to_write = await is_ok_to_write_puts(symbol, ticker, net_target_puts)
+            self.order_ops.record_decision(
+                symbol,
+                "put_write",
+                "eligible" if ok_to_write else "skipped",
+                "通过卖 Put 门槛，待计算单次上限并筛选合约"
+                if ok_to_write
+                else decision_reason,
+                current_shares=current_position,
+                target_shares=self.target_quantities[symbol],
+                target_value=targets[symbol],
+                target_weight=symbol_configs[symbol].weight,
+                contracts_needed=net_target_puts,
+                market_price=market_price,
+                threshold=write_threshold,
+                daily_change=absolute_daily_change,
+            )
             target_additional_quantity[symbol] = {
                 "qty": net_target_puts,
                 "ok_to_write": ok_to_write,
@@ -698,6 +796,15 @@ class OptionsStrategyEngine:
                     account_summary,
                 )
                 puts_to_write = min([additional_quantity, maximum_new_contracts])
+                self.order_ops.record_decision(
+                    symbol,
+                    "put_write",
+                    "eligible",
+                    "按目标缺口与单次新增上限确定卖 Put 数量",
+                    contracts_needed=additional_quantity,
+                    max_contracts=maximum_new_contracts,
+                    quantity=puts_to_write,
+                )
                 if puts_to_write > 0:
                     strike_limit = self.config.get_strike_limit(symbol, "P")
                     if strike_limit:

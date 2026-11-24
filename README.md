@@ -1,12 +1,8 @@
 [![Docker publish](https://github.com/brndnmtthws/thetagang/workflows/Docker%20publish/badge.svg)](https://hub.docker.com/r/brndnmtthws/thetagang) [![Python Publish](https://github.com/brndnmtthws/thetagang/workflows/Python%20Publish/badge.svg)](https://pypi.org/project/thetagang/) [![Docker Pulls](https://img.shields.io/docker/pulls/brndnmtthws/thetagang)](https://hub.docker.com/r/brndnmtthws/thetagang) [![PyPI download month](https://img.shields.io/pypi/dm/thetagang?label=PyPI%20downloads)](https://pypi.python.org/pypi/thetagang/)
 
-[💬 Join the Matrix chat, we can get money together](https://matrix.to/#/#thetagang:frens.io).
-
 # Θ ThetaGang Θ
 
 _Beat the capitalists at their own game with ThetaGang 📈_
-
-![Decay my sweet babies](thetagang.jpg)
 
 ThetaGang is an [IBKR](https://www.interactivebrokers.com/) trading bot that
 started as a basic implementation of "The Wheel" strategy and has grown into a
@@ -186,6 +182,34 @@ minimize market impact when moving in and out of cash positions. Refer to
 ## Advanced Features
 
 ThetaGang includes several advanced features that provide fine-grained control over your trading strategy:
+
+### Candidate allocation review
+
+Before editing portfolio weights, you can review a finite list of candidate
+underlyings with the report-only analyzer. It checks option liquidity, target
+DTE, event-window data and a constrained risk-adjusted allocation. The command
+does not submit orders or modify the active configuration. The Markdown report
+defaults to UTF-8 Chinese; use `--language en` for English labels.
+
+```bash
+uv run thetagang-analyze-candidates \
+  --input data/candidate-analysis.example.json \
+  --output data/candidate-analysis.md
+```
+
+If TWS/IB Gateway is already running, `--ibkr --config thetagang.toml
+--symbols SPY,QQQ,TLT` collects option-chain and historical-price inputs in
+read-only mode. It reads `runtime.account.market_data_type`; add
+`--market-data-type 3` to try delayed data for this analysis only when IBKR
+reports error 10197 for a competing live session. See
+[`docs/strategy/CANDIDATE_ALLOCATION.md`](docs/strategy/CANDIDATE_ALLOCATION.md)
+for the input format, market-hours behavior and review boundaries.
+
+Missing option fields are reported as `data_insufficient`, separately from real
+threshold failures and optional warnings. Add `--option-field-timeout 30
+--json-output data/candidate-diagnostics.json` to wait longer and save per-contract
+observations, including when screening or allocation fails. The default 30% weight
+cap requires at least four eligible candidates to allocate 100%.
 
 ### Buy-Only Rebalancing
 
@@ -511,6 +535,19 @@ Changes and offline test evidence are recorded in
 [the high-priority verification report](docs/verification/OPT-02-05.md).
 
 ## State Database
+
+### Local Chinese dashboard
+
+```sh
+uv run thetagang-dashboard --config thetagang.toml
+```
+
+Open `http://127.0.0.1:8765/` and keep the process running; Ctrl+C stops it.
+The dashboard reads execution history, account/position snapshots, order timelines,
+fills and newly recorded strategy decisions from SQLite without connecting to IBKR.
+It supports timezone selection and sanitized per-run JSON exports. Historical
+statuses are observations, not live broker status; missing older decisions remain
+unavailable. See the [Chinese guide](docs/DASHBOARD.md).
 
 ThetaGang can persist a SQLite database with order activity, executions,
 historical bars, account snapshots, and decision gates. By default, the database

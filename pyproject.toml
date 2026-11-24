@@ -34,6 +34,8 @@ version = "2.0.3"
 
   [project.scripts]
   thetagang = "thetagang.entry:cli"
+  thetagang-analyze-candidates = "thetagang.candidate_analysis:cli"
+  thetagang-dashboard = "thetagang.dashboard:cli"
 
 [dependency-groups]
 dev = [

@@ -110,6 +110,7 @@ def create_call_position(symbol: str, position: int, strike: float) -> Portfolio
 @pytest.mark.asyncio
 async def test_write_calls_absolute_threshold_blocks(portfolio_manager, mocker):
     """Test that absolute threshold blocks call writing when position is too small."""
+    portfolio_manager.order_ops.data_store = mocker.Mock()
     # Configure for 2% allocation with 5% threshold
     portfolio_manager.config.portfolio.symbols = {
         "SPY": mocker.Mock(
@@ -153,6 +154,10 @@ async def test_write_calls_absolute_threshold_blocks(portfolio_manager, mocker):
 
     # Should not write calls because position is only 3% of NLV (below 5% threshold)
     assert len(to_write) == 0
+    event = portfolio_manager.order_ops.data_store.record_event.call_args
+    assert event.args[0] == "strategy_decision"
+    assert event.args[1]["outcome"] == "skipped"
+    assert "占净值比例" in event.args[1]["reason"]
 
 
 @pytest.mark.asyncio

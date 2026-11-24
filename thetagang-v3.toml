@@ -1,0 +1,252 @@
+# ThetaGang v3: small-account stock accumulation baseline.
+#
+# Purpose:
+# - Designed for an approximately USD 1,000 account.
+# - Buys whole shares of one broad-market ETF toward a target allocation.
+# - Does NOT write puts, write calls, roll options, or run hedge/cash strategies.
+#
+# Before use:
+# 1. Export IBKR_ACCOUNT, IBKR_USER, and IBKR_PASSWORD.
+# 2. Keep tradingMode="paper" and run with --dry-run first.
+# 3. Change tradingMode to "live" only after reviewing the proposed stock order.
+
+[meta]
+schema_version = 2
+
+[run]
+# Explicit stage selection prevents every option-trading stage from running.
+
+  [[run.stages]]
+  id = "equity_buy_rebalance"
+  kind = "equity.buy_rebalance"
+  enabled = true
+  depends_on = []
+
+[runtime.account]
+number = "DU7152454"
+# Appropriate only when this account/sub-account is dedicated to ThetaGang.
+cancel_orders = true
+# Invest toward 90% of NLV and retain roughly 10% as an operational buffer.
+margin_usage = 0.90
+market_data_type = 1
+
+[runtime.option_chains]
+# Required by the schema but unused by the v3 run plan.
+expirations = 4
+strikes = 15
+
+[runtime.exchange_hours]
+exchange = "XNYS"
+action_when_closed = "exit"
+max_wait_until_open = 3600
+delay_after_open = 1800
+delay_before_close = 1800
+
+[runtime.orders]
+exchange = "SMART"
+price_update_delay = [30, 60]
+minimum_credit = 0.05
+estimated_fee_per_contract = 1.00
+
+  [runtime.orders.algo]
+  strategy = "Adaptive"
+  params = [["adaptivePriority", "Patient"]]
+
+[runtime.database]
+enabled = true
+path = "data/thetagang-v3.db"
+
+[runtime.ib_async]
+api_response_wait_time = 60
+logfile = "data/ib_async-v3.log"
+
+[runtime.ibc]
+gateway = true
+ibcPath = "/opt/ibc"
+tradingMode = "paper"
+RaiseRequestErrors = false
+userid = "${IBKR_USER:-REPLACE_ME}"
+password = "${IBKR_PASSWORD:-REPLACE_ME}"
+ibcIni = "/etc/thetagang/config.ini"
+javaPath = "/opt/java/openjdk/bin"
+
+[runtime.watchdog]
+appStartupTime = 30
+appTimeout = 20
+clientId = 1
+connectTimeout = 2
+host = "127.0.0.1"
+port = 7497
+probeTimeout = 4
+readonly = false
+retryDelay = 2
+maxStartupRetries = 3
+
+  [runtime.watchdog.probeContract]
+  currency = "USD"
+  exchange = "SMART"
+  secType = "STK"
+  symbol = "SCHB"
+
+# -----------------------------------------------------------------------------
+# Wheel schema settings
+# -----------------------------------------------------------------------------
+# The wheel section is required by the config schema, but v3's explicit run
+# plan enables only equity_buy_rebalance. None of the option settings below run.
+
+[strategies.wheel.risk]
+margin_usage = 0.90
+
+[strategies.wheel.defaults.target]
+dte = 45
+max_dte = 120
+delta = 0.20
+maximum_new_contracts_percent = 0.02
+minimum_open_interest = 100
+
+  [strategies.wheel.defaults.target.puts]
+  delta = 0.20
+
+  [strategies.wheel.defaults.target.calls]
+  delta = 0.20
+
+[strategies.wheel.defaults.write_when]
+calculate_net_contracts = false
+
+  [strategies.wheel.defaults.write_when.puts]
+  green = false
+  red = true
+
+  [strategies.wheel.defaults.write_when.calls]
+  green = true
+  red = false
+  cap_factor = 0.50
+  cap_target_floor = 0.50
+  excess_only = false
+
+[strategies.wheel.defaults.roll_when]
+pnl = 0.75
+dte = 21
+min_pnl = 0.0
+max_dte = 120
+close_at_pnl = 1.0
+close_if_unable_to_roll = false
+
+  [strategies.wheel.defaults.roll_when.puts]
+  itm = false
+  always_when_itm = false
+  credit_only = true
+  has_excess = true
+
+  [strategies.wheel.defaults.roll_when.calls]
+  itm = true
+  always_when_itm = false
+  credit_only = true
+  has_excess = true
+  maintain_high_water_mark = true
+
+[strategies.wheel.defaults.constants]
+daily_stddev_window = "30 D"
+
+[strategies.wheel.equity_rebalance.defaults]
+mode = "buy_only"
+min_threshold_shares = 1
+min_threshold_amount = 25
+min_threshold_percent_relative = 0.05
+
+# -----------------------------------------------------------------------------
+# Portfolio
+# -----------------------------------------------------------------------------
+# The project currently sizes whole shares. At a roughly $1,000 NLV and the
+# 90% capital base above, it will target approximately $900 of SCHB.
+
+[portfolio.symbols]
+
+  [portfolio.symbols.SCHB]
+  weight = 1.0
+  primary_exchange = "ARCA"
+  adjust_price_after_delay = false
+  no_trading = false
+
+    [portfolio.symbols.SCHB.execution]
+    buy_price = "mid"
+    sell_price = "mid"
+    fill_timeout = 300
+    on_timeout = "cancel"
+    on_inactive = "cancel"
+    final_wait = 30
+
+# -----------------------------------------------------------------------------
+# Optional strategies: explicitly disabled and absent from the run plan.
+# -----------------------------------------------------------------------------
+
+[strategies.regime_rebalance]
+enabled = false
+symbols = []
+lookback_days = 40
+soft_band = 0.10
+hard_band = 0.50
+hard_band_rebalance_fraction = 1.0
+cooldown_days = 5
+choppiness_min = 3.0
+efficiency_max = 0.30
+flow_trade_min = 0.025
+flow_trade_stop = 0.0125
+flow_imbalance_tau = 0.70
+deficit_rail_start = 0.06
+deficit_rail_stop = 0.03
+eps = 0.00000001
+order_history_lookback_days = 30
+shares_only = false
+weight_base = "net_liq_ex_options"
+
+  [strategies.regime_rebalance.equity_rebalance.defaults]
+  mode = "both"
+
+[strategies.vix_call_hedge]
+enabled = false
+delta = 0.20
+target_dte = 30
+max_dte = 60
+close_hedges_when_vix_exceeds = 50.0
+ignore_dte = 5
+
+  [[strategies.vix_call_hedge.allocation]]
+  upper_bound = 15.0
+  weight = 0.00
+
+  [[strategies.vix_call_hedge.allocation]]
+  lower_bound = 15.0
+  upper_bound = 30.0
+  weight = 0.01
+
+  [[strategies.vix_call_hedge.allocation]]
+  lower_bound = 30.0
+  upper_bound = 50.0
+  weight = 0.005
+
+  [[strategies.vix_call_hedge.allocation]]
+  lower_bound = 50.0
+  weight = 0.00
+
+[strategies.tail_hedge]
+enabled = false
+annual_budget = 0.005
+harvest_trigger_weight = 0.05
+harvest_target_weight = 0.03
+targets = []
+
+[strategies.cash_management]
+enabled = false
+cash_fund = "SGOV"
+target_cash_balance = 0
+buy_threshold = 10000
+sell_threshold = 10000
+primary_exchange = "ARCA"
+
+  [strategies.cash_management.orders]
+  exchange = "SMART"
+
+    [strategies.cash_management.orders.algo]
+    strategy = "Vwap"
+    params = []

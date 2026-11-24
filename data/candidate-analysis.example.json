@@ -1,0 +1,75 @@
+{
+  "policy": {
+    "target_dte": 45,
+    "dte_tolerance": 15,
+    "max_bid_ask_pct": 0.05,
+    "min_option_volume": 100,
+    "min_open_interest": 500,
+    "earnings_blackout_days": 14,
+    "max_single_weight": 0.3,
+    "max_group_weight": 0.5,
+    "capital": 100000,
+    "margin_usage": 0.5,
+    "max_contract_notional_pct": 0.25,
+    "stress_shock_pct": 0.25,
+    "max_stress_loss_pct": 0.2
+  },
+  "candidates": [
+    {
+      "symbol": "SPY",
+      "price": 500,
+      "bid_ask_pct": 0.01,
+      "option_volume": 250000,
+      "open_interest": 1500000,
+      "dte": 45,
+      "earnings_days": null,
+      "implied_volatility": 0.18,
+      "realized_volatility": 0.16,
+      "option_yield": 0.03,
+      "risk_group": "us_equity",
+      "notes": ["Synthetic example values; replace with live observations."]
+    },
+    {
+      "symbol": "QQQ",
+      "price": 450,
+      "bid_ask_pct": 0.015,
+      "option_volume": 180000,
+      "open_interest": 900000,
+      "dte": 52,
+      "earnings_days": null,
+      "implied_volatility": 0.22,
+      "realized_volatility": 0.21,
+      "option_yield": 0.04,
+      "risk_group": "us_growth",
+      "notes": ["Synthetic example values; replace with live observations."]
+    },
+    {
+      "symbol": "IWM",
+      "price": 210,
+      "bid_ask_pct": 0.025,
+      "option_volume": 60000,
+      "open_interest": 300000,
+      "dte": 38,
+      "earnings_days": null,
+      "implied_volatility": 0.25,
+      "realized_volatility": 0.23,
+      "option_yield": 0.045,
+      "risk_group": "us_small_cap",
+      "notes": ["Synthetic example values; replace with live observations."]
+    },
+    {
+      "symbol": "TLT",
+      "price": 90,
+      "bid_ask_pct": 0.035,
+      "option_volume": 25000,
+      "open_interest": 120000,
+      "dte": 60,
+      "earnings_days": null,
+      "implied_volatility": 0.17,
+      "realized_volatility": 0.15,
+      "option_yield": 0.02,
+      "risk_group": "rates",
+      "notes": ["Synthetic example values; replace with live observations."]
+    }
+  ]
+}

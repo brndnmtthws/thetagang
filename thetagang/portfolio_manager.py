@@ -902,6 +902,7 @@ class PortfolioManager:
                             "success": error is None
                             and self.execution_result.successful,
                             **self.execution_result.to_dict(),
+                            "error_type": type(error).__name__ if error else None,
                         },
                     )
             except Exception as finalization_error:

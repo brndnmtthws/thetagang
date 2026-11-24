@@ -271,6 +271,7 @@ class DataStore:
         self.Session = sessionmaker(bind=self.engine, future=True)
         run_migrations(db_url)
         self.dry_run = dry_run
+        self.run_ended = False
         self.run_id = self._create_run(config_path, dry_run, config_text)
 
     @contextmanager
@@ -326,6 +327,8 @@ class DataStore:
                         payload=payload_json,
                     )
                 )
+            if event_type == "run_end":
+                self.run_ended = True
         except Exception as exc:
             log.warning(f"Failed to record event {event_type}: {exc}")
 

@@ -80,6 +80,9 @@ class PostStrategyEngine:
             return (False, None, None)
 
         if not self.config.strategies.vix_call_hedge.enabled:
+            self.order_ops.record_decision(
+                "VIX", "vix_hedge", "skipped", "VIX 对冲未启用"
+            )
             log.warning("🛑 VIX call hedging not enabled, skipping...")
             return
 
@@ -93,6 +96,14 @@ class PostStrategyEngine:
                 vix_ticker,
                 threshold,
             ) = await vix_calls_should_be_closed()
+            self.order_ops.record_decision(
+                "VIX",
+                "vix_hedge",
+                "eligible" if close_vix_calls else "skipped",
+                "已有 VIX Call，达到对冲平仓门槛"
+                if close_vix_calls
+                else "已有有效 VIX Call 持仓，本次不新增对冲",
+            )
             if close_vix_calls and vix_ticker and threshold:
                 for position in portfolio_positions.get("VIX", []):
                     if (
@@ -119,6 +130,9 @@ class PostStrategyEngine:
 
         (close_vix_calls, _vix_ticker, _threshold) = await vix_calls_should_be_closed()
         if close_vix_calls:
+            self.order_ops.record_decision(
+                "VIX", "vix_hedge", "skipped", "VIX 已高于配置的平仓阈值，跳过新增对冲"
+            )
             return
         try:
             vixmo_contract = Index("VIXMO", "CBOE", "USD")
@@ -147,6 +161,17 @@ class PostStrategyEngine:
                     weight = allocation.weight
                     break
             allocation_amount = float(account_summary["NetLiquidation"].value) * weight
+            self.order_ops.record_decision(
+                "VIX",
+                "vix_hedge",
+                "eligible" if weight > 0 else "skipped",
+                "按当前 VIXMO 与配置计算对冲预算"
+                if weight > 0
+                else "当前配置匹配到零对冲预算",
+                vixmo=vixmo_ticker.marketPrice(),
+                weight=weight,
+                allocation_amount=allocation_amount,
+            )
             if weight <= 0:
                 return
             buy_ticker = await self.option_scanner.find_eligible_contracts(
@@ -172,7 +197,20 @@ class PostStrategyEngine:
                 transmit=True,
             )
             self.order_ops.enqueue_order(buy_ticker.contract, order)
+            self.order_ops.record_decision(
+                "VIX",
+                "vix_hedge",
+                "planned",
+                "对冲预算除以每张权利金，向下取整后加入买入计划",
+                quantity=qty,
+                limit_price=price,
+                strike=buy_ticker.contract.strike,
+                allocation_amount=allocation_amount,
+            )
         except (RuntimeError, NoValidContractsError):
+            self.order_ops.record_decision(
+                "VIX", "vix_hedge", "error", "对冲行情获取或合约筛选失败，跳过本次对冲"
+            )
             log.error("VIX: Error occurred when VIX call hedging. Continuing anyway...")
 
     async def do_cashman(
@@ -182,6 +220,9 @@ class PostStrategyEngine:
     ) -> None:
         log.notice("Cash management...")
         if not self.config.strategies.cash_management.enabled:
+            self.order_ops.record_decision(
+                "", "cash_management", "skipped", "现金管理未启用"
+            )
             log.warning("🛑 Cash management not enabled, skipping")
             return
 
@@ -205,6 +246,15 @@ class PostStrategyEngine:
             elif effective_cash_balance < target_cash_balance - sell_threshold:
                 amount = effective_cash_balance - target_cash_balance
             else:
+                self.order_ops.record_decision(
+                    "",
+                    "cash_management",
+                    "skipped",
+                    "现金余额处于配置允许的范围内",
+                    cash_balance=cash_balance,
+                    pending_balance=pending_balance,
+                    effective_cash_balance=effective_cash_balance,
+                )
                 return
 
             symbol = self.config.strategies.cash_management.cash_fund
@@ -227,6 +277,12 @@ class PostStrategyEngine:
             if qty < 0:
                 qty -= 1
                 if symbol not in portfolio_positions:
+                    self.order_ops.record_decision(
+                        symbol,
+                        "cash_management",
+                        "skipped",
+                        "现金不足，但没有可出售的现金基金持仓",
+                    )
                     return
                 positions = [
                     p.position
@@ -236,6 +292,9 @@ class PostStrategyEngine:
                 position = positions[0] if len(positions) > 0 else 0
                 qty = min([max([-math.floor(position), qty]), 0])
                 if qty == 0:
+                    self.order_ops.record_decision(
+                        symbol, "cash_management", "skipped", "可出售的现金基金股数不足"
+                    )
                     return
 
             order = self.order_ops.create_limit_order(
@@ -247,5 +306,21 @@ class PostStrategyEngine:
                 transmit=True,
             )
             self.order_ops.enqueue_order(ticker.contract, order)
+            self.order_ops.record_decision(
+                symbol,
+                "cash_management",
+                "planned",
+                "现金超过目标，买入现金基金"
+                if qty > 0
+                else "现金低于目标，卖出现金基金补足；未成交卖单收入不计入可用现金",
+                cash_balance=cash_balance,
+                pending_balance=pending_balance,
+                effective_cash_balance=effective_cash_balance,
+                quantity=abs(qty),
+                limit_price=round(price, 2),
+            )
         except RuntimeError:
+            self.order_ops.record_decision(
+                "", "cash_management", "error", "现金管理行情获取或订单计算失败"
+            )
             log.error("Error occurred when cash hedging. Continuing anyway...")

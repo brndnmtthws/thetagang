@@ -1,0 +1,49 @@
+ThetaGang architecture validation
+Date: 2026-09-10 Asia/Shanghai
+Scope: candidate allocation analysis architecture sync (REV-20260910-011)
+
+Exporter
+- Command: bundled-python docs/architecture/export_architecture.py --png
+- Result: generated SVG and 3600 x 3800 PNG
+
+Static validation
+- SVG XML parse: PASS
+- Required SVG nodes: PASS
+  CandidateDataProvider
+  IBKRCandidateDataProvider
+  pressure simulation and constrained allocation
+  PortfolioManager
+  BatchRisk
+- PNG dimensions: 3600 x 3800
+- PNG decode: PASS
+- Mermaid required nodes and review-copy boundary: PASS
+- Visual inspection: PASS; analysis and trading regions are separated and labels are legible
+- ZIP integrity: PASS; 18 entries, no compressed-data errors
+- ZIP/source byte comparison for diagram, exporter, validation and candidate-design files: PASS
+
+Code quality
+- full pytest suite: PASS, 380 passed
+- ruff check docs/architecture/export_architecture.py: PASS
+- ruff format --check docs/architecture/export_architecture.py: PASS
+- ty check docs/architecture/export_architecture.py: PASS
+- git diff --check: PASS
+
+Archive
+- ZIP entries: 18
+- unzip integrity: PASS
+- Selected diagram, source, validation, and candidate-analysis files match archive bytes
+
+Execution boundary
+- No broker connection was made.
+- No order was submitted, modified, or cancelled.
+- The architecture exporter imports no trading code.
+
+Dashboard extension verification — 2026-09-12 (REV-20260912-001)
+- Chinese dashboard added: read-only SQLite -> local browser, strategy_decision events.
+- SVG XML and dashboard node: PASS; current date: 2026-09-12.
+- PNG dimensions: 3600 x 4160; visual inspection: PASS.
+- Full offline regression: 423 passed, 34 warnings; overall coverage 78%, dashboard 87%.
+- Ruff, ty, JavaScript syntax and git diff checks: PASS.
+- Desktop 1440 x 1000 / narrow 390 x 844 UI: PASS.
+- ZIP rebuilt from current files; 20 entries, integrity and byte comparison: PASS.
+- Existing 2026-09-10 verification above is retained as a historical record.

@@ -92,9 +92,6 @@ def _run(
     dry_run: bool,
     journal: ExecutionJournal,
 ) -> None:
-    run_stage_flags = stage_enabled_map(config)
-    run_stage_order = enabled_stage_ids_from_run(config.run)
-
     config.display(config_path)
 
     data_store = None
@@ -105,10 +102,41 @@ def _run(
             sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         data_store = DataStore(db_url, config_path, dry_run, raw_config)
 
+    try:
+        _run_session(config, without_ibc, dry_run, journal, data_store)
+    except BaseException as exc:
+        if data_store and not data_store.run_ended:
+            data_store.record_event(
+                "run_end",
+                {
+                    "success": False,
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                    "phase": "startup",
+                },
+            )
+        raise
+    finally:
+        if data_store:
+            data_store.engine.dispose()
+
+
+def _run_session(
+    config: Config,
+    without_ibc: bool,
+    dry_run: bool,
+    journal: ExecutionJournal,
+    data_store: DataStore | None,
+) -> None:
+    run_stage_flags = stage_enabled_map(config)
+    run_stage_order = enabled_stage_ids_from_run(config.run)
+
     _configure_ib_async_logging(config.runtime.ib_async.logfile)
 
     # Check if exchange is open before continuing
     if need_to_exit(config.runtime.exchange_hours):
+        if data_store:
+            data_store.record_event("run_end", {"success": True, "status": "skipped"})
         return
 
     management_task: asyncio.Task[Any] | None = None

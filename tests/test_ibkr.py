@@ -26,6 +26,28 @@ from thetagang.ibkr import (
 pytestmark = pytest.mark.asyncio
 
 
+async def test_volume_wait_uses_existing_value_and_accepts_genuine_zero(ibkr):
+    ticker = Ticker()
+    ticker.volume = 0.0
+    handler = ibkr.__ticker_field_handler__(TickerField.VOLUME, 0.01)
+    assert await handler(ticker)
+
+
+async def test_volume_wait_handles_late_update_and_missing_value(ibkr):
+    ticker = Ticker()
+    handler = ibkr.__ticker_field_handler__(TickerField.VOLUME, 0.1)
+
+    def update():
+        ticker.volume = 200.0
+        ticker.updateEvent.emit(ticker)
+
+    asyncio.get_running_loop().call_soon(update)
+    assert await handler(ticker)
+    ticker.volume = float("nan")
+    assert not await ibkr.__ticker_field_handler__(TickerField.VOLUME, 0.01)(ticker)
+    assert len(ticker.updateEvent) == 0
+
+
 @pytest.fixture
 def mock_ib(mocker):
     """Fixture to create a mock IB object."""

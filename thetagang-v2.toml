@@ -1,0 +1,348 @@
+# Conservative paper-trading baseline for ThetaGang.
+#
+# Before use:
+# 1. Set IBKR_ACCOUNT / IBKR_USER / IBKR_PASSWORD, or replace the demo values.
+# 2. Keep tradingMode="paper" and use --dry-run until every proposed order is understood.
+# 3. This config reduces risk but does not make short puts cash-secured in code.
+#    Always verify sum(short put strike * 100 * quantity) against reserved cash.
+
+[meta]
+schema_version = 2
+
+[run]
+# Start with one strategy only. Add hedging or cash management after the wheel
+# behavior has been observed and reconciled independently.
+strategies = ["wheel"]
+
+[runtime.account]
+# The account number to operate on
+number = "DU7152454"
+
+# Cancel any existing orders for the symbols configured at startup
+cancel_orders = true
+
+# Maximum amount of margin to use, as a ratio of net liquidation. IB lets
+# you use varying amounts of margin, depending on the assets. To use up to 4x
+# margin, set this to 4. It's recommended you always leave some additional
+# cushion. IB will start to close positions if you go below certain thresholds
+# of available margin in your account.
+#
+# For details on margin usage, see:
+#   https://www.interactivebrokers.com/en/index.php?f=24176
+#
+# The default value uses 50% of your available net liquidation value
+# (i.e., half of your funds). Set this to 1.0 to use all your funds,
+# or 1.5 to use 150% (which may incur margin interest charges).
+#
+# In other words, ThetaGang's buying power is calculated by taking your NLV and
+# multiplying it by margin_usage.
+margin_usage = 0.5
+
+# Market data type (see
+# https://interactivebrokers.github.io/tws-api/market_data_type.html)
+market_data_type = 1
+
+[runtime.option_chains]
+expirations = 4
+strikes = 15
+
+[runtime.exchange_hours]
+exchange = "XNYS"
+action_when_closed = "continue"
+max_wait_until_open = 3600
+delay_after_open = 1800
+delay_before_close = 1800
+
+[runtime.orders]
+exchange = "SMART"
+price_update_delay = [30, 60]
+minimum_credit = 0.05
+estimated_fee_per_contract = 1.00
+
+  [runtime.orders.algo]
+  strategy = "Adaptive"
+  params = [["adaptivePriority", "Patient"]]
+
+[runtime.database]
+enabled = true
+
+# Path to the SQLite file, relative to the config file location unless absolute.
+path = "data/thetagang-v2.db"
+
+# External decision providers are named runtime transports that can be reused by
+# narrowly scoped strategy decision points. Commands receive one JSON request on
+# stdin and must emit one JSON response on stdout. They are executed directly,
+# without a shell.
+#
+# [runtime.external_decisions.providers.tqqq_sizing]
+# transport = "command"
+# command = ["/opt/tqqq-policy/.venv/bin/python", "-m", "tqqq_policy"]
+# timeout_seconds = 10
+# max_response_bytes = 1048576
+# working_directory = "/opt/tqqq-policy"
+#
+# [runtime.external_decisions.providers.tail_harvest]
+# command = ["/opt/tail-policy/.venv/bin/python", "-m", "tail_policy"]
+# timeout_seconds = 10
+
+# Optional SQLAlchemy URL override, e.g. "sqlite:////abs/path/thetagang.db".
+# url = "sqlite:////path/to/thetagang.db"
+
+[runtime.ib_async]
+api_response_wait_time = 60
+logfile = "data/ib_async-v2.log"
+
+[runtime.ibc]
+gateway = true
+ibcPath = "/opt/ibc"
+tradingMode = "paper"
+RaiseRequestErrors = false
+userid = "${IBKR_USER:-demo}"
+password = "${IBKR_PASSWORD:-demo}"
+ibcIni = "/etc/thetagang/config.ini"
+javaPath = "/opt/java/openjdk/bin"
+
+[runtime.watchdog]
+appStartupTime = 30
+appTimeout = 20
+clientId = 1
+connectTimeout = 2
+host = "127.0.0.1"
+port = 7497
+probeTimeout = 4
+readonly = false
+retryDelay = 2
+maxStartupRetries = 3
+
+  [runtime.watchdog.probeContract]
+  currency = "USD"
+  exchange = "SMART"
+  secType = "STK"
+  symbol = "SPY"
+
+# -----------------------------------------------------------------------------
+# Wheel strategy
+# -----------------------------------------------------------------------------
+
+[strategies.wheel.risk]
+margin_usage = 0.30
+
+[strategies.wheel.defaults.target]
+dte = 45
+max_dte = 120
+delta = 0.20
+maximum_new_contracts_percent = 0.02
+minimum_open_interest = 100
+
+  [strategies.wheel.defaults.target.puts]
+  delta = 0.20
+
+  [strategies.wheel.defaults.target.calls]
+  delta = 0.20
+
+[strategies.wheel.defaults.write_when]
+calculate_net_contracts = false
+
+  [strategies.wheel.defaults.write_when.puts]
+  green = false
+  red = true
+
+  [strategies.wheel.defaults.write_when.calls]
+  green = true
+  red = false
+  cap_factor = 0.50
+  cap_target_floor = 0.50
+  excess_only = false
+
+[strategies.wheel.defaults.roll_when]
+pnl = 0.75
+dte = 21
+min_pnl = 0.0
+max_dte = 120
+close_at_pnl = 1.0
+close_if_unable_to_roll = false
+
+  [strategies.wheel.defaults.roll_when.puts]
+  itm = false
+  always_when_itm = false
+  credit_only = true
+  has_excess = true
+
+  [strategies.wheel.defaults.roll_when.calls]
+  itm = true
+  always_when_itm = false
+  credit_only = true
+  has_excess = true
+  maintain_high_water_mark = true
+
+[strategies.wheel.defaults.constants]
+daily_stddev_window = "30 D"
+
+[strategies.wheel.equity_rebalance.defaults]
+# Keep direct stock rebalancing off during the initial wheel-only trial.
+mode = "off"
+
+# -----------------------------------------------------------------------------
+# Portfolio
+# Broad, liquid ETFs only for the initial paper-trading phase.
+# Weights must sum to 1.0.
+# -----------------------------------------------------------------------------
+
+[portfolio.symbols]
+
+  [portfolio.symbols.SPY]
+  weight = 0.50
+  primary_exchange = "ARCA"
+  dte = 45
+  adjust_price_after_delay = false
+  no_trading = false
+
+    [portfolio.symbols.SPY.puts]
+    delta = 0.20
+
+    [portfolio.symbols.SPY.calls]
+    delta = 0.20
+    maintain_high_water_mark = true
+    cap_factor = 0.50
+    cap_target_floor = 0.50
+    excess_only = false
+
+    [portfolio.symbols.SPY.execution]
+    buy_price = "mid"
+    sell_price = "mid"
+    fill_timeout = 300
+    on_timeout = "cancel"
+    on_inactive = "cancel"
+    final_wait = 30
+
+  [portfolio.symbols.QQQ]
+  weight = 0.30
+  primary_exchange = "NASDAQ"
+  dte = 45
+  adjust_price_after_delay = false
+  no_trading = false
+
+    [portfolio.symbols.QQQ.puts]
+    delta = 0.20
+    write_threshold = 0.01
+
+      [portfolio.symbols.QQQ.puts.write_when]
+      green = false
+      red = true
+
+    [portfolio.symbols.QQQ.calls]
+    delta = 0.20
+    maintain_high_water_mark = true
+    cap_factor = 0.50
+    cap_target_floor = 0.50
+    excess_only = false
+
+    [portfolio.symbols.QQQ.execution]
+    buy_price = "mid"
+    sell_price = "mid"
+    fill_timeout = 300
+    on_timeout = "cancel"
+    on_inactive = "cancel"
+    final_wait = 30
+
+  [portfolio.symbols.TLT]
+  weight = 0.20
+  primary_exchange = "NASDAQ"
+  dte = 45
+  delta = 0.20
+  adjust_price_after_delay = false
+  no_trading = false
+
+    [portfolio.symbols.TLT.puts]
+    delta = 0.20
+
+    [portfolio.symbols.TLT.calls]
+    delta = 0.20
+    maintain_high_water_mark = true
+    cap_factor = 0.50
+    cap_target_floor = 0.50
+    excess_only = false
+
+    [portfolio.symbols.TLT.execution]
+    buy_price = "mid"
+    sell_price = "mid"
+    fill_timeout = 300
+    on_timeout = "cancel"
+    on_inactive = "cancel"
+    final_wait = 30
+
+# -----------------------------------------------------------------------------
+# Optional strategies: fully specified but disabled.
+# They are also absent from run.strategies, so they cannot trade accidentally.
+# -----------------------------------------------------------------------------
+
+[strategies.regime_rebalance]
+enabled = false
+symbols = []
+lookback_days = 40
+soft_band = 0.10
+hard_band = 0.50
+hard_band_rebalance_fraction = 1.0
+cooldown_days = 5
+choppiness_min = 3.0
+efficiency_max = 0.30
+flow_trade_min = 0.025
+flow_trade_stop = 0.0125
+flow_imbalance_tau = 0.70
+deficit_rail_start = 0.06
+deficit_rail_stop = 0.03
+eps = 0.00000001
+order_history_lookback_days = 30
+shares_only = false
+weight_base = "net_liq_ex_options"
+
+  [strategies.regime_rebalance.equity_rebalance.defaults]
+  mode = "both"
+
+[strategies.vix_call_hedge]
+enabled = false
+delta = 0.20
+target_dte = 30
+max_dte = 60
+close_hedges_when_vix_exceeds = 50.0
+ignore_dte = 5
+
+  [[strategies.vix_call_hedge.allocation]]
+  upper_bound = 15.0
+  weight = 0.00
+
+  [[strategies.vix_call_hedge.allocation]]
+  lower_bound = 15.0
+  upper_bound = 30.0
+  weight = 0.01
+
+  [[strategies.vix_call_hedge.allocation]]
+  lower_bound = 30.0
+  upper_bound = 50.0
+  weight = 0.005
+
+  [[strategies.vix_call_hedge.allocation]]
+  lower_bound = 50.0
+  weight = 0.00
+
+[strategies.tail_hedge]
+enabled = false
+annual_budget = 0.005
+harvest_trigger_weight = 0.05
+harvest_target_weight = 0.03
+targets = []
+
+[strategies.cash_management]
+enabled = false
+cash_fund = "SGOV"
+target_cash_balance = 0
+buy_threshold = 10000
+sell_threshold = 10000
+primary_exchange = "ARCA"
+
+  [strategies.cash_management.orders]
+  exchange = "SMART"
+
+    [strategies.cash_management.orders.algo]
+    strategy = "Vwap"
+    params = []

@@ -1,114 +1,169 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1420" viewBox="0 0 1800 1420">
-<title>ThetaGang 系统架构</title>
-<desc>配置驱动的异步交易程序。PortfolioManager 共用预计组合，订单通过批次风险检查并先落盘再提交；账户锁与券商对账约束重复执行，SQLite 可选。</desc>
-<rect width="1800" height="1420" fill="#ffffff"/>
-<text x="60" y="42" dominant-baseline="text-before-edge" text-anchor="start" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="36">ThetaGang 系统架构</text>
-<text x="60" y="94" dominant-baseline="text-before-edge" text-anchor="start" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">配置驱动  /  单进程异步执行  /  顺序规划，统一提交</text>
-<text x="1530" y="52" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">代码结构快照 · 2026-09-10</text>
-<rect x="40" y="150" width="1280" height="1150" rx="18" fill="#f8fafc" stroke="#dbe3eb" stroke-width="2"/>
-<text x="65" y="162" dominant-baseline="text-before-edge" text-anchor="start" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="18">THETAGANG · PYTHON PROCESS</text>
-<rect x="80" y="205" width="350" height="95" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="255.0" y="223" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">命令行入口</text>
-<text x="255.0" y="259" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">entry.py → main.py</text>
-<rect x="490" y="205" width="770" height="95" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="875.0" y="223" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">TOML 配置 → Config</text>
-<text x="875.0" y="259" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">config_migration：迁移   ·   config / config_models：校验与解析</text>
-<rect x="80" y="355" width="1180" height="100" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="670.0" y="373" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">启动与生命周期 · thetagang.py</text>
-<text x="670.0" y="409" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">账户锁   ·   交易时段检查   ·   IB / IBC / Watchdog   ·   单轮执行与断线退出</text>
-<rect x="80" y="515" width="1180" height="115" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="670.0" y="533" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">PortfolioManager + 阶段执行器</text>
-<text x="670.0" y="569" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">实际持仓 + 工作挂单 + 本轮意图   ·   按 run 配置顺序调度策略</text>
-<rect x="60" y="685" width="1220" height="260" rx="12" fill="#ffffff" stroke="#cad5de" stroke-width="2"/>
-<text x="85" y="696" dominant-baseline="text-before-edge" text-anchor="start" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">策略层 · strategies/（按配置选择；Wheel 与 Regime 互斥）</text>
-<rect x="80" y="745" width="350" height="160" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="255.0" y="763" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">OptionsStrategyEngine</text>
-<text x="255.0" y="799" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">卖出 Put / Call</text>
-<text x="255.0" y="829" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">展期 · 平仓</text>
-<rect x="490" y="745" width="350" height="80" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="665.0" y="763" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">EquityRebalanceEngine</text>
-<text x="665" y="790" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">股票买入 / 卖出再平衡</text>
-<rect x="500" y="855" width="330" height="72" rx="12" fill="#f4f1fa" stroke="#cad5de" stroke-width="2"/>
-<text x="665.0" y="873" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">RegimeRebalanceEngine</text>
-<text x="665" y="903" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="18">门控 · 动态权重 · 冷却期</text>
-<polyline points="665,825 665,855" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="665,855 670.0,843.0 660.0,843.0" fill="#8393a2"/>
-<rect x="910" y="745" width="350" height="160" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="1085.0" y="763" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">PostStrategyEngine</text>
-<text x="1085.0" y="799" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">VIX 对冲 · 现金管理</text>
-<text x="1085.0" y="829" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">未成交收入不补充可用资金</text>
-<rect x="80" y="1010" width="650" height="100" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="405.0" y="1028" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">OrderOperations → Orders → BatchRisk</text>
-<text x="405.0" y="1064" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">跨策略预留   ·   去重与敞口   ·   提交前检查</text>
-<rect x="810" y="1010" width="450" height="100" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="1035.0" y="1028" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">Trades · 提交与订单跟踪</text>
-<text x="1035.0" y="1064" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">先落盘再提交 / 调价 / 结果传递</text>
-<rect x="80" y="1190" width="650" height="80" rx="12" fill="#f3f5f7" stroke="#cad5de" stroke-width="2"/>
-<text x="405.0" y="1208" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">模拟运行 · 输出订单摘要</text>
-<text x="1060" y="1201" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">一个批次结束后退出</text>
-<text x="1060" y="1236" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">完成提交 ≠ 所有订单已经成交</text>
-<rect x="1400" y="205" width="340" height="275" rx="12" fill="#f4f1fa" stroke="#cad5de" stroke-width="2"/>
-<text x="1570.0" y="223" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">持久化与恢复</text>
-<text x="1570.0" y="259" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">必需：JSON 提交恢复日志</text>
-<text x="1570.0" y="289" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">未知结果先核对券商记录</text>
-<text x="1570.0" y="319" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">可选：DataStore · SQLite</text>
-<text x="1570.0" y="349" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">订单意图 / 状态 / 成交</text>
-<text x="1570.0" y="379" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">账户快照 / 策略历史状态</text>
-<text x="1570.0" y="409" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">账户锁阻止本机并发运行</text>
-<rect x="1400" y="515" width="340" height="115" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="1570.0" y="533" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">OptionChainScanner</text>
-<text x="1570.0" y="569" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">筛选到期日、Delta、价格</text>
-<text x="1570.0" y="599" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">供期权及 VIX 策略调用</text>
-<rect x="1400" y="700" width="340" height="150" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="1570.0" y="718" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">IBKR 适配层 · ibkr.py</text>
-<text x="1570.0" y="754" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">账户 / 持仓 / 行情 / 日线</text>
-<text x="1570.0" y="784" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">期权链 / 合约验证</text>
-<text x="1570.0" y="814" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">下单 / 撤单 / 状态回调</text>
-<rect x="1400" y="995" width="340" height="110" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="1570.0" y="1013" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">TWS / IB Gateway</text>
-<text x="1570.0" y="1049" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">可由 IBC / Watchdog 管理</text>
-<rect x="1400" y="1190" width="340" height="100" rx="12" fill="#edf5fa" stroke="#cad5de" stroke-width="2"/>
-<text x="1570.0" y="1208" dominant-baseline="text-before-edge" text-anchor="middle" fill="#172d43" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">Interactive Brokers</text>
-<text x="1570.0" y="1244" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">账户 · 行情 · 交易执行</text>
-<polyline points="255,300 255,355" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="255,355 260.0,343.0 250.0,343.0" fill="#8393a2"/>
-<polyline points="875,300 875,355" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="875,355 880.0,343.0 870.0,343.0" fill="#8393a2"/>
-<polyline points="670,455 670,515" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="670,515 675.0,503.0 665.0,503.0" fill="#8393a2"/>
-<polyline points="670,630 670,685" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="670,685 675.0,673.0 665.0,673.0" fill="#8393a2"/>
-<text x="698" y="646" dominant-baseline="text-before-edge" text-anchor="start" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="18">按阶段顺序执行</text>
-<polyline points="405,945 405,1010" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="405,1010 410.0,998.0 400.0,998.0" fill="#8393a2"/>
-<text x="423" y="964" dominant-baseline="text-before-edge" text-anchor="start" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="18">生成订单</text>
-<polyline points="730,1060 810,1060" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="810,1060 798.0,1055.0 798.0,1065.0" fill="#8393a2"/>
-<text x="770" y="1028" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="17">提交</text>
-<polyline points="405,1110 405,1190" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="405,1190 410.0,1178.0 400.0,1178.0" fill="#8393a2"/>
-<text x="425" y="1145" dominant-baseline="text-before-edge" text-anchor="start" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">dry-run</text>
-<polyline points="1260,400 1340,400 1340,320 1400,320" fill="none" stroke="#8393a2" stroke-width="2" stroke-dasharray="10 8"/>
-<polygon points="1400,320 1388.0,315.0 1388.0,325.0" fill="#8393a2"/>
-<text x="1355" y="279" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="18">记录</text>
-<polyline points="1280,720 1360,720 1360,570 1400,570" fill="none" stroke="#8393a2" stroke-width="2" stroke-dasharray="10 8"/>
-<polygon points="1400,570 1388.0,565.0 1388.0,575.0" fill="#8393a2"/>
-<polyline points="1260,570 1338,570 1338,792 1400,792" fill="none" stroke="#8393a2" stroke-width="2" stroke-dasharray="10 8"/>
-<polygon points="1400,792 1388.0,787.0 1388.0,797.0" fill="#8393a2"/>
-<text x="1368" y="759" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="18">查询</text>
-<polyline points="1570,630 1570,700" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="1570,700 1575.0,688.0 1565.0,688.0" fill="#8393a2"/>
-<polyline points="1260,1060 1368,1060 1368,825 1400,825" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="1400,825 1388.0,820.0 1388.0,830.0" fill="#8393a2"/>
-<polyline points="1570,850 1570,995" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="1570,995 1575.0,983.0 1565.0,983.0" fill="#8393a2"/>
-<text x="1595" y="887" dominant-baseline="text-before-edge" text-anchor="start" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">ib_async</text>
-<text x="1595" y="920" dominant-baseline="text-before-edge" text-anchor="start" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="18">请求 / 回调</text>
-<polyline points="1260,420 1298,420 1298,958 1510,958 1510,995" fill="none" stroke="#8393a2" stroke-width="2" stroke-dasharray="10 8"/>
-<polygon points="1510,995 1515.0,983.0 1505.0,983.0" fill="#8393a2"/>
-<text x="1430" y="966" dominant-baseline="text-before-edge" text-anchor="middle" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="17">启动 / 监护</text>
-<polyline points="1570,1105 1570,1190" fill="none" stroke="#8393a2" stroke-width="2"/>
-<polygon points="1570,1190 1575.0,1178.0 1565.0,1178.0" fill="#8393a2"/>
-<text x="60" y="1330" dominant-baseline="text-before-edge" text-anchor="start" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">实线：主要执行 / 订单路径     虚线：支撑调用 / 生命周期 / 持久化（省略逐模块连线）</text>
-<text x="60" y="1370" dominant-baseline="text-before-edge" text-anchor="start" fill="#526579" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="20">执行边界：模拟模式禁交易写入；结果未知先对账；未成交收入不用于资金预留。</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="2080" viewBox="0 0 1800 2080">
+<title>ThetaGang 系统架构 · 候选分析与中文交易仪表盘</title>
+<desc>新增只读候选标的分析与权重建议链路。数据采集、确定性评分、压力模拟、约束分配和报告输出与交易执行边界分离。</desc>
+<rect width="1800" height="2080" fill="#f6f8fa"/>
+<text x="60" y="34" dominant-baseline="text-before-edge" text-anchor="start" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="38">ThetaGang 系统架构 · 交易分析与中文复盘</text>
+<text x="60" y="90" dominant-baseline="text-before-edge" text-anchor="start" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="21">2026-09-12  /  分析链路只读并输出建议  /  交易链路继续执行统一风控</text>
+<text x="1570" y="49" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">代码结构快照</text>
+<rect x="40" y="145" width="1280" height="540" rx="18" fill="#fbfcfd" stroke="#cdd8e1" stroke-width="2"/>
+<text x="64" y="158" dominant-baseline="text-before-edge" text-anchor="start" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="18">PRE-TRADE ANALYSIS · REPORT-ONLY</text>
+<rect x="75" y="205" width="330" height="105" rx="14" fill="#f1edfb" stroke="#cdd8e1" stroke-width="2"/>
+<text x="240.0" y="221" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">候选标的输入</text>
+<text x="240.0" y="253" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">JSON 文件 / --symbols</text>
+<text x="240.0" y="280" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">交易员限定范围，不扫描全市场</text>
+<rect x="465" y="205" width="350" height="105" rx="14" fill="#f1edfb" stroke="#cdd8e1" stroke-width="2"/>
+<text x="640.0" y="221" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">CandidateDataProvider</text>
+<text x="640.0" y="253" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">人工 / 智能体结构化数据</text>
+<text x="640.0" y="280" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">只读 IBKRCandidateDataProvider</text>
+<rect x="875" y="205" width="390" height="105" rx="14" fill="#f1edfb" stroke="#cdd8e1" stroke-width="2"/>
+<text x="1070.0" y="221" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">候选观察快照</text>
+<text x="1070.0" y="253" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">价差 · 成交量 · OI · DTE</text>
+<text x="1070.0" y="280" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">IV / RV · 财报状态 · 风险组</text>
+<rect x="165" y="380" width="430" height="125" rx="14" fill="#ffffff" stroke="#cdd8e1" stroke-width="2"/>
+<text x="380.0" y="396" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">硬过滤与可解释评分</text>
+<text x="380.0" y="428" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">流动性 / DTE / 事件窗口</text>
+<text x="380.0" y="455" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">收益、风险分项与淘汰原因</text>
+<rect x="725" y="380" width="430" height="125" rx="14" fill="#ffffff" stroke="#cdd8e1" stroke-width="2"/>
+<text x="940.0" y="396" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">压力模拟与约束分配</text>
+<text x="940.0" y="428" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">压力损失 · 单张合约规模</text>
+<text x="940.0" y="455" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">单标的上限 · 风险组上限</text>
+<rect x="165" y="555" width="990" height="90" rx="14" fill="#eaf6ef" stroke="#cdd8e1" stroke-width="2"/>
+<text x="660.0" y="571" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">推荐结果 · 人工审核入口</text>
+<text x="660.0" y="603" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">Markdown 审核报告 · JSON 证据 · TOML 权重片段；不会自动提交订单或覆盖正式配置</text>
+<path d="M405 257 L465 257" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="465,257 453.0,252.0 453.0,262.0" fill="#879aaa"/>
+<path d="M815 257 L875 257" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="875,257 863.0,252.0 863.0,262.0" fill="#879aaa"/>
+<path d="M1070 310 L1070 345 L380 345 L380 380" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="380,380 385.0,368.0 375.0,368.0" fill="#879aaa"/>
+<path d="M595 442 L725 442" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="725,442 713.0,437.0 713.0,447.0" fill="#879aaa"/>
+<path d="M940 505 L940 555" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="940,555 945.0,543.0 935.0,543.0" fill="#879aaa"/>
+<rect x="40" y="725" width="1280" height="1045" rx="18" fill="#fbfcfd" stroke="#cdd8e1" stroke-width="2"/>
+<text x="64" y="738" dominant-baseline="text-before-edge" text-anchor="start" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="18">TRADING RUNTIME · ORDER PATH</text>
+<rect x="75" y="785" width="330" height="105" rx="14" fill="#edf5fa" stroke="#cdd8e1" stroke-width="2"/>
+<text x="240.0" y="801" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">交易命令行入口</text>
+<text x="240.0" y="833" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">entry.py → main.py</text>
+<text x="240.0" y="860" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">dry-run / 配置迁移</text>
+<rect x="465" y="785" width="800" height="105" rx="14" fill="#edf5fa" stroke="#cdd8e1" stroke-width="2"/>
+<text x="865.0" y="801" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">正式 TOML 配置 → Config</text>
+<text x="865.0" y="833" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">迁移、校验、策略阶段、标的权重与执行参数</text>
+<rect x="75" y="945" width="1190" height="90" rx="14" fill="#edf5fa" stroke="#cdd8e1" stroke-width="2"/>
+<text x="670.0" y="961" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">启动与恢复 · thetagang.py</text>
+<text x="670.0" y="993" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">账户锁 · 交易时段 · 历史提交及券商对账 · 单轮执行 · 断线退出</text>
+<rect x="75" y="1090" width="1190" height="90" rx="14" fill="#edf5fa" stroke="#cdd8e1" stroke-width="2"/>
+<text x="670.0" y="1106" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">PortfolioManager</text>
+<text x="670.0" y="1138" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">实际持仓 + 工作挂单 + 本轮意图；按 run 配置顺序调度阶段</text>
+<rect x="60" y="1235" width="1220" height="210" rx="14" fill="#ffffff" stroke="#cdd8e1" stroke-width="2"/>
+<text x="84" y="1248" dominant-baseline="text-before-edge" text-anchor="start" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">策略层 · strategies/（Wheel 与 Regime 互斥）</text>
+<rect x="80" y="1295" width="350" height="115" rx="14" fill="#fff3dd" stroke="#cdd8e1" stroke-width="2"/>
+<text x="255.0" y="1311" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">OptionsStrategyEngine</text>
+<text x="255.0" y="1343" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">卖 Put / Call</text>
+<text x="255.0" y="1370" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">展期 · 平仓</text>
+<rect x="485" y="1295" width="350" height="115" rx="14" fill="#fff3dd" stroke="#cdd8e1" stroke-width="2"/>
+<text x="660.0" y="1311" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">Equity / Regime</text>
+<text x="660.0" y="1343" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">股票再平衡</text>
+<text x="660.0" y="1370" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">状态门控 · 动态权重</text>
+<rect x="890" y="1295" width="350" height="115" rx="14" fill="#fff3dd" stroke="#cdd8e1" stroke-width="2"/>
+<text x="1065.0" y="1311" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">PostStrategyEngine</text>
+<text x="1065.0" y="1343" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">VIX Call 对冲</text>
+<text x="1065.0" y="1370" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">现金管理</text>
+<rect x="75" y="1500" width="560" height="105" rx="14" fill="#eaf6ef" stroke="#cdd8e1" stroke-width="2"/>
+<text x="355.0" y="1516" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">OrderOperations → Orders → BatchRisk</text>
+<text x="355.0" y="1548" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">订单意图 · 跨策略预留</text>
+<text x="355.0" y="1575" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">去重、敞口、支出与保证金检查</text>
+<rect x="705" y="1500" width="560" height="105" rx="14" fill="#eaf6ef" stroke="#cdd8e1" stroke-width="2"/>
+<text x="985.0" y="1516" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">Trades · 提交与跟踪</text>
+<text x="985.0" y="1548" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">先落盘再提交 · 调价再校验</text>
+<text x="985.0" y="1575" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">失败与未知结果向上返回</text>
+<rect x="75" y="1650" width="560" height="80" rx="14" fill="#ffffff" stroke="#cdd8e1" stroke-width="2"/>
+<text x="355.0" y="1666" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">dry-run · 只输出订单摘要</text>
+<text x="355.0" y="1698" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="18">交易写操作由 IBKR 适配层阻断</text>
+<rect x="705" y="1650" width="560" height="80" rx="14" fill="#ffffff" stroke="#cdd8e1" stroke-width="2"/>
+<text x="985.0" y="1666" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">批次结束</text>
+<text x="985.0" y="1698" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="18">完成提交不等于全部订单已经成交</text>
+<path d="M405 837 L465 837" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="465,837 453.0,832.0 453.0,842.0" fill="#879aaa"/>
+<path d="M865 890 L865 945" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="865,945 870.0,933.0 860.0,933.0" fill="#879aaa"/>
+<path d="M670 1035 L670 1090" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="670,1090 675.0,1078.0 665.0,1078.0" fill="#879aaa"/>
+<path d="M670 1180 L670 1235" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="670,1235 675.0,1223.0 665.0,1223.0" fill="#879aaa"/>
+<path d="M355 1445 L355 1500" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="355,1500 360.0,1488.0 350.0,1488.0" fill="#879aaa"/>
+<path d="M635 1552 L705 1552" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="705,1552 693.0,1547.0 693.0,1557.0" fill="#879aaa"/>
+<text x="670" y="1514" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="17">实盘通过</text>
+<path d="M355 1605 L355 1650" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="355,1650 360.0,1638.0 350.0,1638.0" fill="#879aaa"/>
+<text x="402" y="1614" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="17">dry-run</text>
+<path d="M985 1605 L985 1650" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="985,1650 990.0,1638.0 980.0,1638.0" fill="#879aaa"/>
+<rect x="1400" y="175" width="340" height="125" rx="14" fill="#fff0eb" stroke="#cdd8e1" stroke-width="2"/>
+<text x="1570.0" y="191" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">可选事件数据源</text>
+<text x="1570.0" y="223" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">财报日历 · 分红日</text>
+<text x="1570.0" y="250" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">缺失时标记未验证</text>
+<rect x="1400" y="360" width="340" height="150" rx="14" fill="#f1edfb" stroke="#cdd8e1" stroke-width="2"/>
+<text x="1570.0" y="376" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">只读分析数据</text>
+<text x="1570.0" y="408" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">目标 DTE 近 ATM Put / Call</text>
+<text x="1570.0" y="435" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">行情 · OI · 成交量 · Greeks</text>
+<text x="1570.0" y="462" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">历史日线</text>
+<rect x="1400" y="570" width="340" height="145" rx="14" fill="#edf5fa" stroke="#cdd8e1" stroke-width="2"/>
+<text x="1570.0" y="586" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">TWS / IB Gateway</text>
+<text x="1570.0" y="618" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">分析命令要求网关已运行</text>
+<text x="1570.0" y="645" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">交易由 IBC / Watchdog 管理</text>
+<rect x="1400" y="775" width="340" height="100" rx="14" fill="#edf5fa" stroke="#cdd8e1" stroke-width="2"/>
+<text x="1570.0" y="791" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">Interactive Brokers</text>
+<text x="1570.0" y="823" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">账户 · 市场数据 · 交易执行</text>
+<rect x="1400" y="945" width="340" height="210" rx="14" fill="#ffffff" stroke="#cdd8e1" stroke-width="2"/>
+<text x="1570.0" y="961" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">持久化与恢复</text>
+<text x="1570.0" y="993" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">ExecutionJournal · 原子 JSON</text>
+<text x="1570.0" y="1020" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">DataStore · SQLite（可选）</text>
+<text x="1570.0" y="1047" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">运行 / 快照 / 意图 / 成交</text>
+<text x="1570.0" y="1074" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">账户锁阻止本机并发</text>
+<rect x="1400" y="1235" width="340" height="115" rx="14" fill="#edf5fa" stroke="#cdd8e1" stroke-width="2"/>
+<text x="1570.0" y="1251" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">OptionChainScanner</text>
+<text x="1570.0" y="1283" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">DTE · Delta · 价格</text>
+<text x="1570.0" y="1310" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">供交易策略选择合约</text>
+<rect x="1400" y="1430" width="340" height="160" rx="14" fill="#edf5fa" stroke="#cdd8e1" stroke-width="2"/>
+<text x="1570.0" y="1446" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">IBKR 适配层 · ibkr.py</text>
+<text x="1570.0" y="1478" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">账户 / 持仓 / 行情 / 日线</text>
+<text x="1570.0" y="1505" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">合约验证 · what-if</text>
+<text x="1570.0" y="1532" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">下单 / 撤单 / 状态回调</text>
+<rect x="1400" y="1650" width="340" height="115" rx="14" fill="#ffffff" stroke="#cdd8e1" stroke-width="2"/>
+<text x="1570.0" y="1666" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">审计与说明</text>
+<text x="1570.0" y="1698" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">架构 / 策略 / 修订记录</text>
+<text x="1570.0" y="1725" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">候选分析报告留痕</text>
+<path d="M1400 237 L1305 237 L1305 270 L1265 270" fill="none" stroke="#879aaa" stroke-width="2" stroke-dasharray="10 8"/>
+<polygon points="1265,270 1277.0,275.0 1277.0,265.0" fill="#879aaa"/>
+<path d="M1400 435 L1325 435 L1325 285 L815 285" fill="none" stroke="#879aaa" stroke-width="2" stroke-dasharray="10 8"/>
+<polygon points="815,285 827.0,290.0 827.0,280.0" fill="#879aaa"/>
+<path d="M1570 510 L1570 570" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="1570,570 1575.0,558.0 1565.0,558.0" fill="#879aaa"/>
+<path d="M1570 715 L1570 775" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="1570,775 1575.0,763.0 1565.0,763.0" fill="#879aaa"/>
+<path d="M1155 600 L1335 600 L1335 830 L465 830" fill="none" stroke="#879aaa" stroke-width="2" stroke-dasharray="10 8"/>
+<polygon points="465,830 477.0,835.0 477.0,825.0" fill="#879aaa"/>
+<text x="1205" y="610" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="17">审核后复制权重</text>
+<path d="M1265 980 L1360 980 L1360 1048 L1400 1048" fill="none" stroke="#879aaa" stroke-width="2" stroke-dasharray="10 8"/>
+<polygon points="1400,1048 1388.0,1043.0 1388.0,1053.0" fill="#879aaa"/>
+<path d="M1280 1275 L1360 1275 L1400 1290" fill="none" stroke="#879aaa" stroke-width="2" stroke-dasharray="10 8"/>
+<polygon points="1400,1290 1390.5196670771134,1281.104872813094 1387.0084326612296,1290.4681645887845" fill="#879aaa"/>
+<path d="M1570 1350 L1570 1430" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="1570,1430 1575.0,1418.0 1565.0,1418.0" fill="#879aaa"/>
+<path d="M1265 1552 L1340 1552 L1400 1510" fill="none" stroke="#879aaa" stroke-width="2"/>
+<polygon points="1400,1510 1387.3019052319548,1512.7853885297648 1393.036528675588,1520.9777077349552" fill="#879aaa"/>
+<path d="M1570 1430 L1570 715" fill="none" stroke="#879aaa" stroke-width="2" stroke-dasharray="10 8"/>
+<polygon points="1570,715 1565.0,727.0 1575.0,727.0" fill="#879aaa"/>
+<text x="1612" y="1160" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="17">ib_async</text>
+<rect x="75" y="1810" width="1665" height="135" rx="14" fill="#eaf6ef" stroke="#cdd8e1" stroke-width="2"/>
+<text x="907.5" y="1826" dominant-baseline="text-before-edge" text-anchor="middle" fill="#18364d" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="23">本地中文交易仪表盘 · dashboard.py → 浏览器</text>
+<text x="907.5" y="1858" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">SQLite 只读事务 → 运行历史 / 订单生命周期 / 持仓快照 / 策略决策 / JSON 导出</text>
+<text x="907.5" y="1885" dominant-baseline="text-before-edge" text-anchor="middle" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">Put / Call / VIX / 现金管理写入决策事件；界面仅本机读取，不连接券商</text>
+<path d="M1740 1050 L1775 1050 L1775 1870 L1740 1870" fill="none" stroke="#879aaa" stroke-width="2" stroke-dasharray="10 8"/>
+<polygon points="1740,1870 1752.0,1875.0 1752.0,1865.0" fill="#879aaa"/>
+<text x="60" y="1980" dominant-baseline="text-before-edge" text-anchor="start" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">实线：主要数据或订单路径    虚线：只读支撑、审核复制、持久化或共享适配调用</text>
+<text x="60" y="2015" dominant-baseline="text-before-edge" text-anchor="start" fill="#4e6678" font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" font-size="19">边界：候选分析生成建议但不交易；正式配置经交易运行加载后，订单仍必须通过恢复与整批风险检查。</text>
 </svg>

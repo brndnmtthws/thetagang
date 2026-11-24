@@ -55,6 +55,27 @@ class OrderOperations:
             return round(price * 20) / 20
         return round(price * 100) / 100
 
+    def record_decision(
+        self,
+        symbol: str,
+        stage: str,
+        outcome: str,
+        reason: str,
+        **metrics: Any,
+    ) -> None:
+        """Persist an observed decision without changing strategy control flow."""
+        if self.data_store:
+            self.data_store.record_event(
+                "strategy_decision",
+                {
+                    "stage": stage,
+                    "outcome": outcome,
+                    "reason": reason,
+                    "metrics": metrics,
+                },
+                symbol=symbol,
+            )
+
     def create_limit_order(
         self,
         *,

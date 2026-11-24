@@ -1,0 +1,11 @@
+[symbols.IWM]
+weight = 0.3000
+
+[symbols.QQQ]
+weight = 0.3000
+
+[symbols.SPY]
+weight = 0.3000
+
+[symbols.TLT]
+weight = 0.1000

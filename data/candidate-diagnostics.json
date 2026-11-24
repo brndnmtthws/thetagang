@@ -1,0 +1,240 @@
+{
+  "status": "analysis_failed",
+  "error": "No candidate passed the hard eligibility filters. Rejections: SPY: option volume is below 100 || open interest is below 500 | QQQ: option volume is below 100 || open interest is below 500",
+  "policy": {
+    "target_dte": 45,
+    "dte_tolerance": 15,
+    "max_bid_ask_pct": 0.05,
+    "min_option_volume": 100.0,
+    "min_open_interest": 500.0,
+    "earnings_blackout_days": 14,
+    "max_single_weight": 0.3,
+    "max_group_weight": 0.5,
+    "min_weight": 0.0,
+    "capital": 100000.0,
+    "margin_usage": 0.5,
+    "contract_multiplier": 100,
+    "max_contract_notional_pct": 0.25,
+    "stress_shock_pct": 0.25,
+    "max_stress_loss_pct": 0.2,
+    "allocation_step": 0.01,
+    "risk_floor": 0.05
+  },
+  "assessments": [
+    {
+      "symbol": "SPY",
+      "eligible": false,
+      "score": 0.690861,
+      "liquidity_score": 0.700872,
+      "dte_score": 0.933333,
+      "yield_score": 1.0,
+      "risk_score": 0.444444,
+      "reasons": [
+        "option volume is below 100",
+        "open interest is below 500"
+      ],
+      "warnings": [
+        "earnings date was not supplied; event risk is unverified",
+        "implied volatility is below realized volatility"
+      ],
+      "missing_data": [],
+      "status": "rejected"
+    },
+    {
+      "symbol": "QQQ",
+      "eligible": false,
+      "score": 0.636553,
+      "liquidity_score": 0.575737,
+      "dte_score": 0.933333,
+      "yield_score": 1.0,
+      "risk_score": 0.414416,
+      "reasons": [
+        "option volume is below 100",
+        "open interest is below 500"
+      ],
+      "warnings": [
+        "earnings date was not supplied; event risk is unverified",
+        "implied volatility is below realized volatility"
+      ],
+      "missing_data": [],
+      "status": "rejected"
+    }
+  ],
+  "observations": [
+    {
+      "symbol": "SPY",
+      "price": 765.775,
+      "bid_ask_pct": 0.006102212051868808,
+      "option_volume": 75.0,
+      "open_interest": 35.0,
+      "dte": 42,
+      "earnings_days": null,
+      "implied_volatility": 0.13001625711845777,
+      "realized_volatility": 0.13596256880214624,
+      "beta": null,
+      "option_yield": 0.15490842610427347,
+      "stress_loss_pct": null,
+      "risk_group": "us_equity",
+      "source": "ibkr",
+      "as_of": "2026-09-11T14:30:31.028308+00:00",
+      "notes": [],
+      "requested_market_data_type": 2,
+      "option_samples": [
+        {
+          "contract": "SPY   261023P00766000",
+          "con_id": 920271259,
+          "right": "P",
+          "bid": 13.07,
+          "ask": 13.15,
+          "volume": 75.0,
+          "open_interest": 71.0,
+          "open_interest_field": "putOpenInterest",
+          "implied_volatility": 0.13001625711845777,
+          "iv_source": "modelGreeks",
+          "delta": -0.4893689954258496,
+          "greeks": {
+            "modelGreeks": {
+              "impliedVol": 0.13001625711845777,
+              "delta": -0.4893689954258496
+            },
+            "bidGreeks": {
+              "impliedVol": 0.12944031999558683,
+              "delta": null
+            },
+            "askGreeks": {
+              "impliedVol": 0.13002526457862518,
+              "delta": null
+            },
+            "lastGreeks": {
+              "impliedVol": null,
+              "delta": null
+            }
+          },
+          "market_data_type": 1,
+          "received_at": "2026-09-11T14:30:30.476529+00:00"
+        },
+        {
+          "contract": "SPY   261023C00766000",
+          "con_id": 920268999,
+          "right": "C",
+          "bid": 14.16,
+          "ask": 14.22,
+          "volume": 79.0,
+          "open_interest": 35.0,
+          "open_interest_field": "callOpenInterest",
+          "implied_volatility": 0.13001625711845777,
+          "iv_source": "modelGreeks",
+          "delta": 0.5297375679168003,
+          "greeks": {
+            "modelGreeks": {
+              "impliedVol": 0.13001625711845777,
+              "delta": 0.5297375679168003
+            },
+            "bidGreeks": {
+              "impliedVol": 0.12991764183447482,
+              "delta": null
+            },
+            "askGreeks": {
+              "impliedVol": 0.13049820672919535,
+              "delta": null
+            },
+            "lastGreeks": {
+              "impliedVol": null,
+              "delta": null
+            }
+          },
+          "market_data_type": 1,
+          "received_at": "2026-09-11T14:30:30.476429+00:00"
+        }
+      ]
+    },
+    {
+      "symbol": "QQQ",
+      "price": 716.3050000000001,
+      "bid_ask_pct": 0.01597160603371781,
+      "option_volume": 29.0,
+      "open_interest": 45.0,
+      "dte": 42,
+      "earnings_days": null,
+      "implied_volatility": 0.188442237167678,
+      "realized_volatility": 0.22608593695839616,
+      "beta": null,
+      "option_yield": 0.2222649902060209,
+      "stress_loss_pct": null,
+      "risk_group": "us_growth",
+      "source": "ibkr",
+      "as_of": "2026-09-11T14:30:33.473148+00:00",
+      "notes": [],
+      "requested_market_data_type": 2,
+      "option_samples": [
+        {
+          "contract": "QQQ   261023P00716000",
+          "con_id": 920303329,
+          "right": "P",
+          "bid": 16.77,
+          "ask": 17.04,
+          "volume": 29.0,
+          "open_interest": 61.0,
+          "open_interest_field": "putOpenInterest",
+          "implied_volatility": 0.18681413389068943,
+          "iv_source": "modelGreeks",
+          "delta": -0.47264680976334955,
+          "greeks": {
+            "modelGreeks": {
+              "impliedVol": 0.18681413389068943,
+              "delta": -0.47264680976334955
+            },
+            "bidGreeks": {
+              "impliedVol": 0.18412405121134506,
+              "delta": null
+            },
+            "askGreeks": {
+              "impliedVol": 0.1874534595959675,
+              "delta": null
+            },
+            "lastGreeks": {
+              "impliedVol": 0.19329201810476188,
+              "delta": null
+            }
+          },
+          "market_data_type": 1,
+          "received_at": "2026-09-11T14:30:32.930676+00:00"
+        },
+        {
+          "contract": "QQQ   261023C00716000",
+          "con_id": 920301967,
+          "right": "C",
+          "bid": 19.59,
+          "ask": 19.88,
+          "volume": 50.0,
+          "open_interest": 45.0,
+          "open_interest_field": "callOpenInterest",
+          "implied_volatility": 0.19007034044466659,
+          "iv_source": "modelGreeks",
+          "delta": 0.5390454445641294,
+          "greeks": {
+            "modelGreeks": {
+              "impliedVol": 0.19007034044466659,
+              "delta": 0.5390454445641294
+            },
+            "bidGreeks": {
+              "impliedVol": 0.18743647189165852,
+              "delta": null
+            },
+            "askGreeks": {
+              "impliedVol": 0.1903405969426462,
+              "delta": null
+            },
+            "lastGreeks": {
+              "impliedVol": 0.18813352022117255,
+              "delta": null
+            }
+          },
+          "market_data_type": 1,
+          "received_at": "2026-09-11T14:30:32.932000+00:00"
+        }
+      ]
+    }
+  ],
+  "recommendations": []
+}

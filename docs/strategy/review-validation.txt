@@ -1,0 +1,32 @@
+ThetaGang strategy review — 2026-09-10
+Source baseline: 5db001b261875d9e118f839dc7b2622243ae0633
+Scope: documentation, offline observations and diagram exports only.
+
+Command:
+.venv/bin/python -m docs.strategy.verify_strategy_review
+Result:
+All observation assertions passed; 12 result groups saved to review-observations.json.
+Broker calls were mocked. No IB connection or real order was created.
+
+Command:
+.venv/bin/pytest -q tests/test_regime_rebalance.py tests/test_config_new.py tests/test_strategy_stage_runners.py tests/test_post_strategy_engine.py tests/test_trading_operations.py tests/test_util.py tests/test_portfolio_manager.py
+Result:
+147 passed in 2.67s
+This was a targeted existing-test run, not a full-suite or coverage run.
+
+Commands:
+.venv/bin/ruff check docs/strategy
+.venv/bin/ruff format --check docs/strategy
+.venv/bin/ty check docs/strategy
+git diff --check
+Results:
+All checks passed; 2 files already formatted; type checks passed; no diff whitespace errors.
+
+Artifact validation:
+- Exporter rendered both SVG and 3600 x 4440 PNG from the same drawing operations.
+- Pillow rendering checked measured text width and available box height.
+- PNG visually inspected; replaced unsupported minus glyphs and inspected again.
+- SVG parsed successfully as XML; local Markdown links resolve.
+- Mermaid source reviewed against the stage and decision branches; no Mermaid renderer run.
+- ZIP rebuilt from 9 current artifact/evidence files; CRC and byte equality checked.
+- No differences in thetagang/, tests/, thetagang.toml, pyproject.toml or uv.lock.

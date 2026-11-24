@@ -1,0 +1,140 @@
+{
+  "policy": {
+    "target_dte": 45,
+    "dte_tolerance": 15,
+    "max_bid_ask_pct": 0.05,
+    "min_option_volume": 100,
+    "min_open_interest": 500,
+    "earnings_blackout_days": 14,
+    "max_single_weight": 0.3,
+    "max_group_weight": 0.5,
+    "min_weight": 0.0,
+    "capital": 100000,
+    "margin_usage": 0.5,
+    "contract_multiplier": 100,
+    "max_contract_notional_pct": 0.25,
+    "stress_shock_pct": 0.25,
+    "max_stress_loss_pct": 0.2,
+    "allocation_step": 0.01,
+    "risk_floor": 0.05
+  },
+  "assessments": [
+    {
+      "symbol": "SPY",
+      "eligible": true,
+      "score": 0.710556,
+      "liquidity_score": 0.9,
+      "dte_score": 1.0,
+      "yield_score": 0.6,
+      "risk_score": 0.444444,
+      "reasons": [],
+      "warnings": [
+        "Synthetic example values; replace with live observations.",
+        "earnings date was not supplied; event risk is unverified"
+      ]
+    },
+    {
+      "symbol": "QQQ",
+      "eligible": true,
+      "score": 0.695518,
+      "liquidity_score": 0.85,
+      "dte_score": 0.844444,
+      "yield_score": 0.8,
+      "risk_score": 0.432432,
+      "reasons": [],
+      "warnings": [
+        "Synthetic example values; replace with live observations.",
+        "earnings date was not supplied; event risk is unverified"
+      ]
+    },
+    {
+      "symbol": "IWM",
+      "eligible": true,
+      "score": 0.667756,
+      "liquidity_score": 0.75,
+      "dte_score": 0.844444,
+      "yield_score": 0.9,
+      "risk_score": 0.410256,
+      "reasons": [],
+      "warnings": [
+        "Synthetic example values; replace with live observations.",
+        "earnings date was not supplied; event risk is unverified"
+      ]
+    },
+    {
+      "symbol": "TLT",
+      "eligible": true,
+      "score": 0.543056,
+      "liquidity_score": 0.65,
+      "dte_score": 0.666667,
+      "yield_score": 0.4,
+      "risk_score": 0.444444,
+      "reasons": [],
+      "warnings": [
+        "Synthetic example values; replace with live observations.",
+        "earnings date was not supplied; event risk is unverified"
+      ]
+    }
+  ],
+  "recommendations": [
+    {
+      "symbol": "IWM",
+      "weight": 0.3,
+      "target_value": 15000.0,
+      "estimated_contract_notional_pct": 0.42,
+      "score": 0.667756,
+      "risk_group": "us_small_cap",
+      "rationale": [
+        "passed hard filters",
+        "risk-adjusted score allocation",
+        "review contract size before enabling writes"
+      ]
+    },
+    {
+      "symbol": "QQQ",
+      "weight": 0.3,
+      "target_value": 15000.0,
+      "estimated_contract_notional_pct": 0.9,
+      "score": 0.695518,
+      "risk_group": "us_growth",
+      "rationale": [
+        "passed hard filters",
+        "risk-adjusted score allocation",
+        "review contract size before enabling writes"
+      ]
+    },
+    {
+      "symbol": "SPY",
+      "weight": 0.3,
+      "target_value": 15000.0,
+      "estimated_contract_notional_pct": 1.0,
+      "score": 0.710556,
+      "risk_group": "us_equity",
+      "rationale": [
+        "passed hard filters",
+        "risk-adjusted score allocation",
+        "review contract size before enabling writes"
+      ]
+    },
+    {
+      "symbol": "TLT",
+      "weight": 0.1,
+      "target_value": 5000.0,
+      "estimated_contract_notional_pct": 0.18,
+      "score": 0.543056,
+      "risk_group": "rates",
+      "rationale": [
+        "passed hard filters",
+        "risk-adjusted score allocation"
+      ]
+    }
+  ],
+  "rejected_symbols": [],
+  "warnings": [
+    "IWM: one contract is 42.0% of the available capital base",
+    "QQQ: one contract is 90.0% of the available capital base",
+    "SPY: one contract is 100.0% of the available capital base",
+    "Synthetic example values; replace with live observations.",
+    "earnings date was not supplied; event risk is unverified"
+  ]
+}

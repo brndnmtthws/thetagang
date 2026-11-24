@@ -1,450 +1,382 @@
-"""Generate the strategy overview SVG without external rendering dependencies."""
+"""Export the reviewed strategy map as SVG and, optionally, PNG.
 
+SVG: .venv/bin/python docs/strategy/export_strategy_overview.py
+PNG: use a Python runtime with Pillow and append --png.
+This is a document exporter; it imports no trading code.
+"""
+
+import argparse
+import importlib
+import math
 from html import escape
 from pathlib import Path
+from typing import Any
 
-OUT = Path(__file__).with_name("strategy-overview.svg")
-WIDTH, HEIGHT = 3000, 1840
-
-INK = "#173044"
-MUTED = "#526579"
-LINE = "#90a0ae"
-BG = "#f6f8fb"
-CORE = "#eaf3f8"
-WHEEL = "#fff3df"
-REGIME = "#f1ecfa"
-POST = "#e8f6ee"
-RISK = "#f8ecec"
-WHITE = "#ffffff"
-
-svg: list[str] = [
-    f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">',
-    "<title>ThetaGang 交易策略全景图</title>",
-    "<desc>展示 Wheel、Regime-aware 再平衡、VIX Call 对冲、现金管理和统一订单风险边界的实际执行路径。</desc>",
-    f'<rect width="{WIDTH}" height="{HEIGHT}" fill="{BG}"/>',
-    """<defs>
-      <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
-        <path d="M0,0 L12,6 L0,12 z" fill="#90a0ae"/>
-      </marker>
-      <marker id="arrow-dark" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
-        <path d="M0,0 L12,6 L0,12 z" fill="#526579"/>
-      </marker>
-    </defs>""",
-]
+WIDTH, HEIGHT = 1800, 2220
+INK, MUTED, LINE = "#19364c", "#496174", "#8a9fab"
+WHITE, BACK = "#ffffff", "#f7f9fb"
+WHEEL, REGIME, POST, WARN = "#fff3dd", "#f0ebfa", "#e9f5ee", "#fff0eb"
+OUT = Path(__file__).parent
+FONT = "/System/Library/Fonts/Hiragino Sans GB.ttc"
 
 
-def text(
-    x: float,
-    y: float,
-    value: str,
-    size: int = 22,
-    color: str = INK,
-    anchor: str = "start",
-    weight: int = 400,
-) -> None:
-    svg.append(
-        f'<text x="{x}" y="{y}" text-anchor="{anchor}" dominant-baseline="middle" '
-        f'fill="{color}" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" '
-        f'font-size="{size}" font-weight="{weight}">{escape(value)}</text>'
+def export(png: bool) -> None:
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">',
+        "<title>ThetaGang 交易策略 · 代码复核版</title>",
+        "<desc>两条互斥主策略路线与可选后置阶段。包含已复现的 Delta 回退、止盈优先级、VIX 分档和股票禁交易开关缺口。</desc>",
+        f'<rect width="{WIDTH}" height="{HEIGHT}" fill="{BACK}"/>',
+    ]
+    image: Any = None
+    draw: Any = None
+    font_module: Any = None
+    if png:
+        image_module = importlib.import_module("PIL.Image")
+        draw_module = importlib.import_module("PIL.ImageDraw")
+        font_module = importlib.import_module("PIL.ImageFont")
+        image = image_module.new("RGB", (WIDTH * 2, HEIGHT * 2), BACK)
+        draw = draw_module.Draw(image)
+
+    def text(
+        x: float,
+        y: float,
+        value: str,
+        size: int = 22,
+        color: str = INK,
+        max_width: float = 1680,
+    ) -> None:
+        svg.append(
+            f'<text x="{x}" y="{y}" dominant-baseline="text-before-edge" '
+            f'font-family="Hiragino Sans GB, PingFang SC, Microsoft YaHei, sans-serif" '
+            f'font-size="{size}" fill="{color}">{escape(value)}</text>'
+        )
+        if draw is not None:
+            assert font_module is not None
+            font = font_module.truetype(FONT, size * 2)
+            bounds = draw.textbbox((0, 0), value, font=font)
+            width = bounds[2] - bounds[0]
+            if width > max_width * 2:
+                raise ValueError(f"Text exceeds its column: {value}")
+            draw.text(
+                (x * 2 - bounds[0], y * 2 - bounds[1]), value, font=font, fill=color
+            )
+
+    def rect(x: float, y: float, w: float, h: float, fill: str) -> None:
+        svg.append(
+            f'<rect x="{x}" y="{y}" width="{w}" height="{h}" '
+            f'rx="14" fill="{fill}" stroke="#cfdae2" stroke-width="1.5"/>'
+        )
+        if draw is not None:
+            draw.rounded_rectangle(
+                (x * 2, y * 2, (x + w) * 2, (y + h) * 2),
+                radius=28,
+                fill=fill,
+                outline="#cfdae2",
+                width=3,
+            )
+
+    def box(
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        title: str,
+        lines: list[str],
+        fill: str = WHITE,
+    ) -> None:
+        rect(x, y, w, h, fill)
+        text(x + 24, y + 18, title, 25, max_width=w - 48)
+        for index, line in enumerate(lines):
+            top = y + 56 + index * 31
+            if top + 25 > y + h - 12:
+                raise ValueError(f"Text exceeds box height: {title}")
+            text(x + 24, top, line, 21, MUTED, max_width=w - 48)
+
+    def arrow(x1: float, y1: float, x2: float, y2: float) -> None:
+        angle = math.atan2(y2 - y1, x2 - x1)
+        points = [
+            (x2, y2),
+            (
+                x2 - 12 * math.cos(angle) + 5 * math.sin(angle),
+                y2 - 12 * math.sin(angle) - 5 * math.cos(angle),
+            ),
+            (
+                x2 - 12 * math.cos(angle) - 5 * math.sin(angle),
+                y2 - 12 * math.sin(angle) + 5 * math.cos(angle),
+            ),
+        ]
+        svg.append(
+            f'<path d="M{x1} {y1} L{x2} {y2}" fill="none" stroke="{LINE}" stroke-width="2"/>'
+        )
+        svg.append(
+            '<polygon points="'
+            + " ".join(f"{x},{y}" for x, y in points)
+            + f'" fill="{LINE}"/>'
+        )
+        if draw is not None:
+            draw.line((x1 * 2, y1 * 2, x2 * 2, y2 * 2), fill=LINE, width=4)
+            draw.polygon([(x * 2, y * 2) for x, y in points], fill=LINE)
+
+    text(60, 36, "ThetaGang 交易策略 · 代码复核版", 38)
+    text(
+        60,
+        92,
+        "2026-09-10  /  基于当前源码与隔离调用  /  图中参数描述的是现有行为",
+        21,
+        MUTED,
     )
-
-
-def box(
-    x: float,
-    y: float,
-    w: float,
-    h: float,
-    title: str,
-    lines: list[str],
-    fill: str = WHITE,
-    stroke: str = "#cad5de",
-    radius: int = 18,
-    title_size: int = 24,
-    line_size: int = 19,
-) -> None:
-    svg.append(
-        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{radius}" fill="{fill}" stroke="{stroke}" stroke-width="2"/>'
+    box(
+        60,
+        145,
+        1680,
+        133,
+        "配置选路 → 持仓与挂单对账 → 规划订单",
+        [
+            "run.strategies 按规范顺序展开；显式 run.stages 按填写顺序执行。",
+            "仓库示例：Wheel 已选；VIX 与现金阶段已选，但各自 enabled=false，实际跳过。",
+        ],
     )
-    text(x + 24, y + 32, title, title_size, INK, weight=500)
-    for idx, line in enumerate(lines):
-        text(x + 24, y + 72 + idx * 29, line, line_size, MUTED)
+    text(60, 312, "A · Wheel", 30)
+    text(930, 312, "B · Regime 股票再平衡", 30)
+    text(740, 319, "两条主路线互斥", 20, MUTED, max_width=170)
+    arrow(470, 278, 470, 354)
+    arrow(1330, 278, 1330, 354)
 
-
-def section(
-    x: float,
-    y: float,
-    w: float,
-    h: float,
-    title: str,
-    subtitle: str,
-    fill: str,
-    stroke: str,
-) -> None:
-    svg.append(
-        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="24" fill="{fill}" stroke="{stroke}" stroke-width="3"/>'
+    box(
+        60,
+        360,
+        810,
+        158,
+        "1 目标仓位与覆盖数量",
+        [
+            "B = NLV × wheel_margin_usage；T = floor(权重 × B / 价格)",
+            "Put 缺口扣除股票和已计入空头 Put（每张按100股）。",
+            "Call 目标由 cap_factor / cap_target_floor / excess_only 决定。",
+        ],
+        WHEEL,
     )
-    text(x + 28, y + 35, title, 29, INK, weight=500)
-    text(x + 28, y + 75, subtitle, 19, MUTED)
-
-
-def arrow(
-    x1: float, y1: float, x2: float, y2: float, dashed: bool = False, dark: bool = False
-) -> None:
-    stroke = "#526579" if dark else LINE
-    dash = ' stroke-dasharray="10 8"' if dashed else ""
-    marker = "arrow-dark" if dark else "arrow"
-    svg.append(
-        f'<path d="M{x1} {y1} L{x2} {y2}" fill="none" stroke="{stroke}" stroke-width="3"{dash} marker-end="url(#{marker})"/>'
+    box(
+        60,
+        556,
+        810,
+        158,
+        "2 先规划卖 Put，再规划卖 Call",
+        [
+            "标的允许交易 + green/red + 当日价格变化达到阈值。",
+            "buy_only / both 抑制新 Put；sell_only / both 抑制新 Call。",
+            "新增合约分批数量至少为1张；百分比并非名义敞口硬上限。",
+        ],
+        WHEEL,
     )
+    box(
+        60,
+        752,
+        810,
+        190,
+        "3 合约扫描 → 股票补仓 / 减仓",
+        [
+            "DTE 是下限；按到期、Delta、价格、行权价、未平仓量选约。",
+            "Delta 无合格候选且最低价格非零时，可回退到超限候选。",
+            "股票模式 off / buy_only / sell_only / both 决定直接买卖。",
+            "新规划订单先入队；不会在这里立即成交。",
+        ],
+        WHEEL,
+    )
+    box(
+        60,
+        980,
+        810,
+        223,
+        "4 管理已有空头期权（排除 VIX）",
+        [
+            "先判展期；不满足展期时，才检查 P&L > close_at_pnl。",
+            "展期 = BUY 旧合约 + SELL 新合约；允许同到期换执行价。",
+            "always_when_itm 优先于旧 DTE / P&L 等普通展期限制。",
+            "展期失败转平仓还要求 roll.max_dte 非空且盈利。",
+            "买回 Call 不会卖出股票；Put 卖方被指派后才取得股票。",
+        ],
+        WHEEL,
+    )
+    for a, b in [(518, 556), (714, 752), (942, 980)]:
+        arrow(465, a, 465, b)
+
+    box(
+        930,
+        360,
+        810,
+        158,
+        "1 选择资金基准 B",
+        [
+            "net_liq：NLV × regime_margin_usage。",
+            "net_liq_ex_options：扣除有符号期权市值，再乘资金比例。",
+            "managed_stocks：受管股票市值合计，不再乘资金比例。",
+        ],
+        REGIME,
+    )
+    box(
+        930,
+        556,
+        810,
+        158,
+        "2 有效权重直接决定目标金额",
+        [
+            "基础权重 × 目标波动率 / 实现波动率 → 限幅与平滑。",
+            "有效权重不再归一到100%；总和下降可主动保留现金。",
+            "归一化只用于代理指数、ratio basket 等辅助计算。",
+        ],
+        REGIME,
+    )
+    box(
+        930,
+        752,
+        810,
+        190,
+        "3 优先级：Hard → Soft → Deficit → Flow",
+        [
+            "Hard：偏离越过硬带，可部分回归；Soft：偏离 + 软门控。",
+            "软门控 = 震荡/效率指标 + 冷却期 + 可选 ratio gate。",
+            "Deficit：优先卖超配，必要时低于目标卖出补缺口。",
+            "Flow：现金盈余或较小缺口 + 软门控 + 股数方向一致性。",
+        ],
+        REGIME,
+    )
+    box(
+        930,
+        980,
+        810,
+        223,
+        "4 过滤股票订单与预留现金",
+        [
+            "Hard/Soft 后还可能追加 Deficit 清理。",
+            "所有模式仍受交易允许、买卖方向和最小阈值限制。",
+            "硬带也需历史数据校验通过；核心数据不足会中止本轮。",
+            "仅 Flow 产生买单后，才预留未使用的正现金余量。",
+            "普通波动率降仓位留下的现金不自动获得 Flow 预留。",
+        ],
+        REGIME,
+    )
+    for a, b in [(518, 556), (714, 752), (942, 980)]:
+        arrow(1335, a, 1335, b)
+
+    arrow(465, 1203, 465, 1257)
+    arrow(1335, 1203, 1335, 1257)
+    text(
+        60,
+        1260,
+        "汇合后的可选阶段：先 VIX Call，再现金管理（各自还需 enabled=true）",
+        27,
+    )
+    box(
+        60,
+        1315,
+        810,
+        244,
+        "VIX Call 对冲",
+        [
+            "已有净多 Call：VIX 超过平仓线才平仓，否则持有。",
+            "净数量≤0且未过平仓线：读取 VIXMO，按 NLV 预算买入。",
+            "实际分档有偏差：默认列表在 VIXMO≥15 时均命中1%。",
+            "现货 VIX 的平仓门控与 VIXMO 分档是不同判断。",
+            "平仓筛选也有缺口，可能对非 Call 持仓生成 SELL。",
+        ],
+        POST,
+    )
+    box(
+        930,
+        1315,
+        810,
+        244,
+        "现金基金管理",
+        [
+            "有效现金 = TotalCashValue - 本轮队列待发生支出。",
+            "可扫现金 = 有效现金 - Regime 预留。",
+            "可扫现金 > 目标+买阈值：按 ask 规划买入。",
+            "有效现金 < 目标-卖阈值：按 bid 规划卖出。",
+            "预留只影响买入；未成交收入不提前作为可用现金。",
+        ],
+        POST,
+    )
+    arrow(870, 1437, 930, 1437)
+    arrow(1335, 1559, 1335, 1610)
+    box(
+        60,
+        1610,
+        1680,
+        160,
+        "订单队列 → 整批检查 → 预览或提交",
+        [
+            "统一审核持仓覆盖、股票超卖、重复/反向订单和资金；实盘再做 what-if。",
+            "模拟模式只预览；实盘先写恢复日志，再提交、调价和记录结果。",
+            "批次风控不补上 Delta、VIX 分档或全策略 no_trading 的语义检查；提交成功不等于全部成交。",
+        ],
+    )
+    text(60, 1804, "本轮复核中需特别区分的事实", 29)
+    box(
+        60,
+        1860,
+        530,
+        222,
+        "参数优选 ≠ 硬约束",
+        [
+            "Delta=0.3 时原方法可选中0.6。",
+            "新增5%分批参数存在至少1张下限。",
+            "roll=90%、close=99%时，",
+            "盈利99.5%仍被归为展期。",
+        ],
+        WARN,
+    )
+    box(
+        635,
+        1860,
+        530,
+        222,
+        "配置意图 ≠ 当前实现",
+        [
+            "VIXMO=40 的意图预算为0.5%，",
+            "当前原方法却使用1%。",
+            "Wheel 股票模式 both 加",
+            "no_trading=true 仍能规划买入。",
+        ],
+        WARN,
+    )
+    box(
+        1210,
+        1860,
+        530,
+        222,
+        "文档已修正 · 逻辑未变更",
+        [
+            "原方法调用全部使用本地模拟数据。",
+            "本轮留存复核报告和原始观察。",
+            "已确认的策略缺口仍待后续处理。",
+            "不将规则复核等同于收益验证。",
+        ],
+        WARN,
+    )
+    text(
+        60,
+        2120,
+        "经济循环：卖 Put → 卖方被指派取得股票 → 卖 Call → 被指派交付股票；指派由券商处理。",
+        22,
+        MUTED,
+    )
+    text(
+        60,
+        2161,
+        "详见 docs/strategy/README.md 与 REVIEW.md；箭头表示规划顺序，不表示当轮已完成交易或指派。",
+        20,
+        MUTED,
+    )
+    svg.append("</svg>")
+    (OUT / "strategy-overview.svg").write_text("\n".join(svg), encoding="utf-8")
+    if image is not None:
+        image.save(OUT / "strategy-overview.png")
+    print(f"Generated SVG{' and 3600 × 4440 PNG' if png else ''} in {OUT}")
 
 
-text(70, 54, "ThetaGang 交易策略全景图", 40, INK, weight=500)
-text(
-    70,
-    102,
-    "配置驱动 · 一次运行按阶段规划 · 期权、股票、对冲和现金共享账户级风险边界",
-    22,
-    MUTED,
-)
-text(2930, 54, "代码行为快照 · 2026-09-10", 18, MUTED, anchor="end")
-
-# Execution timeline.
-section(
-    70,
-    150,
-    2860,
-    245,
-    "一次运行的主路径",
-    "阶段顺序由 CANONICAL_STAGE_ORDER 决定；策略配置只决定哪些阶段启用。",
-    CORE,
-    "#86a9be",
-)
-box(
-    100,
-    225,
-    365,
-    115,
-    "① 快照",
-    ["账户 / 持仓 / 工作挂单", "本轮订单意图进入预计组合"],
-    WHITE,
-)
-box(
-    510,
-    225,
-    500,
-    115,
-    "② 期权写入",
-    ["卖 Put → 卖 Call", "目标权重、方向、波动与合约链门控"],
-    WHEEL,
-)
-box(
-    1055,
-    225,
-    615,
-    115,
-    "③ 股票再平衡",
-    ["Regime / Buy-only / Sell-only", "软硬带、状态过滤、缺口与现金流"],
-    REGIME,
-)
-box(
-    1715,
-    225,
-    500,
-    115,
-    "④ 期权管理",
-    ["展期 → 平仓", "DTE、ITM、P&L、信用与超额仓位"],
-    WHEEL,
-)
-box(
-    2260,
-    225,
-    620,
-    115,
-    "⑤ 后置与提交",
-    ["VIX 对冲 → 现金管理 → 整批风控", "dry-run 预览或实盘提交 / 调价"],
-    POST,
-)
-arrow(465, 282, 510, 282, dark=True)
-arrow(1010, 282, 1055, 282, dark=True)
-arrow(1670, 282, 1715, 282, dark=True)
-arrow(2215, 282, 2260, 282, dark=True)
-
-# Strategy cards.
-section(
-    70,
-    445,
-    1210,
-    1035,
-    "Wheel · 期权收益与仓位转换",
-    "卖 Put 获得标的敞口，股票到位后卖 Call；空头合约按规则展期或止盈。",
-    WHEEL,
-    "#d7ae67",
-)
-box(
-    105,
-    540,
-    500,
-    150,
-    "目标仓位",
-    [
-        "目标金额 = 权重 × 购买力",
-        "目标股数 = floor(目标金额 / 价格)",
-        "Put 股数还要扣除 100 × 净空头 Put",
-    ],
-    WHITE,
-)
-box(
-    655,
-    540,
-    575 - 40,
-    150,
-    "共同写入门控",
-    [
-        "可交易 / 非 buy-only 或 sell-only",
-        "green/red 方向与当日变动阈值",
-        "新增张数受购买力百分比限制",
-    ],
-    WHITE,
-)
-arrow(605, 615, 655, 615)
-box(
-    105,
-    755,
-    1120,
-    125,
-    "OptionChainScanner",
-    [
-        "目标 DTE / 最大 DTE · Delta 上限 · 行权价方向 · 最低价格 · 未平仓量 · 排除旧合约"
-    ],
-    WHITE,
-)
-arrow(890, 690, 890, 755)
-box(
-    105,
-    935,
-    500,
-    150,
-    "卖 Put",
-    ["按需卖出 Put", "低于目标时逐步获得持仓", "买方接 assignment 后转为股票"],
-    WHITE,
-)
-box(
-    655,
-    935,
-    570,
-    150,
-    "卖 Covered Call",
-    [
-        "cap_factor / cap_target_floor",
-        "excess_only 与仓位阈值",
-        "新行权价不低于成本线与现价",
-    ],
-    WHITE,
-)
-arrow(350, 880, 350, 935)
-arrow(900, 880, 900, 935)
-box(
-    105,
-    1135,
-    1120,
-    255,
-    "空头期权管理",
-    [
-        "ITM、超额仓位、DTE、P&L 和 max_dte 决定是否动作",
-        "展期：BAG 组合单 = BUY 旧合约 + SELL 新合约",
-        "平仓：空头 BUY 平仓；配置 close_at_pnl 可直接止盈",
-        "credit_only / 无合约时可按配置关闭或跳过",
-    ],
-    WHITE,
-)
-arrow(350, 1085, 350, 1135)
-arrow(940, 1085, 940, 1135)
-text(
-    105,
-    1445,
-    "长期特征：卖 Put 承担下跌与 assignment 风险；卖 Call 换取权利金但限制上涨空间。",
-    19,
-    MUTED,
-)
-
-section(
-    1320,
-    445,
-    1010,
-    1035,
-    "Regime-aware · 状态门控的股票再平衡",
-    "Wheel 与 Regime 互斥；Regime 只规划股票订单，并可把 Flow 余量预留给现金管理。",
-    REGIME,
-    "#aa91ca",
-)
-box(
-    1355,
-    540,
-    440,
-    150,
-    "资金基准",
-    ["net_liq", "managed_stocks", "net_liq_ex_options", "再乘 regime_margin_usage"],
-    WHITE,
-)
-box(
-    1845,
-    540,
-    450,
-    150,
-    "有效权重",
-    ["可按历史波动率调整", "归一化后计算目标股数", "逐标的得到 relative_drift"],
-    WHITE,
-)
-arrow(1795, 615, 1845, 615)
-box(
-    1355,
-    755,
-    940,
-    155,
-    "市场状态过滤",
-    [
-        "软带：Choppiness ≥ min 且 Efficiency ≤ max，冷却期结束，Ratio gate 可选",
-        "硬带：超过 hard_band，越过状态与冷却限制；可只回归 fraction",
-    ],
-    WHITE,
-)
-arrow(1815, 690, 1815, 755)
-box(
-    1355,
-    975,
-    280,
-    175,
-    "Soft",
-    ["偏离 ≥ soft_band", "状态和冷却通过", "按目标买卖"],
-    WHITE,
-)
-box(1685, 975, 280, 175, "Hard", ["偏离 ≥ hard_band", "安全护栏", "可部分回归"], WHITE)
-box(
-    2015,
-    975,
-    280,
-    175,
-    "Flow / Deficit",
-    ["超额现金方向一致", "或缺口达到安全轨", "必要时跌破目标卖出"],
-    WHITE,
-)
-arrow(1815, 910, 1495, 975)
-arrow(1815, 910, 1825, 975)
-arrow(1815, 910, 2155, 975)
-box(
-    1355,
-    1210,
-    940,
-    175,
-    "股票订单 + 资金预留",
-    [
-        "按每标的交易策略过滤买卖方向与最小阈值",
-        "Flow 买入后仍需使用的现金由后置现金管理预留",
-        "数据不足时该策略本轮停止生成订单",
-    ],
-    WHITE,
-)
-arrow(1495, 1150, 1495, 1210)
-arrow(1825, 1150, 1825, 1210)
-arrow(2155, 1150, 2155, 1210)
-
-section(
-    2370,
-    445,
-    560,
-    1035,
-    "后置策略",
-    "VIX 与现金管理在股票/期权规划后执行。",
-    POST,
-    "#83b999",
-)
-box(
-    2405,
-    540,
-    490,
-    250,
-    "VIX Call 对冲",
-    [
-        "已有净多 Call 且 VIX 过平仓线 → 卖出",
-        "否则按 VIXMO 区间选择 allocation",
-        "预算 = NLV × weight",
-        "按目标 Delta / DTE 扫描并买入",
-    ],
-    WHITE,
-)
-box(
-    2405,
-    850,
-    490,
-    250,
-    "Cash management",
-    [
-        "有效现金 = TotalCash + 待发生变动",
-        "扣除 Regime 预留现金",
-        "高于目标 + buy_threshold → 买现金基金",
-        "低于目标 - sell_threshold → 卖现金基金",
-    ],
-    WHITE,
-)
-arrow(2650, 790, 2650, 850)
-text(2405, 1175, "VIX Call 是尾部保护层，也会产生时间价值成本。", 18, MUTED)
-text(2405, 1210, "现金基金是现金调度，不是收益保证。", 18, MUTED)
-
-# Shared risk and boundaries.
-section(
-    70,
-    1540,
-    2860,
-    245,
-    "统一风险与互斥边界",
-    "策略只生成意图；整批风险、执行状态和券商对账决定是否真的提交。",
-    RISK,
-    "#c68989",
-)
-box(
-    100,
-    1615,
-    630,
-    110,
-    "整批 BatchRisk",
-    ["重复/反向订单 · 股票超卖 · Call 覆盖", "合计支出 · 币种/乘数 · 实盘保证金预估"],
-    WHITE,
-)
-box(
-    770,
-    1615,
-    630,
-    110,
-    "执行与恢复",
-    ["先写 ExecutionJournal，再提交", "未知结果、未解决工作单先阻断下一批"],
-    WHITE,
-)
-box(
-    1440,
-    1615,
-    630,
-    110,
-    "配置互斥",
-    [
-        "wheel ↔ regime_rebalance",
-        "calls 写入依赖 puts 写入",
-        "shares_only 跳过期权写入和展期",
-    ],
-    WHITE,
-)
-box(
-    2110,
-    1615,
-    790,
-    110,
-    "共享账户视角",
-    [
-        "购买力、NLV、持仓、挂单和本轮意图共同影响后续阶段",
-        "未成交卖出收入与期权贷记不会提前变成可用资金",
-    ],
-    WHITE,
-)
-
-svg.append("</svg>")
-OUT.write_text("\n".join(svg), encoding="utf-8")
-print(f"wrote {OUT}")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--png", action="store_true", help="Also render PNG with Pillow"
+    )
+    export(parser.parse_args().png)

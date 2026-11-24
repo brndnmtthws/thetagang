@@ -1,0 +1,63 @@
+{
+  "sample_switches": {
+    "stages": [
+      "options_write_puts",
+      "options_write_calls",
+      "equity_buy_rebalance",
+      "equity_sell_rebalance",
+      "options_roll_positions",
+      "options_close_positions",
+      "post_vix_call_hedge",
+      "post_cash_management"
+    ],
+    "vix_enabled": false,
+    "cash_enabled": false
+  },
+  "explicit_order_without_depends_on": [
+    "options_write_calls",
+    "options_write_puts"
+  ],
+  "vix_band_quantities_at_price_2_nlv_100000_close_gate_disabled": {
+    "14": 0,
+    "15": 5,
+    "29": 5,
+    "30": 5,
+    "40": 5,
+    "50": 5,
+    "60": 5
+  },
+  "vix_close_with_long_call_and_short_put": [
+    [
+      "C",
+      "SELL"
+    ],
+    [
+      "P",
+      "SELL"
+    ]
+  ],
+  "delta_fallback": {
+    "target": 0.3,
+    "selected": 0.6
+  },
+  "pnl_0_995_roll_0_9_close_0_99": {
+    "roll_candidates": 1,
+    "close_candidates": 0
+  },
+  "close_only_stage_for_roll_eligible_put": "no close order",
+  "failed_roll_close_candidates": {
+    "roll_max_dte_null": 0,
+    "roll_max_dte_180": 1
+  },
+  "always_itm_bypasses_roll_max_dte": true,
+  "five_percent_of_10000_at_stock_price_100_max_contracts": 1,
+  "regime_subset_weights_0_4_0_3_at_base_10000_price_100": {
+    "SPY": 40,
+    "QQQ": 30
+  },
+  "equity_both_mode_with_no_trading_true": {
+    "buy_mode": true,
+    "sell_mode": true,
+    "planned_buy_shares": 40
+  }
+}
