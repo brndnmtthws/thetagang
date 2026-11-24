@@ -1,0 +1,47 @@
+name: TWS startup
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/tws-startup.yml
+      - Dockerfile
+      - docker/**
+      - entrypoint.bash
+      - extract-installer.sh
+      - thetagang/thetagang.py
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: Offline startup (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        id: cache-tws
+        with:
+          path: tws/
+          key: ${{ runner.os }}-publish-cache-tws-${{ hashFiles('extract-installer.sh') }}
+      # Only the vendor's Linux installer needs x86 emulation on the ARM runner.
+      - uses: docker/setup-qemu-action@v4
+        if: matrix.arch == 'arm64' && steps.cache-tws.outputs.cache-hit != 'true'
+        with:
+          platforms: amd64
+      - run: ./extract-installer.sh
+        if: steps.cache-tws.outputs.cache-hit != 'true'
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: '3.15'
+      - run: uv build --wheel
+      - run: docker build --platform linux/${{ matrix.arch }} -t thetagang:tws-smoke .
+      - run: sh docker/smoke-tws.sh thetagang:tws-smoke
