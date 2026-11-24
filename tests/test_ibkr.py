@@ -642,6 +642,23 @@ async def test_wait_for_orders_complete_timeout(ibkr, mock_trade, mocker):
     assert "PASS (OrderId: 1)" not in mock_log_info.call_args[0][0]
 
 
+@pytest.mark.parametrize("order_id", [0, 123])
+async def test_place_order_blocks_new_orders_and_amendments_in_dry_run(
+    mock_ib, order_id
+):
+    ibkr = IBKR(
+        ib=mock_ib,
+        api_response_wait_time=1,
+        default_order_exchange="SMART",
+        dry_run=True,
+    )
+
+    with pytest.raises(RuntimeError, match="Dry run enabled"):
+        ibkr.place_order(Stock("SPY", "SMART", "USD"), Order(orderId=order_id))
+
+    mock_ib.placeOrder.assert_not_called()
+
+
 async def test_cancel_order_is_blocked_in_dry_run(mock_ib):
     ibkr = IBKR(
         ib=mock_ib,

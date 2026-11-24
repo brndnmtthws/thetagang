@@ -14,7 +14,7 @@ from thetagang.db import DataStore
 from thetagang.fmt import dfmt
 from thetagang.ibkr import IBKR, TickerField
 from thetagang.options import option_dte
-from thetagang.orders import Orders
+from thetagang.orders import ORDER_REF_PREFIX, Orders
 from thetagang.util import midpoint_or_market_price
 
 
@@ -72,6 +72,7 @@ class OrderOperations:
         kwargs: dict[str, Any] = {
             "tif": tif,
             "account": self.account_number,
+            "orderRef": order_ref or f"{ORDER_REF_PREFIX}order",
             "transmit": transmit,
         }
         if algo_strategy is not None:
@@ -82,8 +83,6 @@ class OrderOperations:
             kwargs["algoParams"] = algo_params
         elif use_default_algo:
             kwargs["algoParams"] = self.get_algo_params()
-        if order_ref is not None:
-            kwargs["orderRef"] = order_ref
         if order_id is not None:
             kwargs["orderId"] = order_id
         return LimitOrder(action, quantity, limit_price, **kwargs)

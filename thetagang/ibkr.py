@@ -171,6 +171,10 @@ class IBKR:
         return self.ib.trades()
 
     def place_order(self, contract: Contract, order: Order) -> Trade:
+        if self.dry_run:
+            raise RuntimeError(
+                "Dry run enabled; broker placement and amendment are blocked."
+            )
         return self.ib.placeOrder(contract, order)
 
     def cancel_order(self, order: Order) -> None:

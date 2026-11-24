@@ -20,6 +20,7 @@ from thetagang.accounting import (
 from thetagang.fmt import dfmt, ifmt
 
 __all__ = [
+    "ORDER_REF_PREFIX",
     "Orders",
     "PendingBuyCash",
     "PendingOrderCash",
@@ -31,6 +32,8 @@ __all__ = [
     "working_buy_cash",
     "working_order_cash",
 ]
+
+ORDER_REF_PREFIX = "tg:"
 
 
 class Orders:

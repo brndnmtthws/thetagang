@@ -13,6 +13,7 @@ from thetagang.strategies.tail_hedge_state import (
     TailHedgeState,
     TailHedgeStateStore,
 )
+from thetagang.trades import OrderSubmissionError
 
 
 def _naive_utc(
@@ -183,16 +184,23 @@ class TestPortfolioManager:
         assert result == 101.00
         ticker.marketPrice.assert_called_once()
 
-    def test_initialize_account_only_cancels_orders_for_active_account(
+    def test_initialize_account_cancels_only_owned_orders_for_active_account(
         self, portfolio_manager, mocker
     ):
-        active = working_trade(mocker, portfolio_manager)
+        active = working_trade(mocker, portfolio_manager, order_ref="tg:order")
         other = working_trade(
             mocker,
             portfolio_manager,
+            order_ref="tg:order",
             account="OTHER123",
         )
-        prepare_initialization(portfolio_manager, mocker, [active, other])
+        untagged = working_trade(mocker, portfolio_manager)
+        manual = working_trade(mocker, portfolio_manager, order_ref="manual")
+        unmanaged = working_trade(mocker, portfolio_manager, order_ref="tg:order")
+        unmanaged.contract.symbol = "QQQ"
+        prepare_initialization(
+            portfolio_manager, mocker, [active, other, untagged, manual, unmanaged]
+        )
 
         portfolio_manager.initialize_account()
 
@@ -207,7 +215,7 @@ class TestPortfolioManager:
             mocker.Mock(),
             dry_run=True,
         )
-        trade = working_trade(mocker, portfolio_manager)
+        trade = working_trade(mocker, portfolio_manager, order_ref="tg:order")
         prepare_initialization(portfolio_manager, mocker, [trade])
         cancel_order = mocker.Mock()
         portfolio_manager.ibkr.cancel_order = cancel_order
@@ -262,8 +270,9 @@ class TestPortfolioManager:
 
         portfolio_manager.ibkr.cancel_order.assert_called_once_with(entry.order)
 
+    @pytest.mark.parametrize("placement_fails", [False, True])
     def test_submit_orders_caps_tail_sales_to_uncommitted_live_position(
-        self, portfolio_manager, mocker
+        self, portfolio_manager, mocker, placement_fails
     ):
         contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
         portfolio_manager.ibkr.portfolio = mocker.Mock(
@@ -282,7 +291,6 @@ class TestPortfolioManager:
         ]
         portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=working_trades)
         portfolio_manager.trades = mocker.Mock()
-        portfolio_manager.trades.submit_order.return_value = False
         update_recovery = mocker.patch.object(
             portfolio_manager,
             "_update_tail_recovery_submission",
@@ -291,20 +299,18 @@ class TestPortfolioManager:
         first = tail_order(portfolio_manager, "SELL", 2, "tg:tail-harvest:SPY:123")
         portfolio_manager.orders.add_order(contract, first, None)
 
-        portfolio_manager.submit_orders()
+        if placement_fails:
+            portfolio_manager.trades.submit_order.side_effect = OrderSubmissionError()
+            with pytest.raises(OrderSubmissionError):
+                portfolio_manager.submit_orders()
+        else:
+            portfolio_manager.submit_orders()
 
         portfolio_manager.trades.submit_order.assert_called_once()
         submitted_order = portfolio_manager.trades.submit_order.call_args.args[1]
         assert submitted_order is not first
         assert int(submitted_order.totalQuantity) == 1
-        assert [call.args for call in update_recovery.call_args_list] == [
-            (123, 1),
-            (123, None),
-        ]
-        assert [call.kwargs for call in update_recovery.call_args_list] == [
-            {"live_quantity": 3},
-            {},
-        ]
+        update_recovery.assert_called_once_with(123, 1, live_quantity=3)
 
     def test_submit_orders_allows_one_tail_sale_per_contract(
         self, portfolio_manager, mocker
@@ -315,7 +321,6 @@ class TestPortfolioManager:
         )
         portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
         portfolio_manager.trades = mocker.Mock()
-        portfolio_manager.trades.submit_order.return_value = True
         update_recovery = mocker.patch.object(
             portfolio_manager,
             "_update_tail_recovery_submission",
@@ -422,7 +427,6 @@ class TestPortfolioManager:
         )
         portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
         portfolio_manager.trades = mocker.Mock()
-        portfolio_manager.trades.submit_order.return_value = True
         portfolio_manager.orders.add_order(
             contract,
             tail_order(portfolio_manager, "BUY", 1, "tg:tail-harvest:SPY:789"),
@@ -452,7 +456,6 @@ class TestPortfolioManager:
             ]
         )
         portfolio_manager.trades = mocker.Mock()
-        portfolio_manager.trades.submit_order.return_value = True
         for symbol, con_id in [("QQQ", 100), ("SPY", 200)]:
             portfolio_manager.orders.add_order(
                 Option(symbol, "20271217", 300, "P", "SMART", conId=con_id),
@@ -515,7 +518,6 @@ class TestPortfolioManager:
             ]
         )
         portfolio_manager.trades = mocker.Mock()
-        portfolio_manager.trades.submit_order.return_value = True
         for symbol, con_id in [("SPY", 100), ("QQQ", 200)]:
             portfolio_manager.orders.add_order(
                 Option(symbol, "20271217", 300, "P", "SMART", conId=con_id),
@@ -623,7 +625,6 @@ class TestPortfolioManager:
         )
         portfolio_manager.ibkr.open_trades = mocker.Mock(return_value=[])
         portfolio_manager.trades = mocker.Mock()
-        portfolio_manager.trades.submit_order.return_value = True
         order = tail_order(portfolio_manager, "BUY", 1, "tg:tail-hedge:entry")
         portfolio_manager.orders.add_order(contract, order, None)
         portfolio_manager.orders.add_order(contract, order, None)
@@ -644,7 +645,6 @@ class TestPortfolioManager:
             return_value=[position(portfolio_manager, Stock("SPY", "SMART"), 1)]
         )
         portfolio_manager.trades = mocker.Mock()
-        portfolio_manager.trades.submit_order.return_value = True
         tail = (
             Option("SPY", "20271217", 300, "P", "SMART", conId=100),
             tail_order(
@@ -881,6 +881,38 @@ class TestPortfolioManager:
         pm.adjust_prices.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_manage_stops_batch_and_fails_run_when_placement_raises(
+        self, mock_ib, mock_config, mocker
+    ):
+        completion_future = asyncio.get_running_loop().create_future()
+        data_store = mocker.Mock()
+        pm = PortfolioManager(
+            mock_config,
+            mock_ib,
+            completion_future,
+            dry_run=False,
+            data_store=data_store,
+            run_stage_order=["collect_state"],
+        )
+        pm.initialize_account = mocker.Mock()
+        pm.summarize_account = mocker.AsyncMock(return_value=({}, {}))
+        pm.execution_manager.prepare_orders = mocker.AsyncMock()
+        error = ConnectionError("broker disconnected")
+        mock_ib.placeOrder.side_effect = error
+        first = Stock("SPY", "SMART", "USD")
+        order = LimitOrder("BUY", 1, 100, account=pm.account_number)
+        pm.orders.add_order(first, order, None)
+        pm.orders.add_order(Stock("QQQ", "SMART", "USD"), order, None)
+
+        with pytest.raises(OrderSubmissionError, match="Check broker orders") as raised:
+            await pm.manage()
+
+        mock_ib.placeOrder.assert_called_once_with(first, order)
+        assert raised.value.__cause__ is error
+        assert completion_future.exception() is raised.value
+        data_store.record_event.assert_called_with("run_end", {"success": False})
+
+    @pytest.mark.asyncio
     async def test_manage_alerts_and_fails_for_incomplete_orders(
         self, mock_ib, mock_config, mocker, capsys
     ):
@@ -1074,8 +1106,9 @@ class TestPortfolioManager:
         assert submitted_order.lmtPrice == pytest.approx(1.5)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("placement_fails", [False, True])
     async def test_tail_harvest_phase_cancels_and_fails_closed(
-        self, portfolio_manager, mocker
+        self, portfolio_manager, mocker, placement_fails
     ):
         portfolio_manager.config.runtime.orders.price_update_delay = [1, 2]
         contract = Option("SPY", "20271217", 300, "P", "SMART", conId=123)
@@ -1095,12 +1128,16 @@ class TestPortfolioManager:
         trades = []
         portfolio_manager.trades = mocker.Mock()
         portfolio_manager.trades.records.side_effect = lambda: trades
-        portfolio_manager.submit_orders = mocker.Mock(
-            side_effect=lambda _records: trades.append(trade)
-        )
+
+        def submit(_records):
+            trades.append(trade)
+            if placement_fails:
+                raise OrderSubmissionError("Second tail harvest placement failed")
+
+        portfolio_manager.submit_orders = mocker.Mock(side_effect=submit)
         portfolio_manager.ibkr.wait_for_submitting_orders = mocker.AsyncMock()
         portfolio_manager.ibkr.wait_for_orders_complete = mocker.AsyncMock(
-            side_effect=[[trade], [trade], []]
+            side_effect=[[]] if placement_fails else [[trade], [trade], []]
         )
         portfolio_manager.ibkr.cancel_order = mocker.Mock()
         mocker.patch.object(
@@ -1109,14 +1146,23 @@ class TestPortfolioManager:
             new=mocker.AsyncMock(return_value=True),
         )
 
-        filled = await portfolio_manager._execute_tail_harvest_phase(
-            [(contract, order, None)],
-            timeout=1,
-        )
-
-        assert filled is False
+        records = [(contract, order, None)]
+        if placement_fails:
+            second = tail_order(portfolio_manager, "SELL", 1, "tg:tail-harvest:SPY:124")
+            records.append((contract, second, None))
+            with pytest.raises(OrderSubmissionError):
+                await portfolio_manager._execute_tail_harvest_phase(records, timeout=1)
+        else:
+            filled = await portfolio_manager._execute_tail_harvest_phase(
+                records, timeout=1
+            )
+            assert filled is False
         portfolio_manager.ibkr.cancel_order.assert_called_once_with(order)
-        assert portfolio_manager.ibkr.wait_for_orders_complete.await_count == 3
+        expected_waits = 1 if placement_fails else 3
+        assert (
+            portfolio_manager.ibkr.wait_for_orders_complete.await_count
+            == expected_waits
+        )
 
     @pytest.mark.asyncio
     async def test_regime_stage_recalculates_after_filled_tail_harvest(

@@ -9,11 +9,16 @@ from thetagang.fmt import dfmt, ffmt, ifmt
 from thetagang.ibkr import IBKR
 
 
+class OrderSubmissionError(RuntimeError):
+    """Order placement raised before broker acceptance could be confirmed."""
+
+
 class Trades:
     def __init__(self, ibkr: IBKR, data_store: DataStore | None = None) -> None:
         self.ibkr = ibkr
         self.data_store = data_store
         self.__records: list[Trade] = []
+        self.__submission_failed = False
 
     def submit_order(
         self,
@@ -21,16 +26,20 @@ class Trades:
         order: Order,
         idx: int | None = None,
         intent_id: int | None = None,
-    ) -> bool:
-        """Submit an order, returning whether local placement succeeded."""
+    ) -> None:
+        """Place an order or halt submissions if broker acceptance is unknown."""
+        if self.__submission_failed:
+            raise OrderSubmissionError(
+                "Submissions halted after an unconfirmed placement."
+            )
         try:
             trade = self.ibkr.place_order(contract, order)
-        except Exception as exc:  # noqa: BLE001
-            log.error(
-                f"{contract.symbol}: Failed to submit contract, order={order}, "
-                f"error={type(exc).__name__}: {exc}"
-            )
-            return False
+        except Exception as exc:
+            self.__submission_failed = True
+            raise OrderSubmissionError(
+                f"{contract.symbol}: Order placement could not be confirmed. "
+                "Check broker orders and fills before retrying."
+            ) from exc
 
         if self.data_store:
             self.data_store.record_order(contract, order, intent_id=intent_id)
@@ -38,7 +47,6 @@ class Trades:
             self.__replace_trade(trade, idx)
         else:
             self.__add_trade(trade)
-        return True
 
     def records(self) -> list[Trade]:
         return self.__records

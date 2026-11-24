@@ -43,7 +43,7 @@ from thetagang.external_decisions import ExternalDecisionProviders
 from thetagang.fmt import dfmt, ffmt, ifmt, pfmt
 from thetagang.ibkr import IBKR
 from thetagang.order_execution import OrderExecutionManager
-from thetagang.orders import Orders
+from thetagang.orders import ORDER_REF_PREFIX, Orders
 from thetagang.strategies import (
     EquityStrategyDeps,
     OptionsStrategyDeps,
@@ -75,7 +75,7 @@ from thetagang.strategies.tail_hedge_state import (
     is_tail_reduction_ref,
 )
 from thetagang.target_weight_policy import TARGET_WEIGHT_POLICY_STATE_EVENT
-from thetagang.trades import Trades
+from thetagang.trades import OrderSubmissionError, Trades
 from thetagang.trading_operations import (
     OptionChainScanner,
     OrderOperations,
@@ -415,11 +415,14 @@ class PortfolioManager:
         order = getattr(trade, "order", None)
         contract = getattr(trade, "contract", None)
         symbol = getattr(contract, "symbol", None)
+        order_ref = getattr(order, "orderRef", None)
         return bool(
             order is not None
             and contract is not None
             and not trade.isDone()
             and getattr(order, "account", "") == self.account_number
+            and isinstance(order_ref, str)
+            and order_ref.startswith(ORDER_REF_PREFIX)
             and (
                 symbol in self.get_symbols()
                 or (self.config.strategies.vix_call_hedge.enabled and symbol == "VIX")
@@ -1166,7 +1169,16 @@ class PortfolioManager:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         trade_start = len(self.trades.records())
-        self.submit_orders(order_records)
+        try:
+            self.submit_orders(order_records)
+        except OrderSubmissionError:
+            try:
+                await self._cancel_incomplete_trades(
+                    self.trades.records()[trade_start:]
+                )
+            except (OSError, RuntimeError) as exc:
+                log.error(f"Could not cancel earlier tail harvests: {exc}")
+            raise
         trade_indices = list(range(trade_start, len(self.trades.records())))
         phase_trades = [self.trades.records()[idx] for idx in trade_indices]
         if len(phase_trades) != len(order_records):
@@ -1389,21 +1401,20 @@ class PortfolioManager:
                         continue
                     reduction_con_id = con_id
 
-            submitted = self.trades.submit_order(
+            # On a placement error the broker may still fill the order, so leave
+            # any persisted tail reservation intact for reconciliation.
+            self.trades.submit_order(
                 contract,
                 submitted_order,
                 intent_id=intent_id,
             )
 
-            if not submitted and reduction_con_id is not None:
-                self._update_tail_recovery_submission(reduction_con_id, None)
-
-            if submitted and is_tail_reduction_ref(order_ref):
+            if is_tail_reduction_ref(order_ref):
                 key = (int(contract.conId), str(submitted_order.action).upper())
                 commitments[key] += int(float(submitted_order.totalQuantity))
                 if reduction_con_id is not None:
                     submitted_tail_sells.add(reduction_con_id)
-            elif submitted and order_ref == TAIL_HEDGE_ENTRY_ORDER_REF:
+            elif order_ref == TAIL_HEDGE_ENTRY_ORDER_REF:
                 submitted_tail_entries.add(int(contract.conId))
         self.trades.print_summary()
 
