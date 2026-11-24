@@ -1,4 +1,8 @@
-FROM eclipse-temurin:17.0.8_7-jdk-jammy
+FROM ubuntu:22.04
+
+ENV JAVA_HOME="/opt/java/openjdk"
+ENV VIRTUAL_ENV="/opt/venv"
+ENV PATH="/opt/venv/bin:/root/.local/bin:${JAVA_HOME}/bin:${PATH}"
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -qy --no-install-recommends \
@@ -34,45 +38,56 @@ RUN apt-get update \
   libxrandr2 \
   libxrender1 \
   libxtst6 \
-  openjfx \
   unzip \
   wget \
   xdg-utils \
   xvfb \
-  && echo '0bd03c713f04c0a64367abbd3d5a40d228fcc2fb969c927bd7cdbd85baddac4b  ibc.zip' | tee ibc.zip.sha256 \
-  && wget -q https://github.com/IbcAlpha/IBC/releases/download/3.23.0/IBCLinux-3.23.0.zip -O ibc.zip \
-  && sha256sum -c ibc.zip.sha256 \
+  && case "$(dpkg --print-architecture)" in \
+    amd64) java_arch=x64; java_sha=61c862e4fb08135dfed7f7abfa43e2b6a0a538fc6265f5431b3f5c3aadb41f58 ;; \
+    arm64) java_arch=aarch64; java_sha=ffc3bfea2633518c6c9e47821a516e6b5bcb4569ac4890af3e79c211703caa75 ;; \
+    *) echo "Unsupported architecture for the bundled TWS runtime" >&2; exit 1 ;; \
+  esac \
+  && wget -q "https://cdn.azul.com/zulu/bin/zulu25.38.109-ca-fx-jre25.0.5.0.3-linux_${java_arch}.tar.gz" -O java.tar.gz \
+  && echo "$java_sha  java.tar.gz" | sha256sum -c - \
+  && mkdir -p "$JAVA_HOME" \
+  && tar -xzf java.tar.gz -C "$JAVA_HOME" --strip-components=1 \
+  && rm java.tar.gz \
+  && java --add-modules javafx.controls,javafx.web -version \
+  && wget -q https://github.com/IbcAlpha/IBC/releases/download/3.24.2/IBCLinux-3.24.2.zip -O ibc.zip \
+  && echo 'cc097ca1dfa75413a5fbe02e4743050af15f3308eb6a97c769b3cff9850c80c5  ibc.zip' | sha256sum -c - \
   && unzip ibc.zip -d /opt/ibc \
   && chmod o+x /opt/ibc/*.sh /opt/ibc/*/*.sh \
   && rm ibc.zip \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-ENV VIRTUAL_ENV="/opt/venv"
-ENV PATH="/opt/venv/bin:/root/.local/bin:${PATH}"
-
 WORKDIR /src
 
-ADD ./tws/Jts /root/Jts
+COPY ./tws/Jts/1053 /root/Jts/1053
 ADD ./dist /src/dist
 ADD entrypoint.bash /src/entrypoint.bash
 ADD docker/patch-ibc-java-logging.sh /src/patch-ibc-java-logging.sh
-ADD ./data/jxbrowser-linux64-arm-7.29.jar /root/Jts/1050/jars/
 ADD ./thetagang/ibgateway-log4j2.xml /opt/thetagang/ibgateway-log4j2.xml
 
-RUN wget -qO- https://astral.sh/uv/install.sh | sh \
+RUN if [ "$(dpkg --print-architecture)" = "arm64" ]; then \
+    wget -q https://us-maven.pkg.dev/jxbrowser/releases/com/teamdev/jxbrowser/jxbrowser-linux64-arm/9.5.3/jxbrowser-linux64-arm-9.5.3.jar -O jxbrowser-linux64-arm-9.5.3.jar \
+      && echo '0c9f37b8bfe73cd31f4b0d890ad968b8276e8921dc5ed1e206c96a2c3221bd24  jxbrowser-linux64-arm-9.5.3.jar' | sha256sum -c - \
+      && mv jxbrowser-linux64-arm-9.5.3.jar /root/Jts/1053/jars/; \
+  fi \
+  && wget -qO- https://astral.sh/uv/install.sh | sh \
   && uv python install 3.15 \
   && uv venv /opt/venv --python 3.15 \
-  && if test "$(dpkg --print-architecture)" = "armhf" ; then export PIP_EXTRA_INDEX_URL=https://www.piwheels.org/simple ; fi \
   && uv pip install --python /opt/venv/bin/python dist/thetagang-*.whl \
   && rm -rf /root/.cache \
   && rm -rf dist \
-  && echo '--module-path /usr/share/openjfx/lib' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '--add-modules java.base,java.naming,java.management,javafx.base,javafx.controls,javafx.fxml,javafx.graphics,javafx.media,javafx.swing,javafx.web' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '--add-opens java.desktop/javax.swing=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '--add-opens java.desktop/java.awt=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '--add-opens java.base/java.util=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
-  && echo '--add-opens javafx.graphics/com.sun.javafx.application=ALL-UNNAMED' | tee -a /root/Jts/*/tws.vmoptions \
+  && printf '%s\n' "$JAVA_HOME" > /root/Jts/1053/.install4j/pref_jre.cfg \
+  && printf '%s\n' \
+    '--add-modules java.base,java.naming,java.management,javafx.base,javafx.controls,javafx.fxml,javafx.graphics,javafx.media,javafx.swing,javafx.web' \
+    '--add-opens java.desktop/javax.swing=ALL-UNNAMED' \
+    '--add-opens java.desktop/java.awt=ALL-UNNAMED' \
+    '--add-opens java.base/java.util=ALL-UNNAMED' \
+    '--add-opens javafx.graphics/com.sun.javafx.application=ALL-UNNAMED' \
+    >> /root/Jts/1053/tws.vmoptions \
   && sh /src/patch-ibc-java-logging.sh \
   && echo '[Logon]' | tee -a /root/Jts/jts.ini \
   && echo 'UseSSL=true' | tee -a /root/Jts/jts.ini

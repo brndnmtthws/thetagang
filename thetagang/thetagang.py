@@ -129,9 +129,9 @@ def start(
     )
 
     if not without_ibc:
-        # TWS version is pinned to current stable
+        # Match the offline TWS build used by extract-installer.sh.
         ibc_config = config.runtime.ibc
-        ibc = IBC(1050, **ibc_config.to_dict())
+        ibc = IBC(1053, **ibc_config.to_dict())
         log.info(f"Starting TWS with twsVersion={ibc.twsVersion}")
 
         ib.RaiseRequestErrors = ibc_config.RaiseRequestErrors
